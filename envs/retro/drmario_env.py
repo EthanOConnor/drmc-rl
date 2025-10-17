@@ -259,6 +259,16 @@ class DrMarioRetroEnv(gym.Env):
                         self._last_frame = ob
             except Exception:
                 pass
+        # Initialize viruses remaining from RAM if available
+        if self._using_retro and self._retro is not None:
+            try:
+                ram_bytes = self._retro.get_ram()
+                vaddr = int(self._ram_offsets.get("viruses", {}).get("remaining_addr", "0"), 16)
+                if 0 <= vaddr < len(ram_bytes):
+                    self._viruses_remaining = int(ram_bytes[vaddr])
+            except Exception:
+                pass
+        self._viruses_prev = self._viruses_remaining
         # Reset holds
         self._hold_left = self._hold_right = self._hold_down = False
         obs = self._observe(risk_tau=(options.get("risk_tau") if options else self.default_risk_tau))
@@ -271,37 +281,47 @@ class DrMarioRetroEnv(gym.Env):
         return obs, info
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
-        # Placeholder dynamics: random chance to clear a virus
         self._t += 1
         done = False
         truncated = False
 
-        # Drive Retro forward if available (for pixels); env reward remains per spec/mock
+        delta_v = 0
+
+        # Drive Retro forward for frame_skip steps; update pixel stack and RAM-based counters
         if self._using_retro and self._retro is not None:
-            # Map our discrete action to NES MultiBinary via adapter
             from envs.retro.action_adapters import discrete10_to_buttons
             held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
             a_list = discrete10_to_buttons(int(action), held)
-            # Update held state from adapter's dict
             self._hold_left, self._hold_right, self._hold_down = held["LEFT"], held["RIGHT"], held["DOWN"]
             a_vec = np.array(a_list, dtype=np.uint8)
+            steps = max(1, int(self.frame_skip))
+            for _ in range(steps):
+                try:
+                    ob, *_ = self._retro.step(a_vec)
+                    if isinstance(ob, np.ndarray):
+                        self._last_frame = ob
+                        small = self._resize_rgb(self._last_frame, (128, 128)).astype(np.float32) / 255.0
+                        if self._pix_stack is None:
+                            self._pix_stack = np.stack([small for _ in range(4)], axis=0)
+                        else:
+                            self._pix_stack = np.concatenate([self._pix_stack[1:], small[None, ...]], axis=0)
+                except Exception:
+                    break
+            # Read viruses remaining from RAM and compute delta
             try:
-                ob, _, _, _, _ = self._retro.step(a_vec)
-                if isinstance(ob, np.ndarray):
-                    self._last_frame = ob
-                    small = self._resize_rgb(self._last_frame, (128, 128)).astype(np.float32) / 255.0
-                    if self._pix_stack is None:
-                        self._pix_stack = np.stack([small for _ in range(4)], axis=0)
-                    else:
-                        self._pix_stack = np.concatenate([self._pix_stack[1:], small[None, ...]], axis=0)
+                ram_bytes = self._retro.get_ram()
+                vaddr = int(self._ram_offsets.get("viruses", {}).get("remaining_addr", "0"), 16)
+                v_now = int(ram_bytes[vaddr]) if 0 <= vaddr < len(ram_bytes) else self._viruses_remaining
+                delta_v = max(0, self._viruses_prev - v_now)
+                self._viruses_prev = self._viruses_remaining = v_now
             except Exception:
                 pass
+        else:
+            # Mock dynamics if Retro not available
+            delta_v = 1 if self._rng.rand() < 0.02 else 0
+            self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
 
-        # Mock gameplay dynamics for reward/termination until RAM mapping is implemented
-        delta_v = 1 if self._rng.rand() < 0.02 else 0
-        self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
-
-        # Reward shaping per finalized spec (placeholder mechanics)
+        # Reward shaping per finalized spec
         r_env = -1.0 + self.reward_cfg.alpha * float(delta_v)
         if self._viruses_remaining == 0:
             r_env += self.reward_cfg.terminal_clear_bonus
@@ -322,7 +342,7 @@ class DrMarioRetroEnv(gym.Env):
         r_total = float(r_env + r_shape)
         info: Dict[str, Any] = {
             "t": self._t,
-            "viruses_remaining": self._viruses_remaining if not self._using_retro else -1,
+            "viruses_remaining": self._viruses_remaining,
             "delta_v": delta_v,
             "r_env": float(r_env),
             "r_shape": float(r_shape),

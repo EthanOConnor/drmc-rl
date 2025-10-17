@@ -12,5 +12,6 @@
     "lock_counter_addr": "0x0307"
   },
   "level": {"addr": "0x0316"}
+  ,
+  "viruses": {"remaining_addr": "0x0324"}
 }
-

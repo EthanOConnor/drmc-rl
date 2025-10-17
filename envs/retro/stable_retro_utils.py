@@ -14,17 +14,26 @@ from typing import Optional, Tuple
 
 
 def make_retro_env():
+    """Create a Stable-Retro env for Dr. Mario.
+
+    Environment variables used:
+    - DRMARIO_GAME: game identifier in your Stable-Retro integration (default 'DrMario-Nes').
+    - DRMARIO_STATE: initial savestate name (default 'LevelSelect').
+    - DRMARIO_CORE_PATH: explicit libretro NES core path; also set LIBRETRO_CORE.
+    """
     import retro  # provided by stable-retro
     game = os.environ.get("DRMARIO_GAME", "DrMario-Nes")
     state = os.environ.get("DRMARIO_STATE", "LevelSelect")
-    # NOTE: If your integration uses a different name/state, change here.
     kwargs = {}
     core_path = os.environ.get("DRMARIO_CORE_PATH")
     if core_path:
-        kwargs["use_restricted_actions"] = retro.Actions.DISCRETE
-        # stable-retro may accept core path via retro.make(..., inttype, **kwargs) or via env var.
         os.environ.setdefault("LIBRETRO_CORE", core_path)
-    env = retro.make(game=game, state=state, **kwargs)
+    # Gymnasium API compatibility
+    try:
+        env = retro.make(game=game, state=state, **kwargs)
+    except TypeError:
+        # Older/newer API variants
+        env = retro.make(game=game, state=state)
     return env
 
 
@@ -35,4 +44,3 @@ def get_buttons_layout() -> Tuple[str, ...]:
     """
     # Many cores expose 'B','A','SELECT','START','UP','DOWN','LEFT','RIGHT'; we use that here.
     return ("B", "A", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT")
-
