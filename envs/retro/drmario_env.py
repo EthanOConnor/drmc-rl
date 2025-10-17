@@ -246,6 +246,19 @@ class DrMarioRetroEnv(gym.Env):
                 self._pix_stack = None
             except Exception:
                 pass
+        # Optional frame offset to influence ROM RNG by letting frames elapse before we start
+        frame_offset = int((options or {}).get("frame_offset", 0))
+        if frame_offset > 0 and self._using_retro and self._retro is not None:
+            # Advance with NOOP inputs for frame_offset frames
+            try:
+                import numpy as _np
+                _noop = _np.zeros((len(self._buttons_layout or ("B","A","SELECT","START","UP","DOWN","LEFT","RIGHT"))), dtype=_np.uint8)
+                for _ in range(frame_offset):
+                    ob, *_ = self._retro.step(_noop)
+                    if isinstance(ob, _np.ndarray):
+                        self._last_frame = ob
+            except Exception:
+                pass
         # Reset holds
         self._hold_left = self._hold_right = self._hold_down = False
         obs = self._observe(risk_tau=(options.get("risk_tau") if options else self.default_risk_tau))

@@ -15,11 +15,12 @@ def main():
     ap.add_argument('--steps', type=int, default=1000)
     ap.add_argument('--risk-tau', type=float, default=0.5)
     ap.add_argument('--dump-state', action='store_true', help='Print state-plane stats (state mode)')
+    ap.add_argument('--frame-offset', type=int, default=0, help='Advance N frames with NOOP at reset (influences ROM RNG)')
     args = ap.parse_args()
 
     register_env_id()
     env = make("DrMarioRetroEnv-v0", obs_mode=args.mode, level=args.level, risk_tau=args.risk_tau)
-    obs, info = env.reset()
+    obs, info = env.reset(options={'frame_offset': args.frame_offset})
     t0 = time.time()
     steps, reward_sum = 0, 0.0
     for _ in range(args.steps):
