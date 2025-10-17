@@ -1,0 +1,3 @@
+[submodule "dr-mario-disassembly"]
+	path = dr-mario-disassembly
+	url = https://github.com/Nostaljipi/dr-mario-disassembly.git
