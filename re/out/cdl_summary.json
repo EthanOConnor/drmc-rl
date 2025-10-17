@@ -1,0 +1,25 @@
+{
+  "banks": [
+    {
+      "bank": 0,
+      "marked_bytes": 9295,
+      "total": 16384
+    },
+    {
+      "bank": 1,
+      "marked_bytes": 5526,
+      "total": 16384
+    },
+    {
+      "bank": 2,
+      "marked_bytes": 11746,
+      "total": 16384
+    },
+    {
+      "bank": 3,
+      "marked_bytes": 7600,
+      "total": 16384
+    }
+  ],
+  "total_bytes": 65536
+}

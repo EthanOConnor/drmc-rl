@@ -1,0 +1,9 @@
+{
+  "rng_update": {"label": "randomNumberGenerator", "addr": "0xB78B", "file": "prg/drmario_prg_general.asm"},
+  "generate_next_pill": {"label": "generateNextPill", "addr": "0x8E9D", "file": "prg/drmario_prg_game_logic.asm"},
+  "add_virus": {"label": "addVirus", "addr": "0x9D19", "file": "prg/drmario_prg_game_logic.asm"},
+  "falling_y_logic": {"label": "fallingPill_checkYMove", "addr": "0x8D80", "file": "prg/drmario_prg_game_logic.asm"},
+  "nmi": {"label": "nmi", "addr": "0x8005", "file": "prg/drmario_prg_game_init.asm"},
+  "init": {"label": "init", "addr": "0x803B", "file": "prg/drmario_prg_game_init.asm"}
+}
+

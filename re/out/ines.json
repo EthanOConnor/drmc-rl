@@ -1,0 +1,11 @@
+{
+  "mapper": 1,
+  "prg_rom_bytes": 32768,
+  "chr_rom_bytes": 32768,
+  "mirroring": "horizontal",
+  "battery": false,
+  "trainer": false,
+  "four_screen": false,
+  "ines2": false,
+  "sha1": "01de1e04c396298358e86468ba96148066688194"
+}

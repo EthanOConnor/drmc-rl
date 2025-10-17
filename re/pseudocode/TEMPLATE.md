@@ -1,0 +1,1 @@
+# Dr. Mario – Pseudocode (as implemented)\n\n(keep structures faithful; fill modules: Reset/NMI, MainLoop, RNG, PlaceViruses, NextPill, Physics, Clear/Settle, Timers, RAM map)\n

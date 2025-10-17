@@ -1,0 +1,23 @@
+algo: APPO
+env: DrMarioRetroEnv-v0
+experiment: drmario_pixel_v0
+
+num_workers: 8
+num_envs_per_worker: 32
+rollout: 128
+
+gamma: 0.997
+gae_lambda: 0.95
+ppo_clip_ratio: 0.2
+entropy_coef: 0.003
+learning_rate: 0.0003
+
+obs_mode: pixel
+frame_stack: 4
+
+risk_tau_train_low: 0.25
+risk_tau_train_high: 0.75
+
+with_wandb: false
+save_every_sec: 600
+

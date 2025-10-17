@@ -1,0 +1,55 @@
+{
+  "bottle": {
+    "base_addr": "0x0400",
+    "width": 8,
+    "height": 16,
+    "stride": 8,
+    "encoding": "hi:type, lo:color"
+  },
+  "falling_pill": {
+    "row_addr": "0x0306",
+    "col_addr": "0x0305",
+    "orient_addr": "0x0325",
+    "size_addr": "0x0326",
+    "left_color_addr": "0x0301",
+    "right_color_addr": "0x0302"
+  },
+  "preview_pill": {
+    "left_color_addr": "0x031A",
+    "right_color_addr": "0x031B",
+    "rotation_addr": "0x0322",
+    "size_addr": "0x0323"
+  },
+  "gravity_lock": {
+    "gravity_counter_addr": "0x0312",
+    "lock_counter_addr": "0x0307",
+    "speed_index_addr": "0x0320",
+    "speed_setting_addr": "0x030B"
+  },
+  "timers": {
+    "frame_counter_addr": "0x0043",
+    "wait_frames_addr": "0x0051",
+    "music_frames_since_last_beat_addr": "0x067F"
+  },
+  "level": {"addr": "0x0316"},
+  "inputs": {
+    "p1_buttons_pressed_addr": "0x00F5",
+    "p1_buttons_held_addr": "0x00F7",
+    "p2_buttons_pressed_addr": "0x00F6",
+    "p2_buttons_held_addr": "0x00F8"
+  },
+  "rng": {
+    "state_addrs": ["0x0017", "0x0018"],
+    "update_addr": "0xB78B",
+    "seed_constant": "0x89",
+    "seed_context": "drmario_prg_game_init.asm::storeRngSeeds"
+  },
+  "viruses": {
+    "remaining_addr": "0x0324"
+  },
+  "notes": {
+    "field_objects": "See defines/drmario_constants.asm: type in high nibble; color=yellow(0)/red(1)/blue(2) in low nibble.",
+    "grid_layout": "16 rows x 8 cols; row stride=8 bytes; p1_field at 0x0400, p2_field at 0x0500"
+  }
+}
+

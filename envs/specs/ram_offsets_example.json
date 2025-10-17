@@ -1,0 +1,15 @@
+{
+  "bottle": {"base_addr": "0x0600", "stride": 16},
+  "falling_pill": {
+    "row_addr": "0x00F0",
+    "col_addr": "0x00F1",
+    "orient_addr": "0x00F2",
+    "left_color_addr": "0x00F3",
+    "right_color_addr": "0x00F4"
+  },
+  "gravity_lock": {
+    "gravity_counter_addr": "0x00E0",
+    "lock_counter_addr": "0x00E1"
+  },
+  "level": {"addr": "0x0010"}
+}
