@@ -1,7 +1,7 @@
 """Utilities for converting Dr. Mario state tensors to RGB debug frames."""
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import numpy as np
 
