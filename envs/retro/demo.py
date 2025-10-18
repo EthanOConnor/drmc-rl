@@ -157,10 +157,14 @@ def _viewer_worker(
         if text_var is None or stats is None:
             return
         info = stats.get("info", {}) if isinstance(stats, dict) else {}
+        level_val = info.get("level_state") if isinstance(info, dict) else None
+        if level_val is None and isinstance(info, dict):
+            level_val = info.get("level")
+        level_text = level_val if level_val is not None else "?"
         lines = [
             f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
             f"Last reward {stats.get('reward', 0.0):.2f} (env {info.get('r_env', 0.0):.2f})",
-            f"Viruses {info.get('viruses_remaining', '?')}  Level {info.get('level', '?')}",
+            f"Viruses {info.get('viruses_remaining', '?')}  Level {level_text}",
             f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
         ]
         term = info.get("terminal_reason")
@@ -174,7 +178,10 @@ def _viewer_worker(
         ratio = stats.get("emu_vis_ratio")
         if emu_fps is not None:
             target_text = "free" if not target_hz else f"target {target_hz:.1f}"
-            lines.append(f"Emu FPS {emu_fps:.1f} ({target_text})")
+            realtime_multiplier = emu_fps / 60.0
+            lines.append(
+                f"Emu FPS {emu_fps:.1f} ({target_text}, {realtime_multiplier:.2f}x)"
+            )
         lines.append(f"Viz FPS {viz_fps:.1f}")
         if ratio:
             lines[-1] += f"  ratio×{ratio:.2f}"
