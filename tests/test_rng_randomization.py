@@ -63,8 +63,8 @@ def test_randomize_rng_defers_until_start_sequence():
     write_indices = [idx for idx, event in enumerate(stub.events) if event[0] == "write"]
     assert write_indices, "RNG randomization never triggered"
     first_write = write_indices[0]
-    assert any(event[0] == "step" for event in stub.events[:first_write]), (
-        "RNG randomization should occur after start inputs are issued"
+    assert not any(event[0] == "step" for event in stub.events[:first_write]), (
+        "RNG randomization should happen before issuing start inputs"
     )
     written = stub.events[first_write]
     addr, values = written[1], written[2]
