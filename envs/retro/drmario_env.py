@@ -195,6 +195,9 @@ class DrMarioRetroEnv(gym.Env):
         self._player_count: Optional[int] = None
         self._pill_spawn_counter: Optional[int] = None
         self._frames_until_drop_val: Optional[int] = None
+        self._pending_rng_randomize = False
+        self._pending_rng_override: Optional[Sequence[int]] = None
+        self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -304,16 +307,18 @@ class DrMarioRetroEnv(gym.Env):
             return None
         return self._read_ram_value(addr)
 
-    def _randomize_rng_state(self, override: Optional[Sequence[int]] = None) -> None:
+    def _randomize_rng_state(
+        self, override: Optional[Sequence[int]] = None
+    ) -> Optional[Tuple[int, ...]]:
         if not self._using_backend or self._backend is None:
-            return
+            return None
         offsets = self._ram_offsets.get("rng", {})
         state_addrs = offsets.get("state_addrs")
         if not state_addrs:
-            return
+            return None
         writer = getattr(self._backend, "write_ram", None)
         if writer is None:
-            return
+            return None
         addresses: list[int] = []
         for addr_hex in state_addrs:
             try:
@@ -321,16 +326,17 @@ class DrMarioRetroEnv(gym.Env):
             except (TypeError, ValueError):
                 continue
         if not addresses:
-            return
+            return None
         addresses.sort()
         if override is not None:
             data = np.asarray(list(override), dtype=np.uint8)
         else:
             rng = np.random.default_rng()
             data = rng.integers(0, 256, size=len(addresses), dtype=np.uint8)
+        data_list = [int(v) for v in data.tolist()]
         chunk_start: Optional[int] = None
         chunk_values: list[int] = []
-        for addr, value in zip(addresses, data.tolist()):
+        for addr, value in zip(addresses, data_list):
             if chunk_start is None:
                 chunk_start = addr
                 chunk_values = [value]
@@ -340,16 +346,32 @@ class DrMarioRetroEnv(gym.Env):
                 try:
                     writer(chunk_start, chunk_values)
                 except Exception:
-                    return
+                    return None
                 chunk_start = addr
                 chunk_values = [value]
         if chunk_start is not None and chunk_values:
             try:
                 writer(chunk_start, chunk_values)
             except Exception:
-                return
+                return None
         self._ram_cache = None
         self._read_ram_array(refresh=True)
+        return tuple(data_list)
+
+    def _apply_pending_rng_randomization(self) -> None:
+        if not self._pending_rng_randomize or not self._using_backend or self._backend is None:
+            self._pending_rng_randomize = False
+            self._pending_rng_override = None
+            return
+        override = self._pending_rng_override
+        try:
+            result = self._randomize_rng_state(override)
+        except Exception as exc:
+            warnings.warn(f"RNG randomization failed: {exc}")
+            result = None
+        self._last_rng_seed_bytes = tuple(int(v) & 0xFF for v in result) if result else None
+        self._pending_rng_randomize = False
+        self._pending_rng_override = None
 
     def _update_active_pill_tracker(self, v_now: Optional[int]) -> None:
         if not self._in_game:
@@ -509,7 +531,12 @@ class DrMarioRetroEnv(gym.Env):
         self._read_ram_array(refresh=True)
 
     def _run_start_sequence(
-        self, presses: int, options: Optional[Dict[str, Any]], *, from_topout: bool = False
+        self,
+        presses: int,
+        options: Optional[Dict[str, Any]],
+        *,
+        from_topout: bool = False,
+        apply_rng: bool = False,
     ) -> None:
         if presses <= 0 or not self._using_backend or self._backend is None:
             return
@@ -552,6 +579,9 @@ class DrMarioRetroEnv(gym.Env):
             for _ in range(presses - 1):
                 press_start()
 
+        if apply_rng:
+            self._apply_pending_rng_randomization()
+
         if settle_frames > 0:
             self._backend_step_buttons(noop, repeat=settle_frames)
         if wait_frames > 0:
@@ -580,8 +610,17 @@ class DrMarioRetroEnv(gym.Env):
                 presses = 2
             else:
                 presses = 1
+        apply_rng = bool(self._pending_rng_randomize)
         if presses > 0:
-            self._run_start_sequence(presses, options, from_topout=(prev_terminal == "topout"))
+            self._run_start_sequence(
+                presses,
+                options,
+                from_topout=(prev_terminal == "topout"),
+                apply_rng=apply_rng,
+            )
+        if self._pending_rng_randomize:
+            self._apply_pending_rng_randomization()
+        if self._using_backend and self._backend is not None:
             self._read_ram_array(refresh=True)
             vcount = self._extract_virus_count()
             if vcount is not None and vcount > 0:
@@ -685,6 +724,9 @@ class DrMarioRetroEnv(gym.Env):
         self._player_count = None
         self._pill_spawn_counter = None
         self._frames_until_drop_val = None
+        self._pending_rng_randomize = False
+        self._pending_rng_override = None
+        self._last_rng_seed_bytes = None
         if self._using_backend and self._backend is not None:
             try:
                 self._backend.reset()
@@ -710,9 +752,14 @@ class DrMarioRetroEnv(gym.Env):
                     override_seq = [int(v) & 0xFF for v in seed_bytes]
                 else:
                     override_seq = None
-                self._randomize_rng_state(override_seq)
+                self._pending_rng_randomize = True
+                self._pending_rng_override = override_seq
+                if not self.auto_start:
+                    self._apply_pending_rng_randomization()
             except Exception as exc:
-                warnings.warn(f"RNG randomization failed: {exc}")
+                warnings.warn(f"RNG randomization setup failed: {exc}")
+                self._pending_rng_randomize = False
+                self._pending_rng_override = None
         # Optional frame offset to influence ROM RNG by letting frames elapse before we start
         frame_offset = int(opts.get("frame_offset", 0))
         if frame_offset > 0 and self._using_backend and self._backend is not None:
@@ -741,6 +788,8 @@ class DrMarioRetroEnv(gym.Env):
         else:
             self._state_prev = None
         info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
+        if self._last_rng_seed_bytes is not None:
+            info["rng_seed"] = self._last_rng_seed_bytes
         return obs, self._augment_info(info)
 
     def _time_penalty_per_step(self) -> float:
