@@ -24,12 +24,15 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 - Point the env at your ROM: `export DRMARIO_ROM_PATH=/path/to/DrMario.nes`
 - (Optional) Import the game for Stable-Retro fallback: `python -m retro.import ~/ROMs/NES`
 - Smoke test: `python envs/retro/demo.py --mode pixel --steps 2000 --backend libretro`
-- Auto-start tuning: `python envs/retro/demo.py --backend libretro --start-presses 2 --start-settle-frames 180`
+- Auto-start tuning: `python envs/retro/demo.py --backend libretro --start-presses 3 --start-level-taps 12 --start-settle-frames 180 --start-wait-frames 600`
 - Capture frames: `python envs/retro/demo.py --backend libretro --save-frames out_frames`
+- Live window (requires system Tk + Pillow): `python envs/retro/demo.py --backend libretro --show-window --display-scale 2`
+- Kick off Sample Factory: `python -m sample_factory.launcher.run --cfg training/sf_configs/pixel_baseline.yaml --override env.backend=libretro env.auto_start=true`
 
 ### Backend selection
 
 - libretro (default): `DRMARIO_BACKEND=libretro` (or omit, defaults here). Requires a libretro core (`DRMARIO_CORE_PATH`) and ROM (`DRMARIO_ROM_PATH`). QuickNES and Mesen cores are known good options.
+- Top-outs are detected (virus count jumps to menu) and incur a penalty; the env automatically returns to level 0 using configurable START/LEFT sequences (`--start-presses`, `--start-level-taps`, etc.).
 - stable-retro: `DRMARIO_BACKEND=stable-retro`. Requires Stable-Retro install and imported game assets.
 - mock: `DRMARIO_BACKEND=mock` for deterministic mock dynamics (CI / docs).
 

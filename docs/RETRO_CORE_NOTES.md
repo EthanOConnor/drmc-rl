@@ -12,4 +12,5 @@
   ```
 - Default backend is libretro (`DRMARIO_BACKEND=libretro`); switch with `DRMARIO_BACKEND=stable-retro` or `DRMARIO_BACKEND=mock`.
 - QuickNES (`quicknes_libretro.dylib`) and Mesen (`mesen_libretro.dylib`) cores are both supported. QuickNES is lightweight and ships cleanly on arm64; Mesen offers higher fidelity if available.
+- The demo auto-presses START (default 3 taps on first boot, then 1 on subsequent resets). Override with `--start-presses`, `--start-level-taps`, `--start-settle-frames`, and `--start-wait-frames` as needed.
 - See `envs/retro/stable_retro_utils.py` for how Stable-Retro specific env vars are consumed.

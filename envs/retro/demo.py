@@ -17,12 +17,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     Image = None
 
-# Optional OpenCV display support
-try:
-    import cv2  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
-    cv2 = None
-
 # Ensure repo root is on sys.path when running as a script
 _ROOT = str(Path(__file__).resolve().parents[2])
 if _ROOT not in sys.path:
@@ -43,6 +37,7 @@ def main():
     ap.add_argument('--start-presses', type=int, default=None, help='Override auto start presses at reset (default: 2 on first boot, 1 afterwards)')
     ap.add_argument('--start-hold-frames', type=int, default=None, help='Frames to hold START during auto-start (default 6)')
     ap.add_argument('--start-gap-frames', type=int, default=None, help='Frames between START taps (default 40)')
+    ap.add_argument('--start-level-taps', type=int, default=None, help='Number of LEFT taps on level select before starting (default 12)')
     ap.add_argument('--start-settle-frames', type=int, default=None, help='Frames to run NOOP after auto-start before gameplay (default 180)')
     ap.add_argument('--start-wait-frames', type=int, default=None, help='Additional NOOP frames while waiting for virus count to become positive (default 600)')
     ap.add_argument('--backend', type=str, default=None, help='libretro (default), stable-retro, or mock')
@@ -72,6 +67,8 @@ def main():
         reset_options['start_hold_frames'] = int(args.start_hold_frames)
     if args.start_gap_frames is not None:
         reset_options['start_gap_frames'] = int(args.start_gap_frames)
+    if args.start_level_taps is not None:
+        reset_options['start_level_taps'] = int(args.start_level_taps)
     if args.start_settle_frames is not None:
         reset_options['start_settle_frames'] = int(args.start_settle_frames)
     if args.start_wait_frames is not None:
@@ -85,14 +82,50 @@ def main():
         save_dir.mkdir(parents=True, exist_ok=True)
         if Image is None:
             print("Pillow not installed; frames will be saved as .npy arrays.")
-    show_window = args.show_window
-    if show_window and cv2 is None:
-        print("OpenCV (cv2) not installed; install opencv-python or omit --show-window.")
-        show_window = False
-    window_name: Optional[str] = None
+    show_window = bool(args.show_window)
+    viewer = None
     if show_window:
-        window_name = "Dr. Mario"
-        cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)  # type: ignore[arg-type]
+        if Image is None:
+            print("Pillow is required for the live window; skipping preview.")
+            show_window = False
+        else:
+            try:
+                import tkinter as tk
+                from PIL import ImageTk  # type: ignore
+            except Exception as exc:
+                print(f"Tkinter preview unavailable ({exc}); skipping live window.")
+                show_window = False
+            else:
+                class _TkViewer:
+                    def __init__(self, title: str, scale: float):
+                        self._scale = max(0.5, float(scale))
+                        self._tk = tk.Tk()
+                        self._tk.title(title)
+                        self._label = tk.Label(self._tk)
+                        self._label.pack()
+                        self._img = None
+
+                    def update(self, frame: np.ndarray) -> bool:
+                        try:
+                            image = Image.fromarray(frame)
+                            if self._scale != 1.0:
+                                w, h = image.size
+                                image = image.resize((int(w * self._scale), int(h * self._scale)), Image.NEAREST)
+                            self._img = ImageTk.PhotoImage(image)
+                            self._label.configure(image=self._img)
+                            self._tk.update_idletasks()
+                            self._tk.update()
+                            return True
+                        except tk.TclError:
+                            return False
+
+                    def close(self) -> None:
+                        try:
+                            self._tk.destroy()
+                        except tk.TclError:
+                            pass
+
+                viewer = _TkViewer("Dr. Mario", args.display_scale)
     for _ in range(args.steps):
         a = env.action_space.sample()
         obs, r, term, trunc, info = env.step(a)
@@ -105,12 +138,8 @@ def main():
         if save_dir or show_window:
             frame = env.render()
             if frame is not None:
-                if show_window and window_name:
-                    scale = max(0.5, float(args.display_scale))
-                    scaled = cv2.resize(frame, dsize=None, fx=scale, fy=scale, interpolation=cv2.INTER_NEAREST)  # type: ignore[arg-type]
-                    cv2.imshow(window_name, cv2.cvtColor(scaled, cv2.COLOR_RGB2BGR))  # type: ignore[arg-type]
-                    key = cv2.waitKey(1)  # type: ignore[arg-type]
-                    if key & 0xFF == ord('q'):
+                if viewer is not None:
+                    if not viewer.update(frame):
                         break
                 if save_dir:
                     fname = save_dir / f"frame_{steps:05d}"
@@ -129,8 +158,8 @@ def main():
         f"Ran {steps} steps, reward={reward_sum:.1f}, cleared={info.get('cleared', False)}, "
         f"FPS≈{fps:.1f}, backend={backend_name}, active={info.get('backend_active', False)}"
     )
-    if show_window and window_name:
-        cv2.destroyAllWindows()  # type: ignore[attr-defined]
+    if viewer is not None:
+        viewer.close()
     env.close()
 
 

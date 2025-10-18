@@ -38,6 +38,7 @@ class RewardConfig:
     beta: float = 0.5    # tiny bonus for multi-clears
     gamma: float = 0.1   # settle penalty weight
     terminal_clear_bonus: float = 500.0
+    topout_penalty: float = -500.0
     mode: str = "speedrun"  # "speedrun" | "mean_safe" | "cvar"
     cvar_alpha: float = 0.25
 
@@ -60,6 +61,8 @@ class DrMarioRetroEnv(gym.Env):
       - Defaults to the libretro backend using a direct ctypes binding and a provided NES core.
         Stable-Retro remains available as an alternate backend, and the env falls back
         to deterministic mock dynamics if no backend can be constructed.
+      - Automatic START/LEFT sequences can be enabled (default) to skip menus and enforce
+        level-0 restarts; top-outs are detected via virus-count reset and incur a penalty.
     """
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 60}
@@ -165,6 +168,8 @@ class DrMarioRetroEnv(gym.Env):
         self._hold_left = False
         self._hold_right = False
         self._hold_down = False
+        self._in_game = False
+        self._last_terminal: Optional[str] = None
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -230,11 +235,32 @@ class DrMarioRetroEnv(gym.Env):
         gap_frames = int(opts.get("start_gap_frames", 40))
         settle_frames = int(opts.get("start_settle_frames", 180))
         wait_frames = int(opts.get("start_wait_viruses", 600))
+        level_taps = int(opts.get("start_level_taps", 12))
         noop = self._button_vector(None)
         start_vec = self._button_vector(["START"])
-        for i in range(int(presses)):
+        left_vec = self._button_vector(["LEFT"])
+
+        def press_start() -> None:
             self._backend_step_buttons(start_vec, repeat=hold_frames)
             self._backend_step_buttons(noop, repeat=gap_frames)
+
+        presses = int(presses)
+        if presses <= 0:
+            return
+        if presses == 1:
+            for _ in range(level_taps):
+                self._backend_step_buttons(left_vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
+            press_start()
+        else:
+            press_start()
+            if level_taps > 0:
+                for _ in range(level_taps):
+                    self._backend_step_buttons(left_vec, repeat=1)
+                    self._backend_step_buttons(noop, repeat=1)
+            for _ in range(presses - 1):
+                press_start()
+
         if settle_frames > 0:
             self._backend_step_buttons(noop, repeat=settle_frames)
         if wait_frames > 0:
@@ -244,6 +270,10 @@ class DrMarioRetroEnv(gym.Env):
                     break
                 self._backend_step_buttons(noop, repeat=1)
         self._hold_left = self._hold_right = self._hold_down = False
+        vcount = self._extract_virus_count()
+        if vcount is not None and vcount > 0:
+            self._in_game = True
+
 
     def _maybe_auto_start(self, options: Optional[Dict[str, Any]]) -> None:
         if not self.auto_start:
@@ -253,6 +283,9 @@ class DrMarioRetroEnv(gym.Env):
         if presses > 0:
             self._run_start_sequence(presses, options)
             self._read_ram_array(refresh=True)
+            vcount = self._extract_virus_count()
+            if vcount is not None and vcount > 0:
+                self._in_game = True
         self._first_boot = False
 
     def _load_ram_offsets(self) -> Dict[str, Any]:
@@ -339,6 +372,8 @@ class DrMarioRetroEnv(gym.Env):
         self._t_max = get_level_timeout(self.level)
         self._pix_stack = None
         self._state_stack = None
+        self._in_game = False
+        self._last_terminal = None
         if self._using_backend and self._backend is not None:
             try:
                 self._backend.reset()
@@ -388,6 +423,7 @@ class DrMarioRetroEnv(gym.Env):
         truncated = False
 
         delta_v = 0
+        topout = False
 
         # Drive Retro forward for frame_skip steps; update pixel stack and RAM-based counters
         held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
@@ -403,8 +439,17 @@ class DrMarioRetroEnv(gym.Env):
                 self._backend_step_buttons(buttons, repeat=self.frame_skip)
                 v_now = self._extract_virus_count()
                 if v_now is not None:
-                    delta_v = max(0, self._viruses_prev - v_now)
-                    self._viruses_prev = self._viruses_remaining = v_now
+                    if v_now > 0 and not self._in_game:
+                        self._in_game = True
+                    if self._in_game and self._viruses_prev > 0 and v_now >= 200:
+                        topout = True
+                        done = True
+                        self._in_game = False
+                        self._viruses_remaining = v_now
+                        self._viruses_prev = v_now
+                    else:
+                        delta_v = max(0, self._viruses_prev - v_now)
+                        self._viruses_prev = self._viruses_remaining = v_now
             except Exception as exc:
                 warnings.warn(f"Backend step failed: {exc}. Falling back to mock dynamics.")
                 try:
@@ -420,9 +465,14 @@ class DrMarioRetroEnv(gym.Env):
 
         # Reward shaping per finalized spec
         r_env = -1.0 + self.reward_cfg.alpha * float(delta_v)
-        if self._viruses_remaining == 0:
+        if self._viruses_remaining == 0 and not topout:
             r_env += self.reward_cfg.terminal_clear_bonus
             done = True
+            self._in_game = False
+            self._last_terminal = "clear"
+        if topout:
+            r_env += self.reward_cfg.topout_penalty
+            self._last_terminal = "topout"
 
         if self._t > self._t_max:
             truncated = True
@@ -444,9 +494,13 @@ class DrMarioRetroEnv(gym.Env):
             "r_env": float(r_env),
             "r_shape": float(r_shape),
             "r_total": float(r_total),
-            "cleared": bool(self._viruses_remaining == 0),
+            "cleared": bool(self._viruses_remaining == 0 and not topout),
+            "topout": bool(topout),
             "backend_active": bool(self._using_backend),
+            "terminal_reason": self._last_terminal,
         }
+        if not (done or truncated):
+            self._last_terminal = None
         return obs, r_total, done, truncated, info
 
     def render(self) -> Optional[np.ndarray]:

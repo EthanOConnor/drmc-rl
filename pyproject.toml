@@ -31,6 +31,7 @@ exclude = [
 retro = [
     "stable-retro; python_version < '3.13'",
     "opencv-python",
+    "pillow",
 ]
 rl = [
     "torch",
