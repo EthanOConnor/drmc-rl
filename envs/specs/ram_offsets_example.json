@@ -11,5 +11,10 @@
     "gravity_counter_addr": "0x00E0",
     "lock_counter_addr": "0x00E1"
   },
+  "mode": {"addr": "0x0005", "playing_value": "0x04"},
+  "players": {"addr": "0x0011"},
+  "stage_clear": {"flag_addr": "0x0006", "cleared_value": "0x01"},
+  "ending": {"addr": "0x0007", "non_ending_value": "0x0A"},
+  "pill_counter": {"addr": "0x00F5"},
   "level": {"addr": "0x0010"}
 }

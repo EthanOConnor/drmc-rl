@@ -626,74 +626,82 @@ def main():
 
     episodes = 0
     last_info = info
-    while steps < args.steps:
-        if viewer is not None:
-            while True:
-                command = viewer.poll_control()
-                if not command:
-                    break
-                if command.get("type") == "ratio":
-                    mode = command.get("mode")
-                    if mode == "match":
-                        viz_fps = command.get("viz_fps")
-                        anchor = float(viz_fps) if viz_fps else viz_baseline_hz
-                        apply_ratio(1.0, anchor_hz=anchor)
-                    elif mode == "faster":
-                        if emu_vis_ratio is None:
-                            apply_ratio(ratio_step)
-                        else:
-                            apply_ratio(emu_vis_ratio * ratio_step)
-                    elif mode == "slower":
-                        if emu_vis_ratio is None:
-                            apply_ratio(1.0 / ratio_step)
-                        else:
-                            apply_ratio(emu_vis_ratio / ratio_step)
-        if step_period > 0:
-            now = time.perf_counter()
-            if now < next_step_time:
-                time.sleep(next_step_time - now)
-                now = next_step_time
-            else:
+    interrupted = False
+    try:
+        while steps < args.steps:
+            if viewer is not None:
+                while True:
+                    command = viewer.poll_control()
+                    if not command:
+                        break
+                    if command.get("type") == "ratio":
+                        mode = command.get("mode")
+                        if mode == "match":
+                            viz_fps = command.get("viz_fps")
+                            anchor = float(viz_fps) if viz_fps else viz_baseline_hz
+                            apply_ratio(1.0, anchor_hz=anchor)
+                        elif mode == "faster":
+                            if emu_vis_ratio is None:
+                                apply_ratio(ratio_step)
+                            else:
+                                apply_ratio(emu_vis_ratio * ratio_step)
+                        elif mode == "slower":
+                            if emu_vis_ratio is None:
+                                apply_ratio(1.0 / ratio_step)
+                            else:
+                                apply_ratio(emu_vis_ratio / ratio_step)
+            if step_period > 0:
                 now = time.perf_counter()
-            next_step_time = now + step_period
-        a = env.action_space.sample()
-        obs, r, term, trunc, info = env.step(a)
-        step_times.append(time.perf_counter())
-        if len(step_times) >= 2:
-            span = step_times[-1] - step_times[0]
-            if span > 0:
-                emu_fps = float(len(step_times) - 1) / span
-        if args.dump_state and args.mode == 'state':
-            core = extract_state_stack(obs)
-            latest = core[-1]
-            nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
-            print('nz per channel:', nz)
-        cumulative_reward += r
-        reward_sum += r
-        steps += 1
-        publish_frame(obs, info, int(a), r, steps, cumulative_reward)
-        last_info = info
-        if term or trunc:
-            episodes += 1
-            if steps >= args.steps:
-                break
-            cumulative_reward = 0.0
-            step_times.clear()
-            obs, info = env.reset(options=reset_options)
-            publish_frame(obs, info, None, 0.0, steps, cumulative_reward)
+                if now < next_step_time:
+                    time.sleep(next_step_time - now)
+                    now = next_step_time
+                else:
+                    now = time.perf_counter()
+                next_step_time = now + step_period
+            a = env.action_space.sample()
+            obs, r, term, trunc, info = env.step(a)
+            step_times.append(time.perf_counter())
+            if len(step_times) >= 2:
+                span = step_times[-1] - step_times[0]
+                if span > 0:
+                    emu_fps = float(len(step_times) - 1) / span
+            if args.dump_state and args.mode == 'state':
+                core = extract_state_stack(obs)
+                latest = core[-1]
+                nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
+                print('nz per channel:', nz)
+            cumulative_reward += r
+            reward_sum += r
+            steps += 1
+            publish_frame(obs, info, int(a), r, steps, cumulative_reward)
             last_info = info
-            continue
-    dt = time.time() - t0
-    fps = steps / max(dt, 1e-6)
-    backend_name = getattr(env.unwrapped, "backend_name", "unknown")
-    summary_info = last_info if isinstance(last_info, dict) else {}
-    print(
-        f"Ran {steps} steps, reward={reward_sum:.1f}, cleared={summary_info.get('cleared', False)}, "
-        f"FPS≈{fps:.1f}, backend={backend_name}, active={summary_info.get('backend_active', False)}, episodes={episodes}"
-    )
-    if viewer is not None:
-        viewer.close()
-    env.close()
+            if term or trunc:
+                episodes += 1
+                if steps >= args.steps:
+                    break
+                cumulative_reward = 0.0
+                step_times.clear()
+                obs, info = env.reset(options=reset_options)
+                publish_frame(obs, info, None, 0.0, steps, cumulative_reward)
+                last_info = info
+                continue
+    except KeyboardInterrupt:
+        interrupted = True
+        print("Interrupted by user; shutting down demo.", file=sys.stderr)
+    finally:
+        dt = time.time() - t0
+        fps = steps / max(dt, 1e-6)
+        backend_name = getattr(env.unwrapped, "backend_name", "unknown")
+        summary_info = last_info if isinstance(last_info, dict) else {}
+        suffix = " (interrupted)" if interrupted else ""
+        summary = (
+            f"Ran {steps} steps, reward={reward_sum:.1f}, cleared={summary_info.get('cleared', False)}, "
+            f"FPS≈{fps:.1f}, backend={backend_name}, active={summary_info.get('backend_active', False)}, episodes={episodes}"
+        )
+        print(summary + suffix)
+        if viewer is not None:
+            viewer.close()
+        env.close()
 
 
 if __name__ == '__main__':

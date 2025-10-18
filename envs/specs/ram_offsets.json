@@ -18,6 +18,11 @@
     "gravity_counter_addr": "0x0312",
     "lock_counter_addr": "0x0307"
   },
+  "mode": {"addr": "0x0046", "playing_value": "0x04"},
+  "players": {"addr": "0x0727"},
+  "stage_clear": {"flag_addr": "0x0055", "cleared_value": "0x01"},
+  "ending": {"addr": "0x0053", "non_ending_value": "0x0A"},
+  "pill_counter": {"addr": "0x0310"},
   "level": {"addr": "0x0316"},
   "viruses": {"remaining_addr": "0x0324"},
   "rng": {"state_addrs": ["0x0017", "0x0018"]}
