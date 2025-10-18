@@ -188,6 +188,13 @@ class DrMarioRetroEnv(gym.Env):
         self._prev_terminal: Optional[str] = None
         self._frames_without_active_pill = 0
         self._topout_inactive_threshold = 240
+        self._game_mode_val: Optional[int] = None
+        self._gameplay_active: Optional[bool] = None
+        self._stage_clear_flag: Optional[bool] = None
+        self._ending_active: Optional[bool] = None
+        self._player_count: Optional[int] = None
+        self._pill_spawn_counter: Optional[int] = None
+        self._frames_until_drop_val: Optional[int] = None
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -223,6 +230,79 @@ class DrMarioRetroEnv(gym.Env):
         if 0 <= addr < ram_arr.shape[0]:
             return int(ram_arr[addr])
         return None
+
+    @staticmethod
+    def _parse_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, str):
+            try:
+                base = 16 if value.lower().startswith("0x") else 10
+                return int(value, base)
+            except ValueError:
+                return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _read_offset_value(self, group: str, key: str = "addr") -> Optional[int]:
+        offsets = self._ram_offsets.get(group)
+        if not offsets:
+            return None
+        addr_val = offsets.get(key)
+        addr = self._parse_int(addr_val)
+        if addr is None:
+            return None
+        return self._read_ram_value(addr)
+
+    def _read_gameplay_flag(self) -> Tuple[Optional[int], Optional[bool]]:
+        mode_val = self._read_offset_value("mode")
+        gameplay_flag: Optional[bool] = None
+        offsets = self._ram_offsets.get("mode")
+        if offsets and mode_val is not None:
+            playing_val = self._parse_int(offsets.get("playing_value"))
+            if playing_val is not None:
+                gameplay_flag = mode_val == playing_val
+        return mode_val, gameplay_flag
+
+    def _read_stage_clear_flag(self) -> Optional[bool]:
+        offsets = self._ram_offsets.get("stage_clear")
+        if not offsets:
+            return None
+        val = self._read_offset_value("stage_clear", "flag_addr")
+        target = self._parse_int(offsets.get("cleared_value"))
+        if val is None or target is None:
+            return None
+        return bool(val == target)
+
+    def _read_ending_flag(self) -> Optional[bool]:
+        offsets = self._ram_offsets.get("ending")
+        if not offsets:
+            return None
+        val = self._read_offset_value("ending")
+        if val is None:
+            return None
+        non_value = self._parse_int(offsets.get("non_ending_value"))
+        if non_value is None:
+            return None
+        return bool(val != non_value)
+
+    def _read_player_count(self) -> Optional[int]:
+        return self._read_offset_value("players")
+
+    def _read_pill_counter(self) -> Optional[int]:
+        return self._read_offset_value("pill_counter")
+
+    def _read_frames_until_drop(self) -> Optional[int]:
+        offsets = self._ram_offsets.get("gravity_lock", {})
+        addr_val = offsets.get("gravity_counter_addr") or offsets.get("frames_until_drop_addr")
+        addr = self._parse_int(addr_val)
+        if addr is None:
+            return None
+        return self._read_ram_value(addr)
 
     def _randomize_rng_state(self, override: Optional[Sequence[int]] = None) -> None:
         if not self._using_backend or self._backend is None:
@@ -598,6 +678,13 @@ class DrMarioRetroEnv(gym.Env):
         self._prev_terminal = getattr(self, "_last_terminal", None)
         self._last_terminal = None
         self._frames_without_active_pill = 0
+        self._game_mode_val = None
+        self._gameplay_active = None
+        self._stage_clear_flag = None
+        self._ending_active = None
+        self._player_count = None
+        self._pill_spawn_counter = None
+        self._frames_until_drop_val = None
         if self._using_backend and self._backend is not None:
             try:
                 self._backend.reset()
@@ -674,6 +761,14 @@ class DrMarioRetroEnv(gym.Env):
         delta_v = 0
         topout = False
 
+        self._game_mode_val = None
+        self._gameplay_active = None
+        self._stage_clear_flag = None
+        self._ending_active = None
+        self._player_count = None
+        self._pill_spawn_counter = None
+        self._frames_until_drop_val = None
+
         # Drive Retro forward for frame_skip steps; update pixel stack and RAM-based counters
         held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
         buttons = discrete10_to_buttons(int(action), held)
@@ -684,11 +779,25 @@ class DrMarioRetroEnv(gym.Env):
         )
 
         if self._using_backend and self._backend is not None:
+            gameplay_flag: Optional[bool] = None
             try:
                 self._backend_step_buttons(buttons, repeat=self.frame_skip)
+                mode_val, gameplay_flag = self._read_gameplay_flag()
+                self._game_mode_val = mode_val
+                self._gameplay_active = gameplay_flag
+                self._stage_clear_flag = self._read_stage_clear_flag()
+                self._ending_active = self._read_ending_flag()
+                self._player_count = self._read_player_count()
+                self._pill_spawn_counter = self._read_pill_counter()
+                self._frames_until_drop_val = self._read_frames_until_drop()
+                if gameplay_flag is False:
+                    self._in_game = False
+                    self._frames_without_active_pill = 0
                 v_now = self._extract_virus_count()
                 if v_now is not None:
-                    if v_now > 0 and not self._in_game:
+                    if gameplay_flag is True and v_now > 0:
+                        self._in_game = True
+                    elif v_now > 0 and not self._in_game:
                         self._in_game = True
                     detected_topout = False
                     if self._in_game and self._viruses_prev > 0:
@@ -756,6 +865,20 @@ class DrMarioRetroEnv(gym.Env):
             "terminal_reason": self._last_terminal,
             "level": self.level,
         }
+        if self._game_mode_val is not None:
+            base_info["game_mode"] = int(self._game_mode_val)
+        if self._gameplay_active is not None:
+            base_info["gameplay_active"] = bool(self._gameplay_active)
+        if self._stage_clear_flag is not None:
+            base_info["stage_clear_flag"] = bool(self._stage_clear_flag)
+        if self._ending_active is not None:
+            base_info["ending_active"] = bool(self._ending_active)
+        if self._player_count is not None:
+            base_info["player_count"] = int(self._player_count)
+        if self._pill_spawn_counter is not None:
+            base_info["pill_counter"] = int(self._pill_spawn_counter)
+        if self._frames_until_drop_val is not None:
+            base_info["frames_until_drop"] = int(self._frames_until_drop_val)
         if (
             self._state_viz_interval
             and self.obs_mode == "state"
