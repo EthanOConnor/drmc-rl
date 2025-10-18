@@ -1,12 +1,9 @@
-"""Adapters for libretro action spaces (Discrete or MultiBinary).
-
-We keep a canonical 10-action discrete set at 60 Hz and convert to core button arrays.
-If the core uses a Discrete action space with its own mapping, add a mapping table and convert.
-"""
+"""Adapters for libretro action spaces (Discrete or MultiBinary)."""
 from __future__ import annotations
+
 from typing import List
 
-NES_BUTTONS = ("B", "A", "SELECT", "START", "UP", "DOWN", "LEFT", "RIGHT")
+from envs.backends.base import NES_BUTTONS
 
 
 def discrete10_to_buttons(a: int, held: dict) -> List[int]:
@@ -44,4 +41,3 @@ def discrete10_to_buttons(a: int, held: dict) -> List[int]:
 
     # Convert dict to array in NES_BUTTONS order
     return [b[k] for k in NES_BUTTONS]
-

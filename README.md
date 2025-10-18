@@ -13,13 +13,25 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 ## Quick Start (macOS Apple Silicon)
 
 - System deps: `brew install cmake pkg-config lua@5.1`
-- Python: `uv venv && source .venv/bin/activate` (or `python -m venv venv`)
-- Install (once you have internet access):
-  - `pip install torch torchvision torchaudio` (MPS-supported wheels)
-  - `pip install stable-retro sample-factory gymnasium numpy opencv-python rich`
-- Obtain a NES libretro core (Mesen or Nestopia). Place the `*_libretro.dylib` path in your env.
-- Import the game: `python -m retro.import ~/ROMs/NES`
-- Smoke test: `python envs/retro/demo.py --mode pixel --steps 2000`
+- Python: `python -m venv .venv && source .venv/bin/activate`
+- Install package and extras:
+  - `pip install -e .`  (base deps: gymnasium, numpy)
+  - `pip install -e ".[retro,dev]"`  (stable-retro, opencv; pytest/ruff/black/etc.)
+  - Note: Stable-Retro currently has wheels for Python <3.13. If you are on 3.13,
+    create a 3.12 venv (e.g., `brew install python@3.12 && /opt/homebrew/bin/python3.12 -m venv .venv && source .venv/bin/activate`) before installing extras.
+  - For training: `pip install -e ".[rl]"` (or install PyTorch first on MPS: `pip install torch torchvision torchaudio`)
+- Obtain a NES libretro core (QuickNES, Mesen, or Nestopia). Set `DRMARIO_CORE_PATH=/path/to/quicknes_libretro.dylib`.
+- Point the env at your ROM: `export DRMARIO_ROM_PATH=/path/to/DrMario.nes`
+- (Optional) Import the game for Stable-Retro fallback: `python -m retro.import ~/ROMs/NES`
+- Smoke test: `python envs/retro/demo.py --mode pixel --steps 2000 --backend libretro`
+- Auto-start tuning: `python envs/retro/demo.py --backend libretro --start-presses 2 --start-settle-frames 180`
+- Capture frames: `python envs/retro/demo.py --backend libretro --save-frames out_frames`
+
+### Backend selection
+
+- libretro (default): `DRMARIO_BACKEND=libretro` (or omit, defaults here). Requires a libretro core (`DRMARIO_CORE_PATH`) and ROM (`DRMARIO_ROM_PATH`). QuickNES and Mesen cores are known good options.
+- stable-retro: `DRMARIO_BACKEND=stable-retro`. Requires Stable-Retro install and imported game assets.
+- mock: `DRMARIO_BACKEND=mock` for deterministic mock dynamics (CI / docs).
 
 If you need me to fetch docs or install packages, I can request elevated network permissions and run the commands for you.
 

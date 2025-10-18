@@ -17,9 +17,19 @@ line-length = 100
 select = ["E", "F", "I"]
 ignore = []
 
+[tool.setuptools]
+# Explicitly control package discovery to avoid bundling non-packages (e.g., 're', 'retro')
+
+[tool.setuptools.packages.find]
+include = ["envs*", "models*", "eval*", "training*"]
+exclude = [
+  "re*", "retro*", "data*", "legal_ROMs*", "tools*", "streaming*", "docs*",
+  "sim-envpool*", "dr-mario-disassembly*"
+]
+
 [project.optional-dependencies]
 retro = [
-    "stable-retro",
+    "stable-retro; python_version < '3.13'",
     "opencv-python",
 ]
 rl = [
@@ -38,3 +48,6 @@ dev = [
     "pyarrow",
     "matplotlib",
 ]
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

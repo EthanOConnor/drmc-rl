@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import os
+import warnings
 from dataclasses import dataclass
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 import gymnasium as gym
@@ -11,11 +13,9 @@ from gymnasium import spaces
 from envs.specs.timeouts import get_level_timeout
 from envs.reward_shaping import PotentialShaper
 from envs.specs.ram_to_state import ram_to_state
-try:
-    from envs.retro.stable_retro_utils import make_retro_env, get_buttons_layout
-except Exception:  # optional import
-    make_retro_env = None  # type: ignore
-    get_buttons_layout = None  # type: ignore
+from envs.backends import make_backend
+from envs.backends.base import NES_BUTTONS
+from envs.retro.action_adapters import discrete10_to_buttons
 
 
 class Action(IntEnum):
@@ -47,7 +47,7 @@ def _default_seed_registry() -> Path:
 
 
 class DrMarioRetroEnv(gym.Env):
-    """Single-agent Dr. Mario environment (Stable-Retro wrapper skeleton).
+    """Single-agent Dr. Mario environment with pluggable emulator backends.
 
     Observation modes:
       - pixel: 128x128 RGB, frame-stack 4, normalized to [0,1]
@@ -57,8 +57,9 @@ class DrMarioRetroEnv(gym.Env):
         env var `DRMARIO_RAM_OFFSETS`.
 
     Notes:
-      - This skeleton does not yet bind to stable-retro. It mocks transitions to
-        enable wiring of training/eval code paths. Replace TODOs once retro is available.
+      - Defaults to the libretro backend using a direct ctypes binding and a provided NES core.
+        Stable-Retro remains available as an alternate backend, and the env falls back
+        to deterministic mock dynamics if no backend can be constructed.
     """
 
     metadata = {"render_modes": ["rgb_array"], "render_fps": 60}
@@ -72,8 +73,12 @@ class DrMarioRetroEnv(gym.Env):
         reward_config: Optional[RewardConfig] = None,
         seed_registry: Optional[Path] = None,
         core_path: Optional[Path] = None,
+        rom_path: Optional[Path] = None,
+        backend: Optional[str] = None,
+        backend_kwargs: Optional[Dict[str, Any]] = None,
         render_mode: Optional[str] = None,
         level: int = 0,
+        auto_start: bool = True,
         # Evaluator-based shaping controls
         use_potential_shaping: bool = False,
         evaluator: Optional[Any] = None,
@@ -88,9 +93,18 @@ class DrMarioRetroEnv(gym.Env):
         self.include_risk_tau = include_risk_tau
         self.default_risk_tau = float(risk_tau)
         self.reward_cfg = reward_config or RewardConfig()
-        self.core_path = core_path
+        self.core_path = Path(core_path).expanduser() if core_path is not None else None
+        self.rom_path = Path(rom_path).expanduser() if rom_path is not None else None
         self.render_mode = render_mode
         self.level = level
+        self.backend_name = (backend or os.environ.get("DRMARIO_BACKEND", "libretro")).lower()
+        self._backend_kwargs = dict(backend_kwargs or {})
+        if self.core_path is not None and "core_path" not in self._backend_kwargs:
+            self._backend_kwargs["core_path"] = str(self.core_path)
+        if self.rom_path is not None and "rom_path" not in self._backend_kwargs:
+            self._backend_kwargs["rom_path"] = str(self.rom_path)
+        self.auto_start = auto_start
+        self._first_boot = True
 
         self._t = 0  # frames elapsed
         self._viruses_remaining = 8  # placeholder; varies by level
@@ -127,20 +141,26 @@ class DrMarioRetroEnv(gym.Env):
 
         self.action_space = spaces.Discrete(10)
 
-        # Attempt to bind a Stable-Retro env (optional at bootstrap)
-        self._retro = None
-        self._using_retro = False
-        self._buttons_layout = None
-        if make_retro_env is not None:
+        # Attempt to bind a backend (libretro by default)
+        self._backend = None
+        self._using_backend = False
+        if self.backend_name != "mock":
             try:
-                self._retro = make_retro_env()
-                self._using_retro = True
-                self._buttons_layout = get_buttons_layout() if get_buttons_layout else None
-            except Exception:
-                self._retro = None
-                self._using_retro = False
+                self._backend = make_backend(self.backend_name, **self._backend_kwargs)
+                self._backend.load()
+                self._using_backend = True
+            except Exception as exc:
+                warnings.warn(
+                    f"Failed to initialize backend '{self.backend_name}': {exc}. "
+                    "Falling back to mock dynamics."
+                )
+                self._backend = None
+                self._using_backend = False
+        self._buttons_layout: Sequence[str] = NES_BUTTONS
+        self._button_index = {name: idx for idx, name in enumerate(self._buttons_layout)}
         self._last_frame = np.zeros((240, 256, 3), dtype=np.uint8)
         self._pix_stack: Optional[np.ndarray] = None  # (4,128,128,3)
+        self._ram_cache: Optional[np.ndarray] = None
         # Hold state (used when retro is active)
         self._hold_left = False
         self._hold_right = False
@@ -153,6 +173,87 @@ class DrMarioRetroEnv(gym.Env):
         ys = (np.linspace(0, h - 1, oh)).astype(np.int32)
         xs = (np.linspace(0, w - 1, ow)).astype(np.int32)
         return rgb[ys][:, xs]
+
+    def _update_pixel_stack(self, frame: np.ndarray) -> None:
+        small = self._resize_rgb(frame, (128, 128)).astype(np.float32) / 255.0
+        if self._pix_stack is None:
+            self._pix_stack = np.stack([small for _ in range(4)], axis=0)
+        else:
+            self._pix_stack = np.concatenate([self._pix_stack[1:], small[None, ...]], axis=0)
+
+    def _read_ram_array(self, refresh: bool = True) -> Optional[np.ndarray]:
+        if not self._using_backend or self._backend is None:
+            return None
+        if refresh:
+            try:
+                ram = self._backend.get_ram()
+            except Exception:
+                ram = None
+            if ram is not None:
+                self._ram_cache = np.asarray(ram, dtype=np.uint8).reshape(-1)
+        return self._ram_cache
+
+    def _extract_virus_count(self) -> Optional[int]:
+        ram_arr = self._read_ram_array(refresh=False)
+        if ram_arr is None:
+            return None
+        addr_hex = self._ram_offsets.get("viruses", {}).get("remaining_addr") if "viruses" in self._ram_offsets else None
+        if not addr_hex:
+            return None
+        idx = int(addr_hex, 16)
+        if 0 <= idx < ram_arr.shape[0]:
+            return int(ram_arr[idx])
+        return None
+
+    def _button_vector(self, names: Optional[Sequence[str]] = None) -> Sequence[int]:
+        vec = [0 for _ in range(len(self._buttons_layout))]
+        if names:
+            for name in names:
+                idx = self._button_index.get(name)
+                if idx is not None:
+                    vec[idx] = 1
+        return vec
+
+    def _backend_step_buttons(self, buttons: Sequence[int], repeat: int = 1) -> None:
+        if not self._using_backend or self._backend is None:
+            return
+        self._backend.step(list(buttons), repeat=max(1, int(repeat)))
+        self._last_frame = self._backend.get_frame()
+        self._update_pixel_stack(self._last_frame)
+        self._read_ram_array(refresh=True)
+
+    def _run_start_sequence(self, presses: int, options: Optional[Dict[str, Any]]) -> None:
+        if presses <= 0 or not self._using_backend or self._backend is None:
+            return
+        opts = options or {}
+        hold_frames = int(opts.get("start_hold_frames", 6))
+        gap_frames = int(opts.get("start_gap_frames", 40))
+        settle_frames = int(opts.get("start_settle_frames", 180))
+        wait_frames = int(opts.get("start_wait_viruses", 600))
+        noop = self._button_vector(None)
+        start_vec = self._button_vector(["START"])
+        for i in range(int(presses)):
+            self._backend_step_buttons(start_vec, repeat=hold_frames)
+            self._backend_step_buttons(noop, repeat=gap_frames)
+        if settle_frames > 0:
+            self._backend_step_buttons(noop, repeat=settle_frames)
+        if wait_frames > 0:
+            for _ in range(wait_frames):
+                vcount = self._extract_virus_count()
+                if vcount is not None and vcount > 0:
+                    break
+                self._backend_step_buttons(noop, repeat=1)
+        self._hold_left = self._hold_right = self._hold_down = False
+
+    def _maybe_auto_start(self, options: Optional[Dict[str, Any]]) -> None:
+        if not self.auto_start:
+            return
+        presses_opt = (options or {}).get("start_presses")
+        presses = int(presses_opt) if presses_opt is not None else (2 if self._first_boot else 1)
+        if presses > 0:
+            self._run_start_sequence(presses, options)
+            self._read_ram_array(refresh=True)
+        self._first_boot = False
 
     def _load_ram_offsets(self) -> Dict[str, Any]:
         import json, os
@@ -191,23 +292,22 @@ class DrMarioRetroEnv(gym.Env):
             return board
 
     def _pixel_obs(self) -> np.ndarray:
-        if self._using_retro:
+        if self._using_backend:
             if self._pix_stack is None:
-                small = self._resize_rgb(self._last_frame, (128, 128)).astype(np.float32) / 255.0
-                self._pix_stack = np.stack([small for _ in range(4)], axis=0)
+                self._update_pixel_stack(self._last_frame)
             return self._pix_stack
         return self._mock_obs()
 
     def _state_obs(self) -> np.ndarray:
-        # RAM->state mapping (C=14, H=16, W=8). If Retro present, parse RAM; else zeros
-        if self._using_retro and self._retro is not None:
-            try:
-                ram_bytes = self._retro.get_ram()
-                planes = ram_to_state(ram_bytes, self._ram_offsets)
-            except Exception:
-                planes = np.zeros((14, 16, 8), dtype=np.float32)
-        else:
-            planes = np.zeros((14, 16, 8), dtype=np.float32)
+        # RAM->state mapping (C=14, H=16, W=8). If backend present, parse RAM; else zeros
+        planes = np.zeros((14, 16, 8), dtype=np.float32)
+        if self._using_backend:
+            ram_arr = self._read_ram_array()
+            if ram_arr is not None:
+                try:
+                    planes = ram_to_state(ram_arr.tobytes(), self._ram_offsets)
+                except Exception:
+                    planes = np.zeros((14, 16, 8), dtype=np.float32)
         # Maintain a 4-frame stack along axis 0
         if getattr(self, "_state_stack", None) is None:
             self._state_stack = np.stack([planes for _ in range(4)], axis=0)
@@ -222,7 +322,7 @@ class DrMarioRetroEnv(gym.Env):
             core = self._state_obs()
         tau = self.default_risk_tau if risk_tau is None else float(risk_tau)
         if self.include_risk_tau:
-            return {"obs": core, "risk_tau": np.float32(tau)}
+            return {"obs": core, "risk_tau": np.asarray(tau, dtype=np.float32)}
         return core
 
     def reset(
@@ -237,37 +337,39 @@ class DrMarioRetroEnv(gym.Env):
         self._t = 0
         self._viruses_remaining = 8
         self._t_max = get_level_timeout(self.level)
-        # Reset underlying retro env if present
-        if self._using_retro and self._retro is not None:
+        self._pix_stack = None
+        self._state_stack = None
+        if self._using_backend and self._backend is not None:
             try:
-                ob, _ = self._retro.reset()
-                if isinstance(ob, np.ndarray):
-                    self._last_frame = ob
-                self._pix_stack = None
-            except Exception:
-                pass
+                self._backend.reset()
+                self._last_frame = self._backend.get_frame()
+                self._update_pixel_stack(self._last_frame)
+                self._read_ram_array(refresh=True)
+            except Exception as exc:
+                warnings.warn(f"Backend reset failed: {exc}. Falling back to mock dynamics.")
+                try:
+                    self._backend.close()
+                except Exception:
+                    pass
+                self._backend = None
+                self._using_backend = False
         # Optional frame offset to influence ROM RNG by letting frames elapse before we start
         frame_offset = int((options or {}).get("frame_offset", 0))
-        if frame_offset > 0 and self._using_retro and self._retro is not None:
-            # Advance with NOOP inputs for frame_offset frames
+        if frame_offset > 0 and self._using_backend and self._backend is not None:
+            noop = self._button_vector(None)
             try:
-                import numpy as _np
-                _noop = _np.zeros((len(self._buttons_layout or ("B","A","SELECT","START","UP","DOWN","LEFT","RIGHT"))), dtype=_np.uint8)
-                for _ in range(frame_offset):
-                    ob, *_ = self._retro.step(_noop)
-                    if isinstance(ob, _np.ndarray):
-                        self._last_frame = ob
-            except Exception:
-                pass
+                self._backend_step_buttons(noop, repeat=frame_offset)
+            except Exception as exc:
+                warnings.warn(f"Backend frame_offset failed: {exc}")
+        if self._using_backend and self._backend is not None:
+            try:
+                self._maybe_auto_start(options)
+            except Exception as exc:
+                warnings.warn(f"Auto-start sequence failed: {exc}")
         # Initialize viruses remaining from RAM if available
-        if self._using_retro and self._retro is not None:
-            try:
-                ram_bytes = self._retro.get_ram()
-                vaddr = int(self._ram_offsets.get("viruses", {}).get("remaining_addr", "0"), 16)
-                if 0 <= vaddr < len(ram_bytes):
-                    self._viruses_remaining = int(ram_bytes[vaddr])
-            except Exception:
-                pass
+        vcount = self._extract_virus_count()
+        if vcount is not None:
+            self._viruses_remaining = vcount
         self._viruses_prev = self._viruses_remaining
         # Reset holds
         self._hold_left = self._hold_right = self._hold_down = False
@@ -288,34 +390,29 @@ class DrMarioRetroEnv(gym.Env):
         delta_v = 0
 
         # Drive Retro forward for frame_skip steps; update pixel stack and RAM-based counters
-        if self._using_retro and self._retro is not None:
-            from envs.retro.action_adapters import discrete10_to_buttons
-            held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
-            a_list = discrete10_to_buttons(int(action), held)
-            self._hold_left, self._hold_right, self._hold_down = held["LEFT"], held["RIGHT"], held["DOWN"]
-            a_vec = np.array(a_list, dtype=np.uint8)
-            steps = max(1, int(self.frame_skip))
-            for _ in range(steps):
-                try:
-                    ob, *_ = self._retro.step(a_vec)
-                    if isinstance(ob, np.ndarray):
-                        self._last_frame = ob
-                        small = self._resize_rgb(self._last_frame, (128, 128)).astype(np.float32) / 255.0
-                        if self._pix_stack is None:
-                            self._pix_stack = np.stack([small for _ in range(4)], axis=0)
-                        else:
-                            self._pix_stack = np.concatenate([self._pix_stack[1:], small[None, ...]], axis=0)
-                except Exception:
-                    break
-            # Read viruses remaining from RAM and compute delta
+        held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
+        buttons = discrete10_to_buttons(int(action), held)
+        self._hold_left, self._hold_right, self._hold_down = (
+            bool(held["LEFT"]),
+            bool(held["RIGHT"]),
+            bool(held["DOWN"]),
+        )
+
+        if self._using_backend and self._backend is not None:
             try:
-                ram_bytes = self._retro.get_ram()
-                vaddr = int(self._ram_offsets.get("viruses", {}).get("remaining_addr", "0"), 16)
-                v_now = int(ram_bytes[vaddr]) if 0 <= vaddr < len(ram_bytes) else self._viruses_remaining
-                delta_v = max(0, self._viruses_prev - v_now)
-                self._viruses_prev = self._viruses_remaining = v_now
-            except Exception:
-                pass
+                self._backend_step_buttons(buttons, repeat=self.frame_skip)
+                v_now = self._extract_virus_count()
+                if v_now is not None:
+                    delta_v = max(0, self._viruses_prev - v_now)
+                    self._viruses_prev = self._viruses_remaining = v_now
+            except Exception as exc:
+                warnings.warn(f"Backend step failed: {exc}. Falling back to mock dynamics.")
+                try:
+                    self._backend.close()
+                except Exception:
+                    pass
+                self._backend = None
+                self._using_backend = False
         else:
             # Mock dynamics if Retro not available
             delta_v = 1 if self._rng.rand() < 0.02 else 0
@@ -347,13 +444,16 @@ class DrMarioRetroEnv(gym.Env):
             "r_env": float(r_env),
             "r_shape": float(r_shape),
             "r_total": float(r_total),
-            "cleared": bool(self._viruses_remaining == 0) if not self._using_retro else done,
+            "cleared": bool(self._viruses_remaining == 0),
+            "backend_active": bool(self._using_backend),
         }
         return obs, r_total, done, truncated, info
 
     def render(self) -> Optional[np.ndarray]:
         # For now, return a simple mock frame
         if self.render_mode == "rgb_array":
+            if self._using_backend:
+                return np.ascontiguousarray(self._last_frame)
             return (self._mock_obs()[0] * 255).astype(np.uint8)
         return None
 
@@ -365,6 +465,10 @@ class DrMarioRetroEnv(gym.Env):
             "rng_state": self._rng.get_state(),
             "state_prev": None if self._state_prev is None else np.copy(self._state_prev),
             "last_obs": self.last_obs if hasattr(self, "last_obs") else None,
+            "backend_state": (
+                self._backend.serialize() if self._using_backend and self._backend is not None else None
+            ),
+            "first_boot": self._first_boot,
         }
 
     def restore(self, snap: Dict[str, Any]) -> None:
@@ -373,6 +477,30 @@ class DrMarioRetroEnv(gym.Env):
         self._rng.set_state(snap["rng_state"])  # type: ignore[arg-type]
         self._state_prev = snap["state_prev"]
         self.last_obs = snap.get("last_obs")
+        self._first_boot = bool(snap.get("first_boot", False))
+        backend_blob = snap.get("backend_state")
+        if (
+            backend_blob
+            and self._using_backend
+            and self._backend is not None
+            and isinstance(backend_blob, (bytes, bytearray))
+        ):
+            try:
+                self._backend.deserialize(bytes(backend_blob))
+                self._last_frame = self._backend.get_frame()
+                self._pix_stack = None
+                self._update_pixel_stack(self._last_frame)
+                self._read_ram_array(refresh=True)
+            except Exception as exc:
+                warnings.warn(f"Failed to restore backend state: {exc}")
+
+    def close(self) -> None:
+        if self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception:
+                pass
+        super().close()
 
     def peek_step(self, action: int):
         snap = self.snapshot()
