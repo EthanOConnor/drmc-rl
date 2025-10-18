@@ -16,6 +16,12 @@ try:
     from PIL import Image
 except Exception:  # pragma: no cover - optional dependency
     Image = None
+    ImageTk = None
+else:
+    try:
+        from PIL import ImageTk
+    except Exception:  # pragma: no cover - optional dependency
+        ImageTk = None
 
 # Ensure repo root is on sys.path when running as a script
 _ROOT = str(Path(__file__).resolve().parents[2])
@@ -26,9 +32,9 @@ from envs.retro.register_env import register_env_id
 from gymnasium import make
 
 
-def _state_to_rgb(state_stack: np.ndarray) -> np.ndarray:
+def _state_to_rgb(state_stack: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
     """Convert latest state frame to simple RGB visualization."""
-    latest = state_stack[-1]
+    latest = np.asarray(state_stack[-1])
     h, w = latest.shape[1], latest.shape[2]
     img = np.zeros((h, w, 3), dtype=np.uint8)
 
@@ -50,7 +56,9 @@ def _state_to_rgb(state_stack: np.ndarray) -> np.ndarray:
     paint(8, (120, 120, 255))
     # Background gradient for contrast
     gravity = np.clip(latest[10], 0.0, 1.0)
-    img[img.sum(axis=-1) == 0] = (gravity * 40).astype(np.uint8)[img.sum(axis=-1) == 0][:, None]
+    base = (gravity * 40).astype(np.uint8)
+    img[img.sum(axis=-1) == 0] = base[img.sum(axis=-1) == 0][:, None]
+
     return img
 
 
@@ -110,70 +118,104 @@ def main():
         save_dir.mkdir(parents=True, exist_ok=True)
         if Image is None:
             print("Pillow not installed; frames will be saved as .npy arrays.")
+
     show_window = bool(args.show_window)
     viewer = None
     if show_window:
-        if Image is None:
-            print("Pillow is required for the live window; skipping preview.")
+        if Image is None or ImageTk is None:
+            print("Pillow (with ImageTk) is required for the live window; skipping preview.")
             show_window = False
         else:
             try:
                 import tkinter as tk
-                from PIL import ImageTk  # type: ignore
             except Exception as exc:
                 print(f"Tkinter preview unavailable ({exc}); skipping live window.")
                 show_window = False
             else:
                 class _TkViewer:
-                    def __init__(self, title: str, scale: float):
+                    def __init__(self, title: str, scale: float, with_stats: bool) -> None:
                         self._scale = max(0.5, float(scale))
                         self._tk = tk.Tk()
                         self._tk.title(title)
-                        self._label = tk.Label(self._tk)
-                        self._label.pack()
+                        self._closed = False
+                        self._img_label = tk.Label(self._tk)
+                        self._img_label.pack()
+                        self._text_var: Optional[tk.StringVar] = None
+                        if with_stats:
+                            self._text_var = tk.StringVar(value="")
+                            self._text_label = tk.Label(
+                                self._tk, textvariable=self._text_var, anchor="w", justify="left"
+                            )
+                            self._text_label.pack(fill="x", padx=4, pady=2)
                         self._img = None
+                        self._tk.protocol("WM_DELETE_WINDOW", self._on_close)
 
-                    def update(self, frame: np.ndarray) -> bool:
+                    def _on_close(self) -> None:
+                        self._closed = True
+                        try:
+                            self._tk.destroy()
+                        except Exception:
+                            pass
+
+                    def update(self, frame: np.ndarray, stats: Optional[Dict[str, Any]] = None) -> bool:
+                        if self._closed:
+                            return False
                         try:
                             image = Image.fromarray(frame)
                             if self._scale != 1.0:
                                 w, h = image.size
                                 image = image.resize((int(w * self._scale), int(h * self._scale)), Image.NEAREST)
                             self._img = ImageTk.PhotoImage(image)
-                            self._label.configure(image=self._img)
+                            self._img_label.configure(image=self._img)
+                            if self._text_var is not None and stats is not None:
+                                info = stats.get("info", {}) if isinstance(stats, dict) else {}
+                                lines = [
+                                    f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
+                                    f"Last reward {stats.get('reward', 0.0):.2f} (env {info.get('r_env', 0.0):.2f})",
+                                    f"Viruses {info.get('viruses_remaining', '?')}  Level {info.get('level', '?')}",
+                                    f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
+                                ]
+                                term = info.get('terminal_reason')
+                                if term:
+                                    lines.append(f"Terminal: {term}")
+                                action = stats.get('action')
+                                if action is not None:
+                                    lines.append(f"Action: {action}")
+                                self._text_var.set("\n".join(lines))
                             self._tk.update_idletasks()
                             self._tk.update()
                             return True
-                        except tk.TclError:
+                        except Exception:
+                            self._on_close()
                             return False
 
                     def close(self) -> None:
-                        try:
-                            self._tk.destroy()
-                        except tk.TclError:
-                            pass
+                        self._on_close()
 
-                viewer = _TkViewer("Dr. Mario", args.display_scale)
-    def current_frame(current_obs):
+                viewer = _TkViewer("Dr. Mario", args.display_scale, with_stats=(args.mode == "state"))
+
+    def current_frame(current_obs: Any, current_info: Dict[str, Any]) -> Optional[np.ndarray]:
         if args.mode == "pixel":
             return env.render()
         core = current_obs["obs"] if isinstance(current_obs, dict) else current_obs
-        return _state_to_rgb(np.asarray(core))
+        return _state_to_rgb(np.asarray(core), current_info)
 
     frame_index = 0
+    cumulative_reward = 0.0
 
     if show_window or save_dir:
-        frame = current_frame(obs)
+        frame = current_frame(obs, info)
         if frame is not None:
-            if viewer is not None:
-                viewer.update(frame)
+            stats = {"info": info, "step": steps, "reward": 0.0, "cumulative": cumulative_reward, "action": None}
+            if viewer is not None and not viewer.update(frame, stats):
+                show_window = False
             if save_dir:
                 fname = save_dir / f"frame_{frame_index:05d}"
                 if Image is not None:
                     Image.fromarray(frame).save(fname.with_suffix(".png"))
                 else:
                     np.save(fname.with_suffix(".npy"), frame)
-            frame_index += 1
+        frame_index += 1
 
     for _ in range(args.steps):
         a = env.action_space.sample()
@@ -184,12 +226,19 @@ def main():
             latest = core[-1]
             nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
             print('nz per channel:', nz)
+        cumulative_reward += r
         if save_dir or show_window:
-            frame = current_frame(obs)
+            frame = current_frame(obs, info)
             if frame is not None:
-                if viewer is not None:
-                    if not viewer.update(frame):
-                        break
+                stats = {
+                    "info": info,
+                    "step": steps + 1,
+                    "reward": r,
+                    "cumulative": cumulative_reward,
+                    "action": int(a),
+                }
+                if viewer is not None and not viewer.update(frame, stats):
+                    break
                 if save_dir:
                     fname = save_dir / f"frame_{frame_index:05d}"
                     if Image is not None:

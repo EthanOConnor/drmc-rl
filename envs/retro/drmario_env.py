@@ -436,7 +436,7 @@ class DrMarioRetroEnv(gym.Env):
             self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
         else:
             self._state_prev = None
-        info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining}
+        info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
         return obs, info
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
@@ -520,6 +520,7 @@ class DrMarioRetroEnv(gym.Env):
             "topout": bool(topout),
             "backend_active": bool(self._using_backend),
             "terminal_reason": self._last_terminal,
+            "level": self.level,
         }
         if not (done or truncated):
             self._last_terminal = None

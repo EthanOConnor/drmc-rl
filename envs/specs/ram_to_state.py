@@ -55,23 +55,35 @@ def ram_to_state(ram: bytes, offsets: Dict, *, H: int = 16, W: int = 8) -> np.nd
     # Falling pill
     fr = _read_byte(ram, offsets["falling_pill"]["row_addr"]) if "falling_pill" in offsets else 0
     fc = _read_byte(ram, offsets["falling_pill"]["col_addr"]) if "falling_pill" in offsets else 0
-    orient = (
-        _read_byte(ram, offsets["falling_pill"]["orient_addr"]) & 1 if "falling_pill" in offsets else 0
+    rotation = (
+        _read_byte(ram, offsets["falling_pill"]["orient_addr"]) & 0x03
+        if "falling_pill" in offsets
+        else 0
     )
+    orient = 1 - (rotation & 1)
     lc = _read_byte(ram, offsets["falling_pill"]["left_color_addr"]) if "falling_pill" in offsets else 0
     rc = _read_byte(ram, offsets["falling_pill"]["right_color_addr"]) if "falling_pill" in offsets else 0
     # Map colors to channels (R/Y/B indices 0..2)
     # Colors: yellow=0, red=1, blue=2; we keep R/Y/B order in channels
     color_map = {1: 0, 0: 1, 2: 2}  # red->0, yellow->1, blue->2 for falling channels
     # Place falling halves
-    if 0 <= fr < H and 0 <= fc < W:
-        state[6 + color_map.get(lc, 0), fr, fc] = 1.0
-        if orient == 1:
-            if fc + 1 < W:
-                state[6 + color_map.get(rc, 0), fr, fc + 1] = 1.0
-        else:
-            if fr + 1 < H:
-                state[6 + color_map.get(rc, 0), fr + 1, fc] = 1.0
+    if 0 <= fc < W:
+        base_row = (H - 1) - fr if 0 <= fr < H else None
+        offsets = {
+            0: ((0, 0), (0, 1)),   # horizontal, 1st color on left
+            1: ((0, 0), (-1, 0)),  # vertical, 1st color on bottom
+            2: ((0, 1), (0, 0)),   # horizontal, 1st color on right
+            3: ((-1, 0), (0, 0)),  # vertical, 1st color on top
+        }.get(rotation, ((0, 0), (0, 1)))
+        if base_row is not None:
+            for color, (dr, dc) in zip((lc, rc), offsets):
+                channel_offset = color_map.get(color)
+                if channel_offset is None:
+                    continue
+                row = base_row + dr
+                col = fc + dc
+                if 0 <= row < H and 0 <= col < W:
+                    state[6 + channel_offset, row, col] = 1.0
 
     # Orientation plane
     state[9, :, :] = float(orient)
