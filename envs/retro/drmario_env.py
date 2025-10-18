@@ -226,6 +226,57 @@ class DrMarioRetroEnv(gym.Env):
             return int(ram_arr[idx])
         return None
 
+    def _decode_preview_pill(self) -> Optional[Dict[str, int]]:
+        offsets = self._ram_offsets.get("preview_pill")
+        if not offsets:
+            return None
+        ram_arr = self._read_ram_array(refresh=False)
+        if ram_arr is None:
+            return None
+
+        def read_addr(key: str) -> Optional[int]:
+            addr_hex = offsets.get(key)
+            if not addr_hex:
+                return None
+            idx = int(addr_hex, 16)
+            if 0 <= idx < ram_arr.shape[0]:
+                return int(ram_arr[idx])
+            return None
+
+        first = read_addr("left_color_addr")
+        second = read_addr("right_color_addr")
+        rotation = read_addr("rotation_addr")
+        if first is None or second is None or rotation is None:
+            return None
+        return {
+            "first_color": int(first & 0x03),
+            "second_color": int(second & 0x03),
+            "rotation": int(rotation & 0x03),
+        }
+
+    def _augment_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
+        augmented = dict(info)
+        preview = self._decode_preview_pill()
+        if preview is not None:
+            augmented["preview_pill"] = preview
+
+        state_stack = getattr(self, "_state_stack", None)
+        if state_stack is not None:
+            latest = np.asarray(state_stack[-1])
+            if latest.shape[0] > 12:
+                level_norm = float(np.clip(latest[12, 0, 0], 0.0, 1.0))
+                level_val = int(round(level_norm * 20.0))
+                level_val = int(min(max(level_val, 0), 20))
+                augmented["level_state"] = level_val
+                augmented["level"] = level_val
+            if latest.shape[0] > 11:
+                lock_norm = float(np.clip(latest[11, 0, 0], 0.0, 1.0))
+                lock_raw = int(round(lock_norm * 255.0))
+                augmented["lock_counter"] = lock_raw
+                augmented["is_locked"] = bool(lock_raw > 0)
+
+        return augmented
+
     def _button_vector(self, names: Optional[Sequence[str]] = None) -> Sequence[int]:
         vec = [0 for _ in range(len(self._buttons_layout))]
         if names:
@@ -454,7 +505,7 @@ class DrMarioRetroEnv(gym.Env):
         else:
             self._state_prev = None
         info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
-        return obs, info
+        return obs, self._augment_info(info)
 
     def _time_penalty_per_step(self) -> float:
         viruses_target = max(1, getattr(self, "_viruses_initial", 0) or 1)
@@ -537,7 +588,7 @@ class DrMarioRetroEnv(gym.Env):
             r_shape = float(self._shaper.potential_delta(s_prev, s_next))
             self._state_prev = s_next
         r_total = float(r_env + r_shape)
-        info: Dict[str, Any] = {
+        base_info: Dict[str, Any] = {
             "t": self._t,
             "viruses_remaining": self._viruses_remaining,
             "delta_v": delta_v,
@@ -556,9 +607,10 @@ class DrMarioRetroEnv(gym.Env):
             and getattr(self, "_state_stack", None) is not None
             and (self._t % self._state_viz_interval == 0)
         ):
-            info["state_rgb"] = state_to_rgb(self._state_stack, info)
+            base_info["state_rgb"] = state_to_rgb(self._state_stack, base_info)
         if not (done or truncated):
             self._last_terminal = None
+        info = self._augment_info(base_info)
         return obs, r_total, done, truncated, info
 
     def render(self) -> Optional[np.ndarray]:
