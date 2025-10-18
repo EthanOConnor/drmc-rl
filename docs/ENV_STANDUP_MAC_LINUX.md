@@ -26,6 +26,7 @@
    ```
 5. Run your smoke test: `python envs/retro/demo.py --obs-mode pixel --steps 200 --backend libretro --start-presses 3`
 6. Optional live preview (requires Pillow/Tk): `python envs/retro/demo.py --backend libretro --show-window --display-scale 2`
+   - Install Tk if missing (`brew install python-tk` on macOS, then recreate your venv).
 
 ## Linux (training)
 1. Install CUDA 12.x drivers/toolkit and create a Python env.

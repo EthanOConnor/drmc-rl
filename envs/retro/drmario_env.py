@@ -170,6 +170,7 @@ class DrMarioRetroEnv(gym.Env):
         self._hold_down = False
         self._in_game = False
         self._last_terminal: Optional[str] = None
+        self._prev_terminal: Optional[str] = None
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -227,7 +228,9 @@ class DrMarioRetroEnv(gym.Env):
         self._update_pixel_stack(self._last_frame)
         self._read_ram_array(refresh=True)
 
-    def _run_start_sequence(self, presses: int, options: Optional[Dict[str, Any]]) -> None:
+    def _run_start_sequence(
+        self, presses: int, options: Optional[Dict[str, Any]], *, from_topout: bool = False
+    ) -> None:
         if presses <= 0 or not self._using_backend or self._backend is None:
             return
         opts = options or {}
@@ -247,17 +250,25 @@ class DrMarioRetroEnv(gym.Env):
         presses = int(presses)
         if presses <= 0:
             return
-        if presses == 1:
-            for _ in range(level_taps):
-                self._backend_step_buttons(left_vec, repeat=1)
-                self._backend_step_buttons(noop, repeat=1)
-            press_start()
-        else:
-            press_start()
+
+        def align_level() -> None:
             if level_taps > 0:
                 for _ in range(level_taps):
                     self._backend_step_buttons(left_vec, repeat=1)
                     self._backend_step_buttons(noop, repeat=1)
+
+        if from_topout:
+            presses = max(2, presses)
+            press_start()  # leave game-over screen
+            align_level()
+            for _ in range(presses - 1):
+                press_start()
+        elif presses == 1:
+            align_level()
+            press_start()
+        else:
+            press_start()
+            align_level()
             for _ in range(presses - 1):
                 press_start()
 
@@ -278,15 +289,25 @@ class DrMarioRetroEnv(gym.Env):
     def _maybe_auto_start(self, options: Optional[Dict[str, Any]]) -> None:
         if not self.auto_start:
             return
+        prev_terminal = getattr(self, "_prev_terminal", None)
         presses_opt = (options or {}).get("start_presses")
-        presses = int(presses_opt) if presses_opt is not None else (2 if self._first_boot else 1)
+        if presses_opt is not None:
+            presses = int(presses_opt)
+        else:
+            if self._first_boot:
+                presses = 3
+            elif prev_terminal == "topout":
+                presses = 2
+            else:
+                presses = 1
         if presses > 0:
-            self._run_start_sequence(presses, options)
+            self._run_start_sequence(presses, options, from_topout=(prev_terminal == "topout"))
             self._read_ram_array(refresh=True)
             vcount = self._extract_virus_count()
             if vcount is not None and vcount > 0:
                 self._in_game = True
         self._first_boot = False
+        self._prev_terminal = None
 
     def _load_ram_offsets(self) -> Dict[str, Any]:
         import json, os
@@ -373,6 +394,7 @@ class DrMarioRetroEnv(gym.Env):
         self._pix_stack = None
         self._state_stack = None
         self._in_game = False
+        self._prev_terminal = getattr(self, "_last_terminal", None)
         self._last_terminal = None
         if self._using_backend and self._backend is not None:
             try:
@@ -469,10 +491,10 @@ class DrMarioRetroEnv(gym.Env):
             r_env += self.reward_cfg.terminal_clear_bonus
             done = True
             self._in_game = False
-            self._last_terminal = "clear"
+            self._prev_terminal = self._last_terminal = "clear"
         if topout:
             r_env += self.reward_cfg.topout_penalty
-            self._last_terminal = "topout"
+            self._prev_terminal = self._last_terminal = "topout"
 
         if self._t > self._t_max:
             truncated = True
