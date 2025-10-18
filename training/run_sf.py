@@ -9,6 +9,7 @@ Usage:
 """
 
 import argparse
+import os
 import sys
 
 
@@ -22,6 +23,7 @@ def main() -> None:
 
     ap = argparse.ArgumentParser()
     ap.add_argument('--cfg', type=str, required=True)
+    ap.add_argument('--state-viz-interval', type=int, default=None, help='Emit state RGB frames every N steps (optional)')
     args = ap.parse_args()
 
     try:
@@ -40,8 +42,10 @@ def main() -> None:
     except Exception:
         pass
 
+    if args.state_viz_interval is not None:
+        os.environ["DRMARIO_STATE_VIZ_INTERVAL"] = str(max(1, int(args.state_viz_interval)))
+
     # Defer to SF CLI by shelling out for simplicity:
-    import os
     os.system(f"python -m sample_factory.launcher.run --run {args.cfg}")
 
 

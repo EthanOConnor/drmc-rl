@@ -29,37 +29,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from envs.retro.register_env import register_env_id
+from envs.retro.state_viz import state_to_rgb
 from gymnasium import make
-
-
-def _state_to_rgb(state_stack: np.ndarray, info: Optional[Dict[str, Any]] = None) -> np.ndarray:
-    """Convert latest state frame to simple RGB visualization."""
-    latest = np.asarray(state_stack[-1])
-    h, w = latest.shape[1], latest.shape[2]
-    img = np.zeros((h, w, 3), dtype=np.uint8)
-
-    def paint(channel: int, color: tuple[int, int, int], thresh: float = 0.1) -> None:
-        mask = latest[channel] > thresh
-        img[mask] = color
-
-    # Viruses (channels 0-2)
-    paint(0, (220, 40, 40))
-    paint(1, (240, 220, 40))
-    paint(2, (40, 120, 240))
-    # Fixed pills (3-5)
-    paint(3, (180, 0, 0))
-    paint(4, (200, 180, 0))
-    paint(5, (0, 80, 200))
-    # Falling pill halves (6-8)
-    paint(6, (255, 128, 128))
-    paint(7, (255, 255, 120))
-    paint(8, (120, 120, 255))
-    # Background gradient for contrast
-    gravity = np.clip(latest[10], 0.0, 1.0)
-    base = (gravity * 40).astype(np.uint8)
-    img[img.sum(axis=-1) == 0] = base[img.sum(axis=-1) == 0][:, None]
-
-    return img
+_state_to_rgb = state_to_rgb
 
 
 def main():

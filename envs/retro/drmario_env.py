@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -11,8 +11,9 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from envs.specs.timeouts import get_level_timeout
-from envs.reward_shaping import PotentialShaper
 from envs.specs.ram_to_state import ram_to_state
+from envs.retro.state_viz import state_to_rgb
+from envs.reward_shaping import PotentialShaper
 from envs.backends import make_backend
 from envs.backends.base import NES_BUTTONS
 from envs.retro.action_adapters import discrete10_to_buttons
@@ -41,6 +42,8 @@ class RewardConfig:
     topout_penalty: float = -500.0
     mode: str = "speedrun"  # "speedrun" | "mean_safe" | "cvar"
     cvar_alpha: float = 0.25
+    elite_clear_seconds_default: float = 10.0
+    elite_clear_seconds: Dict[int, float] = field(default_factory=dict)
 
 
 def _default_seed_registry() -> Path:
@@ -87,6 +90,7 @@ class DrMarioRetroEnv(gym.Env):
         evaluator: Optional[Any] = None,
         potential_gamma: float = 0.997,
         potential_kappa: float = 250.0,
+        state_viz_interval: Optional[int] = None,
     ) -> None:
         super().__init__()
         assert obs_mode in {"pixel", "state"}
@@ -111,8 +115,19 @@ class DrMarioRetroEnv(gym.Env):
 
         self._t = 0  # frames elapsed
         self._viruses_remaining = 8  # placeholder; varies by level
+        self._viruses_initial = self._viruses_remaining
         self._rng = np.random.RandomState(0)
         self._t_max = get_level_timeout(self.level)
+        self._fps = 60.0
+        if state_viz_interval is None:
+            env_interval = os.environ.get("DRMARIO_STATE_VIZ_INTERVAL")
+            if env_interval:
+                try:
+                    state_viz_interval = int(env_interval)
+                except ValueError:
+                    state_viz_interval = None
+        self._state_viz_interval = max(1, int(state_viz_interval)) if state_viz_interval else None
+        self._state_viz_last_t = -1
         # Potential shaping setup
         self._use_shaping = use_potential_shaping and evaluator is not None
         self._shaper: Optional[PotentialShaper] = (
@@ -391,6 +406,7 @@ class DrMarioRetroEnv(gym.Env):
         self._t = 0
         self._viruses_remaining = 8
         self._t_max = get_level_timeout(self.level)
+        self._state_viz_last_t = -1
         self._pix_stack = None
         self._state_stack = None
         self._in_game = False
@@ -427,6 +443,7 @@ class DrMarioRetroEnv(gym.Env):
         vcount = self._extract_virus_count()
         if vcount is not None:
             self._viruses_remaining = vcount
+        self._viruses_initial = max(1, self._viruses_remaining)
         self._viruses_prev = self._viruses_remaining
         # Reset holds
         self._hold_left = self._hold_right = self._hold_down = False
@@ -438,6 +455,16 @@ class DrMarioRetroEnv(gym.Env):
             self._state_prev = None
         info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
         return obs, info
+
+    def _time_penalty_per_step(self) -> float:
+        viruses_target = max(1, getattr(self, "_viruses_initial", 0) or 1)
+        elite_seconds = self.reward_cfg.elite_clear_seconds.get(
+            int(self.level), self.reward_cfg.elite_clear_seconds_default
+        )
+        frames_per_virus = max(elite_seconds * self._fps / viruses_target, 1.0)
+        virus_reward = float(self.reward_cfg.alpha)
+        per_frame_penalty = -virus_reward / frames_per_virus
+        return per_frame_penalty * self.frame_skip
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         self._t += 1
@@ -486,7 +513,8 @@ class DrMarioRetroEnv(gym.Env):
             self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
 
         # Reward shaping per finalized spec
-        r_env = -1.0 + self.reward_cfg.alpha * float(delta_v)
+        r_env = self._time_penalty_per_step() if self._viruses_remaining > 0 else 0.0
+        r_env += self.reward_cfg.alpha * float(delta_v)
         if self._viruses_remaining == 0 and not topout:
             r_env += self.reward_cfg.terminal_clear_bonus
             done = True
@@ -522,6 +550,13 @@ class DrMarioRetroEnv(gym.Env):
             "terminal_reason": self._last_terminal,
             "level": self.level,
         }
+        if (
+            self._state_viz_interval
+            and self.obs_mode == "state"
+            and getattr(self, "_state_stack", None) is not None
+            and (self._t % self._state_viz_interval == 0)
+        ):
+            info["state_rgb"] = state_to_rgb(self._state_stack, info)
         if not (done or truncated):
             self._last_terminal = None
         return obs, r_total, done, truncated, info
