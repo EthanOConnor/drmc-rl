@@ -17,8 +17,7 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 - Install package and extras:
   - `pip install -e .`  (base deps: gymnasium, numpy)
   - `pip install -e ".[retro,dev]"`  (stable-retro, opencv; pytest/ruff/black/etc.)
-  - Note: Stable-Retro currently has wheels for Python <3.13. If you are on 3.13,
-    create a 3.12 venv (e.g., `brew install python@3.12 && /opt/homebrew/bin/python3.12 -m venv .venv && source .venv/bin/activate`) before installing extras.
+- Note: Stable-Retro wheels cover Python up to 3.14; if you are on 3.14+ build from source or drop to 3.13/3.12 via `brew install python@3.12` and recreate your venv.
   - For training: `pip install -e ".[rl]"` (or install PyTorch first on MPS: `pip install torch torchvision torchaudio`)
 - Obtain a NES libretro core (QuickNES, Mesen, or Nestopia). Set `DRMARIO_CORE_PATH=/path/to/quicknes_libretro.dylib`.
 - Point the env at your ROM: `export DRMARIO_ROM_PATH=/path/to/DrMario.nes`

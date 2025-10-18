@@ -5,13 +5,11 @@
    ```bash
    brew install cmake pkg-config lua@5.1
    ```
-2. Python env + core libs:
+2. Python env + core libs (Python ≤3.14 recommended for Stable-Retro wheels):
    ```bash
-   # Use Python 3.12 for Stable-Retro (no wheels for 3.13 yet)
-   brew install python@3.12
-   /opt/homebrew/bin/python3.12 -m venv .venv && source .venv/bin/activate
+   python3.13 -m venv .venv && source .venv/bin/activate
    pip install -e .
-   pip install -e ".[retro,dev]"  # installs stable-retro (if on Python < 3.13)
+   pip install -e ".[retro,dev]"  # installs stable-retro wheels (Python ≤3.14)
    # For RL training on macOS: install torch MPS wheels
    pip install torch torchvision torchaudio
    ```

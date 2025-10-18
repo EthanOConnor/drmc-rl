@@ -3,7 +3,7 @@ name = "drmc-rl"
 version = "0.0.1"
 description = "Dr. Mario RL environment, training, and evaluation"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.15"
 dependencies = [
     "gymnasium>=0.29",
     "numpy>=1.24",
@@ -29,7 +29,7 @@ exclude = [
 
 [project.optional-dependencies]
 retro = [
-    "stable-retro; python_version < '3.13'",
+    "stable-retro; python_version < '3.15'",
     "opencv-python",
     "pillow",
 ]
