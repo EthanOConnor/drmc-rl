@@ -245,8 +245,9 @@ class _LibretroCore:
                 return
             if self._frame.shape[0] != h or self._frame.shape[1] != usable_w:
                 self._frame = np.zeros((h, usable_w, 3), dtype=np.uint8)
-            rgb = arr[:, :usable_w, 1:4]
-            self._frame[:, :, :] = rgb
+            slice_arr = arr[:, :usable_w, :3]
+            # Little-endian XRGB => bytes order B,G,R, so flip
+            self._frame[:] = slice_arr[:, :, ::-1]
         elif self._pixel_format == RETRO_PIXEL_FORMAT_RGB565:
             row_bytes = pitch
             raw = C.string_at(data, row_bytes * h)
