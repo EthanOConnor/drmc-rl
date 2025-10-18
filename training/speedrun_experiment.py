@@ -274,6 +274,28 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: SpeedrunAge
     }
 
 
+def _soft_reset_env(env: Any) -> bool:
+    """Attempt an in-place backend reset and force the next reset to run the triple-start."""
+
+    raw_env = getattr(env, "unwrapped", env)
+
+    try:
+        backend_reset = getattr(raw_env, "backend_reset", None)
+        if callable(backend_reset):
+            backend_reset()
+    except Exception as exc:
+        print(f"Backend reset failed, will recreate env: {exc}", file=sys.stderr)
+        return False
+
+    if hasattr(raw_env, "_first_boot"):
+        try:
+            raw_env._first_boot = True  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    return True
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Level-0 speedrun experiment harness")
     ap.add_argument("--mode", choices=["pixel", "state"], default="state")
@@ -305,6 +327,11 @@ def main() -> None:
     ap.add_argument("--epsilon", type=float, default=0.2)
     ap.add_argument("--epsilon-decay", type=float, default=0.97)
     ap.add_argument("--epsilon-min", type=float, default=0.05)
+    ap.add_argument(
+        "--recreate-env",
+        action="store_true",
+        help="Close and recreate the environment between runs instead of using a soft reset.",
+    )
 
     args = ap.parse_args()
 
@@ -325,7 +352,8 @@ def main() -> None:
     if args.no_auto_start:
         env_kwargs["auto_start"] = False
 
-    env = make("DrMarioRetroEnv-v0", **env_kwargs)
+    def build_env() -> Any:
+        return make("DrMarioRetroEnv-v0", **env_kwargs)
 
     reset_options: Dict[str, Any] = {"frame_offset": args.frame_offset}
     if args.randomize_rng:
@@ -343,6 +371,7 @@ def main() -> None:
     if args.start_wait_frames is not None:
         reset_options["start_wait_viruses"] = int(args.start_wait_frames)
 
+    env = build_env()
     obs, info = env.reset(options=reset_options)
 
     agent = SpeedrunAgent(
@@ -489,9 +518,17 @@ def main() -> None:
                 f"epsilon={agent.epsilon:.3f}"
             )
 
-            obs, info = env.reset(options=reset_options)
-            cumulative_reward = 0.0
-            publish_frame(obs, info, None, 0.0, total_steps, run_idx + 1, cumulative_reward)
+            if run_idx < args.runs - 1:
+                if args.recreate_env:
+                    env.close()
+                    env = build_env()
+                else:
+                    if not _soft_reset_env(env):
+                        env.close()
+                        env = build_env()
+                obs, info = env.reset(options=reset_options)
+                cumulative_reward = 0.0
+                publish_frame(obs, info, None, 0.0, total_steps, run_idx + 1, cumulative_reward)
 
     except KeyboardInterrupt:
         print("Interrupted by user; stopping experiment.", file=sys.stderr)

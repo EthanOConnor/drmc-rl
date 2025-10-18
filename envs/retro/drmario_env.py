@@ -198,6 +198,7 @@ class DrMarioRetroEnv(gym.Env):
         self._pending_rng_randomize = False
         self._pending_rng_override: Optional[Sequence[int]] = None
         self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
+        self._backend_reset_done = False
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -530,6 +531,16 @@ class DrMarioRetroEnv(gym.Env):
         self._update_pixel_stack(self._last_frame)
         self._read_ram_array(refresh=True)
 
+    def backend_reset(self) -> None:
+        """Reset the underlying backend and mark the next env.reset as already handled."""
+
+        if not self._using_backend or self._backend is None:
+            self._backend_reset_done = False
+            return
+
+        self._backend.reset()
+        self._backend_reset_done = True
+
     def _run_start_sequence(
         self,
         presses: int,
@@ -737,9 +748,11 @@ class DrMarioRetroEnv(gym.Env):
         self._pending_rng_randomize = False
         self._pending_rng_override = None
         self._last_rng_seed_bytes = None
+        backend_reset_pending = getattr(self, "_backend_reset_done", False)
         if self._using_backend and self._backend is not None:
             try:
-                self._backend.reset()
+                if not backend_reset_pending:
+                    self._backend.reset()
                 self._last_frame = self._backend.get_frame()
                 self._update_pixel_stack(self._last_frame)
                 self._read_ram_array(refresh=True)
@@ -751,6 +764,10 @@ class DrMarioRetroEnv(gym.Env):
                     pass
                 self._backend = None
                 self._using_backend = False
+            finally:
+                self._backend_reset_done = False
+        else:
+            self._backend_reset_done = False
         opts = dict(options or {})
         if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
             try:
