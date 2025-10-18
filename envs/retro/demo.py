@@ -26,6 +26,34 @@ from envs.retro.register_env import register_env_id
 from gymnasium import make
 
 
+def _state_to_rgb(state_stack: np.ndarray) -> np.ndarray:
+    """Convert latest state frame to simple RGB visualization."""
+    latest = state_stack[-1]
+    h, w = latest.shape[1], latest.shape[2]
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+
+    def paint(channel: int, color: tuple[int, int, int], thresh: float = 0.1) -> None:
+        mask = latest[channel] > thresh
+        img[mask] = color
+
+    # Viruses (channels 0-2)
+    paint(0, (220, 40, 40))
+    paint(1, (240, 220, 40))
+    paint(2, (40, 120, 240))
+    # Fixed pills (3-5)
+    paint(3, (180, 0, 0))
+    paint(4, (200, 180, 0))
+    paint(5, (0, 80, 200))
+    # Falling pill halves (6-8)
+    paint(6, (255, 128, 128))
+    paint(7, (255, 255, 120))
+    paint(8, (120, 120, 255))
+    # Background gradient for contrast
+    gravity = np.clip(latest[10], 0.0, 1.0)
+    img[img.sum(axis=-1) == 0] = (gravity * 40).astype(np.uint8)[img.sum(axis=-1) == 0][:, None]
+    return img
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--mode', choices=['pixel', 'state'], default='pixel')
@@ -126,6 +154,27 @@ def main():
                             pass
 
                 viewer = _TkViewer("Dr. Mario", args.display_scale)
+    def current_frame(current_obs):
+        if args.mode == "pixel":
+            return env.render()
+        core = current_obs["obs"] if isinstance(current_obs, dict) else current_obs
+        return _state_to_rgb(np.asarray(core))
+
+    frame_index = 0
+
+    if show_window or save_dir:
+        frame = current_frame(obs)
+        if frame is not None:
+            if viewer is not None:
+                viewer.update(frame)
+            if save_dir:
+                fname = save_dir / f"frame_{frame_index:05d}"
+                if Image is not None:
+                    Image.fromarray(frame).save(fname.with_suffix(".png"))
+                else:
+                    np.save(fname.with_suffix(".npy"), frame)
+            frame_index += 1
+
     for _ in range(args.steps):
         a = env.action_space.sample()
         obs, r, term, trunc, info = env.step(a)
@@ -136,17 +185,18 @@ def main():
             nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
             print('nz per channel:', nz)
         if save_dir or show_window:
-            frame = env.render()
+            frame = current_frame(obs)
             if frame is not None:
                 if viewer is not None:
                     if not viewer.update(frame):
                         break
                 if save_dir:
-                    fname = save_dir / f"frame_{steps:05d}"
+                    fname = save_dir / f"frame_{frame_index:05d}"
                     if Image is not None:
                         Image.fromarray(frame).save(fname.with_suffix(".png"))
                     else:
                         np.save(fname.with_suffix(".npy"), frame)
+                frame_index += 1
         reward_sum += r
         steps += 1
         if term or trunc:

@@ -27,6 +27,7 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 - Capture frames: `python envs/retro/demo.py --backend libretro --save-frames out_frames`
 - Live window (requires system Tk + Pillow): `python envs/retro/demo.py --backend libretro --show-window --display-scale 2`
   - If you see `No module named '_tkinter'`, install Tk (`brew install python-tk` or use the python.org macOS installer) and re-create your venv.
+  - QuickNES ships with a muted palette; for faithful colors switch to the Mesen core (`mesen_libretro.dylib`).
 - Kick off Sample Factory: `python -m sample_factory.launcher.run --cfg training/sf_configs/pixel_baseline.yaml --override env.backend=libretro env.auto_start=true`
 
 ### Backend selection
