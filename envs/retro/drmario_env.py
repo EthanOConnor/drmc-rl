@@ -186,6 +186,8 @@ class DrMarioRetroEnv(gym.Env):
         self._in_game = False
         self._last_terminal: Optional[str] = None
         self._prev_terminal: Optional[str] = None
+        self._frames_without_active_pill = 0
+        self._topout_inactive_threshold = 240
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -213,6 +215,138 @@ class DrMarioRetroEnv(gym.Env):
             if ram is not None:
                 self._ram_cache = np.asarray(ram, dtype=np.uint8).reshape(-1)
         return self._ram_cache
+
+    def _read_ram_value(self, addr: int) -> Optional[int]:
+        ram_arr = self._read_ram_array(refresh=False)
+        if ram_arr is None:
+            return None
+        if 0 <= addr < ram_arr.shape[0]:
+            return int(ram_arr[addr])
+        return None
+
+    def _randomize_rng_state(self, override: Optional[Sequence[int]] = None) -> None:
+        if not self._using_backend or self._backend is None:
+            return
+        offsets = self._ram_offsets.get("rng", {})
+        state_addrs = offsets.get("state_addrs")
+        if not state_addrs:
+            return
+        writer = getattr(self._backend, "write_ram", None)
+        if writer is None:
+            return
+        addresses: list[int] = []
+        for addr_hex in state_addrs:
+            try:
+                addresses.append(int(addr_hex, 16))
+            except (TypeError, ValueError):
+                continue
+        if not addresses:
+            return
+        addresses.sort()
+        if override is not None:
+            data = np.asarray(list(override), dtype=np.uint8)
+        else:
+            rng = np.random.default_rng()
+            data = rng.integers(0, 256, size=len(addresses), dtype=np.uint8)
+        chunk_start: Optional[int] = None
+        chunk_values: list[int] = []
+        for addr, value in zip(addresses, data.tolist()):
+            if chunk_start is None:
+                chunk_start = addr
+                chunk_values = [value]
+            elif addr == chunk_start + len(chunk_values):
+                chunk_values.append(value)
+            else:
+                try:
+                    writer(chunk_start, chunk_values)
+                except Exception:
+                    return
+                chunk_start = addr
+                chunk_values = [value]
+        if chunk_start is not None and chunk_values:
+            try:
+                writer(chunk_start, chunk_values)
+            except Exception:
+                return
+        self._ram_cache = None
+        self._read_ram_array(refresh=True)
+
+    def _update_active_pill_tracker(self, v_now: Optional[int]) -> None:
+        if not self._in_game:
+            self._frames_without_active_pill = 0
+            return
+        if v_now is not None and v_now == 0:
+            self._frames_without_active_pill = 0
+            return
+        size_hex = self._ram_offsets.get("falling_pill", {}).get("size_addr")
+        if not size_hex:
+            self._frames_without_active_pill = 0
+            return
+        try:
+            size_addr = int(size_hex, 16)
+        except (TypeError, ValueError):
+            self._frames_without_active_pill = 0
+            return
+        size_val = self._read_ram_value(size_addr)
+        if size_val is None or size_val >= 2:
+            self._frames_without_active_pill = 0
+            return
+        lock_hex = self._ram_offsets.get("gravity_lock", {}).get("lock_counter_addr")
+        lock_val = None
+        if lock_hex:
+            try:
+                lock_val = self._read_ram_value(int(lock_hex, 16))
+            except (TypeError, ValueError):
+                lock_val = None
+        if lock_val is not None and lock_val > 0:
+            self._frames_without_active_pill = 0
+            return
+        self._frames_without_active_pill += self.frame_skip
+
+    def _explicit_topout_flag(self) -> Optional[bool]:
+        offsets = self._ram_offsets.get("topout")
+        if not offsets:
+            return None
+        flag_hex = offsets.get("flag_addr")
+        if flag_hex:
+            try:
+                flag_addr = int(flag_hex, 16)
+            except (TypeError, ValueError):
+                flag_addr = None
+            if flag_addr is not None:
+                flag_val = self._read_ram_value(flag_addr)
+                if flag_val is not None:
+                    return bool(flag_val)
+        sentinel = offsets.get("sentinel_values")
+        value_hex = offsets.get("value_addr")
+        if value_hex and sentinel:
+            try:
+                val_addr = int(value_hex, 16)
+            except (TypeError, ValueError):
+                val_addr = None
+            if val_addr is not None:
+                val = self._read_ram_value(val_addr)
+                if val is not None:
+                    values: list[int] = []
+                    try:
+                        for s in sentinel:
+                            values.append(int(s, 16) if isinstance(s, str) else int(s))
+                    except Exception:
+                        values = []
+                    if int(val) in values:
+                        return True
+        return None
+
+    def _detect_topout(self, v_now: Optional[int]) -> bool:
+        explicit = self._explicit_topout_flag()
+        if explicit is True:
+            self._frames_without_active_pill = 0
+            return True
+        if explicit is False:
+            self._frames_without_active_pill = 0
+            return False
+        self._update_active_pill_tracker(v_now)
+        return self._frames_without_active_pill >= self._topout_inactive_threshold
 
     def _extract_virus_count(self) -> Optional[int]:
         ram_arr = self._read_ram_array(refresh=False)
@@ -463,6 +597,7 @@ class DrMarioRetroEnv(gym.Env):
         self._in_game = False
         self._prev_terminal = getattr(self, "_last_terminal", None)
         self._last_terminal = None
+        self._frames_without_active_pill = 0
         if self._using_backend and self._backend is not None:
             try:
                 self._backend.reset()
@@ -477,8 +612,22 @@ class DrMarioRetroEnv(gym.Env):
                     pass
                 self._backend = None
                 self._using_backend = False
+        opts = dict(options or {})
+        if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
+            try:
+                seed_bytes = opts.get("rng_seed_bytes")
+                override_seq: Optional[Sequence[int]]
+                if isinstance(seed_bytes, Sequence) and not isinstance(
+                    seed_bytes, (str, bytes, bytearray)
+                ):
+                    override_seq = [int(v) & 0xFF for v in seed_bytes]
+                else:
+                    override_seq = None
+                self._randomize_rng_state(override_seq)
+            except Exception as exc:
+                warnings.warn(f"RNG randomization failed: {exc}")
         # Optional frame offset to influence ROM RNG by letting frames elapse before we start
-        frame_offset = int((options or {}).get("frame_offset", 0))
+        frame_offset = int(opts.get("frame_offset", 0))
         if frame_offset > 0 and self._using_backend and self._backend is not None:
             noop = self._button_vector(None)
             try:
@@ -487,7 +636,7 @@ class DrMarioRetroEnv(gym.Env):
                 warnings.warn(f"Backend frame_offset failed: {exc}")
         if self._using_backend and self._backend is not None:
             try:
-                self._maybe_auto_start(options)
+                self._maybe_auto_start(opts)
             except Exception as exc:
                 warnings.warn(f"Auto-start sequence failed: {exc}")
         # Initialize viruses remaining from RAM if available
@@ -541,7 +690,13 @@ class DrMarioRetroEnv(gym.Env):
                 if v_now is not None:
                     if v_now > 0 and not self._in_game:
                         self._in_game = True
-                    if self._in_game and self._viruses_prev > 0 and v_now >= 200:
+                    detected_topout = False
+                    if self._in_game and self._viruses_prev > 0:
+                        if self._detect_topout(v_now):
+                            detected_topout = True
+                    else:
+                        self._frames_without_active_pill = 0
+                    if detected_topout:
                         topout = True
                         done = True
                         self._in_game = False

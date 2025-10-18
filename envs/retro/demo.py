@@ -425,6 +425,11 @@ def main():
     ap.add_argument('--risk-tau', type=float, default=0.5)
     ap.add_argument('--dump-state', action='store_true', help='Print state-plane stats (state mode)')
     ap.add_argument('--frame-offset', type=int, default=0, help='Advance N frames with NOOP at reset (influences ROM RNG)')
+    ap.add_argument(
+        '--randomize-rng',
+        action='store_true',
+        help='Randomize the in-game RNG state at each reset (writes new rng0/rng1 bytes)',
+    )
     ap.add_argument('--start-presses', type=int, default=None, help='Override auto start presses at reset (default: 2 on first boot, 1 afterwards)')
     ap.add_argument('--start-hold-frames', type=int, default=None, help='Frames to hold START during auto-start (default 6)')
     ap.add_argument('--start-gap-frames', type=int, default=None, help='Frames between START taps (default 40)')
@@ -464,6 +469,8 @@ def main():
         env_kwargs["auto_start"] = False
     env = make("DrMarioRetroEnv-v0", **env_kwargs)
     reset_options: Dict[str, Any] = {'frame_offset': args.frame_offset}
+    if args.randomize_rng:
+        reset_options['randomize_rng'] = True
     if args.start_presses is not None:
         reset_options['start_presses'] = int(args.start_presses)
     if args.start_hold_frames is not None:
@@ -490,13 +497,12 @@ def main():
         core = observation["obs"] if isinstance(observation, dict) else observation
         return np.asarray(core)
 
-    initial_state_stack: Optional[np.ndarray] = None
     state_shape: Optional[Tuple[int, ...]] = None
     state_dtype: Optional[np.dtype] = None
     if args.mode == "state":
-        initial_state_stack = extract_state_stack(obs)
-        state_shape = initial_state_stack.shape
-        state_dtype = initial_state_stack.dtype
+        initial_stack = extract_state_stack(obs)
+        state_shape = initial_stack.shape
+        state_dtype = initial_stack.dtype
 
     show_window = bool(args.show_window)
     viewer: Optional[_ProcessViewer] = None
@@ -536,6 +542,46 @@ def main():
         else:
             np.save(fname.with_suffix(".npy"), frame)
 
+    def publish_frame(
+        observation: Any,
+        info_payload: Dict[str, Any],
+        action_val: Optional[int],
+        reward_val: float,
+        step_idx: int,
+        cumulative_val: float,
+    ) -> None:
+        nonlocal viewer, show_window, frame_index, state_shape, state_dtype
+        if not (show_window or save_dir):
+            return
+        stats = annotate_stats(
+            {
+                "info": info_payload,
+                "step": step_idx,
+                "reward": reward_val,
+                "cumulative": cumulative_val,
+                "action": None if action_val is None else int(action_val),
+            }
+        )
+        if args.mode == "state":
+            state_stack = extract_state_stack(observation)
+            if state_shape is None or state_dtype is None:
+                state_shape = state_stack.shape
+                state_dtype = state_stack.dtype
+            if viewer is not None and not viewer.push(state_stack, stats):
+                viewer = None
+                show_window = False
+            if save_dir:
+                frame = _state_to_rgb(np.asarray(state_stack), info_payload)
+                save_frame(frame, frame_index)
+        else:
+            frame = env.render()
+            if viewer is not None and not viewer.push(frame, stats):
+                viewer = None
+                show_window = False
+            if save_dir:
+                save_frame(frame, frame_index)
+        frame_index += 1
+
     frame_index = 0
     cumulative_reward = 0.0
     step_times: deque[float] = deque(maxlen=240)
@@ -558,33 +604,7 @@ def main():
         stats["emu_vis_ratio"] = emu_vis_ratio
         return stats
 
-    if show_window or save_dir:
-        stats = annotate_stats(
-            {
-                "info": info,
-                "step": steps,
-                "reward": 0.0,
-                "cumulative": cumulative_reward,
-                "action": None,
-            }
-        )
-        if args.mode == "state":
-            if initial_state_stack is None:
-                initial_state_stack = extract_state_stack(obs)
-            if viewer is not None and not viewer.push(initial_state_stack, stats):
-                show_window = False
-                viewer = None
-            if save_dir and initial_state_stack is not None:
-                frame = _state_to_rgb(np.asarray(initial_state_stack), info)
-                save_frame(frame, frame_index)
-        else:
-            frame = env.render()
-            if viewer is not None and not viewer.push(frame, stats):
-                show_window = False
-                viewer = None
-            if save_dir:
-                save_frame(frame, frame_index)
-        frame_index += 1
+    publish_frame(obs, info, None, 0.0, steps, cumulative_reward)
 
     def apply_ratio(new_ratio: Optional[float], anchor_hz: Optional[float] = None) -> None:
         nonlocal target_hz, step_period, emu_vis_ratio, viz_baseline_hz
@@ -604,7 +624,9 @@ def main():
     step_period = 1.0 / target_hz if target_hz > 0 else 0.0
     next_step_time = time.perf_counter()
 
-    for _ in range(args.steps):
+    episodes = 0
+    last_info = info
+    while steps < args.steps:
         if viewer is not None:
             while True:
                 command = viewer.poll_control()
@@ -647,42 +669,27 @@ def main():
             nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
             print('nz per channel:', nz)
         cumulative_reward += r
-        if save_dir or show_window:
-            stats = annotate_stats(
-                {
-                    "info": info,
-                    "step": steps + 1,
-                    "reward": r,
-                    "cumulative": cumulative_reward,
-                    "action": int(a),
-                }
-            )
-            if args.mode == "state":
-                state_stack = extract_state_stack(obs)
-                if viewer is not None and not viewer.push(state_stack, stats):
-                    viewer = None
-                    show_window = False
-                if save_dir:
-                    frame = _state_to_rgb(np.asarray(state_stack), info)
-                    save_frame(frame, frame_index)
-            else:
-                frame = env.render()
-                if viewer is not None and not viewer.push(frame, stats):
-                    viewer = None
-                    show_window = False
-                if save_dir:
-                    save_frame(frame, frame_index)
-            frame_index += 1
         reward_sum += r
         steps += 1
+        publish_frame(obs, info, int(a), r, steps, cumulative_reward)
+        last_info = info
         if term or trunc:
-            break
+            episodes += 1
+            if steps >= args.steps:
+                break
+            cumulative_reward = 0.0
+            step_times.clear()
+            obs, info = env.reset(options=reset_options)
+            publish_frame(obs, info, None, 0.0, steps, cumulative_reward)
+            last_info = info
+            continue
     dt = time.time() - t0
     fps = steps / max(dt, 1e-6)
     backend_name = getattr(env.unwrapped, "backend_name", "unknown")
+    summary_info = last_info if isinstance(last_info, dict) else {}
     print(
-        f"Ran {steps} steps, reward={reward_sum:.1f}, cleared={info.get('cleared', False)}, "
-        f"FPS≈{fps:.1f}, backend={backend_name}, active={info.get('backend_active', False)}"
+        f"Ran {steps} steps, reward={reward_sum:.1f}, cleared={summary_info.get('cleared', False)}, "
+        f"FPS≈{fps:.1f}, backend={backend_name}, active={summary_info.get('backend_active', False)}, episodes={episodes}"
     )
     if viewer is not None:
         viewer.close()

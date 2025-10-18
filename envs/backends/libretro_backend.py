@@ -322,6 +322,29 @@ class _LibretroCore:
             return None
         return C.string_at(ptr, size)
 
+    def write_ram(self, offset: int, data: np.ndarray) -> None:
+        self._lib.retro_get_memory_size.argtypes = [C.c_uint]
+        self._lib.retro_get_memory_size.restype = C.c_size_t
+        self._lib.retro_get_memory_data.argtypes = [C.c_uint]
+        self._lib.retro_get_memory_data.restype = C.c_void_p
+        size = int(self._lib.retro_get_memory_size(RETRO_MEMORY_SYSTEM_RAM))
+        base_ptr = self._lib.retro_get_memory_data(RETRO_MEMORY_SYSTEM_RAM)
+        if not base_ptr or size == 0:
+            raise RuntimeError("Libretro core does not expose writable system RAM")
+        start = int(max(0, offset))
+        arr = np.asarray(data, dtype=np.uint8).reshape(-1)
+        length = int(arr.size)
+        if length == 0:
+            return
+        if start + length > size:
+            raise ValueError("RAM write exceeds system RAM size")
+        base_addr_val = C.cast(base_ptr, C.c_void_p).value
+        if base_addr_val is None:
+            raise RuntimeError("Failed to resolve system RAM pointer")
+        dest = C.c_void_p(int(base_addr_val) + start)
+        src = (C.c_uint8 * length).from_buffer_copy(arr.tobytes())
+        C.memmove(dest, src, length)
+
 
 class LibretroBackend(EmulatorBackend):
     """Backend driving a libretro core via ctypes."""
@@ -389,6 +412,15 @@ class LibretroBackend(EmulatorBackend):
             if ram_bytes is not None:
                 self._ram_cache = np.frombuffer(ram_bytes, dtype=np.uint8).copy()
         return self._ram_cache
+
+    def write_ram(self, addr: int, values: Sequence[int]) -> None:
+        if self._core is None:
+            raise RuntimeError("Backend not loaded.")
+        data = np.asarray(list(values), dtype=np.uint8)
+        if data.size == 0:
+            return
+        self._core.write_ram(int(addr), data)
+        self._ram_cache = None
 
     def serialize(self) -> Optional[bytes]:
         # Implement if needed (requires retro_serialize bindings).
