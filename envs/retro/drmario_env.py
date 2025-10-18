@@ -554,6 +554,14 @@ class DrMarioRetroEnv(gym.Env):
             self._backend_step_buttons(start_vec, repeat=hold_frames)
             self._backend_step_buttons(noop, repeat=gap_frames)
 
+        rng_applied = False
+
+        def apply_rng_now() -> None:
+            nonlocal rng_applied
+            if apply_rng and not rng_applied:
+                self._apply_pending_rng_randomization()
+                rng_applied = True
+
         presses = int(presses)
         if presses <= 0:
             return
@@ -568,19 +576,21 @@ class DrMarioRetroEnv(gym.Env):
             presses = max(2, presses)
             press_start()  # leave game-over screen
             align_level()
+            apply_rng_now()
             for _ in range(presses - 1):
                 press_start()
         elif presses == 1:
             align_level()
+            apply_rng_now()
             press_start()
         else:
             press_start()
             align_level()
+            apply_rng_now()
             for _ in range(presses - 1):
                 press_start()
 
-        if apply_rng:
-            self._apply_pending_rng_randomization()
+        apply_rng_now()
 
         if settle_frames > 0:
             self._backend_step_buttons(noop, repeat=settle_frames)
