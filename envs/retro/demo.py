@@ -8,6 +8,7 @@ import multiprocessing as mp
 import queue
 import sys
 import time
+from collections import deque
 from pathlib import Path
 
 from typing import Any, Dict, Optional, Sequence, Tuple
@@ -47,6 +48,7 @@ def _viewer_worker(
     with_stats: bool,
     frame_queue: "mp.Queue",
     stop_event: "mp.Event",
+    control_queue: "mp.Queue",
     mode: str,
     refresh_hz: float,
     state_config: Optional[Dict[str, Any]] = None,
@@ -115,6 +117,42 @@ def _viewer_worker(
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
+    viz_times: deque[float] = deque(maxlen=120)
+    viz_fps = 0.0
+
+    def record_viz_update() -> None:
+        nonlocal viz_fps
+        if text_var is None:
+            return
+        now = time.perf_counter()
+        viz_times.append(now)
+        if len(viz_times) >= 2:
+            span = viz_times[-1] - viz_times[0]
+            if span > 0:
+                viz_fps = float(len(viz_times) - 1) / span
+
+    def send_control(payload: Dict[str, Any]) -> None:
+        try:
+            control_queue.put_nowait(payload)
+        except queue.Full:
+            pass
+        except Exception:
+            pass
+
+    def on_key(event: Any) -> None:
+        if control_queue is None:
+            return
+        sym = getattr(event, "keysym", "")
+        if sym in {"plus", "equal", "+"}:
+            send_control({"type": "ratio", "mode": "faster"})
+        elif sym in {"minus", "underscore", "-"}:
+            send_control({"type": "ratio", "mode": "slower"})
+        elif sym == "0":
+            send_control({"type": "ratio", "mode": "match", "viz_fps": viz_fps})
+
+    if control_queue is not None:
+        root.bind("<Key>", on_key)
+
     def update_text(stats: Optional[Dict[str, Any]]) -> None:
         if text_var is None or stats is None:
             return
@@ -131,6 +169,18 @@ def _viewer_worker(
         action = stats.get("action")
         if action is not None:
             lines.append(f"Action: {action}")
+        emu_fps = stats.get("emu_fps")
+        target_hz = stats.get("target_hz")
+        ratio = stats.get("emu_vis_ratio")
+        if emu_fps is not None:
+            target_text = "free" if not target_hz else f"target {target_hz:.1f}"
+            lines.append(f"Emu FPS {emu_fps:.1f} ({target_text})")
+        lines.append(f"Viz FPS {viz_fps:.1f}")
+        if ratio:
+            lines[-1] += f"  ratio×{ratio:.2f}"
+        else:
+            lines[-1] += "  ratio×free"
+        lines.append("Controls: 0=emu=viz  +=faster  -=slower")
         text_var.set("\n".join(lines))
 
     def pump() -> None:
@@ -151,6 +201,7 @@ def _viewer_worker(
                             image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
                         holder["img"] = ImageTk.PhotoImage(image)
                         img_label.configure(image=holder["img"])
+                        record_viz_update()
                         update_text(latest_stats)
                     except Exception:
                         continue
@@ -183,6 +234,7 @@ def _viewer_worker(
                             image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
                         holder["img"] = ImageTk.PhotoImage(image)
                         img_label.configure(image=holder["img"])
+                        record_viz_update()
                     except Exception:
                         frame = None
                 last_generation = current_gen
@@ -231,6 +283,7 @@ class _ProcessViewer:
         self._stop = self._ctx.Event()
         self._closed = False
         self._sync_to_viewer = bool(sync_to_viewer) and mode == "state"
+        self._control_queue: mp.Queue = self._ctx.Queue(maxsize=4)
 
         self._shared_mem = None
         self._state_view: Optional[np.ndarray] = None
@@ -263,7 +316,17 @@ class _ProcessViewer:
 
         self._proc = self._ctx.Process(
             target=_viewer_worker,
-            args=(title, scale, with_stats, self._queue, self._stop, mode, self._refresh_hz, state_config),
+            args=(
+                title,
+                scale,
+                with_stats,
+                self._queue,
+                self._stop,
+                self._control_queue,
+                mode,
+                self._refresh_hz,
+                state_config,
+            ),
             daemon=True,
         )
         self._proc.start()
@@ -307,6 +370,14 @@ class _ProcessViewer:
             return False
         return not self._stop.is_set()
 
+    def poll_control(self) -> Optional[Dict[str, Any]]:
+        try:
+            return self._control_queue.get_nowait()
+        except queue.Empty:
+            return None
+        except Exception:
+            return None
+
     def close(self) -> None:
         if self._closed:
             return
@@ -315,6 +386,12 @@ class _ProcessViewer:
             self._stop.set()
             try:
                 self._queue.put_nowait(None)
+            except queue.Full:
+                pass
+            except Exception:
+                pass
+            try:
+                self._control_queue.put_nowait({"type": "shutdown"})
             except queue.Full:
                 pass
             except Exception:
@@ -454,9 +531,36 @@ def main():
 
     frame_index = 0
     cumulative_reward = 0.0
+    step_times: deque[float] = deque(maxlen=240)
+
+    target_hz = max(0.0, float(args.emu_target_hz))
+    viz_baseline_hz = args.viz_refresh_hz if args.viz_refresh_hz > 0 else 60.0
+    emu_vis_ratio: Optional[float]
+    if target_hz > 0 and viz_baseline_hz > 0:
+        emu_vis_ratio = target_hz / viz_baseline_hz
+    else:
+        emu_vis_ratio = None
+    ratio_step = 1.25
+    min_ratio, max_ratio = 0.1, 8.0
+    emu_fps = 0.0
+
+    def annotate_stats(stats: Dict[str, Any]) -> Dict[str, Any]:
+        stats = dict(stats)
+        stats["emu_fps"] = emu_fps
+        stats["target_hz"] = target_hz if target_hz > 0 else None
+        stats["emu_vis_ratio"] = emu_vis_ratio
+        return stats
 
     if show_window or save_dir:
-        stats = {"info": info, "step": steps, "reward": 0.0, "cumulative": cumulative_reward, "action": None}
+        stats = annotate_stats(
+            {
+                "info": info,
+                "step": steps,
+                "reward": 0.0,
+                "cumulative": cumulative_reward,
+                "action": None,
+            }
+        )
         if args.mode == "state":
             if initial_state_stack is None:
                 initial_state_stack = extract_state_stack(obs)
@@ -475,11 +579,46 @@ def main():
                 save_frame(frame, frame_index)
         frame_index += 1
 
-    target_hz = max(0.0, float(args.emu_target_hz))
+    def apply_ratio(new_ratio: Optional[float], anchor_hz: Optional[float] = None) -> None:
+        nonlocal target_hz, step_period, emu_vis_ratio, viz_baseline_hz
+        base = anchor_hz if anchor_hz and anchor_hz > 0 else viz_baseline_hz
+        if not base or base <= 0:
+            base = 60.0
+        viz_baseline_hz = base
+        if new_ratio is None:
+            emu_vis_ratio = None
+            target_hz = 0.0
+        else:
+            clamped = min(max(new_ratio, min_ratio), max_ratio)
+            emu_vis_ratio = clamped
+            target_hz = base * clamped
+        step_period = 1.0 / target_hz if target_hz > 0 else 0.0
+
     step_period = 1.0 / target_hz if target_hz > 0 else 0.0
     next_step_time = time.perf_counter()
 
     for _ in range(args.steps):
+        if viewer is not None:
+            while True:
+                command = viewer.poll_control()
+                if not command:
+                    break
+                if command.get("type") == "ratio":
+                    mode = command.get("mode")
+                    if mode == "match":
+                        viz_fps = command.get("viz_fps")
+                        anchor = float(viz_fps) if viz_fps else viz_baseline_hz
+                        apply_ratio(1.0, anchor_hz=anchor)
+                    elif mode == "faster":
+                        if emu_vis_ratio is None:
+                            apply_ratio(ratio_step)
+                        else:
+                            apply_ratio(emu_vis_ratio * ratio_step)
+                    elif mode == "slower":
+                        if emu_vis_ratio is None:
+                            apply_ratio(1.0 / ratio_step)
+                        else:
+                            apply_ratio(emu_vis_ratio / ratio_step)
         if step_period > 0:
             now = time.perf_counter()
             if now < next_step_time:
@@ -490,6 +629,11 @@ def main():
             next_step_time = now + step_period
         a = env.action_space.sample()
         obs, r, term, trunc, info = env.step(a)
+        step_times.append(time.perf_counter())
+        if len(step_times) >= 2:
+            span = step_times[-1] - step_times[0]
+            if span > 0:
+                emu_fps = float(len(step_times) - 1) / span
         if args.dump_state and args.mode == 'state':
             core = extract_state_stack(obs)
             latest = core[-1]
@@ -497,13 +641,15 @@ def main():
             print('nz per channel:', nz)
         cumulative_reward += r
         if save_dir or show_window:
-            stats = {
-                "info": info,
-                "step": steps + 1,
-                "reward": r,
-                "cumulative": cumulative_reward,
-                "action": int(a),
-            }
+            stats = annotate_stats(
+                {
+                    "info": info,
+                    "step": steps + 1,
+                    "reward": r,
+                    "cumulative": cumulative_reward,
+                    "action": int(a),
+                }
+            )
             if args.mode == "state":
                 state_stack = extract_state_stack(obs)
                 if viewer is not None and not viewer.push(state_stack, stats):
