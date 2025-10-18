@@ -6,13 +6,18 @@ Usage:
 import argparse
 import multiprocessing as mp
 import queue
-import time
 import sys
+import time
 from pathlib import Path
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
+
+try:
+    from multiprocessing import shared_memory
+except Exception:  # pragma: no cover - optional on some platforms
+    shared_memory = None  # type: ignore[assignment]
 
 try:
     from PIL import Image
@@ -42,6 +47,9 @@ def _viewer_worker(
     with_stats: bool,
     frame_queue: "mp.Queue",
     stop_event: "mp.Event",
+    mode: str,
+    refresh_hz: float,
+    state_config: Optional[Dict[str, Any]] = None,
 ) -> None:
     try:
         import tkinter as tk
@@ -49,6 +57,10 @@ def _viewer_worker(
     except Exception:
         stop_event.set()
         return
+
+    interval_ms = 0
+    if refresh_hz > 0:
+        interval_ms = max(1, int(round(1000.0 / refresh_hz)))
 
     root = tk.Tk()
     root.title(title)
@@ -61,6 +73,38 @@ def _viewer_worker(
     holder: Dict[str, Any] = {"img": None}
     scale = max(0.5, float(scale))
 
+    if mode != "state":
+        state_config = None
+
+    state_shm = None
+    state_view: Optional[np.ndarray] = None
+    state_lock = None
+    state_generation = None
+    rendered_generation = None
+    last_generation = -1
+    latest_stats: Optional[Dict[str, Any]] = None
+
+    if state_config is not None:
+        if shared_memory is None:
+            stop_event.set()
+            return
+        try:
+            state_shape = tuple(int(v) for v in state_config["shape"])
+            state_dtype = np.dtype(state_config["dtype"])
+            state_shm = shared_memory.SharedMemory(name=state_config["name"])
+            state_view = np.ndarray(state_shape, dtype=state_dtype, buffer=state_shm.buf)
+            state_lock = state_config.get("lock")
+            state_generation = state_config.get("generation")
+            rendered_generation = state_config.get("rendered_generation")
+        except Exception:
+            stop_event.set()
+            if state_shm is not None:
+                try:
+                    state_shm.close()
+                except Exception:
+                    pass
+            return
+
     def on_close() -> None:
         if not stop_event.is_set():
             stop_event.set()
@@ -71,69 +115,192 @@ def _viewer_worker(
 
     root.protocol("WM_DELETE_WINDOW", on_close)
 
+    def update_text(stats: Optional[Dict[str, Any]]) -> None:
+        if text_var is None or stats is None:
+            return
+        info = stats.get("info", {}) if isinstance(stats, dict) else {}
+        lines = [
+            f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
+            f"Last reward {stats.get('reward', 0.0):.2f} (env {info.get('r_env', 0.0):.2f})",
+            f"Viruses {info.get('viruses_remaining', '?')}  Level {info.get('level', '?')}",
+            f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
+        ]
+        term = info.get("terminal_reason")
+        if term:
+            lines.append(f"Terminal: {term}")
+        action = stats.get("action")
+        if action is not None:
+            lines.append(f"Action: {action}")
+        text_var.set("\n".join(lines))
+
     def pump() -> None:
+        nonlocal latest_stats, last_generation
         try:
             while True:
                 item = frame_queue.get_nowait()
                 if item is None:
                     on_close()
                     return
-                frame, stats = item
-                try:
-                    image = Image.fromarray(frame)
-                    if scale != 1.0:
-                        w, h = image.size
-                        image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
-                    holder["img"] = ImageTk.PhotoImage(image)
-                    img_label.configure(image=holder["img"])
-                    if text_var is not None and stats is not None:
-                        info = stats.get("info", {}) if isinstance(stats, dict) else {}
-                        lines = [
-                            f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
-                            f"Last reward {stats.get('reward', 0.0):.2f} (env {info.get('r_env', 0.0):.2f})",
-                            f"Viruses {info.get('viruses_remaining', '?')}  Level {info.get('level', '?')}",
-                            f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
-                        ]
-                        term = info.get("terminal_reason")
-                        if term:
-                            lines.append(f"Terminal: {term}")
-                        action = stats.get("action")
-                        if action is not None:
-                            lines.append(f"Action: {action}")
-                        text_var.set("\n".join(lines))
-                except Exception:
-                    continue
+                if state_view is None:
+                    frame, stats = item
+                    latest_stats = stats if isinstance(stats, dict) else None
+                    try:
+                        image = Image.fromarray(frame)
+                        if scale != 1.0:
+                            w, h = image.size
+                            image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
+                        holder["img"] = ImageTk.PhotoImage(image)
+                        img_label.configure(image=holder["img"])
+                        update_text(latest_stats)
+                    except Exception:
+                        continue
+                else:
+                    latest_stats = item if isinstance(item, dict) else None
         except queue.Empty:
             pass
+
+        if state_view is not None and state_lock is not None and state_generation is not None:
+            copied: Optional[np.ndarray] = None
+            current_gen = last_generation
+            try:
+                with state_lock:
+                    current_gen = state_generation.value
+                    if current_gen != last_generation and state_view is not None:
+                        copied = np.array(state_view, copy=True)
+            except Exception:
+                copied = None
+            if copied is not None and current_gen != last_generation:
+                info = latest_stats.get("info") if isinstance(latest_stats, dict) else None
+                try:
+                    frame = _state_to_rgb(copied, info)
+                except Exception:
+                    frame = None
+                if frame is not None:
+                    try:
+                        image = Image.fromarray(frame)
+                        if scale != 1.0:
+                            w, h = image.size
+                            image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
+                        holder["img"] = ImageTk.PhotoImage(image)
+                        img_label.configure(image=holder["img"])
+                    except Exception:
+                        frame = None
+                last_generation = current_gen
+                if rendered_generation is not None:
+                    try:
+                        rendered_generation.value = current_gen
+                    except Exception:
+                        pass
+            update_text(latest_stats)
+
         if not stop_event.is_set():
-            root.after(16, pump)
+            if interval_ms > 0:
+                root.after(interval_ms, pump)
+            else:
+                root.after_idle(pump)
 
     pump()
     try:
         root.mainloop()
     finally:
         on_close()
+        if state_shm is not None:
+            try:
+                state_shm.close()
+            except Exception:
+                pass
 
 
 class _ProcessViewer:
-    def __init__(self, title: str, scale: float, with_stats: bool) -> None:
+    def __init__(
+        self,
+        title: str,
+        scale: float,
+        with_stats: bool,
+        *,
+        mode: str = "pixel",
+        refresh_hz: float = 60.0,
+        state_shape: Optional[Sequence[int]] = None,
+        state_dtype: str | np.dtype = "float32",
+        sync_to_viewer: bool = False,
+    ) -> None:
         self._ctx = mp.get_context("spawn")
-        self._queue: mp.Queue = self._ctx.Queue(maxsize=2)
+        self._mode = mode
+        self._refresh_hz = max(0.0, float(refresh_hz))
+        self._queue: mp.Queue = self._ctx.Queue(maxsize=8 if mode == "state" else 2)
         self._stop = self._ctx.Event()
+        self._closed = False
+        self._sync_to_viewer = bool(sync_to_viewer) and mode == "state"
+
+        self._shared_mem = None
+        self._state_view: Optional[np.ndarray] = None
+        self._state_lock = None
+        self._state_generation = None
+        self._rendered_generation = None
+        state_config: Optional[Dict[str, Any]] = None
+
+        if mode == "state":
+            if shared_memory is None:
+                raise RuntimeError("Python shared_memory module unavailable; cannot spawn state viewer")
+            if state_shape is None:
+                raise ValueError("state_shape must be provided for state mode viewer")
+            state_dtype_np = np.dtype(state_dtype)
+            shape_tuple: Tuple[int, ...] = tuple(int(v) for v in state_shape)
+            nbytes = int(np.prod(shape_tuple)) * state_dtype_np.itemsize
+            self._shared_mem = shared_memory.SharedMemory(create=True, size=nbytes)
+            self._state_view = np.ndarray(shape_tuple, dtype=state_dtype_np, buffer=self._shared_mem.buf)
+            self._state_lock = self._ctx.Lock()
+            self._state_generation = self._ctx.Value("Q", 0)
+            self._rendered_generation = self._ctx.Value("Q", 0)
+            state_config = {
+                "name": self._shared_mem.name,
+                "shape": shape_tuple,
+                "dtype": state_dtype_np.str,
+                "lock": self._state_lock,
+                "generation": self._state_generation,
+                "rendered_generation": self._rendered_generation,
+            }
+
         self._proc = self._ctx.Process(
             target=_viewer_worker,
-            args=(title, scale, with_stats, self._queue, self._stop),
+            args=(title, scale, with_stats, self._queue, self._stop, mode, self._refresh_hz, state_config),
             daemon=True,
         )
         self._proc.start()
-        self._closed = False
 
-    def push(self, frame: np.ndarray, stats: Optional[Dict[str, Any]]) -> bool:
+    def push(self, payload: np.ndarray, stats: Optional[Dict[str, Any]]) -> bool:
         if self._closed or self._stop.is_set():
             return False
+        if self._mode == "state":
+            if self._state_view is None or self._state_lock is None or self._state_generation is None:
+                return False
+            if self._sync_to_viewer and self._rendered_generation is not None:
+                while (
+                    not self._stop.is_set()
+                    and self._state_generation.value != self._rendered_generation.value
+                ):
+                    time.sleep(0.001)
+            try:
+                data = np.asarray(payload, dtype=self._state_view.dtype)
+                if data.shape != self._state_view.shape:
+                    return False
+                with self._state_lock:
+                    np.copyto(self._state_view, data)
+                    self._state_generation.value += 1
+            except Exception:
+                return False
+            if stats is not None:
+                try:
+                    self._queue.put_nowait(stats)
+                except queue.Full:
+                    pass
+                except Exception:
+                    return False
+            return not self._stop.is_set()
+
         try:
-            payload = (np.asarray(frame, dtype=np.uint8).copy(), stats)
-            self._queue.put_nowait(payload)
+            frame = np.asarray(payload, dtype=np.uint8).copy()
+            self._queue.put_nowait((frame, stats))
         except queue.Full:
             pass
         except Exception:
@@ -150,10 +317,20 @@ class _ProcessViewer:
                 self._queue.put_nowait(None)
             except queue.Full:
                 pass
+            except Exception:
+                pass
             self._proc.join(timeout=1.0)
         finally:
             if self._proc.is_alive():
                 self._proc.terminate()
+        if self._shared_mem is not None:
+            try:
+                self._shared_mem.close()
+                self._shared_mem.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
 
 
 def main():
@@ -177,6 +354,18 @@ def main():
     ap.add_argument('--save-frames', type=str, default=None, help='Directory to dump rendered frames (PNG if Pillow installed, else .npy)')
     ap.add_argument('--show-window', action='store_true', help='Open an OpenCV window showing live frames (press q to exit early)')
     ap.add_argument('--display-scale', type=float, default=2.0, help='Scale factor for the preview window (requires --show-window)')
+    ap.add_argument('--viz-refresh-hz', type=float, default=60.0, help='Max refresh rate for the preview window (0 disables throttling)')
+    ap.add_argument(
+        '--emu-target-hz',
+        type=float,
+        default=0.0,
+        help='Throttle environment stepping to this rate (0 keeps emulator free-running)',
+    )
+    ap.add_argument(
+        '--viz-sync',
+        action='store_true',
+        help='In state mode, wait for the preview to draw the latest state before advancing',
+    )
     args = ap.parse_args()
 
     register_env_id()
@@ -213,6 +402,18 @@ def main():
         if Image is None:
             print("Pillow not installed; frames will be saved as .npy arrays.")
 
+    def extract_state_stack(observation: Any) -> np.ndarray:
+        core = observation["obs"] if isinstance(observation, dict) else observation
+        return np.asarray(core)
+
+    initial_state_stack: Optional[np.ndarray] = None
+    state_shape: Optional[Tuple[int, ...]] = None
+    state_dtype: Optional[np.dtype] = None
+    if args.mode == "state":
+        initial_state_stack = extract_state_stack(obs)
+        state_shape = initial_state_stack.shape
+        state_dtype = initial_state_stack.dtype
+
     show_window = bool(args.show_window)
     viewer: Optional[_ProcessViewer] = None
     if show_window:
@@ -221,66 +422,104 @@ def main():
             show_window = False
         else:
             try:
-                viewer = _ProcessViewer("Dr. Mario", float(args.display_scale), with_stats=(args.mode == "state"))
+                viewer_kwargs: Dict[str, Any] = {
+                    "mode": args.mode,
+                    "refresh_hz": args.viz_refresh_hz,
+                    "sync_to_viewer": args.viz_sync,
+                }
+                if args.mode == "state":
+                    if state_shape is None or state_dtype is None:
+                        raise RuntimeError("State shape unavailable for state-mode viewer")
+                    viewer_kwargs["state_shape"] = state_shape
+                    viewer_kwargs["state_dtype"] = state_dtype
+                viewer = _ProcessViewer(
+                    "Dr. Mario",
+                    float(args.display_scale),
+                    with_stats=(args.mode == "state"),
+                    **viewer_kwargs,
+                )
             except Exception as exc:
                 print(f"Viewer process unavailable ({exc}); skipping live window.")
                 show_window = False
                 viewer = None
 
-    def current_frame(current_obs: Any, current_info: Dict[str, Any]) -> Optional[np.ndarray]:
-        if args.mode == "pixel":
-            return env.render()
-        core = current_obs["obs"] if isinstance(current_obs, dict) else current_obs
-        return _state_to_rgb(np.asarray(core), current_info)
+    def save_frame(frame: np.ndarray, index: int) -> None:
+        if save_dir is None:
+            return
+        fname = save_dir / f"frame_{index:05d}"
+        if Image is not None:
+            Image.fromarray(frame).save(fname.with_suffix(".png"))
+        else:
+            np.save(fname.with_suffix(".npy"), frame)
 
     frame_index = 0
     cumulative_reward = 0.0
 
     if show_window or save_dir:
-        frame = current_frame(obs, info)
-        if frame is not None:
-            stats = {"info": info, "step": steps, "reward": 0.0, "cumulative": cumulative_reward, "action": None}
+        stats = {"info": info, "step": steps, "reward": 0.0, "cumulative": cumulative_reward, "action": None}
+        if args.mode == "state":
+            if initial_state_stack is None:
+                initial_state_stack = extract_state_stack(obs)
+            if viewer is not None and not viewer.push(initial_state_stack, stats):
+                show_window = False
+                viewer = None
+            if save_dir and initial_state_stack is not None:
+                frame = _state_to_rgb(np.asarray(initial_state_stack), info)
+                save_frame(frame, frame_index)
+        else:
+            frame = env.render()
             if viewer is not None and not viewer.push(frame, stats):
                 show_window = False
                 viewer = None
             if save_dir:
-                fname = save_dir / f"frame_{frame_index:05d}"
-                if Image is not None:
-                    Image.fromarray(frame).save(fname.with_suffix(".png"))
-                else:
-                    np.save(fname.with_suffix(".npy"), frame)
+                save_frame(frame, frame_index)
         frame_index += 1
 
+    target_hz = max(0.0, float(args.emu_target_hz))
+    step_period = 1.0 / target_hz if target_hz > 0 else 0.0
+    next_step_time = time.perf_counter()
+
     for _ in range(args.steps):
+        if step_period > 0:
+            now = time.perf_counter()
+            if now < next_step_time:
+                time.sleep(next_step_time - now)
+                now = next_step_time
+            else:
+                now = time.perf_counter()
+            next_step_time = now + step_period
         a = env.action_space.sample()
         obs, r, term, trunc, info = env.step(a)
         if args.dump_state and args.mode == 'state':
-            core = obs['obs'] if isinstance(obs, dict) else obs
-            # print non-zero counts per channel on the most recent frame in stack
+            core = extract_state_stack(obs)
             latest = core[-1]
             nz = [int(latest[c].sum()) for c in range(latest.shape[0])]
             print('nz per channel:', nz)
         cumulative_reward += r
         if save_dir or show_window:
-            frame = current_frame(obs, info)
-            if frame is not None:
-                stats = {
-                    "info": info,
-                    "step": steps + 1,
-                    "reward": r,
-                    "cumulative": cumulative_reward,
-                    "action": int(a),
-                }
+            stats = {
+                "info": info,
+                "step": steps + 1,
+                "reward": r,
+                "cumulative": cumulative_reward,
+                "action": int(a),
+            }
+            if args.mode == "state":
+                state_stack = extract_state_stack(obs)
+                if viewer is not None and not viewer.push(state_stack, stats):
+                    viewer = None
+                    show_window = False
+                if save_dir:
+                    frame = _state_to_rgb(np.asarray(state_stack), info)
+                    save_frame(frame, frame_index)
+            else:
+                frame = env.render()
                 if viewer is not None and not viewer.push(frame, stats):
                     viewer = None
                     show_window = False
                 if save_dir:
-                    fname = save_dir / f"frame_{frame_index:05d}"
-                    if Image is not None:
-                        Image.fromarray(frame).save(fname.with_suffix(".png"))
-                    else:
-                        np.save(fname.with_suffix(".npy"), frame)
-                frame_index += 1
+                    save_frame(frame, frame_index)
+            frame_index += 1
         reward_sum += r
         steps += 1
         if term or trunc:
