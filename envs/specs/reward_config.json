@@ -1,7 +1,11 @@
 {
-  "pill_place_bonus": {
-    "value": 1.0,
-    "description": "Base reward granted when a pill locks into place before height-based adjustments."
+  "pill_place_base": {
+    "value": 1.2,
+    "description": "Base reward applied to the first pill lock; later locks scale via the exponential curve."
+  },
+  "pill_place_growth": {
+    "value": 0.0008,
+    "description": "Per-placement growth rate (a) for the quadratic pill lock reward: reward = base * (1 + a*(n-1)^2)."
   },
   "virus_clear_bonus": {
     "value": 0.0,
@@ -36,7 +40,7 @@
     "description": "Reward for creating a longer adjacency (three aligned segments)."
   },
   "column_height_penalty": {
-    "value": 0.0,
+    "value": 5.0,
     "description": "Penalty weight applied to tall stacks relative to the virus band."
   },
   "action_penalty_scale": {

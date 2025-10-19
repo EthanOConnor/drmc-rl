@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import warnings
 from dataclasses import dataclass, field
@@ -38,7 +39,8 @@ class Action(IntEnum):
 
 @dataclass
 class RewardConfig:
-    pill_place_bonus: float = 1.0
+    pill_place_base: float = 1.2
+    pill_place_growth: float = 0.0008
     virus_clear_bonus: float = 300.0
     non_virus_clear_bonus: float = 50.0
     terminal_clear_bonus: float = 150.0
@@ -1185,7 +1187,10 @@ class DrMarioRetroEnv(gym.Env):
         current_pill_count = self._pill_spawn_counter or 0
         placement_bonus = 0.0
         if self._prev_pill_count > 0 and current_pill_count > self._prev_pill_count:
-            placement_bonus = self.reward_cfg.pill_place_bonus * (current_pill_count - self._prev_pill_count)
+            placements = max(1, current_pill_count)
+            base_bonus = float(self.reward_cfg.pill_place_base)
+            growth = float(self.reward_cfg.pill_place_growth)
+            placement_bonus = base_bonus * (1.0 + growth * float((placements - 1) ** 2))
             placement_bonus_adjusted = placement_bonus
             if state_prev_frame is not None and state_next_frame is not None:
                 prev_static = state_prev_frame[3:6]
@@ -1219,7 +1224,7 @@ class DrMarioRetroEnv(gym.Env):
                     placement_height_diff = None
             r_env += placement_bonus_adjusted
         self._prev_pill_count = current_pill_count
-        if placement_bonus != 0.0:
+        if placement_bonus > 0.0:
             penalty_unit = float(self.reward_cfg.action_penalty_scale)
 
         # Virus and non-virus clear bonus
