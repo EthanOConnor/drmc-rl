@@ -130,12 +130,12 @@ class DrMarioFrameEncoder(nn.Module):
         self.proj = nn.Sequential(nn.Linear(feature_dim, proj_dim), nn.ReLU(inplace=True))
         self.output_dim = proj_dim
         self.register_buffer(
-            "_row_indices",
-            torch.arange(16, dtype=torch.float32).view(1, 16, 1),
+            "_row_from_bottom",
+            torch.arange(1, 17, dtype=torch.float32).flip(0).view(1, 16, 1),
             persistent=False,
         )
         self.register_buffer(
-            "_column_scale",
+            "_row_scale",
             torch.tensor(16.0, dtype=torch.float32),
             persistent=False,
         )
@@ -166,9 +166,9 @@ class DrMarioFrameEncoder(nn.Module):
             static_planes = original[:, self._static_idx]
             static_mask = (static_planes > 0.1).any(dim=1).float()
             virus_planes = original[:, self._virus_color_idx]
-        row_indices = self._row_indices.to(device=original.device, dtype=original.dtype)
-        column_scale = self._column_scale.to(device=original.device, dtype=original.dtype)
-        column_heights = (static_mask * (row_indices + 1.0)).amax(dim=1) / column_scale
+        row_from_bottom = self._row_from_bottom.to(device=original.device, dtype=original.dtype)
+        row_scale = self._row_scale.to(device=original.device, dtype=original.dtype)
+        column_heights = (static_mask * row_from_bottom).amax(dim=1) / row_scale
         virus_norm = self._virus_normalizer.to(device=original.device, dtype=original.dtype)
         virus_counts = virus_planes.reshape(original.size(0), 3, -1).sum(dim=-1) * virus_norm
 
@@ -198,6 +198,7 @@ class DrMarioStatePolicyNet(nn.Module):
         if in_channels is None:
             in_channels = ram_specs.STATE_CHANNELS
         self.encoder = DrMarioFrameEncoder(in_channels=in_channels, proj_dim=frame_embed_dim)
+        self.pre_core_ln = nn.LayerNorm(frame_embed_dim)
         core_type = core_type.lower()
         if core_type not in {"gru", "lstm"}:
             raise ValueError("core_type must be either 'gru' or 'lstm'")
@@ -215,8 +216,10 @@ class DrMarioStatePolicyNet(nn.Module):
                 batch_first=True,
             )
         self._core_hidden = core_hidden
+        self.post_core_ln = nn.LayerNorm(core_hidden)
         self.policy = nn.Linear(core_hidden, action_dim)
         self.value = nn.Linear(core_hidden, 1)
+        self._flatten_called = False
 
     def forward(
         self,
@@ -231,9 +234,12 @@ class DrMarioStatePolicyNet(nn.Module):
         B, T, C, H, W = x.shape
         frames = x.view(B * T, C, H, W)
         encoded = self.encoder(frames).view(B, T, -1)
-        if hasattr(self.core, "flatten_parameters"):
+        encoded = self.pre_core_ln(encoded)
+        if not self._flatten_called and hasattr(self.core, "flatten_parameters"):
             self.core.flatten_parameters()
+            self._flatten_called = True
         outputs, hx = self.core(encoded, hx)
+        outputs = self.post_core_ln(outputs)
         logits = self.policy(outputs)
         values = self.value(outputs).squeeze(-1)
         return logits, values, hx

@@ -110,12 +110,22 @@ if mx is not None and nn is not None:
         def __call__(self, x: mx.array, h: mx.array) -> mx.array:
             projected_x = self.input_proj(x)
             projected_h = self.hidden_proj(h)
-            hidden = self.hidden_dim
+            return self._combine(projected_x, projected_h, h)
 
-            z = mx.sigmoid(projected_x[:, :hidden] + projected_h[:, :hidden])
-            r = mx.sigmoid(projected_x[:, hidden : 2 * hidden] + projected_h[:, hidden : 2 * hidden])
-            n = mx.tanh(projected_x[:, 2 * hidden :] + r * projected_h[:, 2 * hidden :])
-            return (1.0 - z) * n + z * h
+        def step_with_preproj(self, projected_x: mx.array, h: mx.array) -> mx.array:
+            projected_h = self.hidden_proj(h)
+            return self._combine(projected_x, projected_h, h)
+
+        def _combine(
+            self, projected_x: mx.array, projected_h: mx.array, prev_state: mx.array
+        ) -> mx.array:
+            hidden = self.hidden_dim
+            px_z, px_r, px_n = mx.split(projected_x, 3, axis=-1)
+            ph_z, ph_r, ph_n = mx.split(projected_h, 3, axis=-1)
+            z = mx.sigmoid(px_z + ph_z)
+            r = mx.sigmoid(px_r + ph_r)
+            n = mx.tanh(px_n + r * ph_n)
+            return (1.0 - z) * n + z * prev_state
 
 
     class _TemporalCore(nn.Module):
@@ -127,11 +137,15 @@ if mx is not None and nn is not None:
             self.hidden_dim = hidden_dim
 
         def __call__(self, x: mx.array, h: mx.array) -> Tuple[mx.array, mx.array]:
-            steps = int(x.shape[1])
+            batch, steps, feat_dim = x.shape
+            hidden = self.hidden_dim
+            projected = self.cell.input_proj(mx.reshape(x, (batch * steps, feat_dim)))
+            projected = mx.reshape(projected, (batch, steps, hidden * 3))
+
             outputs = []
             state = h
             for t in range(steps):
-                state = self.cell(x[:, t, :], state)
+                state = self.cell.step_with_preproj(projected[:, t, :], state)
                 outputs.append(state)
             return mx.stack(outputs, axis=1), state
 
@@ -160,6 +174,7 @@ if mx is not None and nn is not None:
             self,
             x: mx.array,
             hx: Optional[mx.array] = None,
+            last_only: bool = True,
         ) -> Tuple[mx.array, mx.array, mx.array]:
             if x.ndim != 5:
                 raise ValueError("Expected input of shape (B, T, C, H, W)")
@@ -179,6 +194,8 @@ if mx is not None and nn is not None:
             values = self.value(flat)
             logits = mx.reshape(logits, (batch, time, -1))
             values = mx.reshape(values, (batch, time))
+            if last_only:
+                return logits[:, -1, :], values[:, -1], hx
             return logits, values, hx
 
         def initial_state(self, batch_size: int, dtype: Optional[mx.Dtype] = None) -> mx.array:
