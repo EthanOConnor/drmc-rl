@@ -582,24 +582,26 @@ def _monitor_worker(
 
 
 class NetworkDiagnosticsTracker:
-    """Collect lightweight diagnostics from torch networks and optimizers."""
+    """Collect lightweight diagnostics from policy networks and optimizers."""
 
     def __init__(self, agent: Any):
         self._torch = torch
         self._nn = nn
         self._optim = optim
+        self._mx = mx
+        self._nn_mlx = nn_mlx
+        self._optim_mlx = optim_mlx
         self._agent = agent
         self._modules: Dict[str, Any] = {}
         self._optimizers: Dict[str, Any] = {}
         self._prev_params: Dict[str, "torch.Tensor"] = {}
-        if self._torch is None:
-            return
+        self._mlx_modules: Dict[str, Any] = {}
+        self._mlx_optimizers: Dict[str, Any] = {}
+        self._prev_params_mlx: Dict[str, np.ndarray] = {}
         self._discover_modules(agent)
         self._snapshot_initial_params()
 
     def _discover_modules(self, agent: Any) -> None:
-        if self._torch is None:
-            return
         attr_names = dir(agent)
         for name in attr_names:
             # getattr may raise for properties; guard accordingly.
@@ -607,23 +609,36 @@ class NetworkDiagnosticsTracker:
                 value = getattr(agent, name)
             except Exception:
                 continue
-            if self._nn is not None and isinstance(value, self._nn.Module):
+            if self._torch is not None and self._nn is not None and isinstance(value, self._nn.Module):
                 existing = self._modules.get(name)
                 if existing is not value:
                     self._modules[name] = value
                     flat = self._flatten_parameters(value)
                     if flat is not None:
                         self._prev_params[name] = flat
-            if self._optim is not None and isinstance(value, self._optim.Optimizer):
+            if self._optim is not None and self._torch is not None and isinstance(value, self._optim.Optimizer):
                 self._optimizers[name] = value
+            if self._nn_mlx is not None and isinstance(value, self._nn_mlx.Module):
+                existing = self._mlx_modules.get(name)
+                if existing is not value:
+                    self._mlx_modules[name] = value
+                    flat_mlx = self._flatten_parameters_mlx(value)
+                    if flat_mlx is not None:
+                        self._prev_params_mlx[name] = flat_mlx
+            if self._is_mlx_optimizer(value):
+                self._mlx_optimizers[name] = value
 
     def _snapshot_initial_params(self) -> None:
-        if self._torch is None:
-            return
-        for name, module in self._modules.items():
-            flat = self._flatten_parameters(module)
-            if flat is not None:
-                self._prev_params[name] = flat
+        if self._torch is not None:
+            for name, module in self._modules.items():
+                flat = self._flatten_parameters(module)
+                if flat is not None:
+                    self._prev_params[name] = flat
+        if self._mx is not None and self._nn_mlx is not None:
+            for name, module in self._mlx_modules.items():
+                flat_mlx = self._flatten_parameters_mlx(module)
+                if flat_mlx is not None:
+                    self._prev_params_mlx[name] = flat_mlx
 
     def _flatten_parameters(self, module: Any):
         if self._torch is None:
@@ -650,18 +665,72 @@ class NetworkDiagnosticsTracker:
             return None
         return self._torch.cat(chunks)
 
+    def _flatten_parameters_mlx(self, module: Any) -> Optional[np.ndarray]:
+        if self._mx is None or self._nn_mlx is None:
+            return None
+        try:
+            params = module.parameters()
+        except Exception:
+            return None
+        leaves: list[np.ndarray] = []
+
+        def _gather(tree: Any) -> None:
+            if tree is None:
+                return
+            if isinstance(tree, dict):
+                for key in sorted(tree.keys()):
+                    _gather(tree[key])
+                return
+            if isinstance(tree, (list, tuple)):
+                for item in tree:
+                    _gather(item)
+                return
+            arr = tree
+            try:
+                if self._mx is not None:
+                    self._mx.eval(arr)
+            except Exception:
+                pass
+            try:
+                arr_np = np.asarray(arr, dtype=np.float32).reshape(-1)
+            except Exception:
+                arr_np = np.array(arr, dtype=np.float32).reshape(-1)
+            if arr_np.size > 0:
+                leaves.append(arr_np.copy())
+
+        _gather(params)
+        if not leaves:
+            return None
+        return np.concatenate(leaves)
+
+    def _is_mlx_optimizer(self, value: Any) -> bool:
+        if self._optim_mlx is None:
+            return False
+        module_name = getattr(getattr(value, "__class__", None), "__module__", "")
+        if not module_name:
+            return False
+        if not module_name.startswith("mlx.optimizers"):
+            return False
+        return hasattr(value, "update")
+
     def collect(self) -> Dict[str, Any]:
         """Return a dictionary of diagnostic scalars (and status strings)."""
-        if self._torch is None:
-            return {"networks/status": "torch unavailable"}
         # Refresh in case new modules/optimizers were attached since the last call.
         self._discover_modules(self._agent)
         metrics: Dict[str, Any] = {}
-        if not self._modules:
-            metrics["networks/status"] = "no modules detected"
+        if not self._modules and not self._mlx_modules:
+            if self._torch is None:
+                metrics["networks/status"] = "torch unavailable"
+            else:
+                metrics["networks/status"] = "no modules detected"
             return metrics
 
-        metrics["networks/status"] = f"{len(self._modules)} module(s) tracked"
+        status_parts: list[str] = []
+        if self._modules:
+            status_parts.append(f"{len(self._modules)} torch module(s)")
+        if self._mlx_modules:
+            status_parts.append(f"{len(self._mlx_modules)} mlx module(s)")
+        metrics["networks/status"] = ", ".join(status_parts) + " tracked"
 
         for name, module in self._modules.items():
             flat_params = self._flatten_parameters(module)
@@ -698,6 +767,34 @@ class NetworkDiagnosticsTracker:
                 if isinstance(step_val, (int, float)):
                     max_step = max(max_step, float(step_val))
             metrics[f"{name}/step"] = max_step
+
+        for name, module in self._mlx_modules.items():
+            flat_params = self._flatten_parameters_mlx(module)
+            if flat_params is None or flat_params.size == 0:
+                continue
+            param_norm = float(np.linalg.norm(flat_params))
+            metrics[f"{name}/param_norm"] = param_norm
+            metrics[f"{name}/num_params"] = float(flat_params.size)
+
+            prev = self._prev_params_mlx.get(name)
+            if prev is not None and prev.size == flat_params.size:
+                delta = float(np.linalg.norm(flat_params - prev))
+                metrics[f"{name}/param_delta"] = delta
+                if param_norm > 1e-8:
+                    metrics[f"{name}/delta_ratio"] = delta / param_norm
+            self._prev_params_mlx[name] = flat_params
+
+        for name, optimizer in self._mlx_optimizers.items():
+            lr_value = getattr(optimizer, "learning_rate", None)
+            if lr_value is not None:
+                try:
+                    lr_float = float(np.asarray(lr_value).reshape(()))
+                    metrics[f"{name}/lr"] = lr_float
+                except Exception:
+                    try:
+                        metrics[f"{name}/lr"] = float(lr_value)
+                    except Exception:
+                        pass
 
         return metrics
 
