@@ -24,6 +24,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from contextlib import nullcontext
 
 import numpy as np
 
@@ -645,18 +646,18 @@ def _monitor_worker(
                         if r_idx in score_by_run:
                             collected_scores.append(score_by_run[r_idx])
                     median_val: Optional[float] = None
-                        if collected_scores and len(collected_scores) == expected:
-                            median_val = float(np.median(collected_scores))
-                            batch_medians[batch_idx] = median_val
-                            scores.clear()
-                            for b_idx in sorted(batch_medians):
-                                scores.append((b_idx + 1, batch_medians[b_idx]))
-                            plots_dirty = True
-                        if median_val is not None:
-                            status_var.set(
-                                f"Run {run_idx}: score {score_val:.2f} | "
-                                f"batch {batch_idx + 1} median {median_val:.2f} "
-                                f"(group {group_size_local})"
+                    if collected_scores and len(collected_scores) == expected:
+                        median_val = float(np.median(collected_scores))
+                        batch_medians[batch_idx] = median_val
+                        scores.clear()
+                        for b_idx in sorted(batch_medians):
+                            scores.append((b_idx + 1, batch_medians[b_idx]))
+                        plots_dirty = True
+                    if median_val is not None:
+                        status_var.set(
+                            f"Run {run_idx}: score {score_val:.2f} | "
+                            f"batch {batch_idx + 1} median {median_val:.2f} "
+                            f"(group {group_size_local})"
                         )
                     else:
                         status_var.set(f"Run {run_idx}: score {score_val:.2f}")
@@ -1265,6 +1266,8 @@ class PolicyGradientAgent:
         color_repr: str = "none",
         obs_mode: str = "state",
         batch_runs: int = 1,
+        torch_amp: bool = False,
+        torch_compile: bool = False,
     ) -> None:
         if torch is None or nn is None or optim is None or Categorical is None:
             raise RuntimeError("PyTorch is required for the policy gradient agent.")
@@ -1318,7 +1321,20 @@ class PolicyGradientAgent:
             self.model = DrMarioPixelUNetPolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
         else:
             raise ValueError(f"Unknown policy architecture '{policy_arch}'")
+        # Optional torch.compile for supported devices/backends
+        self._use_compile = bool(torch_compile)
+        if self._use_compile and hasattr(torch, "compile"):
+            # torch.compile is not consistently stable on MPS; prefer CPU/CUDA
+            try:
+                if self._device.type != "mps":
+                    self.model = torch.compile(self.model)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
         self.optimizer = optim.Adam(self.model.parameters(), lr=float(learning_rate))
+
+        # AMP controls
+        self._use_amp = bool(torch_amp) and self._device.type in ("cuda", "mps")
 
         self._updates = 0
         self._last_metrics: Dict[str, float] = {}
@@ -1380,39 +1396,45 @@ class PolicyGradientAgent:
     def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
         state_tensor = self._prepare_obs(obs)
-        if self._policy_arch == "mlp":
-            logits, value = self.model(state_tensor.unsqueeze(0))
-            dist = Categorical(logits=logits.squeeze(0))
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-            value_tensor = value.squeeze(0)
-            entropy = dist.entropy()
-        else:
-            if state_tensor.dim() == 3:
-                input_tensor = state_tensor.unsqueeze(0).unsqueeze(0)
-            elif state_tensor.dim() == 4:
-                input_tensor = state_tensor.unsqueeze(0)
+        autocast_ctx = (
+            torch.autocast(device_type=self._device.type, dtype=torch.float16)
+            if self._use_amp
+            else nullcontext()
+        )
+        with autocast_ctx:
+            if self._policy_arch == "mlp":
+                logits, value = self.model(state_tensor.unsqueeze(0))
+                dist = Categorical(logits=logits.squeeze(0))
+                action = dist.sample()
+                log_prob = dist.log_prob(action)
+                value_tensor = value.squeeze(0)
+                entropy = dist.entropy()
             else:
-                raise RuntimeError("Unexpected observation tensor shape")
-            logits, value, hx = self.model(input_tensor, ctx.recurrent_state)
-            if logits.dim() == 3:
-                logits_slice = logits[:, -1, :]
-            else:
-                logits_slice = logits
-            if value.dim() == 2:
-                value_tensor = value[:, -1]
-            else:
-                value_tensor = value
-            dist = Categorical(logits=logits_slice.squeeze(0))
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-            entropy = dist.entropy()
-            if isinstance(hx, torch.Tensor):
-                ctx.recurrent_state = hx.detach()
-            elif isinstance(hx, tuple):
-                ctx.recurrent_state = tuple(t.detach() for t in hx)
-            else:
-                ctx.recurrent_state = None
+                if state_tensor.dim() == 3:
+                    input_tensor = state_tensor.unsqueeze(0).unsqueeze(0)
+                elif state_tensor.dim() == 4:
+                    input_tensor = state_tensor.unsqueeze(0)
+                else:
+                    raise RuntimeError("Unexpected observation tensor shape")
+                logits, value, hx = self.model(input_tensor, ctx.recurrent_state)
+                if logits.dim() == 3:
+                    logits_slice = logits[:, -1, :]
+                else:
+                    logits_slice = logits
+                if value.dim() == 2:
+                    value_tensor = value[:, -1]
+                else:
+                    value_tensor = value
+                dist = Categorical(logits=logits_slice.squeeze(0))
+                action = dist.sample()
+                log_prob = dist.log_prob(action)
+                entropy = dist.entropy()
+                if isinstance(hx, torch.Tensor):
+                    ctx.recurrent_state = hx.detach()
+                elif isinstance(hx, tuple):
+                    ctx.recurrent_state = tuple(t.detach() for t in hx)
+                else:
+                    ctx.recurrent_state = None
 
         ctx.log_probs.append(log_prob)
         ctx.values.append(value_tensor.squeeze(0))
@@ -1587,6 +1609,34 @@ class PolicyGradientAgent:
                         group[key] = value.detach().cpu()
             state["model_state"] = model_state
             state["optimizer_state"] = optim_state
+        except Exception:
+            pass
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        if torch is None:
+            return
+        try:
+            model_state = state.get("model_state")
+            if isinstance(model_state, dict):
+                self.model.load_state_dict(model_state)
+                self.model.to(self._device)
+        except Exception:
+            pass
+        try:
+            optim_state = state.get("optimizer_state")
+            if isinstance(optim_state, dict):
+                self.optimizer.load_state_dict(optim_state)
+        except Exception:
+            pass
+        try:
+            self._updates = int(state.get("updates", self._updates))
+            self._episodes_in_batch = int(state.get("episodes_in_batch", 0))
+            self._steps_in_batch = int(state.get("steps_in_batch", 0))
+            self._batch_accum_policy_loss = float(state.get("batch_accum_policy_loss", 0.0))
+            self._batch_accum_value_loss = float(state.get("batch_accum_value_loss", 0.0))
+            self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
+            self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
+            self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
         except Exception:
             pass
 
@@ -2070,6 +2120,9 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
             payload["device"] = args.device
     if args.policy_backend == "mlx":
         payload["mlx_inference_window"] = getattr(args, "mlx_inference_window", "last")
+    else:
+        payload["torch_amp"] = bool(getattr(args, "torch_amp", False))
+        payload["torch_compile"] = bool(getattr(args, "torch_compile", False))
     return payload
 
 
@@ -2158,6 +2211,8 @@ def main() -> None:
     ap.add_argument("--value-coef", type=float, default=0.5)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
     ap.add_argument("--device", type=str, default=None)
+    ap.add_argument("--torch-amp", action="store_true", help="Enable torch autocast for policy forward (CUDA/MPS only).")
+    ap.add_argument("--torch-compile", action="store_true", help="Compile torch model where supported (not MPS).")
     ap.add_argument(
         "--num-envs",
         type=int,
@@ -2307,6 +2362,8 @@ def main() -> None:
                 color_repr=args.color_repr,
                 obs_mode=args.mode,
                 batch_runs=args.batch_runs,
+                torch_amp=bool(getattr(args, "torch_amp", False)),
+                torch_compile=bool(getattr(args, "torch_compile", False)),
             )
     else:
         agent = SpeedrunAgent(

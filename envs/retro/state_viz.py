@@ -73,7 +73,10 @@ def state_to_rgb(
             board[preview_cells] = preview_palette[idx]
 
     if clearing_mask.any():
-        board[clearing_mask] = (250, 200, 240)
+        # Do not obscure falling pills with the clearing overlay.
+        safe_overlay = np.logical_and(clearing_mask, ~falling_mask)
+        if safe_overlay.any():
+            board[safe_overlay] = (250, 200, 240)
 
     empty_mask = board.sum(axis=-1) == 0
     if empty_mask.any():
