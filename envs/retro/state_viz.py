@@ -52,7 +52,7 @@ def state_to_rgb(
         locked = bool(info["is_locked"])
 
     # Background: make empty bottle squares a dark gray for clarity
-    EMPTY_GRAY = 22  # 0..255
+    EMPTY_GRAY = 22  # 0..255 perceived dark gray for empty bottle cells
 
     for idx in range(min(3, color_planes.shape[0])):
         color_mask = color_planes[idx] > 0.1
@@ -61,15 +61,12 @@ def state_to_rgb(
         virus_cells = color_mask & virus_mask
         static_cells = color_mask & static_mask
         falling_cells = color_mask & falling_mask
-        preview_cells = color_mask & preview_mask
         if virus_cells.any():
             board[virus_cells] = virus_palette[idx]
         if static_cells.any():
             board[static_cells] = static_palette[idx]
         if falling_cells.any():
             board[falling_cells] = static_palette[idx] if locked else falling_palette[idx]
-        if preview_cells.any():
-            board[preview_cells] = preview_palette[idx]
 
     if clearing_mask.any():
         # Only overlay on tiles with content (static or virus), never falling or empty.
@@ -85,7 +82,7 @@ def state_to_rgb(
     # Compose preview area above the board
     preview_rows = 4
     canvas = np.zeros((h + preview_rows, w, 3), dtype=np.uint8)
-    preview_bg = np.full((preview_rows, w, 3), 15, dtype=np.uint8)
+    preview_bg = np.zeros((preview_rows, w, 3), dtype=np.uint8)
     canvas[:preview_rows] = preview_bg
     canvas[preview_rows:] = board
 

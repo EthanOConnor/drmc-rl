@@ -404,38 +404,51 @@ def _monitor_worker(
         except Exception:
             width = canvas_width
             height = canvas_height
-        margin = 32
-        plot_w = max(1, width - 2 * margin)
-        plot_h = max(1, height - 2 * margin)
+        left_margin = 40
+        right_margin = 32
+        bottom_margin = 40
+        top_margin = 55  # leave room for titles
+        plot_w = max(1, width - left_margin - right_margin)
+        plot_h = max(1, height - top_margin - bottom_margin)
+        axis_left = left_margin
+        axis_top = top_margin
+        axis_right = left_margin + plot_w
+        axis_bottom = top_margin + plot_h
 
-        canvas_obj.create_line(
-            margin, margin, margin, margin + plot_h, tags="plot", fill="#444"
-        )
-        canvas_obj.create_line(
-            margin,
-            margin + plot_h,
-            margin + plot_w,
-            margin + plot_h,
-            tags="plot",
-            fill="#444",
-        )
         canvas_obj.create_text(
-            margin,
-            margin - 12,
-            anchor="w",
+            left_margin,
+            8,
+            anchor="nw",
             tags="plot",
             text=title,
             fill="#222",
         )
         if subtitle:
             canvas_obj.create_text(
-                margin,
-                margin - 28,
-                anchor="w",
+                left_margin,
+                24,
+                anchor="nw",
                 tags="plot",
                 text=subtitle,
                 fill="#444",
             )
+
+        canvas_obj.create_line(
+            axis_left,
+            axis_top,
+            axis_left,
+            axis_bottom,
+            tags="plot",
+            fill="#444",
+        )
+        canvas_obj.create_line(
+            axis_left,
+            axis_bottom,
+            axis_right,
+            axis_bottom,
+            tags="plot",
+            fill="#444",
+        )
         if not series:
             canvas_obj.create_text(
                 width // 2,
@@ -460,8 +473,8 @@ def _monitor_worker(
         for x_val, y_val in series:
             x_norm = (x_val - min_x) / (max_x - min_x)
             y_norm = (y_val - min_y) / (max_y - min_y)
-            x = margin + x_norm * plot_w
-            y = margin + plot_h - y_norm * plot_h
+            x = axis_left + x_norm * plot_w
+            y = axis_top + plot_h - y_norm * plot_h
             points.extend([x, y])
         if len(points) >= 4:
             canvas_obj.create_line(*points, tags="plot", fill=color, width=2.0)
@@ -479,11 +492,11 @@ def _monitor_worker(
         # Zero reference line if range crosses zero
         if min_y < 0.0 < max_y:
             zero_norm = (0.0 - min_y) / (max_y - min_y)
-            y_zero = margin + plot_h - zero_norm * plot_h
+            y_zero = axis_top + plot_h - zero_norm * plot_h
             canvas_obj.create_line(
-                margin,
+                axis_left,
                 y_zero,
-                margin + plot_w,
+                axis_right,
                 y_zero,
                 tags="plot",
                 fill="#bbbbbb",
