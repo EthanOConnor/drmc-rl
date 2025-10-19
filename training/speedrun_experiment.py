@@ -150,8 +150,26 @@ def _monitor_worker(
     diagnostics_label.pack(fill="x", padx=4, pady=4)
 
     canvas_width, canvas_height = 480, 260
-    canvas = tk.Canvas(root, width=canvas_width, height=canvas_height, bg="white")
-    canvas.pack(fill="both", expand=True, padx=8, pady=8)
+    try:
+        plot_window = tk.Toplevel(root)
+        plot_window.title("Training Plots")
+        reward_canvas = tk.Canvas(
+            plot_window, width=canvas_width, height=canvas_height, bg="white"
+        )
+        reward_canvas.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        policy_canvas = tk.Canvas(
+            plot_window, width=canvas_width, height=canvas_height, bg="white"
+        )
+        policy_canvas.pack(fill="both", expand=True, padx=8, pady=4)
+        value_canvas = tk.Canvas(
+            plot_window, width=canvas_width, height=canvas_height, bg="white"
+        )
+        value_canvas.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+    except Exception:
+        plot_window = None
+        reward_canvas = None
+        policy_canvas = None
+        value_canvas = None
 
     component_fields: list[Tuple[str, str]] = list(COMPONENT_FIELDS)
     component_columns: list[Dict[str, Any]] = []
@@ -189,6 +207,64 @@ def _monitor_worker(
         except Exception:
             pass
 
+    def choose_checkpoint_path(save: bool) -> Optional[str]:
+        nonlocal last_checkpoint_path
+        try:
+            from tkinter import filedialog
+        except Exception:
+            return last_checkpoint_path
+        initialfile = None
+        initialdir = None
+        if last_checkpoint_path:
+            try:
+                initial_path = Path(last_checkpoint_path)
+                if initial_path.is_dir():
+                    initialdir = str(initial_path)
+                else:
+                    initialdir = str(initial_path.parent)
+                    initialfile = str(initial_path.name)
+            except Exception:
+                initialfile = None
+                initialdir = None
+        try:
+            if save:
+                filename = filedialog.asksaveasfilename(
+                    title="Save checkpoint",
+                    defaultextension=".pkl",
+                    filetypes=[("Checkpoint", "*.pkl"), ("All files", "*.*")],
+                    initialdir=initialdir,
+                    initialfile=initialfile,
+                )
+            else:
+                filename = filedialog.askopenfilename(
+                    title="Load checkpoint",
+                    filetypes=[("Checkpoint", "*.pkl"), ("All files", "*.*")],
+                    initialdir=initialdir,
+                )
+        except Exception:
+            filename = ""
+        if not filename:
+            return None
+        path_obj = Path(filename).expanduser()
+        if save and not path_obj.suffix:
+            path_obj = path_obj.with_suffix(".pkl")
+        last_checkpoint_path = str(path_obj)
+        return last_checkpoint_path
+
+    def request_checkpoint_save(_event=None) -> None:
+        path = choose_checkpoint_path(save=True)
+        if not path:
+            return
+        status_var.set(f"Saving checkpoint to {path}")
+        send_command({"type": "checkpoint_save", "path": path})
+
+    def request_checkpoint_load(_event=None) -> None:
+        path = choose_checkpoint_path(save=False)
+        if not path:
+            return
+        status_var.set(f"Loading checkpoint from {path}")
+        send_command({"type": "checkpoint_load", "path": path})
+
     def toggle_rng(_event=None) -> None:
         nonlocal rng_enabled
         rng_enabled = not rng_enabled
@@ -223,22 +299,28 @@ def _monitor_worker(
     def dec_seed(_event=None) -> None:
         adjust_seed(-1)
 
-    root.bind("<Control-r>", toggle_rng)
-    root.bind("<Control-R>", toggle_rng)
-    root.bind("<plus>", inc_seed)
-    root.bind("<KP_Add>", inc_seed)
-    root.bind("<minus>", dec_seed)
-    root.bind("<KP_Subtract>", dec_seed)
-    if 'ticker_window' in locals() and ticker_window is not None:
+    def bind_shortcuts(widget: Optional[Any]) -> None:
+        if widget is None:
+            return
         try:
-            ticker_window.bind("<Control-r>", toggle_rng)
-            ticker_window.bind("<Control-R>", toggle_rng)
-            ticker_window.bind("<plus>", inc_seed)
-            ticker_window.bind("<KP_Add>", inc_seed)
-            ticker_window.bind("<minus>", dec_seed)
-            ticker_window.bind("<KP_Subtract>", dec_seed)
+            widget.bind("<Control-r>", toggle_rng)
+            widget.bind("<Control-R>", toggle_rng)
+            widget.bind("<plus>", inc_seed)
+            widget.bind("<KP_Add>", inc_seed)
+            widget.bind("<minus>", dec_seed)
+            widget.bind("<KP_Subtract>", dec_seed)
+            widget.bind("<Control-s>", request_checkpoint_save)
+            widget.bind("<Control-S>", request_checkpoint_save)
+            widget.bind("<Control-o>", request_checkpoint_load)
+            widget.bind("<Control-O>", request_checkpoint_load)
+            widget.bind("<Control-l>", request_checkpoint_load)
+            widget.bind("<Control-L>", request_checkpoint_load)
         except Exception:
             pass
+
+    bind_shortcuts(root)
+    bind_shortcuts(ticker_window if 'ticker_window' in locals() else None)
+    bind_shortcuts(plot_window)
 
     scores: list[Tuple[int, float]] = []
     score_by_run: Dict[int, float] = {}
@@ -250,6 +332,14 @@ def _monitor_worker(
     latest_diagnostics: Dict[str, Any] = {}
     diagnostic_history: Dict[str, deque[float]] = {}
     diagnostics_window = 20
+    policy_loss_series: list[Tuple[float, float]] = []
+    value_loss_series: list[Tuple[float, float]] = []
+    loss_history_limit = 200
+    last_checkpoint_path: Optional[str] = None
+    if isinstance(hyperparams, dict):
+        checkpoint_hint = hyperparams.get("checkpoint_path")
+        if isinstance(checkpoint_hint, str) and checkpoint_hint:
+            last_checkpoint_path = checkpoint_hint
 
     def format_diagnostics() -> str:
         if not latest_diagnostics:
@@ -285,59 +375,153 @@ def _monitor_worker(
                     lines.append(f"{prefix}{metric}: {value}")
         return "\n".join(lines)
 
-    def render_plot() -> None:
-        canvas.delete("plot")
-        if not scores:
+    def append_series_point(series: list[Tuple[float, float]], x_val: float, y_val: float) -> None:
+        point = (float(x_val), float(y_val))
+        if series and abs(series[-1][0] - point[0]) < 1e-6:
+            series[-1] = point
+        else:
+            series.append(point)
+        if len(series) > loss_history_limit:
+            del series[: len(series) - loss_history_limit]
+
+    def render_line_plot(
+        canvas_obj: Optional["tk.Canvas"],
+        series: list[Tuple[float, float]],
+        title: str,
+        color: str,
+        subtitle: Optional[str] = None,
+    ) -> None:
+        if canvas_obj is None:
             return
-        runs = [run for run, _ in scores]
-        values = [val for _, val in scores]
-        min_run, max_run = min(runs), max(runs)
-        min_val, max_val = min(values), max(values)
-        if max_run == min_run:
-            max_run += 1
-        if max_val == min_val:
-            max_val += 1
+        try:
+            canvas_obj.delete("plot")
+        except Exception:
+            return
+        try:
+            width = max(int(canvas_obj.winfo_width()), 10)
+            height = max(int(canvas_obj.winfo_height()), 10)
+        except Exception:
+            width = canvas_width
+            height = canvas_height
         margin = 32
-        plot_w = canvas_width - 2 * margin
-        plot_h = canvas_height - 2 * margin
+        plot_w = max(1, width - 2 * margin)
+        plot_h = max(1, height - 2 * margin)
 
-        # Axes
-        canvas.create_line(margin, margin, margin, margin + plot_h, tags="plot", fill="#444")
-        canvas.create_line(
-            margin, margin + plot_h, margin + plot_w, margin + plot_h, tags="plot", fill="#444"
+        canvas_obj.create_line(
+            margin, margin, margin, margin + plot_h, tags="plot", fill="#444"
         )
+        canvas_obj.create_line(
+            margin,
+            margin + plot_h,
+            margin + plot_w,
+            margin + plot_h,
+            tags="plot",
+            fill="#444",
+        )
+        canvas_obj.create_text(
+            margin,
+            margin - 12,
+            anchor="w",
+            tags="plot",
+            text=title,
+            fill="#222",
+        )
+        if subtitle:
+            canvas_obj.create_text(
+                margin,
+                margin - 28,
+                anchor="w",
+                tags="plot",
+                text=subtitle,
+                fill="#444",
+            )
+        if not series:
+            canvas_obj.create_text(
+                width // 2,
+                height // 2,
+                anchor="center",
+                tags="plot",
+                text="No data yet",
+                fill="#666",
+            )
+            return
 
-        # Plot polyline
+        xs = [float(item[0]) for item in series]
+        ys = [float(item[1]) for item in series]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        if abs(max_x - min_x) < 1e-9:
+            max_x = min_x + 1.0
+        if abs(max_y - min_y) < 1e-9:
+            max_y = min_y + 1.0
+
         points: list[float] = []
-        for run, value in scores:
-            x_norm = (run - min_run) / (max_run - min_run)
-            y_norm = (value - min_val) / (max_val - min_val)
+        for x_val, y_val in series:
+            x_norm = (x_val - min_x) / (max_x - min_x)
+            y_norm = (y_val - min_y) / (max_y - min_y)
             x = margin + x_norm * plot_w
             y = margin + plot_h - y_norm * plot_h
             points.extend([x, y])
         if len(points) >= 4:
-            canvas.create_line(*points, tags="plot", fill="#0077cc", width=2.0)
+            canvas_obj.create_line(*points, tags="plot", fill=color, width=2.0)
+            last_x, last_y = points[-2], points[-1]
+            canvas_obj.create_oval(
+                last_x - 3,
+                last_y - 3,
+                last_x + 3,
+                last_y + 3,
+                tags="plot",
+                fill="#ff6600",
+                outline="",
+            )
 
-        # Latest point marker
-        last_x, last_y = points[-2], points[-1]
-        canvas.create_oval(
-            last_x - 3,
-            last_y - 3,
-            last_x + 3,
-            last_y + 3,
-            tags="plot",
-            fill="#ff6600",
-            outline="",
-        )
+        # Zero reference line if range crosses zero
+        if min_y < 0.0 < max_y:
+            zero_norm = (0.0 - min_y) / (max_y - min_y)
+            y_zero = margin + plot_h - zero_norm * plot_h
+            canvas_obj.create_line(
+                margin,
+                y_zero,
+                margin + plot_w,
+                y_zero,
+                tags="plot",
+                fill="#bbbbbb",
+                dash=(3, 4),
+            )
 
-        canvas.create_text(
-            margin,
-            margin - 10,
-            anchor="w",
-            tags="plot",
-            text=f"Batches {min_run}–{max_run} | Median {values[-1]:.1f}",
-            fill="#222",
+    def render_reward_plot() -> None:
+        if not scores:
+            render_line_plot(reward_canvas, [], "Batch Median Reward", "#0077cc")
+            return
+        runs = [float(run) for run, _ in scores]
+        values = [float(val) for _, val in scores]
+        subtitle = (
+            f"Batches {int(min(runs))}–{int(max(runs))} | Median {values[-1]:.1f}"
+            if runs
+            else None
         )
+        render_line_plot(reward_canvas, [(float(r), float(v)) for r, v in scores], "Batch Median Reward", "#0077cc", subtitle)
+
+    def render_policy_plot() -> None:
+        subtitle = None
+        if policy_loss_series:
+            latest = policy_loss_series[-1]
+            subtitle = f"Latest {latest[1]:.4f} @ episode {int(latest[0])}"
+        render_line_plot(policy_canvas, policy_loss_series, "Policy Loss", "#9c27b0", subtitle)
+
+    def render_value_plot() -> None:
+        subtitle = None
+        if value_loss_series:
+            latest = value_loss_series[-1]
+            subtitle = f"Latest {latest[1]:.4f} @ episode {int(latest[0])}"
+        render_line_plot(value_canvas, value_loss_series, "Value Loss", "#ff5722", subtitle)
+
+    def render_all_plots() -> None:
+        render_reward_plot()
+        render_policy_plot()
+        render_value_plot()
+
+    render_all_plots()
 
     def recompute_series(group_size: int) -> None:
         scores.clear()
@@ -434,7 +618,7 @@ def _monitor_worker(
 
     def pump_queue() -> None:
         nonlocal runs_total, parallel_envs_var, batch_runs_var, group_size_var, component_columns
-        updated = False
+        plots_dirty = False
         try:
             while True:
                 message = score_queue.get_nowait()
@@ -461,18 +645,18 @@ def _monitor_worker(
                         if r_idx in score_by_run:
                             collected_scores.append(score_by_run[r_idx])
                     median_val: Optional[float] = None
-                    if collected_scores and len(collected_scores) == expected:
-                        median_val = float(np.median(collected_scores))
-                        batch_medians[batch_idx] = median_val
-                        scores.clear()
-                        for b_idx in sorted(batch_medians):
-                            scores.append((b_idx + 1, batch_medians[b_idx]))
-                        updated = True
-                    if median_val is not None:
-                        status_var.set(
-                            f"Run {run_idx}: score {score_val:.2f} | "
-                            f"batch {batch_idx + 1} median {median_val:.2f} "
-                            f"(group {group_size_local})"
+                        if collected_scores and len(collected_scores) == expected:
+                            median_val = float(np.median(collected_scores))
+                            batch_medians[batch_idx] = median_val
+                            scores.clear()
+                            for b_idx in sorted(batch_medians):
+                                scores.append((b_idx + 1, batch_medians[b_idx]))
+                            plots_dirty = True
+                        if median_val is not None:
+                            status_var.set(
+                                f"Run {run_idx}: score {score_val:.2f} | "
+                                f"batch {batch_idx + 1} median {median_val:.2f} "
+                                f"(group {group_size_local})"
                         )
                     else:
                         status_var.set(f"Run {run_idx}: score {score_val:.2f}")
@@ -512,11 +696,40 @@ def _monitor_worker(
                                 set_seed_label()
                             except Exception:
                                 pass
+                        if "checkpoint_path" in payload:
+                            cp_value = payload.get("checkpoint_path")
+                            if isinstance(cp_value, str) and cp_value:
+                                last_checkpoint_path = cp_value
                         group_size_new = max(1, parallel_envs_var, batch_runs_var)
                         if group_size_new != group_size_var:
                             group_size_var = group_size_new
                             recompute_series(group_size_var)
-                            updated = True
+                            plots_dirty = True
+                elif mtype == "score_reset":
+                    score_by_run.clear()
+                    batch_medians.clear()
+                    scores.clear()
+                    component_columns.clear()
+                    policy_loss_series.clear()
+                    value_loss_series.clear()
+                    if ticker_canvas is not None:
+                        ticker_canvas.delete("all")
+                    payload_scores = message.get("scores")
+                    if isinstance(payload_scores, (list, tuple)):
+                        for entry in payload_scores:
+                            if not entry:
+                                continue
+                            try:
+                                run_idx, score_val = entry
+                                run_idx = int(run_idx)
+                                score_val = float(score_val)
+                            except Exception:
+                                continue
+                            score_by_run[run_idx] = score_val
+                    recompute_series(group_size_var)
+                    render_ticker()
+                    status_var.set("Scores reloaded from checkpoint.")
+                    plots_dirty = True
                 elif mtype == "diagnostics":
                     payload = message.get("metrics")
                     if isinstance(payload, dict):
@@ -560,11 +773,31 @@ def _monitor_worker(
                             if len(component_columns) > ticker_history_limit:
                                 component_columns[:] = component_columns[-ticker_history_limit:]
                             render_ticker()
+                        x_coord: Optional[float]
+                        if run_number is not None and run_number >= 1:
+                            x_coord = float(run_number)
+                        else:
+                            updates_val = payload.get("learner/updates")
+                            x_coord = (
+                                float(updates_val)
+                                if isinstance(updates_val, numbers.Number)
+                                else None
+                            )
+                        if x_coord is None:
+                            x_coord = float(len(policy_loss_series) + 1)
+                        policy_val = payload.get("learner/policy_loss")
+                        if isinstance(policy_val, numbers.Number):
+                            append_series_point(policy_loss_series, x_coord, float(policy_val))
+                            plots_dirty = True
+                        value_val = payload.get("learner/value_loss")
+                        if isinstance(value_val, numbers.Number):
+                            append_series_point(value_loss_series, x_coord, float(value_val))
+                            plots_dirty = True
         except queue.Empty:
             pass
 
-        if updated:
-            render_plot()
+        if plots_dirty:
+            render_all_plots()
 
         if stop_event.is_set():
             try:
@@ -834,6 +1067,19 @@ class ExperimentMonitor:
             return
         try:
             self._queue.put_nowait({"type": "status", "text": text})
+        except queue.Full:
+            pass
+        except Exception:
+            pass
+
+    def reset_scores(self, run_scores: Optional[List[Tuple[int, float]]] = None) -> None:
+        if self._closed:
+            return
+        payload: Dict[str, Any] = {"type": "score_reset"}
+        if run_scores:
+            payload["scores"] = [(int(run), float(score)) for run, score in run_scores]
+        try:
+            self._queue.put_nowait(payload)
         except queue.Full:
             pass
         except Exception:
@@ -1802,6 +2048,14 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         "seed_index": getattr(args, "seed_index", None),
         "intent_mode": bool(getattr(args, "intent_action_space", False)),
     }
+    checkpoint_attr = getattr(args, "checkpoint_path", None)
+    if checkpoint_attr:
+        try:
+            payload["checkpoint_path"] = str(Path(checkpoint_attr).expanduser())
+        except Exception:
+            payload["checkpoint_path"] = str(checkpoint_attr)
+    else:
+        payload["checkpoint_path"] = ""
     if getattr(args, "reward_config", None):
         payload["reward_config_path"] = str(Path(args.reward_config).expanduser())
     if hasattr(agent, "epsilon"):
@@ -1983,6 +2237,8 @@ def main() -> None:
     completed_rewards: list[float] = []
     recent_rewards: deque[float] = deque(maxlen=5)
     total_steps = 0
+    completed_runs = 0
+    next_run_idx = 0
     if args.start_presses is not None:
         reset_options["start_presses"] = int(args.start_presses)
     if args.start_hold_frames is not None:
@@ -2074,6 +2330,8 @@ def main() -> None:
 
     def process_monitor_commands() -> None:
         nonlocal randomize_rng_enabled, reset_options, current_seed_index
+        nonlocal checkpoint_path, next_run_idx, completed_runs, completed_rewards, recent_rewards
+        nonlocal total_steps
         if monitor is None:
             return
         commands = monitor.poll_commands()
@@ -2082,12 +2340,13 @@ def main() -> None:
         changed_rng = False
         seed_changed = False
         for cmd in commands:
-            if cmd.get("type") == "rng_toggle":
+            cmd_type = cmd.get("type")
+            if cmd_type == "rng_toggle":
                 enabled = bool(cmd.get("enabled", randomize_rng_enabled))
                 if enabled != randomize_rng_enabled:
                     randomize_rng_enabled = enabled
                     changed_rng = True
-            elif cmd.get("type") == "seed_adjust":
+            elif cmd_type == "seed_adjust":
                 seed_val = cmd.get("seed_index")
                 try:
                     seed_val = int(seed_val)
@@ -2096,6 +2355,69 @@ def main() -> None:
                         seed_changed = True
                 except Exception:
                     pass
+            elif cmd_type == "checkpoint_save":
+                path_val = cmd.get("path")
+                target_path: Optional[Path]
+                try:
+                    target_path = Path(str(path_val)).expanduser() if path_val else None
+                except Exception:
+                    target_path = None
+                if target_path is None:
+                    target_path = checkpoint_path
+                if target_path is None:
+                    if monitor is not None:
+                        try:
+                            monitor.publish_status("Checkpoint save failed: no path selected")
+                        except Exception:
+                            pass
+                    continue
+                checkpoint_path = target_path
+                setattr(args, "checkpoint_path", str(target_path))
+                save_checkpoint(completed_runs, path=target_path)
+                if monitor is not None:
+                    monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+                    try:
+                        monitor.publish_status(f"Checkpoint saved to {target_path}")
+                    except Exception:
+                        pass
+            elif cmd_type == "checkpoint_load":
+                path_val = cmd.get("path")
+                target_path: Optional[Path]
+                try:
+                    target_path = Path(str(path_val)).expanduser() if path_val else None
+                except Exception:
+                    target_path = None
+                if target_path is None:
+                    target_path = checkpoint_path
+                if target_path is None:
+                    if monitor is not None:
+                        try:
+                            monitor.publish_status("Checkpoint load failed: no path selected")
+                        except Exception:
+                            pass
+                    continue
+                payload = load_checkpoint(path=target_path)
+                if payload:
+                    checkpoint_path = target_path
+                    setattr(args, "checkpoint_path", str(target_path))
+                    apply_checkpoint_payload(payload)
+                    if monitor is not None:
+                        monitor.reset_scores(list(enumerate(completed_rewards)))
+                        monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+                        try:
+                            monitor.publish_status(f"Checkpoint loaded from {target_path}")
+                        except Exception:
+                            pass
+                    try:
+                        print(f"Loaded checkpoint from '{target_path}'", flush=True)
+                    except Exception:
+                        pass
+                else:
+                    if monitor is not None:
+                        try:
+                            monitor.publish_status("Checkpoint load failed")
+                        except Exception:
+                            pass
         if changed_rng:
             if randomize_rng_enabled:
                 reset_options["randomize_rng"] = True
@@ -2155,55 +2477,87 @@ def main() -> None:
         }
         return payload
 
-    def save_checkpoint(next_run: int) -> None:
-        if checkpoint_path is None:
+    def apply_checkpoint_payload(payload: Dict[str, Any]) -> None:
+        nonlocal completed_rewards, recent_rewards, total_steps
+        nonlocal randomize_rng_enabled, current_seed_index, completed_runs, next_run_idx, reset_options
+        if not isinstance(payload, dict):
             return
         try:
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            with checkpoint_path.open("wb") as f:
+            loaded_runs = int(payload.get("runs_completed", 0))
+        except Exception:
+            loaded_runs = 0
+        rewards_source = payload.get("completed_rewards", [])
+        new_rewards: list[float] = []
+        if isinstance(rewards_source, (list, tuple)):
+            for item in rewards_source:
+                try:
+                    new_rewards.append(float(item))
+                except Exception:
+                    continue
+        if loaded_runs > 0 and loaded_runs < len(new_rewards):
+            new_rewards = new_rewards[:loaded_runs]
+        if loaded_runs == 0:
+            completed_runs_local = len(new_rewards)
+        else:
+            completed_runs_local = min(loaded_runs, len(new_rewards))
+        new_rewards = new_rewards[:completed_runs_local]
+        completed_rewards = new_rewards
+        recent_rewards = deque(completed_rewards[-5:], maxlen=5)
+        completed_runs = completed_runs_local
+        next_run_idx = completed_runs
+        try:
+            total_steps = int(payload.get("total_steps", total_steps))
+        except Exception:
+            pass
+        randomize_rng_enabled = bool(payload.get("randomize_rng_enabled", randomize_rng_enabled))
+        if randomize_rng_enabled:
+            reset_options["randomize_rng"] = True
+        else:
+            reset_options.pop("randomize_rng", None)
+        setattr(args, "randomize_rng", randomize_rng_enabled)
+        try:
+            current_seed_index = int(payload.get("seed_index", current_seed_index))
+        except Exception:
+            pass
+        setattr(args, "seed_index", current_seed_index)
+        agent_state = payload.get("agent_state")
+        state_fn = getattr(agent, "set_state", None)
+        if callable(state_fn) and agent_state is not None:
+            try:
+                state_fn(agent_state)
+            except Exception as exc:
+                print(f"Warning: failed to restore agent state: {exc}", file=sys.stderr)
+
+    def save_checkpoint(next_run: int, *, path: Optional[Path] = None) -> None:
+        target_path = path or checkpoint_path
+        if target_path is None:
+            return
+        try:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            with target_path.open("wb") as f:
                 pickle.dump(build_checkpoint_payload(next_run), f)
         except Exception as exc:
             print(f"Failed to save checkpoint: {exc}", file=sys.stderr)
 
-    def load_checkpoint() -> Optional[Dict[str, Any]]:
-        if checkpoint_path is None or not checkpoint_path.is_file():
+    def load_checkpoint(*, path: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+        target_path = path or checkpoint_path
+        if target_path is None or not target_path.is_file():
             return None
         try:
-            with checkpoint_path.open("rb") as f:
+            with target_path.open("rb") as f:
                 return pickle.load(f)
         except Exception as exc:
             print(f"Failed to load checkpoint: {exc}", file=sys.stderr)
             return None
 
     if args.resume and checkpoint_path:
-        checkpoint_data = load_checkpoint()
+        checkpoint_data = load_checkpoint(path=checkpoint_path)
         if checkpoint_data:
-            loaded_runs = int(checkpoint_data.get("runs_completed", 0))
-            completed_rewards = list(checkpoint_data.get("completed_rewards", []))
-            recent_rewards_data = checkpoint_data.get("recent_rewards", [])
-            if isinstance(recent_rewards_data, (list, tuple)):
-                recent_rewards = deque(recent_rewards_data[-5:], maxlen=5)
-            else:
-                recent_rewards = deque(maxlen=5)
-            total_steps = int(checkpoint_data.get("total_steps", 0))
-            randomize_rng_enabled = bool(checkpoint_data.get("randomize_rng_enabled", randomize_rng_enabled))
-            if randomize_rng_enabled:
-                reset_options["randomize_rng"] = True
-            else:
-                reset_options.pop("randomize_rng", None)
-            setattr(args, "randomize_rng", randomize_rng_enabled)
-            current_seed_index = int(checkpoint_data.get("seed_index", current_seed_index))
-            setattr(args, "seed_index", current_seed_index)
-            agent_state = checkpoint_data.get("agent_state")
-            state_fn = getattr(agent, "set_state", None)
-            if callable(state_fn) and agent_state is not None:
-                try:
-                    state_fn(agent_state)
-                except Exception as exc:
-                    print(f"Warning: failed to restore agent state: {exc}", file=sys.stderr)
+            apply_checkpoint_payload(checkpoint_data)
             if monitor is not None:
+                monitor.reset_scores(list(enumerate(completed_rewards)))
                 monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
-            print(f"Resumed from checkpoint '{checkpoint_path}' at run {loaded_runs}")
+            print(f"Resumed from checkpoint '{checkpoint_path}' at run {completed_runs}")
         else:
             print("No checkpoint data found; starting fresh.")
 
