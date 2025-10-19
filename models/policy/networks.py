@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -129,6 +129,21 @@ class DrMarioFrameEncoder(nn.Module):
         feature_dim = conv_feat_dim + 3 + 8
         self.proj = nn.Sequential(nn.Linear(feature_dim, proj_dim), nn.ReLU(inplace=True))
         self.output_dim = proj_dim
+        self.register_buffer(
+            "_row_indices",
+            torch.arange(16, dtype=torch.float32).view(1, 16, 1),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_column_scale",
+            torch.tensor(16.0, dtype=torch.float32),
+            persistent=False,
+        )
+        self.register_buffer(
+            "_virus_normalizer",
+            torch.tensor(1.0 / (16.0 * 8.0), dtype=torch.float32),
+            persistent=False,
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         original = x
@@ -151,9 +166,11 @@ class DrMarioFrameEncoder(nn.Module):
             static_planes = original[:, self._static_idx]
             static_mask = (static_planes > 0.1).any(dim=1).float()
             virus_planes = original[:, self._virus_color_idx]
-        row_indices = torch.arange(16, device=x.device, dtype=original.dtype).view(1, 16, 1)
-        column_heights = (static_mask * (row_indices + 1.0)).max(dim=1).values / 16.0
-        virus_counts = virus_planes.reshape(original.size(0), 3, -1).sum(dim=-1) / (16.0 * 8.0)
+        row_indices = self._row_indices.to(device=original.device, dtype=original.dtype)
+        column_scale = self._column_scale.to(device=original.device, dtype=original.dtype)
+        column_heights = (static_mask * (row_indices + 1.0)).amax(dim=1) / column_scale
+        virus_norm = self._virus_normalizer.to(device=original.device, dtype=original.dtype)
+        virus_counts = virus_planes.reshape(original.size(0), 3, -1).sum(dim=-1) * virus_norm
 
         features = torch.cat([conv_feat, virus_counts, column_heights], dim=1)
         return self.proj(features)
@@ -164,7 +181,9 @@ class DrMarioStatePolicyNet(nn.Module):
 
     The encoder reasons over local tile structure, column/row statistics, and virus
     counts. A GRU core maintains temporal context across steps (spawn cadence, lock
-    timers), and linear heads map to action logits and value estimates.
+    timers), and linear heads map to action logits and value estimates. The recurrent
+    core can be configured as a GRU or LSTM and defaults to a lightweight 128-unit
+    hidden size suited for low-latency MPS execution.
     """
 
     def __init__(
@@ -172,25 +191,48 @@ class DrMarioStatePolicyNet(nn.Module):
         action_dim: int,
         in_channels: Optional[int] = None,
         frame_embed_dim: int = 192,
-        core_hidden: int = 256,
+        core_hidden: int = 128,
+        core_type: str = "gru",
     ) -> None:
         super().__init__()
         if in_channels is None:
             in_channels = ram_specs.STATE_CHANNELS
         self.encoder = DrMarioFrameEncoder(in_channels=in_channels, proj_dim=frame_embed_dim)
-        self.core = nn.GRU(input_size=frame_embed_dim, hidden_size=core_hidden, batch_first=True)
+        core_type = core_type.lower()
+        if core_type not in {"gru", "lstm"}:
+            raise ValueError("core_type must be either 'gru' or 'lstm'")
+        self._core_type = core_type
+        if self._core_type == "gru":
+            self.core: nn.Module = nn.GRU(
+                input_size=frame_embed_dim,
+                hidden_size=core_hidden,
+                batch_first=True,
+            )
+        else:
+            self.core = nn.LSTM(
+                input_size=frame_embed_dim,
+                hidden_size=core_hidden,
+                batch_first=True,
+            )
+        self._core_hidden = core_hidden
         self.policy = nn.Linear(core_hidden, action_dim)
         self.value = nn.Linear(core_hidden, 1)
 
     def forward(
         self,
         x: torch.Tensor,
-        hx: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        hx: Optional[Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]] = None,
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor,
+        Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]],
+    ]:
         # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
         frames = x.view(B * T, C, H, W)
         encoded = self.encoder(frames).view(B, T, -1)
+        if hasattr(self.core, "flatten_parameters"):
+            self.core.flatten_parameters()
         outputs, hx = self.core(encoded, hx)
         logits = self.policy(outputs)
         values = self.value(outputs).squeeze(-1)
