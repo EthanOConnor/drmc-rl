@@ -8,7 +8,7 @@ import gymnasium as gym
 import numpy as np
 
 from envs.retro.drmario_env import Action
-from envs.specs.ram_to_state import ram_to_state
+import envs.specs.ram_to_state as ram_specs
 
 
 class IntentAction(enum.IntEnum):
@@ -70,9 +70,9 @@ def _decode_pill_state(env) -> PillState:
     spawn_id = int(ram_arr[int(spawn_addr, 16)]) if spawn_addr else 0
     drop_counter = int(ram_arr[int(drop_addr, 16)]) if drop_addr else 0
 
-    state = ram_to_state(ram_bytes, offsets)
-    falling_mask = (state[6:9].sum(axis=0) > 0.5)
-    static_mask = (state[0:6].sum(axis=0) > 0.5)
+    state = ram_specs.ram_to_state(ram_bytes, offsets)
+    falling_mask = ram_specs.get_falling_mask(state)
+    static_mask = ram_specs.get_static_mask(state)
 
     coords = [(int(r), int(c)) for r, c in zip(*np.where(falling_mask))]
     falling = len(coords) > 0
@@ -85,7 +85,9 @@ def _decode_pill_state(env) -> PillState:
         drop_counter=int(drop_counter),
         falling_coords=coords,
         static_mask=static_mask,
-        orientation_plane=float(state[9, 0, 0]),
+        orientation_plane=float(state[ram_specs.STATE_IDX.orientation, 0, 0])
+        if getattr(ram_specs.STATE_IDX, "orientation", None) is not None
+        else 0.0,
         falling=falling,
     )
 

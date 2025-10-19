@@ -7,6 +7,7 @@ from typing import Dict, List
 import numpy as np
 
 from envs.retro import DrMarioRetroEnv
+import envs.specs.ram_to_state as ram_specs
 
 
 def cvar(values: np.ndarray, alpha: float) -> float:
@@ -55,9 +56,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--episodes", type=int, default=100)
     ap.add_argument("--obs-mode", choices=["pixel", "state"], default="state")
+    ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
     args = ap.parse_args()
 
-    res = run_seed({"obs_mode": args.obs_mode}, episodes=args.episodes)
+    ram_specs.set_state_representation(args.state_repr)
+
+    res = run_seed({"obs_mode": args.obs_mode, "state_repr": args.state_repr}, episodes=args.episodes)
     print("E[T]:", res.mean)
     print("Var[T]:", res.var)
     print("CVaR5%:", res.cvar5)

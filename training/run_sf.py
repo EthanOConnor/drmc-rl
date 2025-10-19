@@ -23,6 +23,7 @@ def main() -> None:
 
     ap = argparse.ArgumentParser()
     ap.add_argument('--cfg', type=str, required=True)
+    ap.add_argument('--timeout', type=int, default=None, help='Override episode timeout in frames (optional)')
     ap.add_argument('--state-viz-interval', type=int, default=None, help='Emit state RGB frames every N steps (optional)')
     args = ap.parse_args()
 
@@ -44,6 +45,9 @@ def main() -> None:
 
     if args.state_viz_interval is not None:
         os.environ["DRMARIO_STATE_VIZ_INTERVAL"] = str(max(1, int(args.state_viz_interval)))
+
+    if args.timeout is not None:
+        os.environ["DRMARIO_TIMEOUT"] = str(int(args.timeout))
 
     # Defer to SF CLI by shelling out for simplicity:
     os.system(f"python -m sample_factory.launcher.run --run {args.cfg}")

@@ -15,6 +15,8 @@ from typing import Any, Dict, Optional, Sequence, Tuple
 
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
+
 try:
     from multiprocessing import shared_memory
 except Exception:  # pragma: no cover - optional on some platforms
@@ -161,12 +163,35 @@ def _viewer_worker(
         if level_val is None and isinstance(info, dict):
             level_val = info.get("level")
         level_text = level_val if level_val is not None else "?"
+        def fmt_component(value: float) -> str:
+            if abs(value) < 1e-6:
+                return "0.00"
+            return f"{value:+.2f}"
+
         lines = [
             f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
             f"Last reward {stats.get('reward', 0.0):.2f} (env {info.get('r_env', 0.0):.2f})",
-            f"Viruses {info.get('viruses_remaining', '?')}  Level {level_text}",
-            f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
         ]
+        placement_bonus = float(info.get("pill_bonus", 0.0))
+        nonvirus_bonus = float(info.get("non_virus_bonus", 0.0))
+        adjacency_bonus = float(info.get("adjacency_bonus", 0.0))
+        time_reward = float(info.get("time_reward", 0.0))
+        if any(abs(val) > 1e-6 for val in (placement_bonus, nonvirus_bonus, adjacency_bonus, time_reward)):
+            lines.append("Components:")
+            if abs(placement_bonus) > 1e-6:
+                lines.append(f"  placement {fmt_component(placement_bonus)}")
+            if abs(nonvirus_bonus) > 1e-6:
+                lines.append(f"  non-virus {fmt_component(nonvirus_bonus)}")
+            if abs(adjacency_bonus) > 1e-6:
+                lines.append(f"  adjacency {fmt_component(adjacency_bonus)}")
+            if abs(time_reward) > 1e-6:
+                lines.append(f"  time {fmt_component(time_reward)}")
+        lines.extend(
+            [
+                f"Viruses {info.get('viruses_remaining', '?')}  Level {level_text}",
+                f"Topout {info.get('topout', False)}  Cleared {info.get('cleared', False)}",
+            ]
+        )
         term = info.get("terminal_reason")
         if term:
             lines.append(f"Terminal: {term}")
@@ -363,7 +388,13 @@ class _ProcessViewer:
                 try:
                     self._queue.put_nowait(stats)
                 except queue.Full:
-                    pass
+                    try:
+                        self._queue.get_nowait()
+                        self._queue.put_nowait(stats)
+                    except queue.Empty:
+                        pass
+                    except queue.Full:
+                        pass
                 except Exception:
                     return False
             return not self._stop.is_set()
@@ -372,7 +403,13 @@ class _ProcessViewer:
             frame = np.asarray(payload, dtype=np.uint8).copy()
             self._queue.put_nowait((frame, stats))
         except queue.Full:
-            pass
+            try:
+                self._queue.get_nowait()
+                self._queue.put_nowait((frame, stats))
+            except queue.Empty:
+                pass
+            except queue.Full:
+                pass
         except Exception:
             return False
         return not self._stop.is_set()
@@ -440,6 +477,7 @@ def main():
     ap.add_argument('--core-path', type=str, default=None, help='Override DRMARIO_CORE_PATH for libretro backend')
     ap.add_argument('--rom-path', type=str, default=None, help='Override DRMARIO_ROM_PATH for libretro backend')
     ap.add_argument('--no-auto-start', action='store_true', help='Disable automatic START presses at reset')
+    ap.add_argument('--state-repr', choices=['extended', 'bitplane'], default='extended', help='State tensor layout when --mode state is used')
     ap.add_argument('--save-frames', type=str, default=None, help='Directory to dump rendered frames (PNG if Pillow installed, else .npy)')
     ap.add_argument('--show-window', action='store_true', help='Open an OpenCV window showing live frames (press q to exit early)')
     ap.add_argument('--display-scale', type=float, default=2.0, help='Scale factor for the preview window (requires --show-window)')
@@ -457,8 +495,16 @@ def main():
     )
     args = ap.parse_args()
 
+    ram_specs.set_state_representation(args.state_repr)
+
     register_env_id()
-    env_kwargs = {"obs_mode": args.mode, "level": args.level, "risk_tau": args.risk_tau, "render_mode": "rgb_array"}
+    env_kwargs = {
+        "obs_mode": args.mode,
+        "level": args.level,
+        "risk_tau": args.risk_tau,
+        "render_mode": "rgb_array",
+        "state_repr": args.state_repr,
+    }
     if args.backend:
         env_kwargs["backend"] = args.backend
     if args.core_path:

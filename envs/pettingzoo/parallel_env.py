@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
+
 # Skeleton to avoid hard dependency on PettingZoo at repo bootstrap time
 try:
     from pettingzoo.utils import ParallelEnv
@@ -28,7 +30,10 @@ class DrMarioVsEnv(ParallelEnv):  # type: ignore[misc]
             if obs_mode == "pixel":
                 self.observation_spaces = {a: spaces.Box(0.0, 1.0, (4, 128, 128, 3), dtype=np.float32) for a in self.agents}
             else:
-                self.observation_spaces = {a: spaces.Box(0.0, 1.0, (4, 14, 16, 8), dtype=np.float32) for a in self.agents}
+                self.observation_spaces = {
+                    a: spaces.Box(0.0, 1.0, (4, ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)
+                    for a in self.agents
+                }
             self.action_spaces = {a: spaces.Discrete(10) for a in self.agents}
         else:
             self.observation_spaces = {}
@@ -52,5 +57,4 @@ class DrMarioVsEnv(ParallelEnv):  # type: ignore[misc]
     def _mock_obs(self):
         if self.obs_mode == "pixel":
             return np.zeros((4, 128, 128, 3), dtype=np.float32)
-        return np.zeros((4, 14, 16, 8), dtype=np.float32)
-
+        return np.zeros((4, ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)

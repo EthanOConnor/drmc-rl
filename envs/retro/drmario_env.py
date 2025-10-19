@@ -13,7 +13,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from envs.specs.timeouts import get_level_timeout
-from envs.specs.ram_to_state import ram_to_state
+import envs.specs.ram_to_state as ram_specs
 from envs.retro.state_viz import state_to_rgb
 from envs.reward_shaping import PotentialShaper
 from envs.backends import make_backend
@@ -63,10 +63,12 @@ class DrMarioRetroEnv(gym.Env):
 
     Observation modes:
       - pixel: 128x128 RGB, frame-stack 4, normalized to [0,1]
-      - state: structured 16x8 board tensor (14 channels), frame-stack 4.
-        See docs/STATE_OBS_AND_RAM_MAPPING.md for channel spec and mapping; RAM offsets are
-        configured via envs/specs/ram_offsets.json (for this ROM revision) or override with
-        env var `DRMARIO_RAM_OFFSETS`.
+      - state: structured 16x8 board tensor (channel count depends on the
+        selected representation via ``state_repr`` or
+        :func:`envs.specs.ram_to_state.set_state_representation`), frame-stack 4.
+        See docs/STATE_OBS_AND_RAM_MAPPING.md for channel spec and mapping;
+        RAM offsets are configured via envs/specs/ram_offsets.json (for this
+        ROM revision) or override with env var `DRMARIO_RAM_OFFSETS`.
 
     Notes:
       - Defaults to the libretro backend using a direct ctypes binding and a provided NES core.
@@ -99,7 +101,9 @@ class DrMarioRetroEnv(gym.Env):
         evaluator: Optional[Any] = None,
         potential_gamma: float = 0.997,
         potential_kappa: float = 250.0,
+        learner_discount: Optional[float] = None,
         state_viz_interval: Optional[int] = None,
+        state_repr: Optional[str] = None,
     ) -> None:
         super().__init__()
         assert obs_mode in {"pixel", "state"}
@@ -147,12 +151,21 @@ class DrMarioRetroEnv(gym.Env):
         self._state_viz_interval = max(1, int(state_viz_interval)) if state_viz_interval else None
         self._state_viz_last_t = -1
         # Potential shaping setup
+        self._learner_discount = None if learner_discount is None else float(learner_discount)
         self._use_shaping = use_potential_shaping and evaluator is not None
         self._shaper: Optional[PotentialShaper] = (
-            PotentialShaper(evaluator, gamma=potential_gamma, kappa=potential_kappa)
+            PotentialShaper(
+                evaluator,
+                potential_gamma=potential_gamma,
+                kappa=potential_kappa,
+                learner_discount=self._learner_discount,
+            )
             if self._use_shaping
             else None
         )
+        if state_repr is not None:
+            ram_specs.set_state_representation(state_repr)
+        self.state_repr = ram_specs.get_state_representation()
         self._state_prev: Optional[np.ndarray] = None
         # Load RAM offsets for state-mode mapping
         self._ram_offsets = self._load_ram_offsets()
@@ -162,8 +175,10 @@ class DrMarioRetroEnv(gym.Env):
             # 4 x 128 x 128 x 3 float32 in [0,1]
             obs_space = spaces.Box(low=0.0, high=1.0, shape=(4, 128, 128, 3), dtype=np.float32)
         else:
-            # 4 x (C x 16 x 8), typical C ~= 14
-            obs_space = spaces.Box(low=0.0, high=1.0, shape=(4, 14, 16, 8), dtype=np.float32)
+            # 4 x (C x 16 x 8)
+            obs_space = spaces.Box(
+                low=0.0, high=1.0, shape=(4, ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32
+            )
 
         if include_risk_tau:
             self.observation_space = spaces.Dict(
@@ -325,6 +340,28 @@ class DrMarioRetroEnv(gym.Env):
             if ram is not None:
                 self._ram_cache = np.asarray(ram, dtype=np.uint8).reshape(-1)
         return self._ram_cache
+
+    def _raw_ram_bytes(self) -> Optional[bytes]:
+        if not self._using_backend or self._backend is None:
+            return None
+        try:
+            ram_arr = self._read_ram_array(refresh=False)
+            if ram_arr is not None:
+                return ram_arr.tobytes()
+            if hasattr(self._backend, "get_ram"):
+                raw = self._backend.get_ram()
+            else:
+                raw = None
+            if raw is None:
+                return None
+            if isinstance(raw, (bytes, bytearray)):
+                return bytes(raw)
+            try:
+                return np.asarray(raw, dtype=np.uint8).reshape(-1).tobytes()
+            except Exception:
+                return None
+        except Exception:
+            return None
 
     def _read_ram_value(self, addr: int) -> Optional[int]:
         ram_arr = self._read_ram_array(refresh=False)
@@ -554,7 +591,7 @@ class DrMarioRetroEnv(gym.Env):
             ram_arr = self._read_ram_array(refresh=False)
             if ram_arr is not None:
                 try:
-                    planes = ram_to_state(ram_arr.tobytes(), self._ram_offsets)
+                    planes = ram_specs.ram_to_state(ram_arr.tobytes(), self._ram_offsets)
                 except Exception:
                     planes = None
                 if planes is not None and self._detect_state_game_over_pattern(planes):
@@ -576,11 +613,15 @@ class DrMarioRetroEnv(gym.Env):
             latest = stack
         else:
             return False
-        if latest.shape[0] < 6 or latest.shape[-2:] != (16, 8):
+        if latest.shape[-2:] != (16, 8):
             return False
-        static_red = latest[3] > 0.5
-        static_yellow = latest[4] > 0.5
-        static_blue = latest[5] > 0.5
+        static_colors = ram_specs.get_static_color_planes(latest)
+        if static_colors.shape[0] < 3:
+            return False
+        static_masks = static_colors > 0.5
+        static_red = static_masks[0]
+        static_yellow = static_masks[1]
+        static_blue = static_masks[2]
         occupancy = static_red | static_yellow | static_blue
         H, W = occupancy.shape
         if W < 8:
@@ -612,19 +653,21 @@ class DrMarioRetroEnv(gym.Env):
         return False
 
     def _compute_adjacency_bonus(self, prev_frame: np.ndarray, next_frame: np.ndarray) -> float:
-        if prev_frame.shape[0] < 6 or next_frame.shape[0] < 6:
+        static_prev = ram_specs.get_static_color_planes(prev_frame)
+        static_next = ram_specs.get_static_color_planes(next_frame)
+        if static_prev.shape[0] < 3 or static_next.shape[0] < 3:
             return 0.0
-        static_prev = prev_frame[3:6] > 0.5
-        static_next = next_frame[3:6] > 0.5
-        new_cells = static_next & ~static_prev
+        static_prev_mask = static_prev > 0.5
+        static_next_mask = static_next > 0.5
+        new_cells = static_next_mask & ~static_prev_mask
         total_bonus = 0.0
 
         for color_idx in range(3):
             coords = np.argwhere(new_cells[color_idx])
             if coords.size == 0:
                 continue
-            mask_prev = static_prev[color_idx]
-            mask_new = static_next[color_idx]
+            mask_prev = static_prev_mask[color_idx]
+            mask_new = static_next_mask[color_idx]
             pair_awarded = False
             triplet_awarded = False
 
@@ -747,14 +790,14 @@ class DrMarioRetroEnv(gym.Env):
         state_stack = getattr(self, "_state_stack", None)
         if state_stack is not None:
             latest = np.asarray(state_stack[-1])
-            if latest.shape[0] > 12:
-                level_norm = float(np.clip(latest[12, 0, 0], 0.0, 1.0))
+            if ram_specs.STATE_IDX.level is not None:
+                level_norm = float(np.clip(ram_specs.get_level_value(latest), 0.0, 1.0))
                 level_val = int(round(level_norm * 20.0))
                 level_val = int(min(max(level_val, 0), 20))
                 augmented["level_state"] = level_val
                 augmented["level"] = level_val
-            if latest.shape[0] > 11:
-                lock_norm = float(np.clip(latest[11, 0, 0], 0.0, 1.0))
+            if ram_specs.STATE_IDX.lock is not None:
+                lock_norm = float(np.clip(ram_specs.get_lock_value(latest), 0.0, 1.0))
                 lock_raw = int(round(lock_norm * 255.0))
                 augmented["lock_counter"] = lock_raw
                 augmented["is_locked"] = bool(lock_raw > 0)
@@ -924,7 +967,7 @@ class DrMarioRetroEnv(gym.Env):
             return stacked
         else:
             # Random one-hot-ish channels for 16x8 board over 4 frames
-            C = 14
+            C = ram_specs.STATE_CHANNELS
             board = np.zeros((4, C, 16, 8), dtype=np.float32)
             for f in range(4):
                 idx = self._rng.randint(0, C, size=(16, 8))
@@ -940,15 +983,15 @@ class DrMarioRetroEnv(gym.Env):
         return self._mock_obs()
 
     def _state_obs(self) -> np.ndarray:
-        # RAM->state mapping (C=14, H=16, W=8). If backend present, parse RAM; else zeros
-        planes = np.zeros((14, 16, 8), dtype=np.float32)
+        # RAM->state mapping (C=STATE_CHANNELS, H=16, W=8). If backend present, parse RAM; else zeros
+        planes = np.zeros((ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)
         if self._using_backend:
             ram_arr = self._read_ram_array()
             if ram_arr is not None:
                 try:
-                    planes = ram_to_state(ram_arr.tobytes(), self._ram_offsets)
+                    planes = ram_specs.ram_to_state(ram_arr.tobytes(), self._ram_offsets)
                 except Exception:
-                    planes = np.zeros((14, 16, 8), dtype=np.float32)
+                    planes = np.zeros((ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)
         # Maintain a 4-frame stack along axis 0
         if getattr(self, "_state_stack", None) is None:
             self._state_stack = np.stack([planes for _ in range(4)], axis=0)
@@ -1068,6 +1111,7 @@ class DrMarioRetroEnv(gym.Env):
         else:
             self._state_prev = None
         info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
+        info["raw_ram"] = self._raw_ram_bytes()
         if self._last_rng_seed_bytes is not None:
             info["rng_seed"] = self._last_rng_seed_bytes
         return obs, self._augment_info(info)
@@ -1193,8 +1237,8 @@ class DrMarioRetroEnv(gym.Env):
             placement_bonus = base_bonus * (1.0 + growth * float((placements - 1) ** 2))
             placement_bonus_adjusted = placement_bonus
             if state_prev_frame is not None and state_next_frame is not None:
-                prev_static = state_prev_frame[3:6]
-                next_static = state_next_frame[3:6]
+                prev_static = ram_specs.get_static_color_planes(state_prev_frame)
+                next_static = ram_specs.get_static_color_planes(state_next_frame)
                 new_static = (next_static > 0.1) & (prev_static <= 0.1)
                 board_h = next_static.shape[1] if next_static.ndim >= 3 else 0
                 placement_heights: Optional[np.ndarray] = None
@@ -1202,7 +1246,7 @@ class DrMarioRetroEnv(gym.Env):
                     new_rows = np.nonzero(new_static.any(axis=0))[0]
                     if new_rows.size > 0:
                         placement_heights = board_h - new_rows
-                virus_mask = (state_next_frame[0:3] > 0.1).any(axis=0)
+                virus_mask = ram_specs.get_virus_mask(state_next_frame)
                 virus_height = 0
                 if virus_mask.any():
                     virus_rows = np.nonzero(virus_mask)[0]
@@ -1236,8 +1280,10 @@ class DrMarioRetroEnv(gym.Env):
             s_prev_latest_frame = state_prev_frame
             s_next_latest_frame = state_next_frame
             if not topout:
-                s_prev_occupied = np.sum(s_prev_latest_frame[0:6, :, :])
-                s_next_occupied = np.sum(s_next_latest_frame[0:6, :, :])
+                prev_occ_mask = ram_specs.get_occupancy_mask(s_prev_latest_frame)
+                next_occ_mask = ram_specs.get_occupancy_mask(s_next_latest_frame)
+                s_prev_occupied = float(prev_occ_mask.sum())
+                s_next_occupied = float(next_occ_mask.sum())
 
                 total_cleared = s_prev_occupied - s_next_occupied
                 if total_cleared < 0:
@@ -1254,7 +1300,7 @@ class DrMarioRetroEnv(gym.Env):
                         nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
                         r_env += nonvirus_bonus
                     adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
-                static_pills = (s_next_latest_frame[3:6] > 0.1).any(axis=0)
+                static_pills = ram_specs.get_static_mask(s_next_latest_frame)
                 if static_pills.any():
                     board_h = static_pills.shape[0]
                     tallest_height = 0
@@ -1266,7 +1312,7 @@ class DrMarioRetroEnv(gym.Env):
                             if height_from_bottom > tallest_height:
                                 tallest_height = height_from_bottom
                     if tallest_height > 0:
-                        virus_mask = (s_next_latest_frame[0:3] > 0.1).any(axis=0)
+                        virus_mask = ram_specs.get_virus_mask(s_next_latest_frame)
                         virus_height = 0
                         if virus_mask.any():
                             virus_rows = np.nonzero(virus_mask)[0]
@@ -1354,6 +1400,7 @@ class DrMarioRetroEnv(gym.Env):
             "backend_active": bool(self._using_backend),
             "terminal_reason": self._last_terminal,
             "level": self.level,
+            "raw_ram": self._raw_ram_bytes(),
         }
         if self._game_mode_val is not None:
             base_info["game_mode"] = int(self._game_mode_val)

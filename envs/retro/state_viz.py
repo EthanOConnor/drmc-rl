@@ -5,6 +5,8 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
+
 
 def state_to_rgb(
     state_stack: np.ndarray,
@@ -16,47 +18,66 @@ def state_to_rgb(
     latest = np.asarray(state_stack[-1])
     h, w = latest.shape[1], latest.shape[2]
     board = np.zeros((h, w, 3), dtype=np.uint8)
+    color_planes = ram_specs.get_color_planes(latest)
+    static_mask = ram_specs.get_static_mask(latest)
+    falling_mask = ram_specs.get_falling_mask(latest)
+    virus_mask = ram_specs.get_virus_mask(latest)
+    preview_mask = ram_specs.get_preview_mask(latest)
+    clearing_mask = (
+        (latest[ram_specs.STATE_IDX.clearing_mask] > 0.5)
+        if ram_specs.STATE_USE_BITPLANES and ram_specs.STATE_IDX.clearing_mask is not None
+        else np.zeros((h, w), dtype=bool)
+    )
 
-    def apply_mask(channel: int, color: tuple[int, int, int], thresh: float = 0.1) -> None:
-        mask = latest[channel] > thresh
-        board[mask] = color
+    virus_palette = (
+        (220, 40, 40),
+        (240, 220, 40),
+        (40, 120, 240),
+    )
+    static_palette = (
+        (180, 0, 0),
+        (200, 180, 0),
+        (0, 80, 200),
+    )
+    falling_palette = (
+        (255, 128, 128),
+        (255, 255, 120),
+        (120, 120, 255),
+    )
+    preview_palette = static_palette
 
-    # Viruses (channels 0-2)
-    apply_mask(0, (220, 40, 40))
-    apply_mask(1, (240, 220, 40))
-    apply_mask(2, (40, 120, 240))
-
-    # Fixed pill halves (channels 3-5)
-    static_palette = {
-        3: (180, 0, 0),
-        4: (200, 180, 0),
-        5: (0, 80, 200),
-    }
-    for channel, color in static_palette.items():
-        apply_mask(channel, color)
-
-    # Falling pill halves (channels 6-8) — recolor as static when locked
-    lock_norm = float(latest[11, 0, 0]) if latest.shape[0] > 11 else 0.0
+    lock_norm = float(np.clip(ram_specs.get_lock_value(latest), 0.0, 1.0))
     locked = lock_norm > 1e-3
     if isinstance(info, dict) and "is_locked" in info:
         locked = bool(info["is_locked"])
-    falling_channels = {
-        6: ((255, 128, 128), static_palette[3]),
-        7: ((255, 255, 120), static_palette[4]),
-        8: ((120, 120, 255), static_palette[5]),
-    }
-    for channel, (falling_color, locked_color) in falling_channels.items():
-        mask = latest[channel] > 0.1
-        if not mask.any():
-            continue
-        board[mask] = locked_color if locked else falling_color
 
     # Background gradient for contrast
-    gravity = np.clip(latest[10], 0.0, 1.0)
-    base = (gravity * 40).astype(np.uint8)
+    gravity = float(np.clip(ram_specs.get_gravity_value(latest), 0.0, 1.0))
+    base = np.full((h, w), gravity * 40.0, dtype=np.float32)
+
+    for idx in range(min(3, color_planes.shape[0])):
+        color_mask = color_planes[idx] > 0.1
+        if not color_mask.any():
+            continue
+        virus_cells = color_mask & virus_mask
+        static_cells = color_mask & static_mask
+        falling_cells = color_mask & falling_mask
+        preview_cells = color_mask & preview_mask
+        if virus_cells.any():
+            board[virus_cells] = virus_palette[idx]
+        if static_cells.any():
+            board[static_cells] = static_palette[idx]
+        if falling_cells.any():
+            board[falling_cells] = static_palette[idx] if locked else falling_palette[idx]
+        if preview_cells.any():
+            board[preview_cells] = preview_palette[idx]
+
+    if clearing_mask.any():
+        board[clearing_mask] = (250, 200, 240)
+
     empty_mask = board.sum(axis=-1) == 0
     if empty_mask.any():
-        board[empty_mask] = base[empty_mask][:, None]
+        board[empty_mask] = base[empty_mask][:, None].astype(np.uint8)
 
     # Compose preview area above the board
     preview_rows = 4
@@ -102,7 +123,6 @@ def state_to_rgb(
     if scale > 1:
         canvas = np.repeat(np.repeat(canvas, scale, axis=0), scale, axis=1)
 
-    virus_mask = (latest[0:3] > 0.1).any(axis=0)
     if virus_mask.any():
         centers = np.argwhere(virus_mask)
         for r, c in centers:

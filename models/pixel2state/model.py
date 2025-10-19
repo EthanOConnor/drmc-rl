@@ -3,12 +3,16 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
+import envs.specs.ram_to_state as ram_specs
+
 
 class SimpleUNet(nn.Module):
     """Lightweight UNet-like model for pixel->state segmentation (skeleton)."""
 
-    def __init__(self, in_ch: int = 3, out_ch: int = 14):
+    def __init__(self, in_ch: int = 3, out_ch: int | None = None):
         super().__init__()
+        if out_ch is None:
+            out_ch = ram_specs.STATE_CHANNELS
         self.enc1 = nn.Sequential(nn.Conv2d(in_ch, 32, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2))
         self.enc2 = nn.Sequential(nn.Conv2d(32, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2))
         self.enc3 = nn.Sequential(nn.Conv2d(64, 64, 3, padding=1), nn.ReLU(), nn.MaxPool2d(2))
@@ -24,4 +28,3 @@ class SimpleUNet(nn.Module):
         y = self.dec1(y)
         y = self.head(y)
         return y  # logits per state channel
-

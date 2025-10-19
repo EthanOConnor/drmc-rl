@@ -1,12 +1,15 @@
-"""Utilities to visualize the 14-channel state tensor and (optionally) overlay on pixels."""
+"""Utilities to visualize the RAM-derived state tensor and (optionally) overlay on pixels."""
 from __future__ import annotations
 import numpy as np
 import matplotlib.pyplot as plt
 
+import envs.specs.ram_to_state as ram_specs
 
 def grid_show(state: np.ndarray, title: str = "state", savepath: str | None = None):
-    """Show a tiled grid of the 14 channels (C,H,W) as 2D images."""
-    assert state.ndim == 3 and state.shape[0] == 14, f"expected (14,H,W), got {state.shape}"
+    """Show a tiled grid of the state channels (C,H,W) as 2D images."""
+    assert (
+        state.ndim == 3 and state.shape[0] == ram_specs.STATE_CHANNELS
+    ), f"expected ({ram_specs.STATE_CHANNELS},H,W), got {state.shape}"
     C, H, W = state.shape
     cols = 7
     rows = (C + cols - 1) // cols
@@ -46,10 +49,12 @@ def overlay_on_rgb(rgb: np.ndarray, state: np.ndarray, alpha: float = 0.35) -> n
         except Exception:
             pass
     out = rgb.astype(np.float32).copy()
-    virus = np.clip(state[0] + state[1] + state[2], 0, 1)[..., None]
-    fixed = np.clip(state[3] + state[4] + state[5], 0, 1)[..., None]
-    fall = np.clip(state[6] + state[7] + state[8], 0, 1)[..., None]
+    virus_planes = ram_specs.get_virus_color_planes(state)
+    fixed_planes = ram_specs.get_static_color_planes(state)
+    fall_planes = ram_specs.get_falling_color_planes(state)
+    virus = np.clip(virus_planes.sum(axis=0), 0, 1)[..., None]
+    fixed = np.clip(fixed_planes.sum(axis=0), 0, 1)[..., None]
+    fall = np.clip(fall_planes.sum(axis=0), 0, 1)[..., None]
     tint = np.concatenate([virus, fixed, fall], axis=-1)
     out = (1 - alpha) * out + alpha * 255.0 * tint
     return np.clip(out, 0, 255).astype(np.uint8)
-

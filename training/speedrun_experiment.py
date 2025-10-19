@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
 from envs.retro.demo import _ProcessViewer
 from envs.retro.drmario_env import Action
 from envs.retro.intent_wrapper import DrMarioIntentEnv
@@ -904,6 +905,8 @@ class PolicyGradientAgent:
         self._batch_accum_policy_loss = 0.0
         self._batch_accum_value_loss = 0.0
         self._batch_accum_entropy = 0.0
+        self._batch_accum_critic_ev = 0.0
+        self._latest_critic_ev = 0.0
         self._contexts: Dict[int, _EpisodeContext] = {}
         augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
         self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
@@ -911,10 +914,19 @@ class PolicyGradientAgent:
         if policy_arch == "mlp":
             self.model = SimpleStateActorCritic(self._input_dim, int(action_space.n)).to(self._device)
         elif policy_arch == "drmario_cnn":
-            in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else 14
+            in_channels = (
+                augmented_stack.shape[1] if augmented_stack.ndim >= 3 else ram_specs.STATE_CHANNELS
+            )
             self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
         elif policy_arch == "drmario_color_cnn":
-            in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else 17
+            default_color_channels = ram_specs.STATE_CHANNELS + (
+                0 if ram_specs.STATE_USE_BITPLANES else 3
+            )
+            in_channels = (
+                augmented_stack.shape[1]
+                if augmented_stack.ndim >= 3
+                else default_color_channels
+            )
             self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
         elif policy_arch == "drmario_unet_pixel":
             if obs_mode != "pixel":
@@ -1044,12 +1056,25 @@ class PolicyGradientAgent:
             self._batch_accum_policy_loss = 0.0
             self._batch_accum_value_loss = 0.0
             self._batch_accum_entropy = 0.0
+            self._batch_accum_critic_ev = 0.0
 
         advantages = returns_tensor - values.detach()
+        adv_std = advantages.std(unbiased=False).clamp_min(1e-6)
+        advantages = (advantages - advantages.mean()) / adv_std
         policy_loss = -(log_probs * advantages).mean()
-        value_loss = 0.5 * (returns_tensor - values).pow(2).mean()
+        value_errors = returns_tensor - values
+        value_mse = value_errors.pow(2).mean()
+        value_loss = 0.5 * torch.clamp(value_mse, max=10.0)
         entropy_term = entropies.mean()
         loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
+
+        value_err_float = float(value_mse.item())
+        value_var_float = float(returns_tensor.var(unbiased=False).item())
+        if value_var_float <= 1e-8:
+            ev_value = 0.0
+        else:
+            ev_value = 1.0 - (value_err_float / (value_var_float + 1e-8))
+        ev_value = max(-1.0, min(1.0, ev_value))
 
         scale = 1.0 / float(max(1, self._batch_runs))
         (loss * scale).backward()
@@ -1057,6 +1082,8 @@ class PolicyGradientAgent:
         self._batch_accum_policy_loss += float(policy_loss.item())
         self._batch_accum_value_loss += float(value_loss.item())
         self._batch_accum_entropy += float(entropy_term.item())
+        self._batch_accum_critic_ev += ev_value
+        self._latest_critic_ev = ev_value
 
         self._episodes_in_batch += 1
         self._steps_in_batch += int(returns_tensor.shape[0])
@@ -1074,6 +1101,7 @@ class PolicyGradientAgent:
         metrics = dict(self._last_metrics)
         metrics["learner/pending_runs"] = float(self._episodes_in_batch)
         metrics["learner/pending_steps"] = float(self._steps_in_batch)
+        metrics["critic/latest_ev"] = float(self._latest_critic_ev)
         return metrics
 
     def _update_policy(self) -> None:
@@ -1102,6 +1130,7 @@ class PolicyGradientAgent:
             "learner/value_loss": self._batch_accum_value_loss / denom,
             "learner/entropy": self._batch_accum_entropy / denom,
             "learner/updates": float(self._updates),
+            "critic/explained_variance": self._batch_accum_critic_ev / denom,
         }
         self.optimizer.zero_grad(set_to_none=True)
         self._episodes_in_batch = 0
@@ -1109,6 +1138,7 @@ class PolicyGradientAgent:
         self._batch_accum_policy_loss = 0.0
         self._batch_accum_value_loss = 0.0
         self._batch_accum_entropy = 0.0
+        self._batch_accum_critic_ev = 0.0
 
     def get_state(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {
@@ -1118,10 +1148,12 @@ class PolicyGradientAgent:
             "batch_accum_policy_loss": float(self._batch_accum_policy_loss),
             "batch_accum_value_loss": float(self._batch_accum_value_loss),
             "batch_accum_entropy": float(self._batch_accum_entropy),
+            "batch_accum_critic_ev": float(self._batch_accum_critic_ev),
             "batch_runs": int(self._batch_runs),
             "policy_arch": self._policy_arch,
             "obs_mode": self._obs_mode,
             "color_repr": self._color_repr,
+            "latest_critic_ev": float(self._latest_critic_ev),
         }
         if torch is None:
             return state
@@ -1160,6 +1192,8 @@ class PolicyGradientAgent:
             self._batch_accum_policy_loss = float(state.get("batch_accum_policy_loss", 0.0))
             self._batch_accum_value_loss = float(state.get("batch_accum_value_loss", 0.0))
             self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
+            self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
+            self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
         except Exception:
             pass
 
@@ -1173,7 +1207,13 @@ def _apply_color_representation(stack: np.ndarray, mode: str) -> np.ndarray:
         return stack
     if stack.ndim < 3:
         return stack
-    if stack.shape[1] not in (14, 17):
+    if ram_specs.STATE_USE_BITPLANES:
+        return stack
+    base_channels = ram_specs.STATE_CHANNELS
+    augmented_channels = ram_specs.STATE_CHANNELS + 3
+    if stack.shape[1] == augmented_channels:
+        return stack
+    if stack.shape[1] != base_channels:
         return stack
     viruses = stack[:, 0:3]
     fixed = stack[:, 3:6]
@@ -1281,6 +1321,7 @@ def main() -> None:
         default="mlp",
     )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
+    ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
     ap.add_argument("--batch-runs", type=int, default=1, help="Episodes to accumulate before each policy update.")
     ap.add_argument("--entropy-coef", type=float, default=0.01)
     ap.add_argument("--value-coef", type=float, default=0.5)
@@ -1310,6 +1351,8 @@ def main() -> None:
 
     args = ap.parse_args()
 
+    ram_specs.set_state_representation(args.state_repr)
+
     register_env_id()
     if args.intent_action_space:
         register_intent_env_id()
@@ -1322,6 +1365,8 @@ def main() -> None:
         "level": args.level,
         "risk_tau": args.risk_tau,
         "render_mode": "rgb_array",
+        "learner_discount": args.gamma,
+        "state_repr": args.state_repr,
     }
     if args.backend:
         env_kwargs["backend"] = args.backend

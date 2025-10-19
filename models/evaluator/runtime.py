@@ -3,13 +3,19 @@
 This makes it easy to plug into reward shaping and planning without coupling to training code.
 """
 from __future__ import annotations
-import torch
+
+from typing import Any, Optional
+
 import numpy as np
-from typing import Any
+import torch
+
+import envs.specs.ram_to_state as ram_specs
 
 
 class ScriptEvaluator:
-    def __init__(self, path: str, device: str = 'cpu', in_channels: int = 14, input_hw=(128, 128)):
+    def __init__(self, path: str, device: str = 'cpu', in_channels: Optional[int] = None, input_hw=(128, 128)):
+        if in_channels is None:
+            in_channels = ram_specs.STATE_CHANNELS
         self.model = torch.jit.load(path, map_location=device)
         self.model.eval()
         self.device = device
@@ -46,4 +52,3 @@ class ScriptEvaluator:
         q = self.quantiles(state)
         k = max(1, int(alpha * len(q)))
         return float(np.mean(q[:k]))
-

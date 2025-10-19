@@ -10,16 +10,21 @@ This script is a skeleton; wire your actual dataset loader.
 
 import argparse, os, math, json
 from typing import List, Tuple
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+
+import envs.specs.ram_to_state as ram_specs
 from models.evaluator.qr_modules import QREvaluator, quantile_huber_loss
 
 
 class DummyDataset(Dataset):
-    def __init__(self, n=1024, C=14, H=128, W=128, S=32):
+    def __init__(self, n=1024, C: int | None = None, H=128, W=128, S=32):
+        if C is None:
+            C = ram_specs.STATE_CHANNELS
         self.X = np.random.randn(n, C, H, W).astype(np.float32)
         self.Y = np.abs(np.random.randn(n, S).astype(np.float32) * 1000.0)  # fake T_clear samples
 
@@ -40,7 +45,7 @@ def main():
     args = ap.parse_args()
 
     taus = torch.linspace(1 / (args.k + 1), args.k / (args.k + 1), args.k)  # fixed quantiles
-    model = QREvaluator(in_channels=14, k_quantiles=args.k)
+    model = QREvaluator(in_channels=ram_specs.STATE_CHANNELS, k_quantiles=args.k)
     opt = optim.Adam(model.parameters(), lr=args.lr)
 
     ds = DummyDataset()
@@ -65,4 +70,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

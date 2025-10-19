@@ -1,6 +1,13 @@
+//Aim for reward magnitudes where a clear is single-digits to tens, not hundreds; keep step penalties tiny and consistent:
+//	•	Per-step time penalty ≈ −0.01 to −0.02.
+//	•	Virus clear bonus ≈ +1.0 each (or +2 for 2-virus clear).
+//	•	Level clear terminal bonus ≈ +5 (not 500).
+//	•	Potential shaping scale kappa → tune so |r_shape| ≈ 10–30% of |r_env| on average (log and watch the ratio).
+//If your current rewards are in the hundreds, down-scale them; big magnitudes + REINFORCE = noisy gradients and slow improvement.
+
 {
   "pill_place_base": {
-    "value": 1.2,
+    "value": 0.2,
     "description": "Base reward applied to the first pill lock; later locks scale via the exponential curve."
   },
   "pill_place_growth": {
@@ -16,7 +23,7 @@
     "description": "Reward applied for clearing non-virus tiles alongside a placement."
   },
   "terminal_clear_bonus": {
-    "value": 500.0,
+    "value": 10.0,
     "description": "Bonus awarded when the stage is cleared."
   },
   "topout_penalty": {
@@ -40,7 +47,7 @@
     "description": "Reward for creating a longer adjacency (three aligned segments)."
   },
   "column_height_penalty": {
-    "value": 5.0,
+    "value": 0.0,
     "description": "Penalty weight applied to tall stacks relative to the virus band."
   },
   "action_penalty_scale": {

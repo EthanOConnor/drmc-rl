@@ -1,19 +1,24 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import envs.specs.ram_to_state as ram_specs
 
 class QREvaluator(nn.Module):
     """Quantile Regression evaluator for T_clear distribution.
 
     Inputs:
-        x: (B, C, H, W) state tensor (e.g., 14×16×8 upsampled to 128×128).
+        x: (B, C, H, W) state tensor (e.g., STATE_CHANNELS×16×8 upsampled to 128×128).
     Outputs:
         quantiles: (B, K) predicted quantiles of T_clear (in frames).
     """
 
-    def __init__(self, in_channels: int = 14, k_quantiles: int = 101):
+    def __init__(self, in_channels: Optional[int] = None, k_quantiles: int = 101):
         super().__init__()
+        if in_channels is None:
+            in_channels = ram_specs.STATE_CHANNELS
         self.k = k_quantiles
         # Simple IMPALA-like encoder for demonstration; match your policy encoder shape.
         self.conv = nn.Sequential(
@@ -58,4 +63,3 @@ def quantile_huber_loss(
     taus = taus.view(1, K, 1)
     loss = (torch.abs(taus - indicator) * huber).mean()
     return loss
-
