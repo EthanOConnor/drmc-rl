@@ -51,6 +51,9 @@ class RewardConfig:
     adjacency_triplet_bonus: float = 25.0
     column_height_penalty: float = 5.0
     action_penalty_scale: float = 0.25
+    placement_height_threshold: float = 3.0
+    placement_height_penalty_multiplier: float = -2.0
+    punish_high_placements: bool = True
 
 
 
@@ -787,6 +790,14 @@ class DrMarioRetroEnv(gym.Env):
         if preview is not None:
             augmented["preview_pill"] = preview
 
+        augmented["placement_height_threshold"] = float(
+            self.reward_cfg.placement_height_threshold
+        )
+        augmented["placement_height_penalty_multiplier"] = float(
+            self.reward_cfg.placement_height_penalty_multiplier
+        )
+        augmented["punish_high_placements"] = bool(self.reward_cfg.punish_high_placements)
+
         state_stack = getattr(self, "_state_stack", None)
         if state_stack is not None:
             latest = np.asarray(state_stack[-1])
@@ -1236,6 +1247,9 @@ class DrMarioRetroEnv(gym.Env):
             growth = float(self.reward_cfg.pill_place_growth)
             placement_bonus = base_bonus * (1.0 + growth * float((placements - 1) ** 2))
             placement_bonus_adjusted = placement_bonus
+            height_threshold = float(self.reward_cfg.placement_height_threshold)
+            penalty_multiplier = float(self.reward_cfg.placement_height_penalty_multiplier)
+            punish_high_placements = bool(self.reward_cfg.punish_high_placements)
             if state_prev_frame is not None and state_next_frame is not None:
                 prev_static = ram_specs.get_static_color_planes(state_prev_frame)
                 next_static = ram_specs.get_static_color_planes(state_next_frame)
@@ -1255,11 +1269,11 @@ class DrMarioRetroEnv(gym.Env):
                         virus_height = board_h - highest_virus_row
                 if placement_heights is not None and placement_heights.size > 0:
                     placement_height_diff = float(placement_heights.max() - virus_height)
-                    if virus_mask.any():
+                    if virus_mask.any() and punish_high_placements:
                         if np.any(placement_heights <= virus_height):
                             placement_bonus_adjusted = placement_bonus
-                        elif np.all(placement_heights > virus_height + 3):
-                            placement_bonus_adjusted = -2.0 * abs(placement_bonus)
+                        elif np.all(placement_heights > virus_height + height_threshold):
+                            placement_bonus_adjusted = penalty_multiplier * abs(placement_bonus)
                         else:
                             placement_bonus_adjusted = placement_bonus
                     else:
