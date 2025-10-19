@@ -51,9 +51,8 @@ def state_to_rgb(
     if isinstance(info, dict) and "is_locked" in info:
         locked = bool(info["is_locked"])
 
-    # Background gradient for contrast
-    gravity = float(np.clip(ram_specs.get_gravity_value(latest), 0.0, 1.0))
-    base = np.full((h, w), gravity * 40.0, dtype=np.float32)
+    # Background: make empty bottle squares a dark gray for clarity
+    EMPTY_GRAY = 22  # 0..255
 
     for idx in range(min(3, color_planes.shape[0])):
         color_mask = color_planes[idx] > 0.1
@@ -73,14 +72,15 @@ def state_to_rgb(
             board[preview_cells] = preview_palette[idx]
 
     if clearing_mask.any():
-        # Do not obscure falling pills with the clearing overlay.
-        safe_overlay = np.logical_and(clearing_mask, ~falling_mask)
-        if safe_overlay.any():
-            board[safe_overlay] = (250, 200, 240)
+        # Only overlay on tiles with content (static or virus), never falling or empty.
+        overlay_mask = np.logical_and(clearing_mask, np.logical_or(static_mask, virus_mask))
+        overlay_mask = np.logical_and(overlay_mask, np.logical_not(falling_mask))
+        if overlay_mask.any():
+            board[overlay_mask] = (250, 200, 240)
 
     empty_mask = board.sum(axis=-1) == 0
     if empty_mask.any():
-        board[empty_mask] = base[empty_mask][:, None].astype(np.uint8)
+        board[empty_mask] = np.array([EMPTY_GRAY, EMPTY_GRAY, EMPTY_GRAY], dtype=np.uint8)
 
     # Compose preview area above the board
     preview_rows = 4
