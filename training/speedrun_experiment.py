@@ -1,4 +1,7 @@
-"""Single-environment training experiment for level-0 speedrun attempts.
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Single-environment training experiment for level-0 speedrun attempts.
 
 This runner mirrors the demo interface (viewer window, state rendering) while
 adding a lightweight monitor process that tracks hyperparameters and episode
@@ -11,12 +14,15 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as mp
+import numbers
+import os
 import queue
 import sys
 import time
 from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -24,6 +30,17 @@ from envs.retro.demo import _ProcessViewer
 from envs.retro.register_env import register_env_id
 from envs.retro.drmario_env import Action
 from gymnasium import make
+from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
+
+try:
+    import torch
+    from torch import nn, optim
+    from torch.distributions import Categorical
+except Exception:  # pragma: no cover - torch is optional for this experiment
+    torch = None
+    nn = None
+    optim = None
+    Categorical = None
 
 
 def _monitor_worker(
@@ -50,18 +67,75 @@ def _monitor_worker(
             lines.append(f"{key}: {hparams[key]}")
         return "\n".join(lines)
 
-    hyper_label = tk.Label(root, text=format_hyperparams(hyperparams), anchor="w", justify="left")
+    hyper_label = tk.Label(
+        root, text=format_hyperparams(hyperparams), anchor="w", justify="left"
+    )
     hyper_label.pack(fill="x", padx=8, pady=4)
 
     status_var = tk.StringVar(value="Waiting for runs...")
     status_label = tk.Label(root, textvariable=status_var, anchor="w", justify="left")
     status_label.pack(fill="x", padx=8, pady=2)
 
+    diag_frame = tk.LabelFrame(root, text="Diagnostics")
+    diag_frame.pack(fill="x", padx=8, pady=6)
+    diagnostics_var = tk.StringVar(value="No diagnostics yet.")
+    diagnostics_label = tk.Label(
+        diag_frame,
+        textvariable=diagnostics_var,
+        anchor="w",
+        justify="left",
+        font=("Courier", 10),
+    )
+    diagnostics_label.pack(fill="x", padx=4, pady=4)
+
     canvas_width, canvas_height = 480, 260
     canvas = tk.Canvas(root, width=canvas_width, height=canvas_height, bg="white")
     canvas.pack(fill="both", expand=True, padx=8, pady=8)
 
     scores: list[Tuple[int, float]] = []
+    score_by_run: Dict[int, float] = {}
+    batch_medians: Dict[int, float] = {}
+    runs_total = int(hyperparams.get("runs", 0) or 0)
+    parallel_envs_var = int(hyperparams.get("parallel_envs", 1) or 1)
+    batch_runs_var = int(hyperparams.get("batch_runs", 1) or 1)
+    group_size_var = max(1, parallel_envs_var, batch_runs_var)
+    latest_diagnostics: Dict[str, Any] = {}
+    diagnostic_history: Dict[str, deque[float]] = {}
+    diagnostics_window = 20
+
+    def format_diagnostics() -> str:
+        if not latest_diagnostics:
+            return "No diagnostics yet."
+        lines: list[str] = []
+        grouped: Dict[str, list[Tuple[str, Any, str]]] = {}
+        for key, value in latest_diagnostics.items():
+            if "/" in key:
+                group, metric = key.split("/", 1)
+            else:
+                group, metric = "", key
+            grouped.setdefault(group, []).append((metric, value, key))
+
+        for group in sorted(grouped):
+            entries = sorted(grouped[group], key=lambda kv: kv[0])
+            prefix = ""
+            if group:
+                lines.append(f"{group}:")
+                prefix = "  "
+            for metric, value, full_key in entries:
+                if isinstance(value, numbers.Number):
+                    history = diagnostic_history.get(full_key)
+                    if history and len(history) > 1:
+                        avg = float(sum(history) / len(history))
+                        trend = history[-1] - history[0]
+                        lines.append(
+                            f"{prefix}{metric}: {float(value):.4f} "
+                            f"(avg {avg:.4f}, diff {trend:+.4f})"
+                        )
+                    else:
+                        lines.append(f"{prefix}{metric}: {float(value):.4f}")
+                else:
+                    lines.append(f"{prefix}{metric}: {value}")
+        return "\n".join(lines)
 
     def render_plot() -> None:
         canvas.delete("plot")
@@ -81,7 +155,9 @@ def _monitor_worker(
 
         # Axes
         canvas.create_line(margin, margin, margin, margin + plot_h, tags="plot", fill="#444")
-        canvas.create_line(margin, margin + plot_h, margin + plot_w, margin + plot_h, tags="plot", fill="#444")
+        canvas.create_line(
+            margin, margin + plot_h, margin + plot_w, margin + plot_h, tags="plot", fill="#444"
+        )
 
         # Plot polyline
         points: list[float] = []
@@ -111,11 +187,40 @@ def _monitor_worker(
             margin - 10,
             anchor="w",
             tags="plot",
-            text=f"Runs {min_run}–{max_run} | Score {values[-1]:.1f}",
+            text=f"Batches {min_run}–{max_run} | Median {values[-1]:.1f}",
             fill="#222",
         )
 
+    def recompute_series(group_size: int) -> None:
+        scores.clear()
+        batch_medians.clear()
+        if group_size <= 0:
+            return
+        if not score_by_run:
+            return
+        max_run_idx = max(score_by_run)
+        if max_run_idx < 0:
+            return
+        batches = (max_run_idx + group_size) // group_size
+        for batch_idx in range(batches):
+            batch_start = batch_idx * group_size
+            expected = group_size
+            if runs_total > 0:
+                remaining = runs_total - batch_start
+                if remaining < expected:
+                    expected = max(1, remaining)
+            collected: list[float] = []
+            for r_idx in range(batch_start, batch_start + expected):
+                if r_idx in score_by_run:
+                    collected.append(score_by_run[r_idx])
+            if collected and len(collected) == expected:
+                median_val = float(np.median(collected))
+                batch_medians[batch_idx] = median_val
+        for b_idx in sorted(batch_medians):
+            scores.append((b_idx + 1, batch_medians[b_idx]))
+
     def pump_queue() -> None:
+        nonlocal runs_total, parallel_envs_var, batch_runs_var, group_size_var
         updated = False
         try:
             while True:
@@ -129,9 +234,35 @@ def _monitor_worker(
                 if mtype == "score":
                     run_idx = int(message.get("run", len(scores)))
                     score_val = float(message.get("score", 0.0))
-                    scores.append((run_idx, score_val))
-                    status_var.set(f"Run {run_idx}: score {score_val:.2f}")
-                    updated = True
+                    score_by_run[run_idx] = score_val
+                    group_size_local = max(1, group_size_var)
+                    batch_idx = run_idx // group_size_local
+                    batch_start = batch_idx * group_size_local
+                    expected = group_size_local
+                    if runs_total > 0:
+                        remaining = runs_total - batch_start
+                        if remaining < group_size_local:
+                            expected = max(1, remaining)
+                    collected_scores: list[float] = []
+                    for r_idx in range(batch_start, batch_start + expected):
+                        if r_idx in score_by_run:
+                            collected_scores.append(score_by_run[r_idx])
+                    median_val: Optional[float] = None
+                    if collected_scores and len(collected_scores) == expected:
+                        median_val = float(np.median(collected_scores))
+                        batch_medians[batch_idx] = median_val
+                        scores.clear()
+                        for b_idx in sorted(batch_medians):
+                            scores.append((b_idx + 1, batch_medians[b_idx]))
+                        updated = True
+                    if median_val is not None:
+                        status_var.set(
+                            f"Run {run_idx}: score {score_val:.2f} | "
+                            f"batch {batch_idx + 1} median {median_val:.2f} "
+                            f"(group {group_size_local})"
+                        )
+                    else:
+                        status_var.set(f"Run {run_idx}: score {score_val:.2f}")
                 elif mtype == "status":
                     text = message.get("text")
                     if text is not None:
@@ -140,6 +271,42 @@ def _monitor_worker(
                     payload = message.get("hyperparams")
                     if isinstance(payload, dict):
                         hyper_label.configure(text=format_hyperparams(payload))
+                        try:
+                            runs_total = int(payload.get("runs", runs_total) or runs_total or 0)
+                        except Exception:
+                            pass
+                        try:
+                            parallel_envs_var = int(
+                                payload.get("parallel_envs", parallel_envs_var) or parallel_envs_var or 1
+                            )
+                        except Exception:
+                            pass
+                        try:
+                            batch_runs_var = int(
+                                payload.get("batch_runs", batch_runs_var) or batch_runs_var or 1
+                            )
+                        except Exception:
+                            pass
+                        group_size_new = max(1, parallel_envs_var, batch_runs_var)
+                        if group_size_new != group_size_var:
+                            group_size_var = group_size_new
+                            recompute_series(group_size_var)
+                            updated = True
+                elif mtype == "diagnostics":
+                    payload = message.get("metrics")
+                    if isinstance(payload, dict):
+                        for key, value in payload.items():
+                            if isinstance(value, numbers.Number):
+                                value_f = float(value)
+                                latest_diagnostics[key] = value_f
+                                history = diagnostic_history.setdefault(
+                                    key, deque(maxlen=diagnostics_window)
+                                )
+                                history.append(value_f)
+                            else:
+                                latest_diagnostics[key] = str(value)
+                                diagnostic_history.pop(key, None)
+                        diagnostics_var.set(format_diagnostics())
         except queue.Empty:
             pass
 
@@ -159,6 +326,127 @@ def _monitor_worker(
         root.mainloop()
     finally:
         stop_event.set()
+
+
+class NetworkDiagnosticsTracker:
+    """Collect lightweight diagnostics from torch networks and optimizers."""
+
+    def __init__(self, agent: Any):
+        self._torch = torch
+        self._nn = nn
+        self._optim = optim
+        self._agent = agent
+        self._modules: Dict[str, Any] = {}
+        self._optimizers: Dict[str, Any] = {}
+        self._prev_params: Dict[str, "torch.Tensor"] = {}
+        if self._torch is None:
+            return
+        self._discover_modules(agent)
+        self._snapshot_initial_params()
+
+    def _discover_modules(self, agent: Any) -> None:
+        if self._torch is None:
+            return
+        attr_names = dir(agent)
+        for name in attr_names:
+            # getattr may raise for properties; guard accordingly.
+            try:
+                value = getattr(agent, name)
+            except Exception:
+                continue
+            if self._nn is not None and isinstance(value, self._nn.Module):
+                existing = self._modules.get(name)
+                if existing is not value:
+                    self._modules[name] = value
+                    flat = self._flatten_parameters(value)
+                    if flat is not None:
+                        self._prev_params[name] = flat
+            if self._optim is not None and isinstance(value, self._optim.Optimizer):
+                self._optimizers[name] = value
+
+    def _snapshot_initial_params(self) -> None:
+        if self._torch is None:
+            return
+        for name, module in self._modules.items():
+            flat = self._flatten_parameters(module)
+            if flat is not None:
+                self._prev_params[name] = flat
+
+    def _flatten_parameters(self, module: Any):
+        if self._torch is None:
+            return None
+        chunks = []
+        for param in module.parameters(recurse=True):
+            if not param.requires_grad:
+                continue
+            chunks.append(param.detach().float().cpu().view(-1))
+        if not chunks:
+            return None
+        return self._torch.cat(chunks)
+
+    def _flatten_gradients(self, module: Any):
+        if self._torch is None:
+            return None
+        chunks = []
+        for param in module.parameters(recurse=True):
+            grad = param.grad
+            if grad is None:
+                continue
+            chunks.append(grad.detach().float().cpu().view(-1))
+        if not chunks:
+            return None
+        return self._torch.cat(chunks)
+
+    def collect(self) -> Dict[str, Any]:
+        """Return a dictionary of diagnostic scalars (and status strings)."""
+        if self._torch is None:
+            return {"networks/status": "torch unavailable"}
+        # Refresh in case new modules/optimizers were attached since the last call.
+        self._discover_modules(self._agent)
+        metrics: Dict[str, Any] = {}
+        if not self._modules:
+            metrics["networks/status"] = "no modules detected"
+            return metrics
+
+        metrics["networks/status"] = f"{len(self._modules)} module(s) tracked"
+
+        for name, module in self._modules.items():
+            flat_params = self._flatten_parameters(module)
+            if flat_params is None or flat_params.numel() == 0:
+                continue
+            param_norm = flat_params.norm().item()
+            metrics[f"{name}/param_norm"] = param_norm
+            metrics[f"{name}/num_params"] = float(flat_params.numel())
+
+            flat_grads = self._flatten_gradients(module)
+            if flat_grads is not None and flat_grads.numel() > 0:
+                grad_norm = flat_grads.norm().item()
+                metrics[f"{name}/grad_norm"] = grad_norm
+                if param_norm > 1e-8:
+                    metrics[f"{name}/grad_to_param"] = grad_norm / param_norm
+
+            prev = self._prev_params.get(name)
+            if prev is not None and prev.numel() == flat_params.numel():
+                delta = (flat_params - prev).norm().item()
+                metrics[f"{name}/param_delta"] = delta
+                if param_norm > 1e-8:
+                    metrics[f"{name}/delta_ratio"] = delta / param_norm
+            self._prev_params[name] = flat_params
+
+        for name, optimizer in self._optimizers.items():
+            group_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups if "lr" in group]
+            if group_lrs:
+                metrics[f"{name}/lr_mean"] = float(np.mean(group_lrs))
+                metrics[f"{name}/lr_min"] = float(np.min(group_lrs))
+                metrics[f"{name}/lr_max"] = float(np.max(group_lrs))
+            max_step = 0.0
+            for state in optimizer.state.values():
+                step_val = state.get("step")
+                if isinstance(step_val, (int, float)):
+                    max_step = max(max_step, float(step_val))
+            metrics[f"{name}/step"] = max_step
+
+        return metrics
 
 
 class ExperimentMonitor:
@@ -204,6 +492,16 @@ class ExperimentMonitor:
         except Exception:
             pass
 
+    def publish_diagnostics(self, metrics: Dict[str, Any]) -> None:
+        if self._closed or not metrics:
+            return
+        try:
+            self._queue.put_nowait({"type": "diagnostics", "metrics": metrics})
+        except queue.Full:
+            pass
+        except Exception:
+            pass
+
     def close(self) -> None:
         if self._closed:
             return
@@ -236,10 +534,13 @@ class SpeedrunAgent:
         self._epsilon_min = float(epsilon_min)
         self._rng = np.random.default_rng()
 
-    def begin_episode(self) -> None:
+    def begin_episode(self, context_id: Optional[int] = None) -> None:
         pass
 
-    def select_action(self, _obs: Any, _info: Dict[str, Any]) -> int:
+    def observe_step(self, _reward: float, _done: bool, context_id: Optional[int] = None) -> None:
+        pass
+
+    def select_action(self, _obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         if self._rng.random() < self.epsilon:
             return int(self._action_space.sample())
         if self._strategy == "down":
@@ -250,9 +551,283 @@ class SpeedrunAgent:
             return int(Action.NOOP)
         return int(self._action_space.sample())
 
-    def end_episode(self, _score: float) -> None:
+    def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
         if self.epsilon > self._epsilon_min:
             self.epsilon = max(self._epsilon_min, self.epsilon * self._epsilon_decay)
+
+
+class SimpleStateActorCritic(nn.Module):
+    def __init__(self, input_dim: int, action_dim: int):
+        super().__init__()
+        hidden = 256
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, hidden),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(inplace=True),
+        )
+        self.policy_head = nn.Linear(hidden, action_dim)
+        self.value_head = nn.Linear(hidden, 1)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        base = self.encoder(x)
+        logits = self.policy_head(base)
+        value = self.value_head(base).squeeze(-1)
+        return logits, value
+
+
+@dataclass
+class _EpisodeContext:
+    log_probs: List["torch.Tensor"] = field(default_factory=list)
+    values: List["torch.Tensor"] = field(default_factory=list)
+    rewards: List[float] = field(default_factory=list)
+    entropies: List["torch.Tensor"] = field(default_factory=list)
+    recurrent_state: Optional[Any] = None
+
+
+@dataclass
+class _EnvSlot:
+    index: int
+    env: Any
+    viewer: Optional[_ProcessViewer]
+    context_id: int
+    obs: Any = None
+    info: Dict[str, Any] = field(default_factory=dict)
+    run_idx: Optional[int] = None
+    episode_reward: float = 0.0
+    episode_steps: int = 0
+    frame_index: int = 0
+    emu_fps: float = 0.0
+    step_times: deque = field(default_factory=lambda: deque(maxlen=240))
+    next_step_time: float = field(default_factory=time.perf_counter)
+    active: bool = False
+
+
+class PolicyGradientAgent:
+    def __init__(
+        self,
+        action_space,
+        prototype_obs: np.ndarray,
+        gamma: float,
+        learning_rate: float,
+        entropy_coef: float = 0.01,
+        value_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
+        device: Optional[str] = None,
+        policy_arch: str = "mlp",
+        color_repr: str = "none",
+        obs_mode: str = "state",
+        batch_runs: int = 1,
+    ) -> None:
+        if torch is None or nn is None or optim is None or Categorical is None:
+            raise RuntimeError("PyTorch is required for the policy gradient agent.")
+        if prototype_obs.ndim < 1:
+            raise ValueError("Prototype observation must have at least 1 dimension.")
+        self._action_space = action_space
+        self._gamma = float(gamma)
+        self._entropy_coef = float(entropy_coef)
+        self._value_coef = float(value_coef)
+        self._max_grad_norm = float(max_grad_norm)
+        self._device = torch.device(device) if device else torch.device("cpu")
+        self._policy_arch = policy_arch
+        self._color_repr = color_repr
+        self._obs_mode = obs_mode
+        self._batch_runs = max(1, int(batch_runs))
+        self._pending: list[Dict[str, torch.Tensor]] = []
+        self._episodes_in_batch = 0
+        self._steps_in_batch = 0
+        self._contexts: Dict[int, _EpisodeContext] = {}
+        augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
+        self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
+        self._input_dim = int(np.prod(augmented_stack.shape))
+        if policy_arch == "mlp":
+            self.model = SimpleStateActorCritic(self._input_dim, int(action_space.n)).to(self._device)
+        elif policy_arch == "drmario_cnn":
+            in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else 14
+            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+        elif policy_arch == "drmario_color_cnn":
+            in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else 17
+            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+        elif policy_arch == "drmario_unet_pixel":
+            if obs_mode != "pixel":
+                raise ValueError("drmario_unet_pixel architecture requires pixel observations")
+            pixel_stack = np.asarray(prototype_obs, dtype=np.float32)
+            if pixel_stack.ndim != 4:
+                raise ValueError("Pixel observations must be 4D (stack, H, W, C)")
+            in_channels = int(pixel_stack.shape[-1])
+            self.model = DrMarioPixelUNetPolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+        else:
+            raise ValueError(f"Unknown policy architecture '{policy_arch}'")
+        self.optimizer = optim.Adam(self.model.parameters(), lr=float(learning_rate))
+
+        self._updates = 0
+        self._last_metrics: Dict[str, float] = {}
+
+    def _prepare_obs(self, obs: Any) -> torch.Tensor:
+        stack = _extract_state_stack(obs)
+        stack_np = stack.astype(np.float32, copy=False)
+        if self._obs_mode == "state":
+            stack_np = _apply_color_representation(stack_np, self._color_repr)
+        if self._policy_arch == "mlp":
+            flat = torch.from_numpy(stack_np).view(-1)
+            return flat.to(self._device)
+        if self._obs_mode == "pixel":
+            tensor = torch.from_numpy(stack_np).permute(0, 3, 1, 2).contiguous()
+        else:
+            tensor = torch.from_numpy(stack_np)
+        return tensor.to(self._device)
+
+    def _context_key(self, context_id: Optional[int]) -> int:
+        if context_id is None:
+            return 0
+        return int(context_id)
+
+    def _get_context(self, context_id: Optional[int]) -> _EpisodeContext:
+        key = self._context_key(context_id)
+        ctx = self._contexts.get(key)
+        if ctx is None:
+            ctx = _EpisodeContext()
+            self._contexts[key] = ctx
+        return ctx
+
+    def _reset_context(self, context_id: Optional[int]) -> _EpisodeContext:
+        ctx = self._get_context(context_id)
+        ctx.log_probs.clear()
+        ctx.values.clear()
+        ctx.rewards.clear()
+        ctx.entropies.clear()
+        ctx.recurrent_state = None
+        return ctx
+
+    def begin_episode(self, context_id: Optional[int] = None) -> None:
+        self.model.train(True)
+        ctx = self._reset_context(context_id)
+        if self._policy_arch == "mlp":
+            ctx.recurrent_state = None
+
+    def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+        ctx = self._get_context(context_id)
+        state_tensor = self._prepare_obs(obs)
+        if self._policy_arch == "mlp":
+            logits, value = self.model(state_tensor.unsqueeze(0))
+            dist = Categorical(logits=logits.squeeze(0))
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
+            value_tensor = value.squeeze(0)
+            entropy = dist.entropy()
+        else:
+            if state_tensor.dim() == 3:
+                input_tensor = state_tensor.unsqueeze(0).unsqueeze(0)
+            elif state_tensor.dim() == 4:
+                input_tensor = state_tensor.unsqueeze(0)
+            else:
+                raise RuntimeError("Unexpected observation tensor shape")
+            logits, value, hx = self.model(input_tensor, ctx.recurrent_state)
+            logits = logits[:, -1, :]
+            value_tensor = value[:, -1]
+            dist = Categorical(logits=logits.squeeze(0))
+            action = dist.sample()
+            log_prob = dist.log_prob(action)
+            entropy = dist.entropy()
+            if isinstance(hx, torch.Tensor):
+                ctx.recurrent_state = hx.detach()
+            elif isinstance(hx, tuple):
+                ctx.recurrent_state = tuple(t.detach() for t in hx)
+            else:
+                ctx.recurrent_state = None
+
+        ctx.log_probs.append(log_prob)
+        ctx.values.append(value_tensor.squeeze(0))
+        ctx.entropies.append(entropy)
+
+        return int(action.item())
+
+    def observe_step(self, reward: float, _done: bool, context_id: Optional[int] = None) -> None:
+        ctx = self._get_context(context_id)
+        ctx.rewards.append(float(reward))
+
+    def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
+        ctx = self._get_context(context_id)
+        if not ctx.log_probs:
+            return
+
+        returns: list[float] = []
+        G = 0.0
+        # Drop the dummy terminal marker if present
+        rewards = [r for r in ctx.rewards if not np.isnan(r)]
+        for reward in reversed(rewards):
+            G = reward + self._gamma * G
+            returns.append(G)
+        returns.reverse()
+        returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self._device)
+
+        log_probs = torch.stack(ctx.log_probs)
+        values = torch.stack(ctx.values)
+        entropies = torch.stack(ctx.entropies)
+        if returns_tensor.shape[0] != log_probs.shape[0]:
+            min_len = min(returns_tensor.shape[0], log_probs.shape[0])
+            returns_tensor = returns_tensor[:min_len]
+            log_probs = log_probs[:min_len]
+            values = values[:min_len]
+            entropies = entropies[:min_len]
+
+        trajectory = {
+            "log_probs": log_probs,
+            "values": values,
+            "returns": returns_tensor,
+            "entropies": entropies,
+        }
+        self._pending.append(trajectory)
+        self._episodes_in_batch += 1
+        self._steps_in_batch += int(returns_tensor.shape[0])
+
+        ctx.log_probs.clear()
+        ctx.values.clear()
+        ctx.rewards.clear()
+        ctx.entropies.clear()
+        ctx.recurrent_state = None
+
+        if self._episodes_in_batch >= self._batch_runs:
+            self._update_policy()
+
+    def latest_metrics(self) -> Dict[str, float]:
+        metrics = dict(self._last_metrics)
+        metrics["learner/pending_runs"] = float(self._episodes_in_batch)
+        metrics["learner/pending_steps"] = float(self._steps_in_batch)
+        return metrics
+
+    def _update_policy(self) -> None:
+        if not self._pending:
+            return
+
+        log_probs = torch.cat([traj["log_probs"] for traj in self._pending])
+        values = torch.cat([traj["values"] for traj in self._pending])
+        returns = torch.cat([traj["returns"] for traj in self._pending])
+        entropies = torch.cat([traj["entropies"] for traj in self._pending])
+
+        advantages = returns - values.detach()
+
+        policy_loss = -(log_probs * advantages).mean()
+        value_loss = 0.5 * (returns - values).pow(2).mean()
+        entropy_term = entropies.mean()
+        loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._max_grad_norm)
+        self.optimizer.step()
+        self._updates += 1
+
+        self._pending.clear()
+        self._episodes_in_batch = 0
+        self._steps_in_batch = 0
+
+        self._last_metrics = {
+            "learner/policy_loss": float(policy_loss.item()),
+            "learner/value_loss": float(value_loss.item()),
+            "learner/entropy": float(entropy_term.item()),
+            "learner/updates": float(self._updates),
+        }
 
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
@@ -260,25 +835,51 @@ def _extract_state_stack(observation: Any) -> np.ndarray:
     return np.asarray(core)
 
 
-def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: SpeedrunAgent) -> Dict[str, Any]:
-    return {
+def _apply_color_representation(stack: np.ndarray, mode: str) -> np.ndarray:
+    if mode != "shared_color":
+        return stack
+    if stack.ndim < 3:
+        return stack
+    if stack.shape[1] not in (14, 17):
+        return stack
+    viruses = stack[:, 0:3]
+    fixed = stack[:, 3:6]
+    falling = stack[:, 6:9]
+    color_planes = np.minimum(1.0, viruses + fixed + falling)
+    return np.concatenate([stack, color_planes], axis=1)
+
+
+def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dict[str, Any]:
+    payload = {
         "runs": args.runs,
         "max_steps": args.max_steps,
+        "strategy": args.strategy,
+        "learner": args.learner,
         "learning_rate": args.learning_rate,
         "gamma": args.gamma,
-        "epsilon": round(agent.epsilon, 4),
-        "epsilon_decay": args.epsilon_decay,
-        "epsilon_min": args.epsilon_min,
+        "policy_arch": args.policy_arch,
+        "color_repr": args.color_repr,
+        "batch_runs": args.batch_runs,
         "randomize_rng": bool(args.randomize_rng),
         "frame_offset": args.frame_offset,
+        "parallel_envs": getattr(args, "parallel_envs", getattr(args, "num_envs", None)),
     }
+    if hasattr(agent, "epsilon"):
+        payload["epsilon"] = round(float(getattr(agent, "epsilon")), 4)
+        payload["epsilon_decay"] = args.epsilon_decay
+        payload["epsilon_min"] = args.epsilon_min
+    if args.learner != "none":
+        payload["entropy_coef"] = args.entropy_coef
+        payload["value_coef"] = args.value_coef
+        payload["max_grad_norm"] = args.max_grad_norm
+        if args.device:
+            payload["device"] = args.device
+    return payload
 
 
 def _soft_reset_env(env: Any) -> bool:
     """Attempt an in-place backend reset and force the next reset to run the triple-start."""
-
     raw_env = getattr(env, "unwrapped", env)
-
     try:
         backend_reset = getattr(raw_env, "backend_reset", None)
         if callable(backend_reset):
@@ -321,12 +922,34 @@ def main() -> None:
     ap.add_argument("--viz-refresh-hz", type=float, default=60.0)
     ap.add_argument("--no-show-window", action="store_true")
     ap.add_argument("--no-monitor", action="store_true")
-    ap.add_argument("--strategy", choices=["random", "down", "down_hold", "noop"], default="random")
+    ap.add_argument(
+        "--strategy",
+        choices=["random", "down", "down_hold", "noop", "policy"],
+        default="random",
+    )
+    ap.add_argument("--learner", choices=["none", "reinforce"], default="none")
     ap.add_argument("--learning-rate", type=float, default=1e-3)
     ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--epsilon", type=float, default=0.2)
     ap.add_argument("--epsilon-decay", type=float, default=0.97)
     ap.add_argument("--epsilon-min", type=float, default=0.05)
+    ap.add_argument(
+        "--policy-arch",
+        choices=["mlp", "drmario_cnn", "drmario_color_cnn", "drmario_unet_pixel"],
+        default="mlp",
+    )
+    ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
+    ap.add_argument("--batch-runs", type=int, default=1, help="Episodes to accumulate before each policy update.")
+    ap.add_argument("--entropy-coef", type=float, default=0.01)
+    ap.add_argument("--value-coef", type=float, default=0.5)
+    ap.add_argument("--max-grad-norm", type=float, default=0.5)
+    ap.add_argument("--device", type=str, default=None)
+    ap.add_argument(
+        "--num-envs",
+        type=int,
+        default=None,
+        help="Parallel environments to run within each batch (default: cpu_count - 2).",
+    )
     ap.add_argument(
         "--recreate-env",
         action="store_true",
@@ -336,6 +959,9 @@ def main() -> None:
     args = ap.parse_args()
 
     register_env_id()
+
+    if args.mode != "state" and args.color_repr != "none":
+        raise ValueError("--color-repr shared_color is only supported for state mode observations")
 
     env_kwargs: Dict[str, Any] = {
         "obs_mode": args.mode,
@@ -369,34 +995,88 @@ def main() -> None:
     if args.start_settle_frames is not None:
         reset_options["start_settle_frames"] = int(args.start_settle_frames)
     if args.start_wait_frames is not None:
-        reset_options["start_wait_viruses"] = int(args.start_wait_frames)
+        reset_options["start_wait_frames"] = int(args.start_wait_frames)
 
     env = build_env()
     obs, info = env.reset(options=reset_options)
 
-    agent = SpeedrunAgent(
-        env.action_space,
-        strategy=args.strategy,
-        epsilon=args.epsilon,
-        epsilon_decay=args.epsilon_decay,
-        epsilon_min=args.epsilon_min,
-    )
+    use_learning_agent = args.learner == "reinforce" or args.strategy == "policy"
+    if use_learning_agent and args.learner == "none":
+        args.learner = "reinforce"  # align with requested strategy
+    if use_learning_agent and args.strategy != "policy":
+        args.strategy = "policy"
+
+    if args.mode == "state":
+        prototype_stack = _extract_state_stack(obs)
+    else:
+        core = obs["obs"] if isinstance(obs, dict) else obs
+        prototype_stack = np.asarray(core)
+
+    if use_learning_agent:
+        if args.mode == "pixel" and args.policy_arch not in {"mlp", "drmario_unet_pixel"}:
+            raise RuntimeError("Pixel observations require --policy-arch mlp or drmario_unet_pixel.")
+        if prototype_stack is None:
+            raise RuntimeError("Observation stack unavailable for learner initialisation.")
+        agent: Any = PolicyGradientAgent(
+            env.action_space,
+            prototype_obs=prototype_stack,
+            gamma=args.gamma,
+            learning_rate=args.learning_rate,
+            entropy_coef=args.entropy_coef,
+            value_coef=args.value_coef,
+            max_grad_norm=args.max_grad_norm,
+            device=args.device,
+            policy_arch=args.policy_arch,
+            color_repr=args.color_repr,
+            obs_mode=args.mode,
+            batch_runs=args.batch_runs,
+        )
+    else:
+        agent = SpeedrunAgent(
+            env.action_space,
+            strategy=args.strategy,
+            epsilon=args.epsilon,
+            epsilon_decay=args.epsilon_decay,
+            epsilon_min=args.epsilon_min,
+        )
+
+    network_tracker = NetworkDiagnosticsTracker(agent)
 
     monitor: Optional[ExperimentMonitor]
     if args.no_monitor:
         monitor = None
     else:
         monitor = ExperimentMonitor(_format_hyperparams_for_monitor(args, agent), args.strategy)
+        initial_metrics = network_tracker.collect()
+        if initial_metrics:
+            monitor.publish_diagnostics(initial_metrics)
 
     show_window = not args.no_show_window
-    viewer: Optional[_ProcessViewer] = None
     state_shape: Optional[Tuple[int, ...]] = None
     state_dtype: Optional[np.dtype] = None
     if args.mode == "state":
-        stack = _extract_state_stack(obs)
-        state_shape = stack.shape
-        state_dtype = stack.dtype
-    if show_window:
+        state_shape = prototype_stack.shape
+        state_dtype = prototype_stack.dtype
+
+    cpu_count = os.cpu_count() or 1
+    default_envs = max(1, cpu_count - 2)
+    requested_envs = default_envs if args.num_envs is None else max(1, int(args.num_envs))
+    num_envs = max(1, min(requested_envs, args.runs))
+    args.parallel_envs = num_envs
+    if monitor is not None:
+        monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+
+    total_steps = 0
+    target_hz = max(0.0, float(args.emu_target_hz))
+    step_period = 1.0 / target_hz if target_hz > 0 else 0.0
+    experiment_start_time = time.perf_counter()
+    completed_rewards: list[float] = []
+    recent_rewards = deque(maxlen=5)
+
+    def create_viewer(slot_index: int) -> Optional[_ProcessViewer]:
+        nonlocal show_window
+        if not show_window:
+            return None
         try:
             viewer_kwargs: Dict[str, Any] = {
                 "mode": args.mode,
@@ -408,36 +1088,29 @@ def main() -> None:
                     raise RuntimeError("State viewer requires shape information")
                 viewer_kwargs["state_shape"] = state_shape
                 viewer_kwargs["state_dtype"] = state_dtype
-            viewer = _ProcessViewer(
-                "Dr. Mario Trainer",
+            title = "Dr. Mario Trainer" if num_envs == 1 else f"Dr. Mario Trainer #{slot_index + 1}"
+            return _ProcessViewer(
+                title,
                 float(args.display_scale),
                 with_stats=(args.mode == "state"),
                 **viewer_kwargs,
             )
         except Exception as exc:
             print(f"Viewer unavailable: {exc}", file=sys.stderr)
-            viewer = None
             show_window = False
-
-    frame_index = 0
-    total_steps = 0
-    step_times: deque[float] = deque(maxlen=240)
-    target_hz = max(0.0, float(args.emu_target_hz))
-    step_period = 1.0 / target_hz if target_hz > 0 else 0.0
-    next_step_time = time.perf_counter()
-    emu_fps = 0.0
+            return None
 
     def publish_frame(
+        slot: _EnvSlot,
         observation: Any,
         info_payload: Dict[str, Any],
         action_val: Optional[int],
         reward_val: float,
         step_idx: int,
-        run_idx: int,
         episode_reward: float,
     ) -> None:
-        nonlocal viewer, show_window, frame_index, state_shape, state_dtype
-        if viewer is None:
+        viewer_local = slot.viewer
+        if viewer_local is None:
             return
         stats = {
             "info": info_payload,
@@ -445,105 +1118,230 @@ def main() -> None:
             "reward": reward_val,
             "cumulative": episode_reward,
             "action": None if action_val is None else int(action_val),
-            "run": run_idx,
-            "emu_fps": emu_fps,
-            "target_hz": target_hz if target_hz > 0 else None,
-            "emu_vis_ratio": None,
+            "run": -1 if slot.run_idx is None else int(slot.run_idx),
+            "emu_fps": slot.emu_fps,
+            "env_slot": slot.index,
+            "frame": slot.frame_index,
+            "time": time.perf_counter(),
         }
-        if args.mode == "state":
-            stack = _extract_state_stack(observation)
-            if state_shape is None or state_dtype is None:
-                state_shape = stack.shape
-                state_dtype = stack.dtype
-            if not viewer.push(stack, stats):
-                viewer = None
-                show_window = False
+        try:
+            if args.mode == "state":
+                stack = _extract_state_stack(observation)
+                if stack is None:
+                    return
+                if not viewer_local.push(stack, stats):
+                    slot.viewer = None
+                    return
+            else:
+                try:
+                    frame = slot.env.render()
+                except Exception:
+                    slot.viewer = None
+                    return
+                if frame is None:
+                    slot.viewer = None
+                    return
+                frame_np = np.asarray(frame)
+                if frame_np.ndim == 3 and frame_np.shape[-1] == 3:
+                    if not viewer_local.push(frame_np, stats):
+                        slot.viewer = None
+                        return
+                else:
+                    slot.viewer = None
+                    return
+        except Exception:
+            slot.viewer = None
+            return
+        slot.frame_index += 1
+
+    def assign_run(slot: _EnvSlot, run_idx: int) -> None:
+        slot.run_idx = run_idx
+        slot.episode_reward = 0.0
+        slot.episode_steps = 0
+        slot.frame_index = 0
+        slot.emu_fps = 0.0
+        slot.step_times.clear()
+        slot.step_times.append(time.perf_counter())
+        slot.next_step_time = time.perf_counter()
+        slot.active = True
+        slot.info = dict(slot.info or {})
+        agent.begin_episode(context_id=slot.context_id)
+        publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0)
+        if monitor is not None:
+            try:
+                monitor.publish_status(
+                    f"Run {run_idx + 1}/{args.runs} assigned to env {slot.index + 1}/{num_envs}"
+                )
+            except Exception:
+                pass
+
+    slots: list[_EnvSlot] = []
+    for slot_idx in range(num_envs):
+        if slot_idx == 0:
+            slot_env = env
+            slot_obs, slot_info = obs, info
         else:
-            frame = env.render()
-            if not viewer.push(frame, stats):
-                viewer = None
-                show_window = False
-        frame_index += 1
+            slot_env = build_env()
+            slot_obs, slot_info = slot_env.reset(options=reset_options)
+        viewer_instance = create_viewer(slot_idx)
+        slots.append(
+            _EnvSlot(
+                index=slot_idx,
+                env=slot_env,
+                viewer=viewer_instance,
+                context_id=slot_idx,
+                obs=slot_obs,
+                info=dict(slot_info or {}),
+            )
+        )
 
-    results: list[float] = []
-    cumulative_reward = 0.0
+    next_run_idx = 0
+    for slot in slots:
+        if next_run_idx >= args.runs:
+            break
+        assign_run(slot, next_run_idx)
+        next_run_idx += 1
 
-    publish_frame(obs, info, None, 0.0, total_steps, 0, cumulative_reward)
+    completed_runs = 0
 
     try:
-        for run_idx in range(args.runs):
-            agent.begin_episode()
-            run_reward = 0.0
-            episode_steps = 0
-            done = False
-            if monitor is not None:
-                monitor.publish_status(f"Run {run_idx + 1} / {args.runs}")
-
-            while episode_steps < args.max_steps and not done:
+        while completed_runs < args.runs:
+            active_any = False
+            for slot in slots:
+                if not slot.active or slot.run_idx is None:
+                    continue
+                active_any = True
                 if target_hz > 0:
                     now = time.perf_counter()
-                    if now < next_step_time:
-                        time.sleep(max(0.0, next_step_time - now))
-                        now = next_step_time
-                    else:
+                    if now < slot.next_step_time:
+                        time.sleep(max(0.0, slot.next_step_time - now))
                         now = time.perf_counter()
-                    next_step_time = now + step_period
+                    slot.next_step_time = now + step_period
 
-                action = agent.select_action(obs, info)
-                obs, reward, term, trunc, info = env.step(action)
-                run_reward += reward
-                cumulative_reward += reward
-                episode_steps += 1
+                action = agent.select_action(slot.obs, slot.info, context_id=slot.context_id)
+                next_obs, reward, term, trunc, step_info = slot.env.step(action)
+                step_info = dict(step_info or {})
+                step_done = bool(term or trunc)
+
+                slot.episode_reward += reward
+                slot.episode_steps += 1
                 total_steps += 1
 
-                step_times.append(time.perf_counter())
-                if len(step_times) >= 2:
-                    span = step_times[-1] - step_times[0]
+                agent.observe_step(reward, step_done, context_id=slot.context_id)
+
+                slot.step_times.append(time.perf_counter())
+                if len(slot.step_times) >= 2:
+                    span = slot.step_times[-1] - slot.step_times[0]
                     if span > 0:
-                        emu_fps = float(len(step_times) - 1) / span
+                        slot.emu_fps = float(len(slot.step_times) - 1) / span
 
-                publish_frame(obs, info, int(action), reward, total_steps, run_idx, run_reward)
+                publish_frame(slot, next_obs, step_info, int(action), reward, total_steps, slot.episode_reward)
 
-                if term or trunc:
-                    done = True
+                slot.obs = next_obs
+                slot.info = step_info
 
-            results.append(run_reward)
-            agent.end_episode(run_reward)
-            if monitor is not None:
-                monitor.publish_score(run_idx, run_reward)
-                monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+                done = step_done or slot.episode_steps >= args.max_steps
+                if not done:
+                    continue
 
-            print(
-                f"Run {run_idx + 1}/{args.runs}: reward={run_reward:.2f} steps={episode_steps} "
-                f"epsilon={agent.epsilon:.3f}"
-            )
+                agent.end_episode(slot.episode_reward, context_id=slot.context_id)
+                run_reward = slot.episode_reward
+                completed_rewards.append(run_reward)
+                recent_rewards.append(run_reward)
 
-            if run_idx < args.runs - 1:
-                if args.recreate_env:
-                    env.close()
-                    env = build_env()
+                if monitor is not None:
+                    monitor.publish_score(slot.run_idx, run_reward)
+                    monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+                    elapsed = max(1e-6, time.perf_counter() - experiment_start_time)
+                    diagnostics_payload = {
+                        "episodes_completed": len(completed_rewards),
+                        "episode_reward": run_reward,
+                        "reward_mean_5": float(np.mean(recent_rewards)) if recent_rewards else 0.0,
+                        "reward_std_5": float(np.std(recent_rewards)) if len(recent_rewards) > 1 else 0.0,
+                        "best_reward": float(np.max(completed_rewards)),
+                        "episode_steps": slot.episode_steps,
+                        "total_steps": total_steps,
+                        "steps_per_second": total_steps / elapsed,
+                    }
+                    diagnostics_payload["parallel_envs"] = num_envs
+                    diagnostics_payload["active_envs"] = sum(1 for s in slots if s.active)
+                    if hasattr(agent, "epsilon"):
+                        diagnostics_payload["epsilon"] = float(getattr(agent, "epsilon"))
+                    network_metrics = network_tracker.collect()
+                    if network_metrics:
+                        diagnostics_payload.update(network_metrics)
+                    agent_metrics_fn = getattr(agent, "latest_metrics", None)
+                    if callable(agent_metrics_fn):
+                        agent_metrics = agent_metrics_fn()
+                        if agent_metrics:
+                            diagnostics_payload.update(agent_metrics)
+                    try:
+                        monitor.publish_diagnostics(diagnostics_payload)
+                        active_envs = sum(1 for s in slots if s.active)
+                        status_text = (
+                            f"Completed {completed_runs + 1}/{args.runs} | "
+                            f"run {slot.run_idx + 1} reward {run_reward:.2f} | "
+                            f"env {slot.index + 1} fps {slot.emu_fps:.1f} | "
+                            f"active {active_envs}/{num_envs}"
+                        )
+                        if hasattr(agent, "epsilon"):
+                            try:
+                                status_text += f" | eps {float(getattr(agent, 'epsilon')):.3f}"
+                            except Exception:
+                                pass
+                        monitor.publish_status(status_text)
+                    except Exception:
+                        pass
+
+                completed_runs += 1
+                slot.active = False
+
+                if next_run_idx < args.runs:
+                    if args.recreate_env:
+                        try:
+                            slot.env.close()
+                        except Exception:
+                            pass
+                        slot.env = build_env()
+                    else:
+                        if not _soft_reset_env(slot.env):
+                            try:
+                                slot.env.close()
+                            except Exception:
+                                pass
+                            slot.env = build_env()
+                    slot.obs, slot.info = slot.env.reset(options=reset_options)
+                    slot.info = dict(slot.info or {})
+                    assign_run(slot, next_run_idx)
+                    next_run_idx += 1
                 else:
-                    if not _soft_reset_env(env):
-                        env.close()
-                        env = build_env()
-                obs, info = env.reset(options=reset_options)
-                cumulative_reward = 0.0
-                publish_frame(obs, info, None, 0.0, total_steps, run_idx + 1, cumulative_reward)
+                    slot.run_idx = None
+                    slot.step_times.clear()
+
+            if not active_any:
+                time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("Interrupted by user; stopping experiment.", file=sys.stderr)
     finally:
         if monitor is not None:
             monitor.close()
-        if viewer is not None:
-            viewer.close()
-        env.close()
-        if results:
-            mean_reward = float(np.mean(results))
-            best_reward = float(np.max(results))
-            print(f"Completed {len(results)} runs. Mean reward={mean_reward:.2f}, best={best_reward:.2f}")
+        for slot in slots:
+            if slot.viewer is not None:
+                slot.viewer.close()
+            try:
+                slot.env.close()
+            except Exception:
+                pass
+        if completed_rewards:
+            mean_reward = float(np.mean(completed_rewards))
+            best_reward = float(np.max(completed_rewards))
+            print(
+                f"Completed {len(completed_rewards)} runs. Mean reward={mean_reward:.2f}, "
+                f"best={best_reward:.2f}"
+            )
+
 
 
 if __name__ == "__main__":
     main()
-
