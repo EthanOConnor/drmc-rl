@@ -89,11 +89,12 @@ if mx is not None and nn is not None:
             )
 
         def __call__(self, x: mx.array) -> mx.array:
-            # Input: (B, C, 16, 8)
+            # Input: (B, C, 16, 8) -> convert to NHWC for MLX convolutions
+            x = mx.transpose(x, (0, 2, 3, 1))
             x = self.stem(x)
             x = self.down1(x)
             x = self.down2(x)
-            x = mx.mean(x, axis=(2, 3))
+            x = mx.mean(x, axis=(1, 2))
             x = self.norm(x)
             return self.project(x)
 
@@ -215,4 +216,3 @@ else:  # pragma: no cover - fall-back when MLX is unavailable
 
 
 __all__ = ["DrMarioStatePolicyMLX"]
-

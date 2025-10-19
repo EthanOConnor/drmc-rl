@@ -34,6 +34,10 @@ from envs.retro.intent_wrapper import DrMarioIntentEnv
 from envs.retro.register_env import register_env_id, register_intent_env_id
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
+try:
+    from models.policy.mlx_networks import DrMarioStatePolicyMLX
+except Exception:  # pragma: no cover - optional dependency
+    DrMarioStatePolicyMLX = None
 
 try:
     import torch
@@ -44,6 +48,15 @@ except Exception:  # pragma: no cover - torch is optional for this experiment
     nn = None
     optim = None
     Categorical = None
+
+try:  # pragma: no cover - optional dependency
+    import mlx.core as mx
+    import mlx.nn as nn_mlx
+    import mlx.optimizers as optim_mlx
+except Exception:  # pragma: no cover - MLX is optional
+    mx = None
+    nn_mlx = None
+    optim_mlx = None
 
 COMPONENT_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("episode_reward", "Total"),
@@ -1216,6 +1229,247 @@ class PolicyGradientAgent:
             state["optimizer_state"] = optim_state
         except Exception:
             pass
+
+
+@dataclass
+class _MLXEpisodeContext:
+    observations: List[np.ndarray] = field(default_factory=list)
+    rewards: List[float] = field(default_factory=list)
+    actions: List[int] = field(default_factory=list)
+    recurrent_state: Optional[Any] = None
+
+
+class PolicyGradientAgentMLX:
+    def __init__(
+        self,
+        action_space,
+        prototype_obs: np.ndarray,
+        gamma: float,
+        learning_rate: float,
+        entropy_coef: float = 0.01,
+        value_coef: float = 0.5,
+        policy_arch: str = "drmario_cnn",
+        color_repr: str = "none",
+        obs_mode: str = "state",
+        batch_runs: int = 1,
+    ) -> None:
+        if mx is None or nn_mlx is None or optim_mlx is None:
+            raise RuntimeError("MLX backend is not available. Please install mlx to use --policy-backend mlx.")
+        if DrMarioStatePolicyMLX is None:
+            raise RuntimeError("DrMarioStatePolicyMLX is unavailable.")
+        if obs_mode != "state":
+            raise ValueError("MLX backend currently supports state observations only.")
+        if policy_arch not in {"drmario_cnn", "drmario_color_cnn"}:
+            raise ValueError("MLX backend requires --policy-arch drmario_cnn or drmario_color_cnn.")
+        self._action_space = action_space
+        self._action_dim = int(action_space.n)
+        self._gamma = float(gamma)
+        self._entropy_coef = float(entropy_coef)
+        self._value_coef = float(value_coef)
+        self._color_repr = color_repr
+        self._obs_mode = obs_mode
+        if batch_runs != 1:
+            print("Warning: MLX backend currently ignores batch accumulation; forcing batch_runs=1.", file=sys.stderr)
+        self._batch_runs = 1
+        self._contexts: Dict[int, _MLXEpisodeContext] = {}
+        augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
+        if augmented_stack.ndim < 3:
+            raise ValueError("Prototype observation must have at least 3 dimensions.")
+        self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
+        in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else ram_specs.STATE_CHANNELS
+        self.model = DrMarioStatePolicyMLX(
+            action_dim=self._action_dim,
+            in_channels=int(in_channels),
+        )
+        self.optimizer = optim_mlx.Adam(learning_rate=float(learning_rate))
+        try:  # pragma: no cover - optional evaluation for lazy arrays
+            mx.eval(self.model.parameters(), self.optimizer.state)
+        except Exception:
+            pass
+        self._updates = 0
+        self._last_metrics: Dict[str, float] = {}
+        self._latest_critic_ev = 0.0
+        self._episodes_in_batch = 0
+        self._steps_in_batch = 0
+
+    def _context_key(self, context_id: Optional[int]) -> int:
+        if context_id is None:
+            return 0
+        return int(context_id)
+
+    def _get_context(self, context_id: Optional[int]) -> _MLXEpisodeContext:
+        key = self._context_key(context_id)
+        ctx = self._contexts.get(key)
+        if ctx is None:
+            ctx = _MLXEpisodeContext()
+            self._contexts[key] = ctx
+        return ctx
+
+    def _reset_context(self, context_id: Optional[int]) -> _MLXEpisodeContext:
+        ctx = self._get_context(context_id)
+        ctx.observations.clear()
+        ctx.rewards.clear()
+        ctx.actions.clear()
+        ctx.recurrent_state = None
+        return ctx
+
+    def _prepare_obs(self, obs: Any) -> np.ndarray:
+        stack = _extract_state_stack(obs)
+        stack_np = np.asarray(stack, dtype=np.float32)
+        if self._obs_mode == "state":
+            stack_np = _apply_color_representation(stack_np, self._color_repr)
+        return stack_np
+
+    def begin_episode(self, context_id: Optional[int] = None) -> None:
+        self._reset_context(context_id)
+
+    def observe_step(
+        self,
+        reward: float,
+        _done: bool,
+        _info: Optional[Dict[str, Any]] = None,
+        context_id: Optional[int] = None,
+    ) -> None:
+        ctx = self._get_context(context_id)
+        ctx.rewards.append(float(reward))
+
+    def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+        ctx = self._get_context(context_id)
+        stack_np = self._prepare_obs(obs)
+        if stack_np.ndim != 4:
+            raise RuntimeError("MLX backend expects observation shape (T, C, H, W).")
+        ctx.observations.append(stack_np)
+        obs_tensor = mx.array(stack_np, dtype=mx.float32)
+        obs_tensor = mx.expand_dims(obs_tensor, axis=0)  # (1, T, C, H, W)
+        logits, value, hx = self.model(obs_tensor, ctx.recurrent_state, last_only=True)
+        logits_vec = logits[0]
+        ctx.recurrent_state = hx
+
+        probs = mx.softmax(logits_vec, axis=-1)
+        probs_np = np.asarray(probs, dtype=np.float64)
+        if probs_np.ndim != 1:
+            probs_np = probs_np.reshape(-1)
+        probs_np = np.clip(probs_np, 1e-8, None)
+        probs_np = probs_np / probs_np.sum()
+        action = int(np.random.choice(self._action_dim, p=probs_np))
+        ctx.actions.append(action)
+        return action
+
+    def _mx_to_float(self, value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            try:
+                return float(np.asarray(value))
+            except Exception:
+                return float(np.array(value).reshape(()))
+
+    def _mx_to_numpy(self, value: Any) -> np.ndarray:
+        try:
+            return np.asarray(value)
+        except Exception:
+            return np.array(value)
+
+    def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
+        ctx = self._get_context(context_id)
+        if not ctx.actions:
+            self._reset_context(context_id)
+            return
+
+        observations = np.stack(ctx.observations, axis=0).astype(np.float32)
+        actions = np.array(ctx.actions, dtype=np.int32)
+        rewards = np.array(ctx.rewards, dtype=np.float32)
+
+        returns = np.zeros_like(rewards)
+        G = 0.0
+        for idx in range(len(rewards) - 1, -1, -1):
+            G = rewards[idx] + self._gamma * G
+            returns[idx] = G
+
+        obs_batch = mx.array(observations, dtype=mx.float32)
+        obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
+        actions_batch = mx.array(actions.reshape(-1, 1), dtype=mx.int32)
+        returns_tensor = mx.array(returns, dtype=mx.float32)
+
+        metrics_cache: Dict[str, Any] = {}
+
+        def loss_fn(model, obs_tensor, action_tensor):
+            logits_seq, values_seq, _ = model(obs_tensor, None, last_only=False)
+            logits_seq = logits_seq[0]
+            values_seq = values_seq[0]
+            log_probs = mx.log_softmax(logits_seq, axis=-1)
+            selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
+            advantages = returns_tensor - values_seq
+            policy_loss = -mx.mean(selected * advantages)
+            value_loss = 0.5 * mx.mean(mx.clip(advantages * advantages, a_max=10.0))
+            probs = mx.softmax(logits_seq, axis=-1)
+            entropy = -mx.mean(mx.sum(probs * log_probs, axis=-1))
+            metrics_cache["policy_loss"] = policy_loss
+            metrics_cache["value_loss"] = value_loss
+            metrics_cache["entropy"] = entropy
+            metrics_cache["advantages"] = advantages
+            metrics_cache["returns"] = returns_tensor
+            metrics_cache["values"] = values_seq
+            return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
+
+        loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
+        loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
+        self.optimizer.update(self.model, grads)
+        try:  # pragma: no cover - optional evaluation for lazy arrays
+            mx.eval(self.model.parameters(), self.optimizer.state)
+        except Exception:
+            pass
+
+        policy_loss_val = self._mx_to_float(metrics_cache.get("policy_loss", 0.0))
+        value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
+        entropy_val = self._mx_to_float(metrics_cache.get("entropy", 0.0))
+
+        returns_np = self._mx_to_numpy(metrics_cache.get("returns", returns_tensor))
+        values_np = self._mx_to_numpy(metrics_cache.get("values", np.zeros_like(returns_np)))
+        value_errors = returns_np - values_np
+        value_mse = float(np.mean(value_errors ** 2))
+        value_var = float(np.var(returns_np))
+        if value_var <= 1e-8:
+            ev = 0.0
+        else:
+            ev = 1.0 - (value_mse / (value_var + 1e-8))
+
+        self._last_metrics = {
+            "learner/policy_loss": float(policy_loss_val),
+            "learner/value_loss": float(value_loss_val),
+            "learner/entropy": float(entropy_val),
+            "learner/updates": float(self._updates + 1),
+            "critic/explained_variance": float(max(-1.0, min(1.0, ev))),
+        }
+        self._latest_critic_ev = float(max(-1.0, min(1.0, ev)))
+        self._updates += 1
+
+        self._reset_context(context_id)
+
+    def latest_metrics(self) -> Dict[str, float]:
+        metrics = dict(self._last_metrics)
+        metrics["learner/pending_runs"] = 0.0
+        metrics["learner/pending_steps"] = 0.0
+        metrics["critic/latest_ev"] = float(self._latest_critic_ev)
+        return metrics
+
+    def finalize_updates(self) -> None:
+        pass
+
+    def get_state(self) -> Dict[str, Any]:
+        return {
+            "updates": int(self._updates),
+            "latest_critic_ev": float(self._latest_critic_ev),
+            "supports_checkpoint": False,
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        try:
+            self._updates = int(state.get("updates", self._updates))
+            self._latest_critic_ev = float(state.get("latest_critic_ev", self._latest_critic_ev))
+        except Exception:
+            pass
+
         return state
 
     def set_state(self, state: Dict[str, Any]) -> None:
@@ -1279,6 +1533,7 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         "learning_rate": args.learning_rate,
         "gamma": args.gamma,
         "policy_arch": args.policy_arch,
+        "policy_backend": args.policy_backend,
         "color_repr": args.color_repr,
         "batch_runs": args.batch_runs,
         "randomize_rng": bool(args.randomize_rng),
@@ -1367,6 +1622,12 @@ def main() -> None:
         "--policy-arch",
         choices=["mlp", "drmario_cnn", "drmario_color_cnn", "drmario_unet_pixel"],
         default="mlp",
+    )
+    ap.add_argument(
+        "--policy-backend",
+        choices=["torch", "mlx"],
+        default="torch",
+        help="Select the deep learning backend for the policy network.",
     )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
     ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
@@ -1493,20 +1754,34 @@ def main() -> None:
             raise RuntimeError("Pixel observations require --policy-arch mlp or drmario_unet_pixel.")
         if prototype_stack is None:
             raise RuntimeError("Observation stack unavailable for learner initialisation.")
-        agent: Any = PolicyGradientAgent(
-            env.action_space,
-            prototype_obs=prototype_stack,
-            gamma=args.gamma,
-            learning_rate=args.learning_rate,
-            entropy_coef=args.entropy_coef,
-            value_coef=args.value_coef,
-            max_grad_norm=args.max_grad_norm,
-            device=args.device,
-            policy_arch=args.policy_arch,
-            color_repr=args.color_repr,
-            obs_mode=args.mode,
-            batch_runs=args.batch_runs,
-        )
+        if args.policy_backend == "mlx":
+            agent = PolicyGradientAgentMLX(
+                env.action_space,
+                prototype_obs=prototype_stack,
+                gamma=args.gamma,
+                learning_rate=args.learning_rate,
+                entropy_coef=args.entropy_coef,
+                value_coef=args.value_coef,
+                policy_arch=args.policy_arch,
+                color_repr=args.color_repr,
+                obs_mode=args.mode,
+                batch_runs=args.batch_runs,
+            )
+        else:
+            agent = PolicyGradientAgent(
+                env.action_space,
+                prototype_obs=prototype_stack,
+                gamma=args.gamma,
+                learning_rate=args.learning_rate,
+                entropy_coef=args.entropy_coef,
+                value_coef=args.value_coef,
+                max_grad_norm=args.max_grad_norm,
+                device=args.device,
+                policy_arch=args.policy_arch,
+                color_repr=args.color_repr,
+                obs_mode=args.mode,
+                batch_runs=args.batch_runs,
+            )
     else:
         agent = SpeedrunAgent(
             env.action_space,
