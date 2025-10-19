@@ -788,7 +788,13 @@ class SpeedrunAgent:
     def begin_episode(self, context_id: Optional[int] = None) -> None:
         pass
 
-    def observe_step(self, _reward: float, _done: bool, context_id: Optional[int] = None) -> None:
+    def observe_step(
+        self,
+        _reward: float,
+        _done: bool,
+        _info: Optional[Dict[str, Any]] = None,
+        context_id: Optional[int] = None,
+    ) -> None:
         pass
 
     def select_action(self, _obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
@@ -849,6 +855,7 @@ class _EpisodeContext:
     rewards: List[float] = field(default_factory=list)
     entropies: List["torch.Tensor"] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
+    last_spawn_id: Optional[int] = None
 
 
 @dataclass
@@ -977,7 +984,19 @@ class PolicyGradientAgent:
         ctx.rewards.clear()
         ctx.entropies.clear()
         ctx.recurrent_state = None
+        ctx.last_spawn_id = None
         return ctx
+
+    def _zero_recurrent_state(self, ctx: _EpisodeContext) -> None:
+        hx = ctx.recurrent_state
+        if hx is None:
+            return
+        if isinstance(hx, torch.Tensor):
+            ctx.recurrent_state = torch.zeros_like(hx.detach())
+        elif isinstance(hx, tuple):
+            ctx.recurrent_state = tuple(torch.zeros_like(t.detach()) for t in hx)
+        else:
+            ctx.recurrent_state = None
 
     def begin_episode(self, context_id: Optional[int] = None) -> None:
         self.model.train(True)
@@ -1003,9 +1022,15 @@ class PolicyGradientAgent:
             else:
                 raise RuntimeError("Unexpected observation tensor shape")
             logits, value, hx = self.model(input_tensor, ctx.recurrent_state)
-            logits = logits[:, -1, :]
-            value_tensor = value[:, -1]
-            dist = Categorical(logits=logits.squeeze(0))
+            if logits.dim() == 3:
+                logits_slice = logits[:, -1, :]
+            else:
+                logits_slice = logits
+            if value.dim() == 2:
+                value_tensor = value[:, -1]
+            else:
+                value_tensor = value
+            dist = Categorical(logits=logits_slice.squeeze(0))
             action = dist.sample()
             log_prob = dist.log_prob(action)
             entropy = dist.entropy()
@@ -1022,9 +1047,32 @@ class PolicyGradientAgent:
 
         return int(action.item())
 
-    def observe_step(self, reward: float, _done: bool, context_id: Optional[int] = None) -> None:
+    def observe_step(
+        self,
+        reward: float,
+        done: bool,
+        info: Optional[Dict[str, Any]] = None,
+        context_id: Optional[int] = None,
+    ) -> None:
         ctx = self._get_context(context_id)
         ctx.rewards.append(float(reward))
+
+        spawn_id: Optional[int] = None
+        if info is not None:
+            raw_spawn = info.get("spawn_id")
+            if isinstance(raw_spawn, numbers.Integral):
+                spawn_id = int(raw_spawn)
+            elif isinstance(raw_spawn, numbers.Number):
+                spawn_id = int(raw_spawn)
+        if spawn_id is not None:
+            if ctx.last_spawn_id is None:
+                ctx.last_spawn_id = spawn_id
+            elif spawn_id != ctx.last_spawn_id:
+                self._zero_recurrent_state(ctx)
+                ctx.last_spawn_id = spawn_id
+        if done:
+            self._zero_recurrent_state(ctx)
+            ctx.last_spawn_id = None
 
     def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
         ctx = self._get_context(context_id)
@@ -1792,7 +1840,7 @@ def main() -> None:
                 slot.episode_steps += 1
                 total_steps += 1
 
-                agent.observe_step(reward, step_done, context_id=slot.context_id)
+                agent.observe_step(reward, step_done, step_info, context_id=slot.context_id)
 
                 slot.step_times.append(time.perf_counter())
                 if len(slot.step_times) >= 2:
