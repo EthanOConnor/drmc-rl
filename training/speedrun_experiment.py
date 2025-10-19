@@ -16,6 +16,7 @@ import argparse
 import multiprocessing as mp
 import numbers
 import os
+import pickle
 import queue
 import sys
 import time
@@ -27,8 +28,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from envs.retro.demo import _ProcessViewer
-from envs.retro.register_env import register_env_id
 from envs.retro.drmario_env import Action
+from envs.retro.intent_wrapper import DrMarioIntentEnv
+from envs.retro.register_env import register_env_id, register_intent_env_id
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
 
@@ -42,11 +44,22 @@ except Exception:  # pragma: no cover - torch is optional for this experiment
     optim = None
     Categorical = None
 
+COMPONENT_FIELDS: Tuple[Tuple[str, str], ...] = (
+    ("episode_reward", "Total"),
+    ("pill_bonus_adjusted", "Pill"),
+    ("action_penalty", "Action"),
+    ("non_virus_bonus", "Non-virus"),
+    ("adjacency_bonus", "Adjacency"),
+    ("height_penalty_delta", "Height"),
+    ("time_reward", "Time"),
+)
+
 
 def _monitor_worker(
     title: str,
     init_payload: Dict[str, Any],
     score_queue: "mp.Queue",
+    command_queue: "mp.Queue",
     stop_event: "mp.Event",
 ) -> None:
     try:
@@ -72,9 +85,26 @@ def _monitor_worker(
     )
     hyper_label.pack(fill="x", padx=8, pady=4)
 
+    rng_enabled = bool(hyperparams.get("randomize_rng", False))
+
     status_var = tk.StringVar(value="Waiting for runs...")
     status_label = tk.Label(root, textvariable=status_var, anchor="w", justify="left")
     status_label.pack(fill="x", padx=8, pady=2)
+
+    rng_state_var = tk.StringVar()
+    seed_state_var = tk.StringVar()
+
+    def set_rng_label() -> None:
+        rng_state_var.set(f"RNG randomize: {'ON' if rng_enabled else 'OFF'}  (Ctrl+R)")
+
+    current_seed_index = int(hyperparams.get("seed_index", 0))
+
+    def set_seed_label() -> None:
+        seed_state_var.set(f"Seed index: {current_seed_index}  (+/-)")
+
+    set_rng_label()
+    rng_label = tk.Label(root, textvariable=rng_state_var, anchor="w", justify="left")
+    rng_label.pack(fill="x", padx=8, pady=2)
 
     diag_frame = tk.LabelFrame(root, text="Diagnostics")
     diag_frame.pack(fill="x", padx=8, pady=6)
@@ -91,6 +121,93 @@ def _monitor_worker(
     canvas_width, canvas_height = 480, 260
     canvas = tk.Canvas(root, width=canvas_width, height=canvas_height, bg="white")
     canvas.pack(fill="both", expand=True, padx=8, pady=8)
+
+    component_fields: list[Tuple[str, str]] = list(COMPONENT_FIELDS)
+    component_columns: list[Dict[str, Any]] = []
+    ticker_max_cols = 12
+    ticker_history_limit = 120
+    ticker_col_width = 120
+    ticker_row_height = 18
+    ticker_margin = 10
+    ticker_canvas: Optional["tk.Canvas"]
+    try:
+        ticker_window = tk.Toplevel(root)
+        ticker_window.title("Reward Components")
+        ticker_canvas = tk.Canvas(
+            ticker_window,
+            width=ticker_col_width * ticker_max_cols + ticker_margin * 2,
+            height=ticker_row_height * (len(component_fields) + 2) + ticker_margin * 2,
+            bg="white",
+        )
+        ticker_canvas.pack(fill="both", expand=True)
+    except Exception:
+        ticker_canvas = None
+        ticker_window = None
+
+    def send_command(payload: Dict[str, Any]) -> None:
+        if command_queue is None:
+            return
+        try:
+            command_queue.put_nowait(payload)
+        except queue.Full:
+            try:
+                command_queue.get_nowait()
+                command_queue.put_nowait(payload)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def toggle_rng(_event=None) -> None:
+        nonlocal rng_enabled
+        rng_enabled = not rng_enabled
+        set_rng_label()
+        send_command({"type": "rng_toggle", "enabled": rng_enabled})
+        try:
+            hyperparams["randomize_rng"] = rng_enabled
+            hyper_label.configure(text=format_hyperparams(hyperparams))
+        except Exception:
+            pass
+        try:
+            status_var.set(
+                f"Randomize RNG {'enabled' if rng_enabled else 'disabled'} (Ctrl+R to toggle)"
+            )
+        except Exception:
+            pass
+
+    def adjust_seed(delta: int) -> None:
+        nonlocal current_seed_index
+        current_seed_index = (current_seed_index + delta) % 1000000
+        set_seed_label()
+        send_command({"type": "seed_adjust", "seed_index": current_seed_index})
+        try:
+            hyperparams["seed_index"] = current_seed_index
+            hyper_label.configure(text=format_hyperparams(hyperparams))
+        except Exception:
+            pass
+
+    def inc_seed(_event=None) -> None:
+        adjust_seed(1)
+
+    def dec_seed(_event=None) -> None:
+        adjust_seed(-1)
+
+    root.bind("<Control-r>", toggle_rng)
+    root.bind("<Control-R>", toggle_rng)
+    root.bind("<plus>", inc_seed)
+    root.bind("<KP_Add>", inc_seed)
+    root.bind("<minus>", dec_seed)
+    root.bind("<KP_Subtract>", dec_seed)
+    if 'ticker_window' in locals() and ticker_window is not None:
+        try:
+            ticker_window.bind("<Control-r>", toggle_rng)
+            ticker_window.bind("<Control-R>", toggle_rng)
+            ticker_window.bind("<plus>", inc_seed)
+            ticker_window.bind("<KP_Add>", inc_seed)
+            ticker_window.bind("<minus>", dec_seed)
+            ticker_window.bind("<KP_Subtract>", dec_seed)
+        except Exception:
+            pass
 
     scores: list[Tuple[int, float]] = []
     score_by_run: Dict[int, float] = {}
@@ -219,8 +336,73 @@ def _monitor_worker(
         for b_idx in sorted(batch_medians):
             scores.append((b_idx + 1, batch_medians[b_idx]))
 
+    def render_ticker() -> None:
+        if ticker_canvas is None:
+            return
+        ticker_canvas.delete("all")
+        if not component_columns:
+            return
+        columns = component_columns[-ticker_max_cols:]
+
+        label_texts = [f"{label}:" for _, label in component_fields]
+        label_width = max(len(text) for text in label_texts)
+        value_width = 6
+        sep = " |  "
+        char_px = 8
+
+        def format_value(raw: Optional[float]) -> str:
+            if raw is None:
+                return "-"
+            try:
+                return f"{float(raw):.0f}"
+            except Exception:
+                return "-"
+
+        def format_row(values: list[Optional[float]]) -> str:
+            parts: list[str] = []
+            for idx, val in enumerate(values):
+                text = format_value(val)
+                text = text.rjust(value_width)
+                if idx == 0:
+                    parts.append(text)
+                else:
+                    parts.append(f"{sep}{text}")
+            return "".join(parts)
+
+        header_values: list[Optional[float]] = []
+        for column in columns:
+            run_label = column.get("run")
+            try:
+                header_values.append(float(run_label))
+            except Exception:
+                header_values.append(None)
+
+        header_string = " " * (label_width + 1) + " " + format_row(header_values)
+        row_strings: list[str] = []
+        for idx, (field_name, label) in enumerate(component_fields):
+            label_text = f"{label:<{label_width}}:"
+            row_values = [columns[col_idx].get(field_name) for col_idx in range(len(columns))]
+            row_strings.append(f"{label_text} {format_row(row_values)}")
+
+        all_lines = [header_string] + row_strings
+        max_line_len = max(len(line) for line in all_lines)
+        height = ticker_row_height * len(all_lines) + ticker_margin * 2
+        width = max_line_len * char_px + ticker_margin * 2
+        ticker_canvas.configure(width=width, height=height)
+
+        for line_idx, line in enumerate(all_lines):
+            y = ticker_margin + line_idx * ticker_row_height
+            ticker_canvas.create_text(
+                ticker_margin,
+                y,
+                anchor="nw",
+                text=line,
+                font=("Courier", 10 if line_idx == 0 else 9),
+                fill="#222" if line_idx == 0 else "#333",
+            )
+
     def pump_queue() -> None:
-        nonlocal runs_total, parallel_envs_var, batch_runs_var, group_size_var
+        nonlocal runs_total, parallel_envs_var, batch_runs_var, group_size_var, component_columns
         updated = False
         try:
             while True:
@@ -287,6 +469,18 @@ def _monitor_worker(
                             )
                         except Exception:
                             pass
+                        if "randomize_rng" in payload:
+                            try:
+                                rng_enabled = bool(payload.get("randomize_rng", rng_enabled))
+                                set_rng_label()
+                            except Exception:
+                                pass
+                        if "seed_index" in payload:
+                            try:
+                                current_seed_index = int(payload.get("seed_index", current_seed_index))
+                                set_seed_label()
+                            except Exception:
+                                pass
                         group_size_new = max(1, parallel_envs_var, batch_runs_var)
                         if group_size_new != group_size_var:
                             group_size_var = group_size_new
@@ -307,6 +501,34 @@ def _monitor_worker(
                                 latest_diagnostics[key] = str(value)
                                 diagnostic_history.pop(key, None)
                         diagnostics_var.set(format_diagnostics())
+                        run_number: Optional[int]
+                        try:
+                            run_number = int(payload.get("episodes_completed", 0))
+                        except Exception:
+                            run_number = None
+                        if run_number is not None and run_number >= 1:
+                            component_entry: Dict[str, Any] = {"run": run_number}
+                            for field_name, _label in component_fields:
+                                raw_val = payload.get(field_name)
+                                if isinstance(raw_val, numbers.Number):
+                                    component_entry[field_name] = float(raw_val)
+                                else:
+                                    try:
+                                        component_entry[field_name] = float(raw_val)
+                                    except Exception:
+                                        component_entry[field_name] = None
+                            updated_column = False
+                            for idx, existing in enumerate(component_columns):
+                                if existing.get("run") == run_number:
+                                    component_columns[idx] = component_entry
+                                    updated_column = True
+                                    break
+                            if not updated_column:
+                                component_columns.append(component_entry)
+                            component_columns.sort(key=lambda item: item.get("run", 0))
+                            if len(component_columns) > ticker_history_limit:
+                                component_columns[:] = component_columns[-ticker_history_limit:]
+                            render_ticker()
         except queue.Empty:
             pass
 
@@ -453,10 +675,17 @@ class ExperimentMonitor:
     def __init__(self, hyperparams: Dict[str, Any], strategy: str) -> None:
         self._ctx = mp.get_context("spawn")
         self._queue: mp.Queue = self._ctx.Queue(maxsize=64)
+        self._commands: mp.Queue = self._ctx.Queue(maxsize=32)
         self._stop = self._ctx.Event()
         self._proc = self._ctx.Process(
             target=_monitor_worker,
-            args=("Speedrun Monitor", {"hyperparams": hyperparams, "strategy": strategy}, self._queue, self._stop),
+            args=(
+                "Speedrun Monitor",
+                {"hyperparams": hyperparams, "strategy": strategy},
+                self._queue,
+                self._commands,
+                self._stop,
+            ),
         )
         self._proc.daemon = True
         self._proc.start()
@@ -502,12 +731,33 @@ class ExperimentMonitor:
         except Exception:
             pass
 
+    def poll_commands(self) -> list[Dict[str, Any]]:
+        commands: list[Dict[str, Any]] = []
+        if self._closed:
+            return commands
+        try:
+            while True:
+                cmd = self._commands.get_nowait()
+                if cmd is None:
+                    break
+                if isinstance(cmd, dict):
+                    commands.append(cmd)
+        except queue.Empty:
+            pass
+        except Exception:
+            pass
+        return commands
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
         try:
             self._queue.put_nowait(None)
+        except Exception:
+            pass
+        try:
+            self._commands.put_nowait(None)
         except Exception:
             pass
         self._stop.set()
@@ -555,6 +805,21 @@ class SpeedrunAgent:
         if self.epsilon > self._epsilon_min:
             self.epsilon = max(self._epsilon_min, self.epsilon * self._epsilon_decay)
 
+    def get_state(self) -> Dict[str, Any]:
+        return {
+            "epsilon": float(self.epsilon),
+            "epsilon_decay": float(self._epsilon_decay),
+            "epsilon_min": float(self._epsilon_min),
+            "strategy": self._strategy,
+        }
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        try:
+            if "epsilon" in state:
+                self.epsilon = float(state["epsilon"])
+        except Exception:
+            pass
+
 
 class SimpleStateActorCritic(nn.Module):
     def __init__(self, input_dim: int, action_dim: int):
@@ -601,6 +866,7 @@ class _EnvSlot:
     step_times: deque = field(default_factory=lambda: deque(maxlen=240))
     next_step_time: float = field(default_factory=time.perf_counter)
     active: bool = False
+    component_sums: Dict[str, float] = field(default_factory=dict)
 
 
 class PolicyGradientAgent:
@@ -844,6 +1110,58 @@ class PolicyGradientAgent:
         self._batch_accum_value_loss = 0.0
         self._batch_accum_entropy = 0.0
 
+    def get_state(self) -> Dict[str, Any]:
+        state: Dict[str, Any] = {
+            "updates": int(self._updates),
+            "episodes_in_batch": int(self._episodes_in_batch),
+            "steps_in_batch": int(self._steps_in_batch),
+            "batch_accum_policy_loss": float(self._batch_accum_policy_loss),
+            "batch_accum_value_loss": float(self._batch_accum_value_loss),
+            "batch_accum_entropy": float(self._batch_accum_entropy),
+            "batch_runs": int(self._batch_runs),
+            "policy_arch": self._policy_arch,
+            "obs_mode": self._obs_mode,
+            "color_repr": self._color_repr,
+        }
+        if torch is None:
+            return state
+        try:
+            model_state = {k: v.detach().cpu() for k, v in self.model.state_dict().items()}
+            optim_state = self.optimizer.state_dict()
+            for group in optim_state.get("state", {}).values():
+                for key, value in list(group.items()):
+                    if isinstance(value, torch.Tensor):
+                        group[key] = value.detach().cpu()
+            state["model_state"] = model_state
+            state["optimizer_state"] = optim_state
+        except Exception:
+            pass
+        return state
+
+    def set_state(self, state: Dict[str, Any]) -> None:
+        if torch is not None:
+            model_state = state.get("model_state")
+            if isinstance(model_state, dict):
+                try:
+                    self.model.load_state_dict(model_state)
+                    self.model.to(self._device)
+                except Exception:
+                    pass
+            optim_state = state.get("optimizer_state")
+            if isinstance(optim_state, dict):
+                try:
+                    self.optimizer.load_state_dict(optim_state)
+                except Exception:
+                    pass
+        try:
+            self._updates = int(state.get("updates", self._updates))
+            self._episodes_in_batch = int(state.get("episodes_in_batch", 0))
+            self._steps_in_batch = int(state.get("steps_in_batch", 0))
+            self._batch_accum_policy_loss = float(state.get("batch_accum_policy_loss", 0.0))
+            self._batch_accum_value_loss = float(state.get("batch_accum_value_loss", 0.0))
+            self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
+        except Exception:
+            pass
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
     core = observation["obs"] if isinstance(observation, dict) else observation
@@ -878,7 +1196,11 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         "randomize_rng": bool(args.randomize_rng),
         "frame_offset": args.frame_offset,
         "parallel_envs": getattr(args, "parallel_envs", getattr(args, "num_envs", None)),
+        "seed_index": getattr(args, "seed_index", None),
+        "intent_mode": bool(getattr(args, "intent_action_space", False)),
     }
+    if getattr(args, "reward_config", None):
+        payload["reward_config_path"] = str(Path(args.reward_config).expanduser())
     if hasattr(agent, "epsilon"):
         payload["epsilon"] = round(float(getattr(agent, "epsilon")), 4)
         payload["epsilon_decay"] = args.epsilon_decay
@@ -921,9 +1243,14 @@ def main() -> None:
     ap.add_argument("--risk-tau", type=float, default=0.5)
     ap.add_argument("--frame-offset", type=int, default=0)
     ap.add_argument("--randomize-rng", action="store_true")
+    ap.add_argument("--seed-index", type=int, default=0, help="Seed index used when RNG randomization is disabled.")
     ap.add_argument("--backend", type=str, default=None)
     ap.add_argument("--core-path", type=str, default=None)
     ap.add_argument("--rom-path", type=str, default=None)
+    ap.add_argument("--reward-config", type=str, default=None, help="Path to reward config override (JSON).")
+    ap.add_argument("--checkpoint-path", type=str, default=None, help="File to save checkpoints between runs.")
+    ap.add_argument("--checkpoint-interval", type=int, default=0, help="Save checkpoint every N completed runs (0 disables).")
+    ap.add_argument("--resume", action="store_true", help="Resume from checkpoint if available.")
     ap.add_argument("--no-auto-start", action="store_true")
     ap.add_argument("--start-presses", type=int, default=None)
     ap.add_argument("--start-hold-frames", type=int, default=None)
@@ -970,10 +1297,22 @@ def main() -> None:
         action="store_true",
         help="Close and recreate the environment between runs instead of using a soft reset.",
     )
+    ap.add_argument(
+        "--intent-action-space",
+        action="store_true",
+        help="Use the intent-based control wrapper instead of direct controller actions.",
+    )
+    ap.add_argument(
+        "--intent-safe-writes",
+        action="store_true",
+        help="Allow the intent translator to perform safe backend writes (experimental).",
+    )
 
     args = ap.parse_args()
 
     register_env_id()
+    if args.intent_action_space:
+        register_intent_env_id()
 
     if args.mode != "state" and args.color_repr != "none":
         raise ValueError("--color-repr shared_color is only supported for state mode observations")
@@ -990,15 +1329,38 @@ def main() -> None:
         env_kwargs["core_path"] = Path(args.core_path).expanduser()
     if args.rom_path:
         env_kwargs["rom_path"] = Path(args.rom_path).expanduser()
+    if args.reward_config:
+        env_kwargs["reward_config_path"] = Path(args.reward_config).expanduser()
     if args.no_auto_start:
         env_kwargs["auto_start"] = False
 
     def build_env() -> Any:
         return make("DrMarioRetroEnv-v0", **env_kwargs)
 
+    def build_training_env() -> Any:
+        env_instance = build_env()
+        if args.intent_action_space:
+            env_instance = DrMarioIntentEnv(env_instance, safe_writes=args.intent_safe_writes)
+        return env_instance
+
+    randomize_rng_enabled = bool(args.randomize_rng)
+    current_seed_index = int(getattr(args, "seed_index", 0))
     reset_options: Dict[str, Any] = {"frame_offset": args.frame_offset}
-    if args.randomize_rng:
+    if randomize_rng_enabled:
         reset_options["randomize_rng"] = True
+    setattr(args, "seed_index", current_seed_index)
+    checkpoint_path: Optional[Path]
+    if args.checkpoint_path:
+        checkpoint_path = Path(args.checkpoint_path).expanduser()
+    else:
+        checkpoint_path = None
+    checkpoint_interval = max(0, int(args.checkpoint_interval))
+    if args.resume and checkpoint_path is None:
+        raise ValueError("--resume requires --checkpoint-path")
+
+    completed_rewards: list[float] = []
+    recent_rewards: deque[float] = deque(maxlen=5)
+    total_steps = 0
     if args.start_presses is not None:
         reset_options["start_presses"] = int(args.start_presses)
     if args.start_hold_frames is not None:
@@ -1012,8 +1374,14 @@ def main() -> None:
     if args.start_wait_frames is not None:
         reset_options["start_wait_frames"] = int(args.start_wait_frames)
 
-    env = build_env()
-    obs, info = env.reset(options=reset_options)
+    def reset_environment(environment: Any) -> Tuple[Any, Dict[str, Any]]:
+        opts = dict(reset_options)
+        if randomize_rng_enabled:
+            return environment.reset(options=opts)
+        return environment.reset(seed=current_seed_index, options=opts)
+
+    env = build_training_env()
+    obs, info = reset_environment(env)
 
     use_learning_agent = args.learner == "reinforce" or args.strategy == "policy"
     if use_learning_agent and args.learner == "none":
@@ -1066,6 +1434,141 @@ def main() -> None:
         if initial_metrics:
             monitor.publish_diagnostics(initial_metrics)
 
+    def process_monitor_commands() -> None:
+        nonlocal randomize_rng_enabled, reset_options, current_seed_index
+        if monitor is None:
+            return
+        commands = monitor.poll_commands()
+        if not commands:
+            return
+        changed_rng = False
+        seed_changed = False
+        for cmd in commands:
+            if cmd.get("type") == "rng_toggle":
+                enabled = bool(cmd.get("enabled", randomize_rng_enabled))
+                if enabled != randomize_rng_enabled:
+                    randomize_rng_enabled = enabled
+                    changed_rng = True
+            elif cmd.get("type") == "seed_adjust":
+                seed_val = cmd.get("seed_index")
+                try:
+                    seed_val = int(seed_val)
+                    if seed_val != current_seed_index:
+                        current_seed_index = seed_val
+                        seed_changed = True
+                except Exception:
+                    pass
+        if changed_rng:
+            if randomize_rng_enabled:
+                reset_options["randomize_rng"] = True
+            else:
+                reset_options.pop("randomize_rng", None)
+            setattr(args, "randomize_rng", randomize_rng_enabled)
+            if monitor is not None:
+                monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+        if seed_changed:
+            setattr(args, "seed_index", current_seed_index)
+            if monitor is not None:
+                monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+                try:
+                    monitor.publish_status(f"Seed index set to {current_seed_index}")
+                except Exception:
+                    pass
+
+    def check_reward_config_updates() -> None:
+        changed = False
+        for slot in slots:
+            base_env = getattr(slot.env, "unwrapped", slot.env)
+            reload_fn = getattr(slot.env, "reload_reward_config", None)
+            if reload_fn is None:
+                reload_fn = getattr(base_env, "reload_reward_config", None)
+            if callable(reload_fn):
+                try:
+                    if reload_fn():
+                        changed = True
+                except Exception as exc:
+                    print(f"Warning: failed to reload reward config: {exc}", file=sys.stderr)
+        if changed and monitor is not None:
+            monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+            try:
+                monitor.publish_status("Reloaded reward configuration")
+            except Exception:
+                pass
+
+    def build_checkpoint_payload(next_run: int) -> Dict[str, Any]:
+        agent_state: Optional[Dict[str, Any]] = None
+        state_fn = getattr(agent, "get_state", None)
+        if callable(state_fn):
+            try:
+                agent_state = state_fn()
+            except Exception:
+                agent_state = None
+        payload: Dict[str, Any] = {
+            "version": 1,
+            "timestamp": time.time(),
+            "args": vars(args),
+            "runs_completed": next_run,
+            "completed_rewards": list(completed_rewards),
+            "recent_rewards": list(recent_rewards),
+            "total_steps": total_steps,
+            "randomize_rng_enabled": randomize_rng_enabled,
+            "seed_index": current_seed_index,
+            "agent_state": agent_state,
+        }
+        return payload
+
+    def save_checkpoint(next_run: int) -> None:
+        if checkpoint_path is None:
+            return
+        try:
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            with checkpoint_path.open("wb") as f:
+                pickle.dump(build_checkpoint_payload(next_run), f)
+        except Exception as exc:
+            print(f"Failed to save checkpoint: {exc}", file=sys.stderr)
+
+    def load_checkpoint() -> Optional[Dict[str, Any]]:
+        if checkpoint_path is None or not checkpoint_path.is_file():
+            return None
+        try:
+            with checkpoint_path.open("rb") as f:
+                return pickle.load(f)
+        except Exception as exc:
+            print(f"Failed to load checkpoint: {exc}", file=sys.stderr)
+            return None
+
+    if args.resume and checkpoint_path:
+        checkpoint_data = load_checkpoint()
+        if checkpoint_data:
+            loaded_runs = int(checkpoint_data.get("runs_completed", 0))
+            completed_rewards = list(checkpoint_data.get("completed_rewards", []))
+            recent_rewards_data = checkpoint_data.get("recent_rewards", [])
+            if isinstance(recent_rewards_data, (list, tuple)):
+                recent_rewards = deque(recent_rewards_data[-5:], maxlen=5)
+            else:
+                recent_rewards = deque(maxlen=5)
+            total_steps = int(checkpoint_data.get("total_steps", 0))
+            randomize_rng_enabled = bool(checkpoint_data.get("randomize_rng_enabled", randomize_rng_enabled))
+            if randomize_rng_enabled:
+                reset_options["randomize_rng"] = True
+            else:
+                reset_options.pop("randomize_rng", None)
+            setattr(args, "randomize_rng", randomize_rng_enabled)
+            current_seed_index = int(checkpoint_data.get("seed_index", current_seed_index))
+            setattr(args, "seed_index", current_seed_index)
+            agent_state = checkpoint_data.get("agent_state")
+            state_fn = getattr(agent, "set_state", None)
+            if callable(state_fn) and agent_state is not None:
+                try:
+                    state_fn(agent_state)
+                except Exception as exc:
+                    print(f"Warning: failed to restore agent state: {exc}", file=sys.stderr)
+            if monitor is not None:
+                monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
+            print(f"Resumed from checkpoint '{checkpoint_path}' at run {loaded_runs}")
+        else:
+            print("No checkpoint data found; starting fresh.")
+
     show_window = not args.no_show_window
     state_shape: Optional[Tuple[int, ...]] = None
     state_dtype: Optional[np.dtype] = None
@@ -1081,12 +1584,9 @@ def main() -> None:
     if monitor is not None:
         monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
 
-    total_steps = 0
     target_hz = max(0.0, float(args.emu_target_hz))
     step_period = 1.0 / target_hz if target_hz > 0 else 0.0
     experiment_start_time = time.perf_counter()
-    completed_rewards: list[float] = []
-    recent_rewards = deque(maxlen=5)
 
     def create_viewer(slot_index: int) -> Optional[_ProcessViewer]:
         nonlocal show_window
@@ -1180,6 +1680,7 @@ def main() -> None:
         slot.next_step_time = time.perf_counter()
         slot.active = True
         slot.info = dict(slot.info or {})
+        slot.component_sums.clear()
         agent.begin_episode(context_id=slot.context_id)
         publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0)
         if monitor is not None:
@@ -1196,8 +1697,8 @@ def main() -> None:
             slot_env = env
             slot_obs, slot_info = obs, info
         else:
-            slot_env = build_env()
-            slot_obs, slot_info = slot_env.reset(options=reset_options)
+            slot_env = build_training_env()
+            slot_obs, slot_info = reset_environment(slot_env)
         viewer_instance = create_viewer(slot_idx)
         slots.append(
             _EnvSlot(
@@ -1210,17 +1711,21 @@ def main() -> None:
             )
         )
 
-    next_run_idx = 0
+    check_reward_config_updates()
+
+    next_run_idx = len(completed_rewards)
     for slot in slots:
         if next_run_idx >= args.runs:
             break
         assign_run(slot, next_run_idx)
         next_run_idx += 1
 
-    completed_runs = 0
+    completed_runs = len(completed_rewards)
 
     try:
         while completed_runs < args.runs:
+            process_monitor_commands()
+            check_reward_config_updates()
             active_any = False
             for slot in slots:
                 if not slot.active or slot.run_idx is None:
@@ -1254,6 +1759,15 @@ def main() -> None:
 
                 slot.obs = next_obs
                 slot.info = step_info
+                for comp_key, _ in COMPONENT_FIELDS:
+                    if comp_key == "episode_reward":
+                        continue
+                    raw_val = step_info.get(comp_key)
+                    if isinstance(raw_val, numbers.Number):
+                        val = float(raw_val)
+                        if comp_key == "action_penalty":
+                            val = -val
+                        slot.component_sums[comp_key] = slot.component_sums.get(comp_key, 0.0) + val
 
                 done = step_done or slot.episode_steps >= args.max_steps
                 if not done:
@@ -1278,6 +1792,10 @@ def main() -> None:
                         "total_steps": total_steps,
                         "steps_per_second": total_steps / elapsed,
                     }
+                    for comp_key, _ in COMPONENT_FIELDS:
+                        if comp_key == "episode_reward":
+                            continue
+                        diagnostics_payload[comp_key] = slot.component_sums.get(comp_key, 0.0)
                     diagnostics_payload["parallel_envs"] = num_envs
                     diagnostics_payload["active_envs"] = sum(1 for s in slots if s.active)
                     if hasattr(agent, "epsilon"):
@@ -1311,21 +1829,25 @@ def main() -> None:
                 completed_runs += 1
                 slot.active = False
 
+                if checkpoint_path is not None and checkpoint_interval > 0:
+                    if completed_runs % checkpoint_interval == 0:
+                        save_checkpoint(completed_runs)
+
                 if next_run_idx < args.runs:
                     if args.recreate_env:
                         try:
                             slot.env.close()
                         except Exception:
                             pass
-                        slot.env = build_env()
+                        slot.env = build_training_env()
                     else:
                         if not _soft_reset_env(slot.env):
                             try:
                                 slot.env.close()
                             except Exception:
                                 pass
-                            slot.env = build_env()
-                    slot.obs, slot.info = slot.env.reset(options=reset_options)
+                            slot.env = build_training_env()
+                    slot.obs, slot.info = reset_environment(slot.env)
                     slot.info = dict(slot.info or {})
                     assign_run(slot, next_run_idx)
                     next_run_idx += 1
@@ -1334,6 +1856,8 @@ def main() -> None:
                     slot.step_times.clear()
 
             if not active_any:
+                process_monitor_commands()
+                check_reward_config_updates()
                 time.sleep(0.01)
 
     except KeyboardInterrupt:
@@ -1354,6 +1878,8 @@ def main() -> None:
                 slot.env.close()
             except Exception:
                 pass
+        if checkpoint_path is not None:
+            save_checkpoint(completed_runs)
         if completed_rewards:
             mean_reward = float(np.mean(completed_rewards))
             best_reward = float(np.max(completed_rewards))
@@ -1366,3 +1892,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    set_seed_label()
+    seed_label = tk.Label(root, textvariable=seed_state_var, anchor="w", justify="left")
+    seed_label.pack(fill="x", padx=8, pady=2)

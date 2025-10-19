@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
 import os
 import warnings
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import gymnasium as gym
@@ -16,6 +17,9 @@ from envs.retro.state_viz import state_to_rgb
 from envs.reward_shaping import PotentialShaper
 from envs.backends import make_backend
 from envs.backends.base import NES_BUTTONS
+
+A_BUTTON_INDEX = NES_BUTTONS.index("A")
+B_BUTTON_INDEX = NES_BUTTONS.index("B")
 from envs.retro.action_adapters import discrete10_to_buttons
 
 
@@ -34,16 +38,18 @@ class Action(IntEnum):
 
 @dataclass
 class RewardConfig:
-    # Finalized defaults per design review
-    alpha: float = 8.0   # progress shaping for virus clears
-    beta: float = 0.5    # tiny bonus for multi-clears
-    gamma: float = 0.1   # settle penalty weight
-    terminal_clear_bonus: float = 500.0
-    topout_penalty: float = -500.0
-    mode: str = "speedrun"  # "speedrun" | "mean_safe" | "cvar"
-    cvar_alpha: float = 0.25
-    elite_clear_seconds_default: float = 10.0
-    elite_clear_seconds: Dict[int, float] = field(default_factory=dict)
+    pill_place_bonus: float = 1.0
+    virus_clear_bonus: float = 300.0
+    non_virus_clear_bonus: float = 50.0
+    terminal_clear_bonus: float = 150.0
+    topout_penalty: float = -50.0
+    time_bonus_topout_per_60_frames: float = 2.0
+    time_penalty_clear_per_60_frames: float = 3.0
+    adjacency_pair_bonus: float = 10.0
+    adjacency_triplet_bonus: float = 25.0
+    column_height_penalty: float = 5.0
+    action_penalty_scale: float = 0.25
+
 
 
 def _default_seed_registry() -> Path:
@@ -77,6 +83,7 @@ class DrMarioRetroEnv(gym.Env):
         include_risk_tau: bool = True,
         risk_tau: float = 1.0,
         reward_config: Optional[RewardConfig] = None,
+        reward_config_path: Optional[Union[str, Path]] = None,
         seed_registry: Optional[Path] = None,
         core_path: Optional[Path] = None,
         rom_path: Optional[Path] = None,
@@ -99,7 +106,16 @@ class DrMarioRetroEnv(gym.Env):
         self.frame_skip = frame_skip
         self.include_risk_tau = include_risk_tau
         self.default_risk_tau = float(risk_tau)
-        self.reward_cfg = reward_config or RewardConfig()
+        self._reward_config_path: Optional[Path] = None
+        self.reward_cfg, self._reward_cfg_descriptions = self._resolve_reward_config(
+            reward_config, reward_config_path
+        )
+        self._reward_config_mtime: Optional[float] = None
+        if self._reward_config_path and self._reward_config_path.is_file():
+            try:
+                self._reward_config_mtime = self._reward_config_path.stat().st_mtime
+            except OSError:
+                self._reward_config_mtime = None
         self.core_path = Path(core_path).expanduser() if core_path is not None else None
         self.rom_path = Path(rom_path).expanduser() if rom_path is not None else None
         self.render_mode = render_mode
@@ -183,6 +199,7 @@ class DrMarioRetroEnv(gym.Env):
         self._hold_left = False
         self._hold_right = False
         self._hold_down = False
+        self._prev_move_dir = "none"
         self._in_game = False
         self._last_terminal: Optional[str] = None
         self._prev_terminal: Optional[str] = None
@@ -194,11 +211,91 @@ class DrMarioRetroEnv(gym.Env):
         self._ending_active: Optional[bool] = None
         self._player_count: Optional[int] = None
         self._pill_spawn_counter: Optional[int] = None
+        self._prev_pill_count = 0
         self._frames_until_drop_val: Optional[int] = None
         self._pending_rng_randomize = False
         self._pending_rng_override: Optional[Sequence[int]] = None
         self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
         self._backend_reset_done = False
+        self._prev_height_penalty = 0.0
+        self._elapsed_frames = 0
+
+    def _resolve_reward_config(
+        self,
+        reward_config: Optional[RewardConfig],
+        reward_config_path: Optional[Union[str, Path]],
+    ) -> Tuple[RewardConfig, Dict[str, str]]:
+        if reward_config is not None:
+            self._reward_config_path = None
+            return reward_config, {}
+
+        candidates: list[Path] = []
+        if reward_config_path is not None:
+            candidates.append(Path(reward_config_path).expanduser())
+        env_override = os.environ.get("DRMARIO_REWARD_CONFIG")
+        if env_override:
+            candidates.append(Path(env_override).expanduser())
+        candidates.append(Path(__file__).with_suffix("").parent.parent / "specs" / "reward_config.json")
+
+        for candidate in candidates:
+            try:
+                if not candidate or not candidate.is_file():
+                    continue
+                with candidate.open("r", encoding="utf-8") as f:
+                    payload = json.load(f)
+            except Exception as exc:
+                warnings.warn(f"Failed to load reward config from {candidate}: {exc}")
+                continue
+            cfg_obj, descriptions = self._reward_config_from_payload(payload)
+            self._reward_config_path = candidate
+            return cfg_obj, descriptions
+
+        self._reward_config_path = None
+        return RewardConfig(), {}
+
+    @staticmethod
+    def _reward_config_from_payload(payload: Dict[str, Any]) -> Tuple[RewardConfig, Dict[str, str]]:
+        if not isinstance(payload, dict):
+            return RewardConfig(), {}
+
+        values: Dict[str, Any] = {}
+        descriptions: Dict[str, str] = {}
+        for key, meta in payload.items():
+            if isinstance(meta, dict):
+                if "value" in meta:
+                    values[key] = meta["value"]
+                if "description" in meta:
+                    descriptions[key] = str(meta["description"])
+            else:
+                values[key] = meta
+
+        cfg_kwargs: Dict[str, Any] = {}
+        for field_name in RewardConfig.__dataclass_fields__:
+            if field_name in values:
+                cfg_kwargs[field_name] = values[field_name]
+
+        return RewardConfig(**cfg_kwargs), descriptions
+
+    def reload_reward_config(self) -> bool:
+        if self._reward_config_path is None:
+            return False
+        try:
+            mtime = self._reward_config_path.stat().st_mtime
+        except OSError:
+            return False
+        if self._reward_config_mtime is not None and mtime <= self._reward_config_mtime:
+            return False
+        try:
+            with self._reward_config_path.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+            cfg_obj, descriptions = self._reward_config_from_payload(payload)
+            self.reward_cfg = cfg_obj
+            self._reward_cfg_descriptions = descriptions
+            self._reward_config_mtime = mtime
+            return True
+        except Exception as exc:
+            warnings.warn(f"Failed to reload reward config from {self._reward_config_path}: {exc}")
+            return False
 
     def _resize_rgb(self, rgb: np.ndarray, out_hw=(128, 128)) -> np.ndarray:
         # Nearest-neighbor resize without external deps
@@ -449,7 +546,155 @@ class DrMarioRetroEnv(gym.Env):
             self._frames_without_active_pill = 0
             return False
         self._update_active_pill_tracker(v_now)
-        return self._frames_without_active_pill >= self._topout_inactive_threshold
+        if self._frames_without_active_pill >= self._topout_inactive_threshold:
+            return True
+        if self.obs_mode == "state":
+            ram_arr = self._read_ram_array(refresh=False)
+            if ram_arr is not None:
+                try:
+                    planes = ram_to_state(ram_arr.tobytes(), self._ram_offsets)
+                except Exception:
+                    planes = None
+                if planes is not None and self._detect_state_game_over_pattern(planes):
+                    self._frames_without_active_pill = 0
+                    return True
+        return False
+
+    @staticmethod
+    def _detect_state_game_over_pattern(state_stack: np.ndarray) -> bool:
+        try:
+            stack = np.asarray(state_stack)
+        except Exception:
+            return False
+        if stack.ndim == 4:
+            if stack.shape[0] == 0:
+                return False
+            latest = stack[-1]
+        elif stack.ndim == 3:
+            latest = stack
+        else:
+            return False
+        if latest.shape[0] < 6 or latest.shape[-2:] != (16, 8):
+            return False
+        static_red = latest[3] > 0.5
+        static_yellow = latest[4] > 0.5
+        static_blue = latest[5] > 0.5
+        occupancy = static_red | static_yellow | static_blue
+        H, W = occupancy.shape
+        if W < 8:
+            return False
+        for top in range(0, H - 4):
+            row_y = static_yellow[top]
+            row_r = static_red[top]
+            if row_y.sum() != 6:
+                continue
+            if row_y[0] or row_y[7]:
+                continue
+            if not row_y[1:7].all():
+                continue
+            if not row_r[7] or row_r[:7].any():
+                continue
+            if static_blue[top, 0]:
+                continue
+            consecutive_blue = 0
+            for r in range(top + 1, H):
+                if not static_blue[r, 0]:
+                    break
+                consecutive_blue += 1
+            if consecutive_blue < 4:
+                continue
+            row_occ = occupancy[top]
+            if row_occ.sum() != 7:
+                continue
+            return True
+        return False
+
+    def _compute_adjacency_bonus(self, prev_frame: np.ndarray, next_frame: np.ndarray) -> float:
+        if prev_frame.shape[0] < 6 or next_frame.shape[0] < 6:
+            return 0.0
+        static_prev = prev_frame[3:6] > 0.5
+        static_next = next_frame[3:6] > 0.5
+        new_cells = static_next & ~static_prev
+        total_bonus = 0.0
+
+        for color_idx in range(3):
+            coords = np.argwhere(new_cells[color_idx])
+            if coords.size == 0:
+                continue
+            mask_prev = static_prev[color_idx]
+            mask_new = static_next[color_idx]
+            pair_awarded = False
+            triplet_awarded = False
+
+            for r, c in coords:
+                # Horizontal runs
+                left_prev = 0
+                cc = c - 1
+                while cc >= 0 and mask_prev[r, cc]:
+                    left_prev += 1
+                    cc -= 1
+                right_prev = 0
+                cc = c + 1
+                while cc < mask_prev.shape[1] and mask_prev[r, cc]:
+                    right_prev += 1
+                    cc += 1
+
+                left_new = 0
+                cc = c - 1
+                while cc >= 0 and mask_new[r, cc]:
+                    left_new += 1
+                    cc -= 1
+                right_new = 0
+                cc = c + 1
+                while cc < mask_new.shape[1] and mask_new[r, cc]:
+                    right_new += 1
+                    cc += 1
+
+                run_prev_best = max(left_prev, right_prev)
+                run_new_total = left_new + 1 + right_new
+
+                if run_prev_best < 3 and run_new_total >= 3:
+                    triplet_awarded = True
+                elif run_prev_best < 2 and run_new_total >= 2:
+                    pair_awarded = True
+
+                # Vertical runs
+                up_prev = 0
+                rr = r - 1
+                while rr >= 0 and mask_prev[rr, c]:
+                    up_prev += 1
+                    rr -= 1
+                down_prev = 0
+                rr = r + 1
+                while rr < mask_prev.shape[0] and mask_prev[rr, c]:
+                    down_prev += 1
+                    rr += 1
+
+                up_new = 0
+                rr = r - 1
+                while rr >= 0 and mask_new[rr, c]:
+                    up_new += 1
+                    rr -= 1
+                down_new = 0
+                rr = r + 1
+                while rr < mask_new.shape[0] and mask_new[rr, c]:
+                    down_new += 1
+                    rr += 1
+
+                run_prev_best_v = max(up_prev, down_prev)
+                run_new_total_v = up_new + 1 + down_new
+
+                if run_prev_best_v < 3 and run_new_total_v >= 3:
+                    triplet_awarded = True
+                elif run_prev_best_v < 2 and run_new_total_v >= 2:
+                    pair_awarded = True
+
+            if triplet_awarded:
+                total_bonus += self.reward_cfg.adjacency_triplet_bonus
+            elif pair_awarded:
+                total_bonus += self.reward_cfg.adjacency_pair_bonus
+
+        return total_bonus
 
     def _extract_virus_count(self) -> Optional[int]:
         ram_arr = self._read_ram_array(refresh=False)
@@ -744,11 +989,15 @@ class DrMarioRetroEnv(gym.Env):
         self._ending_active = None
         self._player_count = None
         self._pill_spawn_counter = None
+        self._prev_pill_count = 0
         self._frames_until_drop_val = None
         self._pending_rng_randomize = False
         self._pending_rng_override = None
         self._last_rng_seed_bytes = None
+        self._prev_height_penalty = 0.0
         backend_reset_pending = getattr(self, "_backend_reset_done", False)
+        self._elapsed_frames = 0
+        self._prev_move_dir = "none"
         if self._using_backend and self._backend is not None:
             try:
                 if not backend_reset_pending:
@@ -810,7 +1059,9 @@ class DrMarioRetroEnv(gym.Env):
         self._hold_left = self._hold_right = self._hold_down = False
         obs = self._observe(risk_tau=(options.get("risk_tau") if options else self.default_risk_tau))
         self.last_obs = obs
-        if self._use_shaping and self._shaper is not None:
+        if self.obs_mode == "state":
+            self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
+        elif self._use_shaping and self._shaper is not None:
             self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
         else:
             self._state_prev = None
@@ -819,18 +1070,10 @@ class DrMarioRetroEnv(gym.Env):
             info["rng_seed"] = self._last_rng_seed_bytes
         return obs, self._augment_info(info)
 
-    def _time_penalty_per_step(self) -> float:
-        viruses_target = max(1, getattr(self, "_viruses_initial", 0) or 1)
-        elite_seconds = self.reward_cfg.elite_clear_seconds.get(
-            int(self.level), self.reward_cfg.elite_clear_seconds_default
-        )
-        frames_per_virus = max(elite_seconds * self._fps / viruses_target, 1.0)
-        virus_reward = float(self.reward_cfg.alpha)
-        per_frame_penalty = -virus_reward / frames_per_virus
-        return per_frame_penalty * self.frame_skip
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
         self._t += 1
+        self._elapsed_frames += self.frame_skip
         done = False
         truncated = False
 
@@ -853,6 +1096,25 @@ class DrMarioRetroEnv(gym.Env):
             bool(held["RIGHT"]),
             bool(held["DOWN"]),
         )
+
+        action_events = 0
+        rotation_pressed = bool(buttons[A_BUTTON_INDEX] or buttons[B_BUTTON_INDEX])
+        if rotation_pressed:
+            action_events += 1
+
+        if self._hold_left:
+            new_move_dir = "left"
+        elif self._hold_right:
+            new_move_dir = "right"
+        elif self._hold_down:
+            new_move_dir = "down"
+        else:
+            new_move_dir = "none"
+
+        if new_move_dir != "none" and new_move_dir != self._prev_move_dir:
+            action_events += 1
+
+        self._prev_move_dir = new_move_dir
 
         if self._using_backend and self._backend is not None:
             gameplay_flag: Optional[bool] = None
@@ -903,9 +1165,125 @@ class DrMarioRetroEnv(gym.Env):
             delta_v = 1 if self._rng.rand() < 0.02 else 0
             self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
 
-        # Reward shaping per finalized spec
-        r_env = self._time_penalty_per_step() if self._viruses_remaining > 0 else 0.0
-        r_env += self.reward_cfg.alpha * float(delta_v)
+        obs = self._observe()
+        self.last_obs = obs
+
+        # New reward calculation
+        r_env = 0.0
+
+        state_prev_frame: Optional[np.ndarray] = None
+        state_next_frame: Optional[np.ndarray] = None
+        if self.obs_mode == "state" and self._state_prev is not None:
+            state_prev_frame = self._state_prev[-1]
+            state_next_frame = (obs["obs"] if isinstance(obs, dict) else obs)[-1]
+
+        placement_bonus_adjusted = 0.0
+        placement_height_diff: Optional[float] = None
+        penalty_unit = float(self.reward_cfg.action_penalty_scale)
+
+        # Pill placement bonus (subject to placement height adjustment)
+        current_pill_count = self._pill_spawn_counter or 0
+        placement_bonus = 0.0
+        if self._prev_pill_count > 0 and current_pill_count > self._prev_pill_count:
+            placement_bonus = self.reward_cfg.pill_place_bonus * (current_pill_count - self._prev_pill_count)
+            placement_bonus_adjusted = placement_bonus
+            if state_prev_frame is not None and state_next_frame is not None:
+                prev_static = state_prev_frame[3:6]
+                next_static = state_next_frame[3:6]
+                new_static = (next_static > 0.1) & (prev_static <= 0.1)
+                board_h = next_static.shape[1] if next_static.ndim >= 3 else 0
+                placement_heights: Optional[np.ndarray] = None
+                if new_static.any() and board_h > 0:
+                    new_rows = np.nonzero(new_static.any(axis=0))[0]
+                    if new_rows.size > 0:
+                        placement_heights = board_h - new_rows
+                virus_mask = (state_next_frame[0:3] > 0.1).any(axis=0)
+                virus_height = 0
+                if virus_mask.any():
+                    virus_rows = np.nonzero(virus_mask)[0]
+                    if virus_rows.size > 0:
+                        highest_virus_row = int(virus_rows.max())
+                        virus_height = board_h - highest_virus_row
+                if placement_heights is not None and placement_heights.size > 0:
+                    placement_height_diff = float(placement_heights.max() - virus_height)
+                    if virus_mask.any():
+                        if np.any(placement_heights <= virus_height):
+                            placement_bonus_adjusted = placement_bonus
+                        elif np.all(placement_heights > virus_height + 3):
+                            placement_bonus_adjusted = -2.0 * abs(placement_bonus)
+                        else:
+                            placement_bonus_adjusted = placement_bonus
+                    else:
+                        placement_bonus_adjusted = placement_bonus
+                else:
+                    placement_height_diff = None
+            r_env += placement_bonus_adjusted
+        self._prev_pill_count = current_pill_count
+        if placement_bonus != 0.0:
+            penalty_unit = float(self.reward_cfg.action_penalty_scale)
+
+        # Virus and non-virus clear bonus
+        adjacency_bonus = 0.0
+        nonvirus_bonus = 0.0
+        height_penalty_raw = 0.0
+        height_penalty_delta = 0.0
+        if state_prev_frame is not None and state_next_frame is not None:
+            s_prev_latest_frame = state_prev_frame
+            s_next_latest_frame = state_next_frame
+            if not topout:
+                s_prev_occupied = np.sum(s_prev_latest_frame[0:6, :, :])
+                s_next_occupied = np.sum(s_next_latest_frame[0:6, :, :])
+
+                total_cleared = s_prev_occupied - s_next_occupied
+                if total_cleared < 0:
+                    total_cleared = 0 # Pills can be added, so don't count negative clears
+
+                # Heuristic for game over: if a large number of pieces are cleared at once,
+                # it's likely a game over screen transition.
+                if total_cleared > 20:
+                    topout = True
+                    done = True
+                else:
+                    cleared_non_virus = total_cleared - delta_v
+                    if cleared_non_virus > 0:
+                        nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
+                        r_env += nonvirus_bonus
+                    adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
+                static_pills = (s_next_latest_frame[3:6] > 0.1).any(axis=0)
+                if static_pills.any():
+                    board_h = static_pills.shape[0]
+                    tallest_height = 0
+                    for c in range(static_pills.shape[1]):
+                        rows = np.nonzero(static_pills[:, c])[0]
+                        if rows.size > 0:
+                            highest_row = int(rows[-1])
+                            height_from_bottom = board_h - highest_row
+                            if height_from_bottom > tallest_height:
+                                tallest_height = height_from_bottom
+                    if tallest_height > 0:
+                        virus_mask = (s_next_latest_frame[0:3] > 0.1).any(axis=0)
+                        virus_height = 0
+                        if virus_mask.any():
+                            virus_rows = np.nonzero(virus_mask)[0]
+                            highest_virus_row = int(virus_rows.max())
+                            virus_height = board_h - highest_virus_row
+                        lines_above_virus = max(0, tallest_height - virus_height)
+                        penalty_units = min(tallest_height + 2 * lines_above_virus, 40)
+                        height_penalty_raw = -self.reward_cfg.column_height_penalty * float(penalty_units)
+                        height_penalty_delta = height_penalty_raw - self._prev_height_penalty
+                        r_env += height_penalty_delta
+                        self._prev_height_penalty = height_penalty_raw
+                else:
+                    height_penalty_raw = 0.0
+                    height_penalty_delta = -self._prev_height_penalty
+                    r_env += height_penalty_delta
+                    self._prev_height_penalty = 0.0
+        if adjacency_bonus > 0.0:
+            r_env += adjacency_bonus
+
+        r_env += self.reward_cfg.virus_clear_bonus * float(delta_v)
+
+        # Terminal conditions
         if self._viruses_remaining == 0 and not topout:
             r_env += self.reward_cfg.terminal_clear_bonus
             done = True
@@ -914,19 +1292,40 @@ class DrMarioRetroEnv(gym.Env):
         if topout:
             r_env += self.reward_cfg.topout_penalty
             self._prev_terminal = self._last_terminal = "topout"
+            self._prev_height_penalty = 0.0
+
+        time_reward = 0.0
+        if done:
+            elapsed_seconds = self._elapsed_frames / 60.0
+            if topout:
+                time_reward = self.reward_cfg.time_bonus_topout_per_60_frames * elapsed_seconds
+            elif self._viruses_remaining == 0:
+                time_reward = -self.reward_cfg.time_penalty_clear_per_60_frames * elapsed_seconds
+            if time_reward != 0.0:
+                r_env += time_reward
 
         if self._t > self._t_max:
             truncated = True
+        step_action_penalty = penalty_unit * float(action_events)
+        if step_action_penalty != 0.0:
+            r_env -= step_action_penalty
 
-        obs = self._observe()
-        self.last_obs = obs
         r_shape = 0.0
         if self._use_shaping and self._shaper is not None and self._state_prev is not None:
             s_prev = self._state_prev
             # If terminal, set s_next=None so Phi(terminal)=0 by convention
             s_next = None if (done or truncated) else (obs["obs"] if isinstance(obs, dict) else obs)
             r_shape = float(self._shaper.potential_delta(s_prev, s_next))
+
+        if self.obs_mode == 'state':
+            self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
+        elif self._use_shaping:
+            s_next = None if (done or truncated) else (obs["obs"] if isinstance(obs, dict) else obs)
             self._state_prev = s_next
+
+        if done or truncated:
+            self._elapsed_frames = 0
+
         r_total = float(r_env + r_shape)
         base_info: Dict[str, Any] = {
             "t": self._t,
@@ -935,6 +1334,16 @@ class DrMarioRetroEnv(gym.Env):
             "r_env": float(r_env),
             "r_shape": float(r_shape),
             "r_total": float(r_total),
+            "time_reward": float(time_reward),
+            "adjacency_bonus": float(adjacency_bonus),
+            "pill_bonus": float(placement_bonus),
+            "pill_bonus_adjusted": float(placement_bonus_adjusted),
+            "non_virus_bonus": float(nonvirus_bonus),
+            "height_penalty": float(height_penalty_raw),
+            "height_penalty_delta": float(height_penalty_delta),
+            "placement_height_diff": None if placement_height_diff is None else float(placement_height_diff),
+            "action_penalty": float(step_action_penalty),
+            "action_events": int(action_events),
             "cleared": bool(self._viruses_remaining == 0 and not topout),
             "topout": bool(topout),
             "backend_active": bool(self._using_backend),
@@ -955,6 +1364,8 @@ class DrMarioRetroEnv(gym.Env):
             base_info["pill_counter"] = int(self._pill_spawn_counter)
         if self._frames_until_drop_val is not None:
             base_info["frames_until_drop"] = int(self._frames_until_drop_val)
+        if self._reward_config_path is not None:
+            base_info["reward_config_path"] = str(self._reward_config_path)
         if (
             self._state_viz_interval
             and self.obs_mode == "state"

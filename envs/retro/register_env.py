@@ -12,6 +12,9 @@ from gymnasium.envs.registration import register
 _ENV_ID = "DrMarioRetroEnv-v0"
 _ENTRY_POINT = "envs.retro.drmario_env:DrMarioRetroEnv"
 
+_INTENT_ENV_ID = "DrMarioIntentEnv-v0"
+_INTENT_ENTRY_POINT = "envs.retro.intent_wrapper:DrMarioIntentEnv"
+
 
 def register_env_id(env_id: str = _ENV_ID):
     try:
@@ -26,5 +29,16 @@ def register_env_id(env_id: str = _ENV_ID):
         pass
 
 
-__all__ = ["register_env_id", "_ENV_ID"]
+def register_intent_env_id(env_id: str = _INTENT_ENV_ID):
+    try:
+        register(
+            id=env_id,
+            entry_point=_INTENT_ENTRY_POINT,
+            kwargs={},
+            max_episode_steps=None,
+        )
+    except Exception:
+        pass
 
+
+__all__ = ["register_env_id", "register_intent_env_id", "_ENV_ID", "_INTENT_ENV_ID"]
