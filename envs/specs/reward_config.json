@@ -53,5 +53,17 @@
   "action_penalty_scale": {
     "value": 0.0,
     "description": "Multiplier for the per-step action penalty relative to the most recent placement bonus."
+  },
+  "placement_height_threshold": {
+    "value": 3.0,
+    "description": "Row gap above the highest remaining virus before a placement is considered too high."
+  },
+  "placement_height_penalty_multiplier": {
+    "value": -2.0,
+    "description": "Multiplier applied to the pill placement bonus when the high-placement penalty is triggered."
+  },
+  "punish_high_placements": {
+    "value": true,
+    "description": "If false, disables the heuristic that penalizes pills locked well above the virus band."
   }
 }
