@@ -106,9 +106,9 @@ def state_to_rgb(
         }
         coords = placements.get(rotation, placements[0])
         color_lookup = {
-            0: static_palette[4],  # yellow
-            1: static_palette[3],  # red
-            2: static_palette[5],  # blue
+            0: preview_palette[1],  # yellow
+            1: preview_palette[0],  # red
+            2: preview_palette[2],  # blue
         }
         for color_value, (rr, cc) in zip(color_values, coords):
             if color_value is None:
