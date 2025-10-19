@@ -92,6 +92,12 @@ def _viewer_worker(
         if shared_memory is None:
             stop_event.set()
             return
+        state_repr = state_config.get("state_repr") if isinstance(state_config, dict) else None
+        if state_repr:
+            try:
+                ram_specs.set_state_representation(str(state_repr))
+            except Exception:
+                pass
         try:
             state_shape = tuple(int(v) for v in state_config["shape"])
             state_dtype = np.dtype(state_config["dtype"])
@@ -344,6 +350,7 @@ class _ProcessViewer:
                 "lock": self._state_lock,
                 "generation": self._state_generation,
                 "rendered_generation": self._rendered_generation,
+                "state_repr": ram_specs.get_state_representation(),
             }
 
         self._proc = self._ctx.Process(
