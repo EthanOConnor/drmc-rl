@@ -58,6 +58,23 @@ except Exception:  # pragma: no cover - MLX is optional
     nn_mlx = None
     optim_mlx = None
 
+
+def _mlx_log_softmax(tensor: "mx.array", axis: int = -1) -> "mx.array":
+    """Compute a numerically stable log-softmax with MLX primitives."""
+
+    if mx is None:
+        raise RuntimeError("MLX backend is unavailable")
+    if hasattr(mx, "log_softmax"):
+        return mx.log_softmax(tensor, axis=axis)
+
+    axis_normalized = axis if axis >= 0 else tensor.ndim + axis
+    max_logits = mx.max(tensor, axis=axis_normalized, keepdims=True)
+    shifted = tensor - max_logits
+    exp_shifted = mx.exp(shifted)
+    sum_exp = mx.sum(exp_shifted, axis=axis_normalized, keepdims=True)
+    logsumexp = mx.log(sum_exp)
+    return shifted - logsumexp
+
 COMPONENT_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("episode_reward", "Total"),
     ("pill_bonus_adjusted", "Pill"),
@@ -1434,7 +1451,7 @@ class PolicyGradientAgentMLX:
             logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
             logits_seq = logits_seq[0]
             values_seq = values_seq[0]
-            log_probs = mx.log_softmax(logits_seq, axis=-1)
+            log_probs = _mlx_log_softmax(logits_seq, axis=-1)
             selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
             advantages_policy = returns_tensor - mx.stop_gradient(values_seq)
             adv_mean = mx.mean(advantages_policy)
