@@ -633,9 +633,11 @@ class PolicyGradientAgent:
         self._color_repr = color_repr
         self._obs_mode = obs_mode
         self._batch_runs = max(1, int(batch_runs))
-        self._pending: list[Dict[str, torch.Tensor]] = []
         self._episodes_in_batch = 0
         self._steps_in_batch = 0
+        self._batch_accum_policy_loss = 0.0
+        self._batch_accum_value_loss = 0.0
+        self._batch_accum_entropy = 0.0
         self._contexts: Dict[int, _EpisodeContext] = {}
         augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
         self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
@@ -771,13 +773,25 @@ class PolicyGradientAgent:
             values = values[:min_len]
             entropies = entropies[:min_len]
 
-        trajectory = {
-            "log_probs": log_probs,
-            "values": values,
-            "returns": returns_tensor,
-            "entropies": entropies,
-        }
-        self._pending.append(trajectory)
+        if self._episodes_in_batch == 0:
+            self.optimizer.zero_grad(set_to_none=True)
+            self._batch_accum_policy_loss = 0.0
+            self._batch_accum_value_loss = 0.0
+            self._batch_accum_entropy = 0.0
+
+        advantages = returns_tensor - values.detach()
+        policy_loss = -(log_probs * advantages).mean()
+        value_loss = 0.5 * (returns_tensor - values).pow(2).mean()
+        entropy_term = entropies.mean()
+        loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
+
+        scale = 1.0 / float(max(1, self._batch_runs))
+        (loss * scale).backward()
+
+        self._batch_accum_policy_loss += float(policy_loss.item())
+        self._batch_accum_value_loss += float(value_loss.item())
+        self._batch_accum_entropy += float(entropy_term.item())
+
         self._episodes_in_batch += 1
         self._steps_in_batch += int(returns_tensor.shape[0])
 
@@ -797,37 +811,38 @@ class PolicyGradientAgent:
         return metrics
 
     def _update_policy(self) -> None:
-        if not self._pending:
+        self._apply_optimizer_step(adjust_for_partial=False)
+
+    def finalize_updates(self) -> None:
+        self._apply_optimizer_step(adjust_for_partial=True)
+
+    def _apply_optimizer_step(self, adjust_for_partial: bool) -> None:
+        if self._episodes_in_batch <= 0:
             return
-
-        log_probs = torch.cat([traj["log_probs"] for traj in self._pending])
-        values = torch.cat([traj["values"] for traj in self._pending])
-        returns = torch.cat([traj["returns"] for traj in self._pending])
-        entropies = torch.cat([traj["entropies"] for traj in self._pending])
-
-        advantages = returns - values.detach()
-
-        policy_loss = -(log_probs * advantages).mean()
-        value_loss = 0.5 * (returns - values).pow(2).mean()
-        entropy_term = entropies.mean()
-        loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
-
-        self.optimizer.zero_grad()
-        loss.backward()
+        batch_count = max(1, self._episodes_in_batch)
+        if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
+            scale = float(self._batch_runs) / float(batch_count)
+            for param in self.model.parameters():
+                grad = param.grad
+                if grad is not None:
+                    grad.mul_(scale)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._max_grad_norm)
         self.optimizer.step()
         self._updates += 1
 
-        self._pending.clear()
-        self._episodes_in_batch = 0
-        self._steps_in_batch = 0
-
+        denom = float(batch_count)
         self._last_metrics = {
-            "learner/policy_loss": float(policy_loss.item()),
-            "learner/value_loss": float(value_loss.item()),
-            "learner/entropy": float(entropy_term.item()),
+            "learner/policy_loss": self._batch_accum_policy_loss / denom,
+            "learner/value_loss": self._batch_accum_value_loss / denom,
+            "learner/entropy": self._batch_accum_entropy / denom,
             "learner/updates": float(self._updates),
         }
+        self.optimizer.zero_grad(set_to_none=True)
+        self._episodes_in_batch = 0
+        self._steps_in_batch = 0
+        self._batch_accum_policy_loss = 0.0
+        self._batch_accum_value_loss = 0.0
+        self._batch_accum_entropy = 0.0
 
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
@@ -1324,6 +1339,12 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Interrupted by user; stopping experiment.", file=sys.stderr)
     finally:
+        finalize_updates_fn = getattr(agent, "finalize_updates", None)
+        if callable(finalize_updates_fn):
+            try:
+                finalize_updates_fn()
+            except Exception as exc:
+                print(f"Finalize updates failed: {exc}", file=sys.stderr)
         if monitor is not None:
             monitor.close()
         for slot in slots:
