@@ -1237,6 +1237,7 @@ class _MLXEpisodeContext:
     rewards: List[float] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
+    last_spawn_id: Optional[int] = None
 
 
 class PolicyGradientAgentMLX:
@@ -1248,10 +1249,12 @@ class PolicyGradientAgentMLX:
         learning_rate: float,
         entropy_coef: float = 0.01,
         value_coef: float = 0.5,
+        max_grad_norm: float = 0.5,
         policy_arch: str = "drmario_cnn",
         color_repr: str = "none",
         obs_mode: str = "state",
         batch_runs: int = 1,
+        use_last_frame_inference: bool = True,
     ) -> None:
         if mx is None or nn_mlx is None or optim_mlx is None:
             raise RuntimeError("MLX backend is not available. Please install mlx to use --policy-backend mlx.")
@@ -1268,9 +1271,9 @@ class PolicyGradientAgentMLX:
         self._value_coef = float(value_coef)
         self._color_repr = color_repr
         self._obs_mode = obs_mode
-        if batch_runs != 1:
-            print("Warning: MLX backend currently ignores batch accumulation; forcing batch_runs=1.", file=sys.stderr)
-        self._batch_runs = 1
+        self._max_grad_norm = float(max_grad_norm)
+        self._batch_runs = max(1, int(batch_runs))
+        self._use_last_frame_inference = bool(use_last_frame_inference)
         self._contexts: Dict[int, _MLXEpisodeContext] = {}
         augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
         if augmented_stack.ndim < 3:
@@ -1291,6 +1294,11 @@ class PolicyGradientAgentMLX:
         self._latest_critic_ev = 0.0
         self._episodes_in_batch = 0
         self._steps_in_batch = 0
+        self._batch_accum_policy_loss = 0.0
+        self._batch_accum_value_loss = 0.0
+        self._batch_accum_entropy = 0.0
+        self._batch_accum_critic_ev = 0.0
+        self._grad_accum: Optional[Any] = None
 
     def _context_key(self, context_id: Optional[int]) -> int:
         if context_id is None:
@@ -1311,6 +1319,7 @@ class PolicyGradientAgentMLX:
         ctx.rewards.clear()
         ctx.actions.clear()
         ctx.recurrent_state = None
+        ctx.last_spawn_id = None
         return ctx
 
     def _prepare_obs(self, obs: Any) -> np.ndarray:
@@ -1320,26 +1329,54 @@ class PolicyGradientAgentMLX:
             stack_np = _apply_color_representation(stack_np, self._color_repr)
         return stack_np
 
+    def _zero_recurrent_state(self, ctx: _MLXEpisodeContext) -> None:
+        ctx.recurrent_state = None
+
     def begin_episode(self, context_id: Optional[int] = None) -> None:
         self._reset_context(context_id)
 
     def observe_step(
         self,
         reward: float,
-        _done: bool,
-        _info: Optional[Dict[str, Any]] = None,
+        done: bool,
+        info: Optional[Dict[str, Any]] = None,
         context_id: Optional[int] = None,
     ) -> None:
         ctx = self._get_context(context_id)
         ctx.rewards.append(float(reward))
+        spawn_id: Optional[int] = None
+        if info is not None:
+            raw_spawn = info.get("spawn_id")
+            if isinstance(raw_spawn, numbers.Integral):
+                spawn_id = int(raw_spawn)
+            elif isinstance(raw_spawn, numbers.Number):
+                spawn_id = int(raw_spawn)
+        if spawn_id is not None:
+            if ctx.last_spawn_id is None:
+                ctx.last_spawn_id = spawn_id
+            elif spawn_id != ctx.last_spawn_id:
+                self._zero_recurrent_state(ctx)
+                ctx.last_spawn_id = spawn_id
+        if done:
+            self._zero_recurrent_state(ctx)
+            ctx.last_spawn_id = None
 
     def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
         stack_np = self._prepare_obs(obs)
-        if stack_np.ndim != 4:
-            raise RuntimeError("MLX backend expects observation shape (T, C, H, W).")
-        ctx.observations.append(stack_np)
-        obs_tensor = mx.array(stack_np, dtype=mx.float32)
+        if stack_np.ndim == 3:
+            sequence_np = np.expand_dims(stack_np, axis=0)
+            ctx.observations.append(stack_np)
+        elif stack_np.ndim == 4:
+            latest_frame = stack_np[-1]
+            ctx.observations.append(latest_frame)
+            if self._use_last_frame_inference:
+                sequence_np = np.expand_dims(latest_frame, axis=0)
+            else:
+                sequence_np = stack_np
+        else:
+            raise RuntimeError("MLX backend expects observation shape (C, H, W) or (T, C, H, W).")
+        obs_tensor = mx.array(sequence_np, dtype=mx.float32)
         obs_tensor = mx.expand_dims(obs_tensor, axis=0)  # (1, T, C, H, W)
         logits, value, hx = self.model(obs_tensor, ctx.recurrent_state, last_only=True)
         logits_vec = logits[0]
@@ -1393,32 +1430,47 @@ class PolicyGradientAgentMLX:
 
         metrics_cache: Dict[str, Any] = {}
 
-        def loss_fn(model, obs_tensor, action_tensor):
-            logits_seq, values_seq, _ = model(obs_tensor, None, last_only=False)
+        def loss_fn(obs_tensor, action_tensor):
+            logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
             logits_seq = logits_seq[0]
             values_seq = values_seq[0]
             log_probs = mx.log_softmax(logits_seq, axis=-1)
             selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
-            advantages = returns_tensor - values_seq
-            policy_loss = -mx.mean(selected * advantages)
-            value_loss = 0.5 * mx.mean(mx.clip(advantages * advantages, a_max=10.0))
+            advantages_policy = returns_tensor - mx.stop_gradient(values_seq)
+            adv_mean = mx.mean(advantages_policy)
+            advantages_policy = advantages_policy - adv_mean
+            adv_sq = advantages_policy * advantages_policy
+            adv_std = mx.sqrt(mx.mean(adv_sq))
+            epsilon = mx.array(1e-6, dtype=advantages_policy.dtype)
+            advantages_policy = advantages_policy / mx.maximum(adv_std, epsilon)
+            policy_loss = -mx.mean(selected * advantages_policy)
+            advantages_value = returns_tensor - values_seq
+            value_sq = advantages_value * advantages_value
+            value_loss = 0.5 * mx.mean(mx.clip(value_sq, a_min=None, a_max=10.0))
             probs = mx.softmax(logits_seq, axis=-1)
             entropy = -mx.mean(mx.sum(probs * log_probs, axis=-1))
             metrics_cache["policy_loss"] = policy_loss
             metrics_cache["value_loss"] = value_loss
             metrics_cache["entropy"] = entropy
-            metrics_cache["advantages"] = advantages
             metrics_cache["returns"] = returns_tensor
             metrics_cache["values"] = values_seq
             return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
 
+        if self._episodes_in_batch == 0:
+            self._grad_accum = None
+            self._batch_accum_policy_loss = 0.0
+            self._batch_accum_value_loss = 0.0
+            self._batch_accum_entropy = 0.0
+            self._batch_accum_critic_ev = 0.0
+
         loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
-        loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
-        self.optimizer.update(self.model, grads)
-        try:  # pragma: no cover - optional evaluation for lazy arrays
-            mx.eval(self.model.parameters(), self.optimizer.state)
-        except Exception:
-            pass
+        _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
+        scale = 1.0 / float(max(1, self._batch_runs))
+        grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
+        if self._grad_accum is None:
+            self._grad_accum = grads
+        else:
+            self._grad_accum = self._tree_combine(self._grad_accum, grads, lambda a, b: a + b)
 
         policy_loss_val = self._mx_to_float(metrics_cache.get("policy_loss", 0.0))
         value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
@@ -1434,70 +1486,164 @@ class PolicyGradientAgentMLX:
         else:
             ev = 1.0 - (value_mse / (value_var + 1e-8))
 
-        self._last_metrics = {
-            "learner/policy_loss": float(policy_loss_val),
-            "learner/value_loss": float(value_loss_val),
-            "learner/entropy": float(entropy_val),
-            "learner/updates": float(self._updates + 1),
-            "critic/explained_variance": float(max(-1.0, min(1.0, ev))),
-        }
-        self._latest_critic_ev = float(max(-1.0, min(1.0, ev)))
-        self._updates += 1
+        ev = float(max(-1.0, min(1.0, ev)))
+        self._batch_accum_policy_loss += float(policy_loss_val)
+        self._batch_accum_value_loss += float(value_loss_val)
+        self._batch_accum_entropy += float(entropy_val)
+        self._batch_accum_critic_ev += ev
+        self._latest_critic_ev = ev
+        self._episodes_in_batch += 1
+        self._steps_in_batch += int(returns_tensor.shape[0])
 
         self._reset_context(context_id)
 
+        if self._episodes_in_batch >= self._batch_runs:
+            self._apply_optimizer_step(adjust_for_partial=False)
+
     def latest_metrics(self) -> Dict[str, float]:
         metrics = dict(self._last_metrics)
-        metrics["learner/pending_runs"] = 0.0
-        metrics["learner/pending_steps"] = 0.0
+        metrics["learner/pending_runs"] = float(self._episodes_in_batch)
+        metrics["learner/pending_steps"] = float(self._steps_in_batch)
         metrics["critic/latest_ev"] = float(self._latest_critic_ev)
         return metrics
 
     def finalize_updates(self) -> None:
-        pass
+        self._apply_optimizer_step(adjust_for_partial=True)
+
+    def _apply_optimizer_step(self, adjust_for_partial: bool) -> None:
+        if self._episodes_in_batch <= 0 or self._grad_accum is None:
+            return
+        batch_count = max(1, self._episodes_in_batch)
+        grads = self._grad_accum
+        if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
+            scale = float(self._batch_runs) / float(batch_count)
+            grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
+
+        if self._max_grad_norm > 0.0:
+            total = self._tree_sum_squares(grads)
+            norm = self._mx_to_float(mx.sqrt(total))
+            if norm > self._max_grad_norm and norm > 0.0:
+                clip_scale = self._max_grad_norm / (norm + 1e-8)
+                grads = self._tree_map(grads, lambda g: g * clip_scale if g is not None else None)
+
+        self.optimizer.update(self.model, grads)
+        try:  # pragma: no cover - optional evaluation for lazy arrays
+            mx.eval(self.model.parameters(), self.optimizer.state)
+        except Exception:
+            pass
+        self._updates += 1
+        denom = float(batch_count)
+        self._last_metrics = {
+            "learner/policy_loss": self._batch_accum_policy_loss / denom,
+            "learner/value_loss": self._batch_accum_value_loss / denom,
+            "learner/entropy": self._batch_accum_entropy / denom,
+            "learner/updates": float(self._updates),
+            "critic/explained_variance": self._batch_accum_critic_ev / denom,
+        }
+        self._episodes_in_batch = 0
+        self._steps_in_batch = 0
+        self._batch_accum_policy_loss = 0.0
+        self._batch_accum_value_loss = 0.0
+        self._batch_accum_entropy = 0.0
+        self._batch_accum_critic_ev = 0.0
+        self._grad_accum = None
+
+    def _tree_map(self, tree: Any, fn) -> Any:
+        if tree is None:
+            return None
+        if isinstance(tree, dict):
+            return {key: self._tree_map(value, fn) for key, value in tree.items()}
+        if isinstance(tree, list):
+            return [self._tree_map(value, fn) for value in tree]
+        if isinstance(tree, tuple):
+            return tuple(self._tree_map(value, fn) for value in tree)
+        return fn(tree)
+
+    def _tree_combine(self, left: Any, right: Any, op) -> Any:
+        if left is None:
+            return right
+        if right is None:
+            return left
+        if isinstance(left, dict) and isinstance(right, dict):
+            return {key: self._tree_combine(left[key], right[key], op) for key in left.keys()}
+        if isinstance(left, list) and isinstance(right, list):
+            return [self._tree_combine(lv, rv, op) for lv, rv in zip(left, right)]
+        if isinstance(left, tuple) and isinstance(right, tuple):
+            return tuple(self._tree_combine(lv, rv, op) for lv, rv in zip(left, right))
+        return op(left, right)
+
+    def _tree_sum_squares(self, tree: Any) -> Any:
+        if tree is None:
+            return mx.array(0.0, dtype=mx.float32)
+        if isinstance(tree, dict):
+            total = None
+            for value in tree.values():
+                current = self._tree_sum_squares(value)
+                total = current if total is None else total + current
+            return total if total is not None else mx.array(0.0, dtype=mx.float32)
+        if isinstance(tree, list):
+            total = None
+            for value in tree:
+                current = self._tree_sum_squares(value)
+                total = current if total is None else total + current
+            return total if total is not None else mx.array(0.0, dtype=mx.float32)
+        if isinstance(tree, tuple):
+            total = None
+            for value in tree:
+                current = self._tree_sum_squares(value)
+                total = current if total is None else total + current
+            return total if total is not None else mx.array(0.0, dtype=mx.float32)
+        return mx.sum(tree * tree)
 
     def get_state(self) -> Dict[str, Any]:
-        return {
+        state: Dict[str, Any] = {
             "updates": int(self._updates),
             "latest_critic_ev": float(self._latest_critic_ev),
-            "supports_checkpoint": False,
+            "episodes_in_batch": int(self._episodes_in_batch),
+            "steps_in_batch": int(self._steps_in_batch),
+            "batch_accum_policy_loss": float(self._batch_accum_policy_loss),
+            "batch_accum_value_loss": float(self._batch_accum_value_loss),
+            "batch_accum_entropy": float(self._batch_accum_entropy),
+            "batch_accum_critic_ev": float(self._batch_accum_critic_ev),
+            "batch_runs": int(self._batch_runs),
+            "supports_checkpoint": True,
         }
+        try:
+            mx.eval(self.model.parameters(), self.optimizer.state)
+            state["model_parameters"] = self._tree_map(self.model.parameters(), lambda arr: np.asarray(arr))
+            state["optimizer_state"] = self._tree_map(self.optimizer.state, lambda arr: np.asarray(arr))
+        except Exception:
+            state["supports_checkpoint"] = False
+        return state
 
     def set_state(self, state: Dict[str, Any]) -> None:
         try:
             self._updates = int(state.get("updates", self._updates))
             self._latest_critic_ev = float(state.get("latest_critic_ev", self._latest_critic_ev))
-        except Exception:
-            pass
-
-        return state
-
-    def set_state(self, state: Dict[str, Any]) -> None:
-        if torch is not None:
-            model_state = state.get("model_state")
-            if isinstance(model_state, dict):
-                try:
-                    self.model.load_state_dict(model_state)
-                    self.model.to(self._device)
-                except Exception:
-                    pass
-            optim_state = state.get("optimizer_state")
-            if isinstance(optim_state, dict):
-                try:
-                    self.optimizer.load_state_dict(optim_state)
-                except Exception:
-                    pass
-        try:
-            self._updates = int(state.get("updates", self._updates))
             self._episodes_in_batch = int(state.get("episodes_in_batch", 0))
             self._steps_in_batch = int(state.get("steps_in_batch", 0))
             self._batch_accum_policy_loss = float(state.get("batch_accum_policy_loss", 0.0))
             self._batch_accum_value_loss = float(state.get("batch_accum_value_loss", 0.0))
             self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
             self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
-            self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
         except Exception:
             pass
+
+        params = state.get("model_parameters")
+        if params is not None:
+            try:
+                mx_params = self._tree_map(params, lambda arr: mx.array(arr))
+                self.model.update(mx_params)  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        optimizer_state = state.get("optimizer_state")
+        if optimizer_state is not None:
+            try:
+                mx_state = self._tree_map(optimizer_state, lambda arr: mx.array(arr))
+                self.optimizer.state = mx_state  # type: ignore[attr-defined]
+            except Exception:
+                pass
+        self._grad_accum = None
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
     core = observation["obs"] if isinstance(observation, dict) else observation
@@ -1554,6 +1700,8 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         payload["max_grad_norm"] = args.max_grad_norm
         if args.device:
             payload["device"] = args.device
+    if args.policy_backend == "mlx":
+        payload["mlx_inference_window"] = getattr(args, "mlx_inference_window", "last")
     return payload
 
 
@@ -1628,6 +1776,12 @@ def main() -> None:
         choices=["torch", "mlx"],
         default="torch",
         help="Select the deep learning backend for the policy network.",
+    )
+    ap.add_argument(
+        "--mlx-inference-window",
+        choices=["last", "stack"],
+        default="last",
+        help="MLX-only: use the latest frame ('last') or the full stack ('stack') when selecting actions.",
     )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
     ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
@@ -1762,10 +1916,12 @@ def main() -> None:
                 learning_rate=args.learning_rate,
                 entropy_coef=args.entropy_coef,
                 value_coef=args.value_coef,
+                max_grad_norm=args.max_grad_norm,
                 policy_arch=args.policy_arch,
                 color_repr=args.color_repr,
                 obs_mode=args.mode,
                 batch_runs=args.batch_runs,
+                use_last_frame_inference=(args.mlx_inference_window == "last"),
             )
         else:
             agent = PolicyGradientAgent(
