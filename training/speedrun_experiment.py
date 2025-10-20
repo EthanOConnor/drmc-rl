@@ -13,6 +13,7 @@ real learner; the scaffolding (monitor, viewer, reward logging) remains useful.
 from __future__ import annotations
 
 import argparse
+import math
 import multiprocessing as mp
 import numbers
 import os
@@ -655,7 +656,11 @@ def _monitor_worker(
     batch_medians: Dict[int, float] = {}
     runs_total = int(hyperparams.get("runs", 0) or 0)
     parallel_envs_var = int(hyperparams.get("parallel_envs", 1) or 1)
-    batch_runs_var = int(hyperparams.get("batch_runs", 1) or 1)
+    try:
+        batch_runs_var = int(hyperparams.get("batch_runs", 1))
+    except Exception:
+        batch_runs_var = 1
+    batch_runs_var = max(0, batch_runs_var)
     group_size_var = max(1, parallel_envs_var, batch_runs_var)
     latest_diagnostics: Dict[str, Any] = {}
     diagnostic_history: Dict[str, deque[float]] = {}
@@ -1019,12 +1024,12 @@ def _monitor_worker(
                             )
                         except Exception:
                             pass
-                        try:
-                            batch_runs_var = int(
-                                payload.get("batch_runs", batch_runs_var) or batch_runs_var or 1
-                            )
-                        except Exception:
-                            pass
+                        if "batch_runs" in payload:
+                            try:
+                                batch_runs_candidate = int(payload.get("batch_runs", batch_runs_var))
+                                batch_runs_var = max(0, batch_runs_candidate)
+                            except Exception:
+                                pass
                         if "randomize_rng" in payload:
                             try:
                                 rng_enabled = bool(payload.get("randomize_rng", rng_enabled))
@@ -1616,6 +1621,11 @@ class PolicyGradientAgent:
         color_repr: str = "none",
         obs_mode: str = "state",
         batch_runs: int = 1,
+        batch_steps: Optional[int] = None,
+        lr_schedule: str = "constant",
+        lr_warmup_steps: int = 0,
+        lr_cosine_steps: int = 100000,
+        lr_min_scale: float = 0.0,
         torch_amp: bool = False,
         torch_compile: bool = False,
         torch_matmul_precision: Optional[str] = None,
@@ -1633,7 +1643,15 @@ class PolicyGradientAgent:
         self._policy_arch = policy_arch
         self._color_repr = color_repr
         self._obs_mode = obs_mode
-        self._batch_runs = max(1, int(batch_runs))
+        self._batch_runs = max(0, int(batch_runs))
+        self._batch_steps = max(0, int(batch_steps)) if batch_steps is not None else 0
+        self._base_learning_rate = float(learning_rate)
+        self._lr_schedule = str(lr_schedule)
+        self._lr_warmup_steps = max(0, int(lr_warmup_steps))
+        self._lr_cosine_steps = max(1, int(lr_cosine_steps))
+        self._lr_min_scale = max(0.0, float(lr_min_scale))
+        self._current_learning_rate = self._base_learning_rate
+        self._total_env_steps = 0
         self._pixel_memory_format = (
             torch.channels_last
             if obs_mode == "pixel" and self._device.type == "cuda"
@@ -1702,7 +1720,8 @@ class PolicyGradientAgent:
             except Exception:
                 pass
 
-        self.optimizer = optim.Adam(self.model.parameters(), lr=float(learning_rate))
+        self.optimizer = optim.Adam(self.model.parameters(), lr=self._base_learning_rate)
+        self._apply_lr_schedule(force=True)
 
         # AMP controls
         self._use_amp = bool(torch_amp) and self._device.type in ("cuda", "mps")
@@ -1723,6 +1742,31 @@ class PolicyGradientAgent:
         self._last_batch_update_time = 0.0
         self._batch_update_time_accum = 0.0
         self._batch_update_count = 0
+
+    def _compute_scheduled_lr(self) -> float:
+        base_lr = self._base_learning_rate
+        if self._lr_schedule != "cosine":
+            return base_lr
+        min_lr = base_lr * self._lr_min_scale
+        steps = self._total_env_steps
+        warmup = self._lr_warmup_steps
+        if warmup > 0 and steps < warmup:
+            progress = float(steps) / float(max(1, warmup))
+            return min_lr + (base_lr - min_lr) * progress
+        decay_steps = max(0, steps - warmup)
+        cosine_progress = min(1.0, float(decay_steps) / float(self._lr_cosine_steps))
+        cosine_value = 0.5 * (1.0 + math.cos(math.pi * cosine_progress))
+        return min_lr + (base_lr - min_lr) * cosine_value
+
+    def _apply_lr_schedule(self, force: bool = False) -> None:
+        if self._lr_schedule == "constant" and not force:
+            return
+        new_lr = self._compute_scheduled_lr()
+        if not force and abs(new_lr - self._current_learning_rate) < 1e-12:
+            return
+        for group in self.optimizer.param_groups:
+            group["lr"] = new_lr
+        self._current_learning_rate = new_lr
 
     def _prepare_obs(self, obs: Any) -> torch.Tensor:
         stack = _extract_state_stack(obs)
@@ -2051,11 +2095,10 @@ class PolicyGradientAgent:
                 ev_value = 1.0 - (value_err_float / (value_var_float + 1e-8))
             ev_value = max(-1.0, min(1.0, ev_value))
 
-            scale = 1.0 / float(max(1, self._batch_runs))
             if self._grad_scaler is not None:
-                self._grad_scaler.scale(loss * scale).backward()
+                self._grad_scaler.scale(loss).backward()
             else:
-                (loss * scale).backward()
+                loss.backward()
 
             self._batch_accum_policy_loss += float(policy_loss.item())
             self._batch_accum_value_loss += float(value_loss.item())
@@ -2063,8 +2106,11 @@ class PolicyGradientAgent:
             self._batch_accum_critic_ev += ev_value
             self._latest_critic_ev = ev_value
 
+            episode_steps = int(returns_tensor.shape[0])
             self._episodes_in_batch += 1
-            self._steps_in_batch += int(returns_tensor.shape[0])
+            self._steps_in_batch += episode_steps
+            self._total_env_steps += episode_steps
+            self._apply_lr_schedule()
 
             ctx.observations.clear()
             ctx.actions.clear()
@@ -2074,7 +2120,11 @@ class PolicyGradientAgent:
             ctx.recurrent_state = None
             ctx.last_spawn_id = None
 
-            if self._episodes_in_batch >= self._batch_runs:
+            should_update = (
+                (self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs)
+                or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
+            )
+            if should_update:
                 self._update_policy()
         finally:
             duration = time.perf_counter() - start_time
@@ -2084,6 +2134,8 @@ class PolicyGradientAgent:
         metrics = dict(self._last_metrics)
         metrics["learner/pending_runs"] = float(self._episodes_in_batch)
         metrics["learner/pending_steps"] = float(self._steps_in_batch)
+        metrics["learner/env_steps_total"] = float(self._total_env_steps)
+        metrics["optimizer/lr"] = float(self._current_learning_rate)
         metrics["critic/latest_ev"] = float(self._latest_critic_ev)
         metrics["perf/episode_update_ms_last"] = self._last_episode_update_time * 1000.0
         metrics["perf/batch_update_ms_last"] = self._last_batch_update_time * 1000.0
@@ -2127,12 +2179,11 @@ class PolicyGradientAgent:
                 scaler.unscale_(self.optimizer)
             except Exception:
                 pass
-        if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
-            scale = float(self._batch_runs) / float(batch_count)
-            for param in self.model.parameters():
-                grad = param.grad
-                if grad is not None:
-                    grad.mul_(scale)
+        avg_scale = 1.0 / float(max(1, batch_count))
+        for param in self.model.parameters():
+            grad = param.grad
+            if grad is not None:
+                grad.mul_(avg_scale)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._max_grad_norm)
         if scaler is not None:
             scaler.step(self.optimizer)
@@ -2141,7 +2192,7 @@ class PolicyGradientAgent:
             self.optimizer.step()
         self._updates += 1
 
-        denom = float(batch_count)
+        denom = float(max(1, batch_count))
         self._last_metrics = {
             "learner/policy_loss": self._batch_accum_policy_loss / denom,
             "learner/value_loss": self._batch_accum_value_loss / denom,
@@ -2164,6 +2215,7 @@ class PolicyGradientAgent:
             "updates": int(self._updates),
             "episodes_in_batch": int(self._episodes_in_batch),
             "steps_in_batch": int(self._steps_in_batch),
+            "batch_steps": int(self._batch_steps),
             "batch_accum_policy_loss": float(self._batch_accum_policy_loss),
             "batch_accum_value_loss": float(self._batch_accum_value_loss),
             "batch_accum_entropy": float(self._batch_accum_entropy),
@@ -2176,6 +2228,13 @@ class PolicyGradientAgent:
             "nan_rewards_seen": int(self._nan_rewards_seen),
             "nan_reward_episodes": int(self._nan_reward_episodes),
             "reward_step_total": int(self._total_reward_steps),
+            "total_env_steps": int(self._total_env_steps),
+            "base_learning_rate": float(self._base_learning_rate),
+            "lr_schedule": self._lr_schedule,
+            "lr_warmup_steps": int(self._lr_warmup_steps),
+            "lr_cosine_steps": int(self._lr_cosine_steps),
+            "lr_min_scale": float(self._lr_min_scale),
+            "current_learning_rate": float(self._current_learning_rate),
         }
         if torch is None:
             return state
@@ -2232,15 +2291,26 @@ class PolicyGradientAgent:
             self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
             self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
             self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
-            self._batch_runs = int(state.get("batch_runs", self._batch_runs))
+            self._batch_runs = max(0, int(state.get("batch_runs", self._batch_runs)))
+            self._batch_steps = max(0, int(state.get("batch_steps", self._batch_steps)))
             self._nan_rewards_seen = int(state.get("nan_rewards_seen", self._nan_rewards_seen))
             self._nan_reward_episodes = int(
                 state.get("nan_reward_episodes", self._nan_reward_episodes)
             )
             self._total_reward_steps = int(state.get("reward_step_total", self._total_reward_steps))
+            self._total_env_steps = int(state.get("total_env_steps", self._total_env_steps))
+            self._base_learning_rate = float(state.get("base_learning_rate", self._base_learning_rate))
+            self._lr_schedule = str(state.get("lr_schedule", self._lr_schedule))
+            self._lr_warmup_steps = max(0, int(state.get("lr_warmup_steps", self._lr_warmup_steps)))
+            self._lr_cosine_steps = max(1, int(state.get("lr_cosine_steps", self._lr_cosine_steps)))
+            self._lr_min_scale = max(0.0, float(state.get("lr_min_scale", self._lr_min_scale)))
+            self._current_learning_rate = float(
+                state.get("current_learning_rate", self._current_learning_rate)
+            )
         except Exception:
             pass
         self.optimizer.zero_grad(set_to_none=True)
+        self._apply_lr_schedule(force=True)
 
 
 @dataclass
@@ -2267,6 +2337,11 @@ class PolicyGradientAgentMLX:
         color_repr: str = "none",
         obs_mode: str = "state",
         batch_runs: int = 1,
+        batch_steps: Optional[int] = None,
+        lr_schedule: str = "constant",
+        lr_warmup_steps: int = 0,
+        lr_cosine_steps: int = 100000,
+        lr_min_scale: float = 0.0,
         use_last_frame_inference: bool = True,
     ) -> None:
         if mx is None or nn_mlx is None or optim_mlx is None:
@@ -2285,7 +2360,15 @@ class PolicyGradientAgentMLX:
         self._color_repr = color_repr
         self._obs_mode = obs_mode
         self._max_grad_norm = float(max_grad_norm)
-        self._batch_runs = max(1, int(batch_runs))
+        self._batch_runs = max(0, int(batch_runs))
+        self._batch_steps = max(0, int(batch_steps)) if batch_steps is not None else 0
+        self._base_learning_rate = float(learning_rate)
+        self._lr_schedule = str(lr_schedule)
+        self._lr_warmup_steps = max(0, int(lr_warmup_steps))
+        self._lr_cosine_steps = max(1, int(lr_cosine_steps))
+        self._lr_min_scale = max(0.0, float(lr_min_scale))
+        self._current_learning_rate = self._base_learning_rate
+        self._total_env_steps = 0
         self._use_last_frame_inference = bool(use_last_frame_inference)
         self._contexts: Dict[int, _MLXEpisodeContext] = {}
         augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
@@ -2297,7 +2380,8 @@ class PolicyGradientAgentMLX:
             action_dim=self._action_dim,
             in_channels=int(in_channels),
         )
-        self.optimizer = optim_mlx.Adam(learning_rate=float(learning_rate))
+        self.optimizer = optim_mlx.Adam(learning_rate=self._base_learning_rate)
+        self._apply_lr_schedule(force=True)
         try:  # pragma: no cover - optional evaluation for lazy arrays
             mx.eval(self.model.parameters(), self.optimizer.state)
         except Exception:
@@ -2322,6 +2406,39 @@ class PolicyGradientAgentMLX:
         self._nan_reward_episodes = 0
         self._total_reward_steps = 0
         self._last_episode_nan_repaired = False
+
+    def _set_optimizer_lr(self, value: float) -> None:
+        try:
+            if hasattr(self.optimizer, "learning_rate"):
+                setattr(self.optimizer, "learning_rate", float(value))
+            elif hasattr(self.optimizer, "lr"):
+                setattr(self.optimizer, "lr", float(value))
+        except Exception:
+            pass
+        self._current_learning_rate = float(value)
+
+    def _compute_scheduled_lr(self) -> float:
+        base_lr = self._base_learning_rate
+        if self._lr_schedule != "cosine":
+            return base_lr
+        min_lr = base_lr * self._lr_min_scale
+        steps = self._total_env_steps
+        warmup = self._lr_warmup_steps
+        if warmup > 0 and steps < warmup:
+            progress = float(steps) / float(max(1, warmup))
+            return min_lr + (base_lr - min_lr) * progress
+        decay_steps = max(0, steps - warmup)
+        cosine_progress = min(1.0, float(decay_steps) / float(self._lr_cosine_steps))
+        cosine_value = 0.5 * (1.0 + math.cos(math.pi * cosine_progress))
+        return min_lr + (base_lr - min_lr) * cosine_value
+
+    def _apply_lr_schedule(self, force: bool = False) -> None:
+        if self._lr_schedule == "constant" and not force:
+            return
+        new_lr = self._compute_scheduled_lr()
+        if not force and abs(new_lr - self._current_learning_rate) < 1e-12:
+            return
+        self._set_optimizer_lr(new_lr)
 
     def _context_key(self, context_id: Optional[int]) -> int:
         if context_id is None:
@@ -2582,8 +2699,6 @@ class PolicyGradientAgentMLX:
             loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
             _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
             returns_tensor = metrics_cache.get("returns", rewards_tensor)
-            scale = 1.0 / float(max(1, self._batch_runs))
-            grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
             if self._grad_accum is None:
                 self._grad_accum = grads
             else:
@@ -2621,12 +2736,19 @@ class PolicyGradientAgentMLX:
             self._batch_accum_entropy += float(entropy_val)
             self._batch_accum_critic_ev += ev
             self._latest_critic_ev = ev
+            episode_steps = int(returns_tensor.shape[0])
             self._episodes_in_batch += 1
-            self._steps_in_batch += int(returns_tensor.shape[0])
+            self._steps_in_batch += episode_steps
+            self._total_env_steps += episode_steps
+            self._apply_lr_schedule()
 
             self._reset_context(context_id)
 
-            if self._episodes_in_batch >= self._batch_runs:
+            should_update = (
+                (self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs)
+                or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
+            )
+            if should_update:
                 self._apply_optimizer_step(adjust_for_partial=False)
         finally:
             duration = time.perf_counter() - start_time
@@ -2636,6 +2758,8 @@ class PolicyGradientAgentMLX:
         metrics = dict(self._last_metrics)
         metrics["learner/pending_runs"] = float(self._episodes_in_batch)
         metrics["learner/pending_steps"] = float(self._steps_in_batch)
+        metrics["learner/env_steps_total"] = float(self._total_env_steps)
+        metrics["optimizer/lr"] = float(self._current_learning_rate)
         metrics["critic/latest_ev"] = float(self._latest_critic_ev)
         metrics["perf/episode_update_ms_last"] = self._last_episode_update_time * 1000.0
         metrics["perf/batch_update_ms_last"] = self._last_batch_update_time * 1000.0
@@ -2671,9 +2795,8 @@ class PolicyGradientAgentMLX:
         start_time = time.perf_counter()
         batch_count = max(1, self._episodes_in_batch)
         grads = self._grad_accum
-        if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
-            scale = float(self._batch_runs) / float(batch_count)
-            grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
+        avg_scale = 1.0 / float(max(1, batch_count))
+        grads = self._tree_map(grads, lambda g: g * avg_scale if g is not None else None)
 
         if self._max_grad_norm > 0.0:
             total = self._tree_sum_squares(grads)
@@ -2688,7 +2811,7 @@ class PolicyGradientAgentMLX:
         except Exception:
             pass
         self._updates += 1
-        denom = float(batch_count)
+        denom = float(max(1, batch_count))
         self._last_metrics = {
             "learner/policy_loss": self._batch_accum_policy_loss / denom,
             "learner/value_loss": self._batch_accum_value_loss / denom,
@@ -2759,6 +2882,7 @@ class PolicyGradientAgentMLX:
             "latest_critic_ev": float(self._latest_critic_ev),
             "episodes_in_batch": int(self._episodes_in_batch),
             "steps_in_batch": int(self._steps_in_batch),
+            "batch_steps": int(self._batch_steps),
             "batch_accum_policy_loss": float(self._batch_accum_policy_loss),
             "batch_accum_value_loss": float(self._batch_accum_value_loss),
             "batch_accum_entropy": float(self._batch_accum_entropy),
@@ -2768,6 +2892,13 @@ class PolicyGradientAgentMLX:
             "nan_rewards_seen": int(self._nan_rewards_seen),
             "nan_reward_episodes": int(self._nan_reward_episodes),
             "reward_step_total": int(self._total_reward_steps),
+            "total_env_steps": int(self._total_env_steps),
+            "base_learning_rate": float(self._base_learning_rate),
+            "lr_schedule": self._lr_schedule,
+            "lr_warmup_steps": int(self._lr_warmup_steps),
+            "lr_cosine_steps": int(self._lr_cosine_steps),
+            "lr_min_scale": float(self._lr_min_scale),
+            "current_learning_rate": float(self._current_learning_rate),
         }
         try:
             mx.eval(self.model.parameters(), self.optimizer.state)
@@ -2792,6 +2923,17 @@ class PolicyGradientAgentMLX:
                 state.get("nan_reward_episodes", self._nan_reward_episodes)
             )
             self._total_reward_steps = int(state.get("reward_step_total", self._total_reward_steps))
+            self._batch_steps = max(0, int(state.get("batch_steps", self._batch_steps)))
+            self._batch_runs = max(0, int(state.get("batch_runs", self._batch_runs)))
+            self._total_env_steps = int(state.get("total_env_steps", self._total_env_steps))
+            self._base_learning_rate = float(state.get("base_learning_rate", self._base_learning_rate))
+            self._lr_schedule = str(state.get("lr_schedule", self._lr_schedule))
+            self._lr_warmup_steps = max(0, int(state.get("lr_warmup_steps", self._lr_warmup_steps)))
+            self._lr_cosine_steps = max(1, int(state.get("lr_cosine_steps", self._lr_cosine_steps)))
+            self._lr_min_scale = max(0.0, float(state.get("lr_min_scale", self._lr_min_scale)))
+            self._current_learning_rate = float(
+                state.get("current_learning_rate", self._current_learning_rate)
+            )
         except Exception:
             pass
 
@@ -2809,6 +2951,7 @@ class PolicyGradientAgentMLX:
                 self.optimizer.state = mx_state  # type: ignore[attr-defined]
             except Exception:
                 pass
+        self._apply_lr_schedule(force=True)
         self._grad_accum = None
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
@@ -2848,6 +2991,11 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         "policy_backend": args.policy_backend,
         "color_repr": args.color_repr,
         "batch_runs": args.batch_runs,
+        "batch_steps": args.batch_steps,
+        "lr_schedule": args.lr_schedule,
+        "lr_warmup_steps": args.lr_warmup_steps,
+        "lr_cosine_steps": args.lr_cosine_steps,
+        "lr_min_scale": args.lr_min_scale,
         "randomize_rng": bool(args.randomize_rng),
         "frame_offset": args.frame_offset,
         "parallel_envs": getattr(args, "parallel_envs", getattr(args, "num_envs", None)),
@@ -2966,7 +3114,7 @@ def main() -> None:
         default="random",
     )
     ap.add_argument("--learner", choices=["none", "reinforce"], default="none")
-    ap.add_argument("--learning-rate", type=float, default=1e-3)
+    ap.add_argument("--learning-rate", type=float, default=3e-4)
     ap.add_argument("--gamma", type=float, default=0.99)
     ap.add_argument("--epsilon", type=float, default=0.2)
     ap.add_argument("--epsilon-decay", type=float, default=0.97)
@@ -3001,7 +3149,42 @@ def main() -> None:
     )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
     ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
-    ap.add_argument("--batch-runs", type=int, default=1, help="Episodes to accumulate before each policy update.")
+    ap.add_argument(
+        "--batch-runs",
+        type=int,
+        default=32,
+        help="Episodes to accumulate before each policy update.",
+    )
+    ap.add_argument(
+        "--batch-steps",
+        type=int,
+        default=32768,
+        help="Environment steps to accumulate before each policy update (0 disables).",
+    )
+    ap.add_argument(
+        "--lr-schedule",
+        choices=["constant", "cosine"],
+        default="cosine",
+        help="Learning rate schedule applied to policy gradient learners.",
+    )
+    ap.add_argument(
+        "--lr-warmup-steps",
+        type=int,
+        default=5000,
+        help="Linear warmup steps before enabling the learning rate schedule.",
+    )
+    ap.add_argument(
+        "--lr-cosine-steps",
+        type=int,
+        default=200000,
+        help="Number of steps over which to anneal the cosine schedule after warmup.",
+    )
+    ap.add_argument(
+        "--lr-min-scale",
+        type=float,
+        default=0.0,
+        help="Minimum learning rate scale relative to the base rate for cosine scheduling.",
+    )
     ap.add_argument("--entropy-coef", type=float, default=0.01)
     ap.add_argument("--value-coef", type=float, default=0.5)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
@@ -3213,6 +3396,11 @@ def main() -> None:
                 color_repr=args.color_repr,
                 obs_mode=args.mode,
                 batch_runs=args.batch_runs,
+                batch_steps=args.batch_steps,
+                lr_schedule=args.lr_schedule,
+                lr_warmup_steps=args.lr_warmup_steps,
+                lr_cosine_steps=args.lr_cosine_steps,
+                lr_min_scale=args.lr_min_scale,
                 use_last_frame_inference=(args.mlx_inference_window == "last"),
             )
             if selected_mlx_device is not None:
@@ -3232,6 +3420,11 @@ def main() -> None:
                 color_repr=args.color_repr,
                 obs_mode=args.mode,
                 batch_runs=args.batch_runs,
+                batch_steps=args.batch_steps,
+                lr_schedule=args.lr_schedule,
+                lr_warmup_steps=args.lr_warmup_steps,
+                lr_cosine_steps=args.lr_cosine_steps,
+                lr_min_scale=args.lr_min_scale,
                 torch_amp=bool(getattr(args, "torch_amp", False)),
                 torch_compile=bool(getattr(args, "torch_compile", False)),
                 torch_matmul_precision="high" if bool(getattr(args, "torch_matmul_high", False)) else None,
