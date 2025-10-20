@@ -21,6 +21,7 @@ import random
 import queue
 import sys
 import time
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1577,28 +1578,42 @@ class PolicyGradientAgent:
             if not ctx.actions:
                 return
 
-            returns: list[float] = []
-            G = 0.0
-            # Drop the dummy terminal marker if present
             rewards = [r for r in ctx.rewards if not np.isnan(r)]
-            for reward in reversed(rewards):
-                G = reward + self._gamma * G
-                returns.append(G)
-            returns.reverse()
-            returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self._device)
-
             episode_len = min(
-                len(returns), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
+                len(rewards), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
             )
             if episode_len <= 0:
                 self._reset_context(context_id)
                 return
-            if returns_tensor.shape[0] != episode_len:
-                returns_tensor = returns_tensor[:episode_len]
+            rewards_tensor = torch.as_tensor(
+                rewards[:episode_len], dtype=torch.float32, device=self._device
+            )
+            if rewards_tensor.dim() == 0:
+                rewards_tensor = rewards_tensor.unsqueeze(0)
+
+            if episode_len == 1 or math.isclose(self._gamma, 0.0, abs_tol=1e-8):
+                returns_tensor = rewards_tensor
+            else:
+                steps = torch.arange(
+                    episode_len, dtype=rewards_tensor.dtype, device=self._device
+                )
+                gamma_tensor = rewards_tensor.new_full((episode_len,), float(self._gamma))
+                pow_gamma = torch.pow(gamma_tensor, steps)
+                discounted = rewards_tensor * pow_gamma
+                cumulative = torch.cumsum(torch.flip(discounted, dims=[0]), dim=0)
+                returns_tensor = torch.flip(cumulative, dims=[0])
+                if not math.isclose(self._gamma, 1.0, abs_tol=1e-8):
+                    returns_tensor = returns_tensor / pow_gamma
 
             obs_sequence = ctx.observations[:episode_len]
             action_sequence = ctx.actions[:episode_len]
             reset_flags = ctx.reset_flags[:episode_len]
+
+            obs_batch = torch.stack(obs_sequence, dim=0)
+            obs_batch = obs_batch.to(self._device, non_blocking=True)
+            actions_tensor = torch.as_tensor(
+                action_sequence, dtype=torch.long, device=self._device
+            )
 
             log_prob_list: list[torch.Tensor] = []
             value_list: list[torch.Tensor] = []
@@ -1610,15 +1625,11 @@ class PolicyGradientAgent:
                 else nullcontext()
             )
             with autocast_ctx:
-                for obs_cpu, action_val, reset_flag in zip(
-                    obs_sequence, action_sequence, reset_flags
-                ):
-                    obs_tensor = obs_cpu.to(self._device)
+                for step_idx, reset_flag in enumerate(reset_flags):
+                    obs_tensor = obs_batch[step_idx]
                     if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
                         obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
-                    action_tensor = torch.as_tensor(
-                        int(action_val), dtype=torch.long, device=self._device
-                    )
+                    action_tensor = actions_tensor[step_idx]
 
                     if self._policy_arch == "mlp":
                         logits, values_seq = self.model(obs_tensor.unsqueeze(0))
@@ -1673,8 +1684,9 @@ class PolicyGradientAgent:
                 entropies = entropies[:min_len]
 
             advantages = returns_tensor - values.detach()
-            adv_std = advantages.std(unbiased=False).clamp_min(1e-6)
-            advantages = (advantages - advantages.mean()) / adv_std
+            adv_var, adv_mean = torch.var_mean(advantages, dim=0, unbiased=False)
+            adv_std = torch.sqrt(adv_var).clamp_min(1e-6)
+            advantages = (advantages - adv_mean) / adv_std
             policy_loss = -(log_probs * advantages).mean()
             value_errors = returns_tensor - values
             value_sq = value_errors.pow(2)
@@ -1865,7 +1877,7 @@ class PolicyGradientAgent:
 
 @dataclass
 class _MLXEpisodeContext:
-    observations: List[np.ndarray] = field(default_factory=list)
+    observations: List[Any] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
@@ -1960,12 +1972,12 @@ class PolicyGradientAgentMLX:
         ctx.last_spawn_id = None
         return ctx
 
-    def _prepare_obs(self, obs: Any) -> np.ndarray:
+    def _prepare_obs(self, obs: Any) -> Any:
         stack = _extract_state_stack(obs)
         stack_np = np.asarray(stack, dtype=np.float32)
         if self._obs_mode == "state":
             stack_np = _apply_color_representation(stack_np, self._color_repr)
-        return stack_np
+        return mx.array(stack_np, dtype=mx.float32)
 
     def _zero_recurrent_state(self, ctx: _MLXEpisodeContext) -> None:
         ctx.recurrent_state = None
@@ -2001,21 +2013,20 @@ class PolicyGradientAgentMLX:
 
     def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
-        stack_np = self._prepare_obs(obs)
-        if stack_np.ndim == 3:
-            sequence_np = np.expand_dims(stack_np, axis=0)
-            ctx.observations.append(stack_np)
-        elif stack_np.ndim == 4:
-            latest_frame = stack_np[-1]
+        stack_tensor = self._prepare_obs(obs)
+        if stack_tensor.ndim == 3:
+            sequence_tensor = mx.expand_dims(stack_tensor, axis=0)
+            ctx.observations.append(stack_tensor)
+        elif stack_tensor.ndim == 4:
+            latest_frame = stack_tensor[-1]
             ctx.observations.append(latest_frame)
             if self._use_last_frame_inference:
-                sequence_np = np.expand_dims(latest_frame, axis=0)
+                sequence_tensor = mx.expand_dims(latest_frame, axis=0)
             else:
-                sequence_np = stack_np
+                sequence_tensor = stack_tensor
         else:
             raise RuntimeError("MLX backend expects observation shape (C, H, W) or (T, C, H, W).")
-        obs_tensor = mx.array(sequence_np, dtype=mx.float32)
-        obs_tensor = mx.expand_dims(obs_tensor, axis=0)  # (1, T, C, H, W)
+        obs_tensor = mx.expand_dims(sequence_tensor, axis=0)  # (1, T, C, H, W)
         logits, value, hx = self.model(obs_tensor, ctx.recurrent_state, last_only=True)
         logits_vec = logits[0]
         ctx.recurrent_state = hx
@@ -2038,12 +2049,6 @@ class PolicyGradientAgentMLX:
                 return float(np.asarray(value))
             except Exception:
                 return float(np.array(value).reshape(()))
-
-    def _mx_to_numpy(self, value: Any) -> np.ndarray:
-        try:
-            return np.asarray(value)
-        except Exception:
-            return np.array(value)
 
     def _record_episode_update_time(self, duration: float) -> None:
         self._last_episode_update_time = float(duration)
@@ -2080,24 +2085,47 @@ class PolicyGradientAgentMLX:
         start_time = time.perf_counter()
         try:
             ctx = self._get_context(context_id)
-            if not ctx.actions:
+            if not ctx.actions or not ctx.observations or not ctx.rewards:
                 self._reset_context(context_id)
                 return
 
-            observations = np.stack(ctx.observations, axis=0).astype(np.float32)
-            actions = np.array(ctx.actions, dtype=np.int32)
-            rewards = np.array(ctx.rewards, dtype=np.float32)
+            episode_len = min(len(ctx.actions), len(ctx.observations), len(ctx.rewards))
+            if episode_len <= 0:
+                self._reset_context(context_id)
+                return
 
-            returns = np.zeros_like(rewards)
-            G = 0.0
-            for idx in range(len(rewards) - 1, -1, -1):
-                G = rewards[idx] + self._gamma * G
-                returns[idx] = G
-
-            obs_batch = mx.array(observations, dtype=mx.float32)
+            obs_items = ctx.observations[:episode_len]
+            if hasattr(mx, "stack"):
+                obs_batch = mx.stack(obs_items, axis=0)
+            elif hasattr(mx, "concatenate"):
+                expanded_frames = [mx.expand_dims(item, axis=0) for item in obs_items]
+                obs_batch = expanded_frames[0]
+                for frame in expanded_frames[1:]:
+                    obs_batch = mx.concatenate((obs_batch, frame), axis=0)
+            else:  # pragma: no cover - fallback to host stacking when MX lacks helpers
+                obs_batch = mx.array(
+                    np.stack([np.asarray(item) for item in obs_items], axis=0), dtype=mx.float32
+                )
             obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
-            actions_batch = mx.array(actions.reshape(-1, 1), dtype=mx.int32)
-            returns_tensor = mx.array(returns, dtype=mx.float32)
+
+            action_array = ctx.actions[:episode_len]
+            reward_array = ctx.rewards[:episode_len]
+            actions_batch = mx.expand_dims(
+                mx.array(action_array, dtype=mx.int32), axis=-1
+            )
+            rewards_tensor = mx.array(reward_array, dtype=mx.float32)
+
+            if episode_len == 1 or math.isclose(self._gamma, 0.0, abs_tol=1e-8):
+                returns_tensor = rewards_tensor
+            else:
+                steps = mx.arange(episode_len, dtype=rewards_tensor.dtype)
+                gamma_scalar = mx.array(float(self._gamma), dtype=rewards_tensor.dtype)
+                pow_gamma = mx.power(gamma_scalar, steps)
+                discounted = rewards_tensor * pow_gamma
+                cumulative = mx.cumsum(mx.flip(discounted, axis=0), axis=0)
+                returns_tensor = mx.flip(cumulative, axis=0)
+                if not math.isclose(self._gamma, 1.0, abs_tol=1e-8):
+                    returns_tensor = returns_tensor / pow_gamma
 
             metrics_cache: Dict[str, Any] = {}
 
@@ -2147,11 +2175,23 @@ class PolicyGradientAgentMLX:
             value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
             entropy_val = self._mx_to_float(metrics_cache.get("entropy", 0.0))
 
-            returns_np = self._mx_to_numpy(metrics_cache.get("returns", returns_tensor))
-            values_np = self._mx_to_numpy(metrics_cache.get("values", np.zeros_like(returns_np)))
-            value_errors = returns_np - values_np
-            value_mse = float(np.mean(value_errors**2))
-            value_var = float(np.var(returns_np))
+            returns_arr = metrics_cache.get("returns", returns_tensor)
+            default_values = (
+                mx.zeros_like(returns_arr)
+                if hasattr(mx, "zeros_like")
+                else mx.zeros(returns_arr.shape, dtype=returns_arr.dtype)
+            )
+            values_arr = metrics_cache.get("values", default_values)
+            value_errors = returns_arr - values_arr
+            value_sq = value_errors * value_errors
+            value_mse = self._mx_to_float(mx.mean(value_sq))
+            if hasattr(mx, "var"):
+                returns_var_arr = mx.var(returns_arr)
+            else:  # pragma: no cover - fallback for older MLX versions
+                mean_returns = mx.mean(returns_arr)
+                diff = returns_arr - mean_returns
+                returns_var_arr = mx.mean(diff * diff)
+            value_var = self._mx_to_float(returns_var_arr)
             if value_var <= 1e-8:
                 ev = 0.0
             else:
