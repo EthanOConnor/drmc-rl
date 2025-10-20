@@ -5,8 +5,8 @@ description = "Dr. Mario RL environment, training, and evaluation"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
-    "gymnasium>=0.29",
-    "numpy>=1.24",
+    "gymnasium>=1.2,<2",
+    "numpy>=2.0,<3",
 ]
 
 [tool.black]
@@ -28,27 +28,30 @@ exclude = [
 ]
 
 [project.optional-dependencies]
-retro = [
-    "stable-retro; python_version < '3.15'",
-    "opencv-python",
-    "pillow",
-]
 rl = [
-    "torch",
-    "torchvision",
-    "torchaudio",
-    "torchrl",
-    "sample-factory",
-    "pettingzoo",
+    "torch>=2.8,<2.10",
+    "torchvision==0.24.*",
+    "torchaudio==2.9.*",
+    "torchrl>=0.9,<1.0",
+    "sample-factory>=2.0,<3.0",
+    "pettingzoo>=1.25,<2",
+]
+viz = [
+    "opencv-python-headless>=4.12,<5",
+    "pillow>=11",
+]
+apple = [
+    "mlx>=0.29,<1",
 ]
 dev = [
-    "black",
-    "ruff",
-    "pytest",
-    "pandas",
-    "pyarrow",
-    "matplotlib",
+    "black>=25.0",
+    "ruff>=0.14",
+    "pytest>=8.4",
+    "pandas>=2.3,<2.4",
+    "pyarrow>=21,<22",
+    "matplotlib>=3.10,<3.11",
 ]
+
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=80", "wheel>=0.45"]
 build-backend = "setuptools.build_meta"
