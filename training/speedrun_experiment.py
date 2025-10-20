@@ -1609,6 +1609,8 @@ class PolicyGradientAgent:
                 if self._use_amp
                 else nullcontext()
             )
+            action_tensor = torch.empty((), dtype=torch.long, device=self._device)
+
             with autocast_ctx:
                 for obs_cpu, action_val, reset_flag in zip(
                     obs_sequence, action_sequence, reset_flags
@@ -1616,36 +1618,37 @@ class PolicyGradientAgent:
                     obs_tensor = obs_cpu.to(self._device)
                     if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
                         obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
-                    action_tensor = torch.tensor(int(action_val), dtype=torch.long, device=self._device)
+                    action_tensor.fill_(int(action_val))
+
                     if self._policy_arch == "mlp":
                         logits, values_seq = self.model(obs_tensor.unsqueeze(0))
-                    dist = Categorical(logits=logits.squeeze(0))
+                        dist = Categorical(logits=logits.squeeze(0))
+                        value_tensor = values_seq.squeeze(0)
+                    else:
+                        if obs_tensor.dim() == 3:
+                            input_tensor = obs_tensor.unsqueeze(0).unsqueeze(0)
+                        elif obs_tensor.dim() == 4:
+                            input_tensor = obs_tensor.unsqueeze(0)
+                        else:
+                            raise RuntimeError("Unexpected observation tensor shape")
+                        logits, values_seq, hx = self.model(input_tensor, recurrent)
+                        if logits.dim() == 3:
+                            logits_slice = logits[:, -1, :]
+                        else:
+                            logits_slice = logits
+                        if values_seq.dim() == 2:
+                            value_tensor = values_seq[:, -1]
+                        else:
+                            value_tensor = values_seq
+                        dist = Categorical(logits=logits_slice.squeeze(0))
+                        value_tensor = value_tensor.squeeze(0)
+                        recurrent = self._detach_recurrent(hx)
+                        if reset_flag:
+                            recurrent = self._zero_like_recurrent(recurrent)
+
                     log_prob_list.append(dist.log_prob(action_tensor))
-                    value_list.append(values_seq.squeeze(0))
+                    value_list.append(value_tensor)
                     entropy_list.append(dist.entropy())
-                else:
-                    if obs_tensor.dim() == 3:
-                        input_tensor = obs_tensor.unsqueeze(0).unsqueeze(0)
-                    elif obs_tensor.dim() == 4:
-                        input_tensor = obs_tensor.unsqueeze(0)
-                    else:
-                        raise RuntimeError("Unexpected observation tensor shape")
-                    logits, values_seq, hx = self.model(input_tensor, recurrent)
-                    if logits.dim() == 3:
-                        logits_slice = logits[:, -1, :]
-                    else:
-                        logits_slice = logits
-                    if values_seq.dim() == 2:
-                        value_tensor = values_seq[:, -1]
-                    else:
-                        value_tensor = values_seq
-                    dist = Categorical(logits=logits_slice.squeeze(0))
-                    log_prob_list.append(dist.log_prob(action_tensor))
-                    value_list.append(value_tensor.squeeze(0))
-                    entropy_list.append(dist.entropy())
-                    recurrent = self._detach_recurrent(hx)
-                    if reset_flag:
-                        recurrent = self._zero_like_recurrent(recurrent)
 
             if not log_prob_list:
                 self._reset_context(context_id)
