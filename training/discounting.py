@@ -135,7 +135,7 @@ def discounted_returns_mlx(rewards_tensor, gamma: float, dones=None, bootstrap=N
     if dones is None:
         dones_tensor = mx.zeros((T, B), dtype=mx.bool_)
     else:
-        dones_tensor = mx.asarray(dones, dtype=mx.bool_)
+        dones_tensor = mx.array(dones, dtype=mx.bool_)
         if dones_tensor.size == 1:
             dones_tensor = mx.broadcast_to(mx.reshape(dones_tensor, (1, 1)), (T, B))
         elif dones_tensor.ndim == 1:
@@ -155,7 +155,7 @@ def discounted_returns_mlx(rewards_tensor, gamma: float, dones=None, bootstrap=N
     if bootstrap is None:
         running = mx.zeros((B,), dtype=rt.dtype)
     else:
-        bootstrap_tensor = mx.asarray(bootstrap, dtype=rt.dtype)
+        bootstrap_tensor = mx.array(bootstrap, dtype=rt.dtype)
         if bootstrap_tensor.size == 1:
             running = mx.broadcast_to(mx.reshape(bootstrap_tensor, (1,)), (B,))
         elif bootstrap_tensor.ndim == 1 and int(bootstrap_tensor.shape[0]) == B:
