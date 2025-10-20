@@ -21,7 +21,6 @@ import random
 import queue
 import sys
 import time
-import math
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +36,7 @@ from envs.retro.intent_wrapper import DrMarioIntentEnv
 from envs.retro.register_env import register_env_id, register_intent_env_id
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
+from training.discounting import discounted_returns_mlx, discounted_returns_torch
 try:
     from models.policy.mlx_networks import DrMarioStatePolicyMLX
 except Exception:  # pragma: no cover - optional dependency
@@ -1570,6 +1570,7 @@ class _EpisodeContext:
     observations: List[Any] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
+    dones: List[bool] = field(default_factory=list)
     reset_flags: List[bool] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
     last_spawn_id: Optional[int] = None
@@ -1755,6 +1756,7 @@ class PolicyGradientAgent:
         ctx.observations.clear()
         ctx.actions.clear()
         ctx.rewards.clear()
+        ctx.dones.clear()
         ctx.reset_flags.clear()
         ctx.recurrent_state = None
         ctx.last_spawn_id = None
@@ -1843,6 +1845,7 @@ class PolicyGradientAgent:
     ) -> None:
         ctx = self._get_context(context_id)
         ctx.rewards.append(float(reward))
+        ctx.dones.append(bool(done))
 
         spawn_id: Optional[int] = None
         if info is not None:
@@ -1905,7 +1908,11 @@ class PolicyGradientAgent:
 
             rewards = [r for r in ctx.rewards if not np.isnan(r)]
             episode_len = min(
-                len(rewards), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
+                len(rewards),
+                len(ctx.actions),
+                len(ctx.observations),
+                len(ctx.reset_flags),
+                len(ctx.dones),
             )
             if episode_len <= 0:
                 self._reset_context(context_id)
@@ -1916,19 +1923,11 @@ class PolicyGradientAgent:
             if rewards_tensor.dim() == 0:
                 rewards_tensor = rewards_tensor.unsqueeze(0)
 
-            if episode_len == 1 or math.isclose(self._gamma, 0.0, abs_tol=1e-8):
-                returns_tensor = rewards_tensor
-            else:
-                steps = torch.arange(
-                    episode_len, dtype=rewards_tensor.dtype, device=self._device
-                )
-                gamma_tensor = rewards_tensor.new_full((episode_len,), float(self._gamma))
-                pow_gamma = torch.pow(gamma_tensor, steps)
-                discounted = rewards_tensor * pow_gamma
-                cumulative = torch.cumsum(torch.flip(discounted, dims=[0]), dim=0)
-                returns_tensor = torch.flip(cumulative, dims=[0])
-                if not math.isclose(self._gamma, 1.0, abs_tol=1e-8):
-                    returns_tensor = returns_tensor / pow_gamma
+            dones_tensor = torch.as_tensor(
+                ctx.dones[:episode_len], dtype=torch.bool, device=self._device
+            )
+            if dones_tensor.dim() == 0:
+                dones_tensor = dones_tensor.unsqueeze(0)
 
             obs_sequence = ctx.observations[:episode_len]
             action_sequence = ctx.actions[:episode_len]
@@ -1994,6 +1993,14 @@ class PolicyGradientAgent:
             values = torch.stack(value_list).to(dtype=torch.float32)
             entropies = torch.stack(entropy_list).to(dtype=torch.float32)
 
+            bootstrap_value = None
+            if not bool(dones_tensor[-1].item()):
+                bootstrap_value = values[-1].detach()
+
+            returns_tensor = discounted_returns_torch(
+                rewards_tensor, self._gamma, dones=dones_tensor, bootstrap=bootstrap_value
+            )
+
             if self._episodes_in_batch == 0:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._batch_accum_policy_loss = 0.0
@@ -2046,6 +2053,7 @@ class PolicyGradientAgent:
             ctx.observations.clear()
             ctx.actions.clear()
             ctx.rewards.clear()
+            ctx.dones.clear()
             ctx.reset_flags.clear()
             ctx.recurrent_state = None
             ctx.last_spawn_id = None
@@ -2205,6 +2213,7 @@ class _MLXEpisodeContext:
     observations: List[np.ndarray] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
+    dones: List[bool] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
     last_spawn_id: Optional[int] = None
 
@@ -2293,6 +2302,7 @@ class PolicyGradientAgentMLX:
         ctx.observations.clear()
         ctx.rewards.clear()
         ctx.actions.clear()
+        ctx.dones.clear()
         ctx.recurrent_state = None
         ctx.last_spawn_id = None
         return ctx
@@ -2347,6 +2357,7 @@ class PolicyGradientAgentMLX:
     ) -> None:
         ctx = self._get_context(context_id)
         ctx.rewards.append(float(reward))
+        ctx.dones.append(bool(done))
         spawn_id: Optional[int] = None
         if info is not None:
             raw_spawn = info.get("spawn_id")
@@ -2443,7 +2454,9 @@ class PolicyGradientAgentMLX:
                 self._reset_context(context_id)
                 return
 
-            episode_len = min(len(ctx.actions), len(ctx.observations), len(ctx.rewards))
+            episode_len = min(
+                len(ctx.actions), len(ctx.observations), len(ctx.rewards), len(ctx.dones)
+            )
             if episode_len <= 0:
                 self._reset_context(context_id)
                 return
@@ -2459,28 +2472,37 @@ class PolicyGradientAgentMLX:
                 mx.array(action_array, dtype=mx.int32), axis=-1
             )
             rewards_tensor = mx.array(reward_array, dtype=mx.float32)
-
-            if episode_len == 1 or math.isclose(self._gamma, 0.0, abs_tol=1e-8):
-                returns_tensor = rewards_tensor
-            else:
-                steps = mx.arange(episode_len, dtype=rewards_tensor.dtype)
-                gamma_scalar = mx.array(float(self._gamma), dtype=rewards_tensor.dtype)
-                pow_gamma = mx.power(gamma_scalar, steps)
-                discounted = rewards_tensor * pow_gamma
-                cumulative = mx.cumsum(_mlx_flip(discounted, axis=0), axis=0)
-                returns_tensor = _mlx_flip(cumulative, axis=0)
-                if not math.isclose(self._gamma, 1.0, abs_tol=1e-8):
-                    returns_tensor = returns_tensor / pow_gamma
+            dones_tensor = mx.array(ctx.dones[:episode_len], dtype=mx.bool_)
+            target_shape = rewards_tensor.shape
+            last_done_flag = bool(ctx.dones[episode_len - 1])
 
             metrics_cache: Dict[str, Any] = {}
+            returns_tensor = None
 
             def loss_fn(obs_tensor, action_tensor):
                 logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
                 logits_seq = logits_seq[0]
                 values_seq = values_seq[0]
                 log_probs = _mlx_log_softmax(logits_seq, axis=-1)
+                values_seq_shaped = mx.reshape(values_seq, target_shape)
+                if hasattr(mx, "stop_gradient"):
+                    bootstrap_candidates = mx.stop_gradient(values_seq_shaped[-1])
+                    values_detached = mx.stop_gradient(values_seq_shaped)
+                else:  # pragma: no cover - fallback for older MLX builds
+                    bootstrap_candidates = mx.array(
+                        np.array(values_seq_shaped[-1], copy=True), dtype=values_seq_shaped.dtype
+                    )
+                    values_detached = mx.array(
+                        np.array(values_seq_shaped, copy=True), dtype=values_seq_shaped.dtype
+                    )
+
+                bootstrap_arg = None if last_done_flag else bootstrap_candidates
+
+                returns_tensor = discounted_returns_mlx(
+                    rewards_tensor, self._gamma, dones=dones_tensor, bootstrap=bootstrap_arg
+                )
                 selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
-                advantages_policy = returns_tensor - mx.stop_gradient(values_seq)
+                advantages_policy = returns_tensor - values_detached
                 adv_mean = mx.mean(advantages_policy)
                 advantages_policy = advantages_policy - adv_mean
                 adv_sq = advantages_policy * advantages_policy
@@ -2488,7 +2510,7 @@ class PolicyGradientAgentMLX:
                 epsilon = mx.array(1e-6, dtype=advantages_policy.dtype)
                 advantages_policy = advantages_policy / mx.maximum(adv_std, epsilon)
                 policy_loss = -mx.mean(selected * advantages_policy)
-                advantages_value = returns_tensor - values_seq
+                advantages_value = returns_tensor - values_seq_shaped
                 value_sq = advantages_value * advantages_value
                 value_loss = 0.5 * mx.mean(mx.clip(value_sq, a_min=None, a_max=10.0))
                 probs = mx.softmax(logits_seq, axis=-1)
@@ -2497,7 +2519,7 @@ class PolicyGradientAgentMLX:
                 metrics_cache["value_loss"] = value_loss
                 metrics_cache["entropy"] = entropy
                 metrics_cache["returns"] = returns_tensor
-                metrics_cache["values"] = values_seq
+                metrics_cache["values"] = values_seq_shaped
                 return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
 
             if self._episodes_in_batch == 0:
@@ -2509,6 +2531,7 @@ class PolicyGradientAgentMLX:
 
             loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
             _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
+            returns_tensor = metrics_cache.get("returns", rewards_tensor)
             scale = 1.0 / float(max(1, self._batch_runs))
             grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
             if self._grad_accum is None:
