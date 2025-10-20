@@ -25,7 +25,7 @@ import math
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from contextlib import nullcontext
 
 import numpy as np
@@ -95,6 +95,312 @@ def _mlx_flip(tensor: "mx.array", axis: int = 0) -> "mx.array":
     np_view = np.asarray(tensor)
     flipped = np.flip(np_view, axis=axis_normalized)
     return mx.array(flipped, dtype=tensor.dtype)
+
+
+@dataclass
+class _MLXDeviceInfo:
+    """Runtime description of an MLX compute device."""
+
+    ordinal: int
+    identifier: str
+    kind: str
+    name: str
+    hw_index: Optional[int]
+    handle: Any
+    is_default: bool = False
+    memory_bytes: Optional[int] = None
+
+    def summary(self) -> str:
+        label_kind = self.kind.upper() if self.kind else "UNKNOWN"
+        label = f"[{self.ordinal}] {label_kind}"
+        if self.hw_index is not None:
+            label += f":{self.hw_index}"
+        if self.name:
+            label += f" - {self.name}"
+        if self.memory_bytes:
+            label += f" ({_format_bytes(self.memory_bytes)})"
+        if self.is_default:
+            label += " (default)"
+        return label
+
+    def aliases(self) -> List[str]:
+        tokens: set[str] = set()
+        tokens.add(str(self.ordinal))
+        if self.identifier:
+            tokens.add(self.identifier.lower())
+        if self.hw_index is not None:
+            tokens.add(str(self.hw_index))
+            if self.kind:
+                tokens.add(f"{self.kind.lower()}:{self.hw_index}")
+        if self.kind:
+            tokens.add(self.kind.lower())
+        if self.name:
+            tokens.add(self.name.lower())
+        return [token for token in tokens if token]
+
+
+def _format_bytes(num_bytes: int) -> str:
+    """Return a human readable representation of a byte count."""
+
+    suffixes = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"]
+    value = float(max(num_bytes, 0))
+    for suffix in suffixes:
+        if value < 1024.0 or suffix == suffixes[-1]:
+            if suffix == "B":
+                return f"{int(value)} {suffix}"
+            return f"{value:.1f} {suffix}"
+        value /= 1024.0
+    return f"{num_bytes} B"
+
+
+def _safe_getattr(obj: Any, attr: str) -> Any:
+    try:
+        return getattr(obj, attr)
+    except Exception:
+        return None
+
+
+def _mlx_get_default_device_handle() -> Any:
+    if mx is None:
+        return None
+    default_candidate = _safe_getattr(mx, "default_device")
+    if callable(default_candidate):
+        try:
+            return default_candidate()
+        except Exception:
+            return None
+    return default_candidate
+
+
+def _normalize_device_kind(kind_value: Any) -> str:
+    if kind_value is None:
+        return ""
+    candidate = getattr(kind_value, "name", kind_value)
+    return str(candidate).strip()
+
+
+def _normalize_device_name(name_value: Any) -> str:
+    if name_value is None:
+        return ""
+    return str(name_value).strip()
+
+
+def _normalize_hw_index(index_value: Any) -> Optional[int]:
+    if isinstance(index_value, numbers.Integral):
+        return int(index_value)
+    if isinstance(index_value, str) and index_value.isdigit():
+        return int(index_value)
+    return None
+
+
+def _normalize_memory_size(memory_value: Any) -> Optional[int]:
+    if isinstance(memory_value, numbers.Integral):
+        return int(memory_value)
+    if isinstance(memory_value, (tuple, list)) and memory_value:
+        first = memory_value[0]
+        if isinstance(first, numbers.Integral):
+            return int(first)
+    return None
+
+
+def _mlx_device_tokens(device: Any) -> set[str]:
+    tokens: set[str] = set()
+    if device is None:
+        return tokens
+    try:
+        tokens.add(str(device).lower())
+    except Exception:
+        pass
+    for attr in ("name", "description", "label"):
+        value = _safe_getattr(device, attr)
+        if isinstance(value, str):
+            tokens.add(value.lower())
+    kind_value = _safe_getattr(device, "type") or _safe_getattr(device, "kind")
+    if kind_value is not None:
+        tokens.add(_normalize_device_kind(kind_value).lower())
+    index_value = (
+        _safe_getattr(device, "index")
+        or _safe_getattr(device, "device_id")
+        or _safe_getattr(device, "id")
+        or _safe_getattr(device, "ordinal")
+    )
+    hw_index = _normalize_hw_index(index_value)
+    if hw_index is not None:
+        tokens.add(str(hw_index))
+    return {token for token in tokens if token}
+
+
+def _mlx_device_equal(lhs: Any, rhs: Any) -> bool:
+    if lhs is rhs:
+        return True
+    if lhs is None or rhs is None:
+        return False
+    if isinstance(lhs, str) and isinstance(rhs, str):
+        return lhs == rhs
+    if isinstance(lhs, str):
+        return lhs.lower() in _mlx_device_tokens(rhs)
+    if isinstance(rhs, str):
+        return rhs.lower() in _mlx_device_tokens(lhs)
+    try:
+        if lhs == rhs:
+            return True
+    except Exception:
+        pass
+    return bool(_mlx_device_tokens(lhs) & _mlx_device_tokens(rhs))
+
+
+def _mlx_describe_device(ordinal: int, device: Any, default_handle: Any) -> _MLXDeviceInfo:
+    kind_value = _safe_getattr(device, "type") or _safe_getattr(device, "kind")
+    name_value = (
+        _safe_getattr(device, "name")
+        or _safe_getattr(device, "description")
+        or _safe_getattr(device, "label")
+    )
+    index_value = (
+        _safe_getattr(device, "index")
+        or _safe_getattr(device, "device_id")
+        or _safe_getattr(device, "id")
+        or _safe_getattr(device, "ordinal")
+    )
+    memory_value = (
+        _safe_getattr(device, "memory")
+        or _safe_getattr(device, "memory_size")
+        or _safe_getattr(device, "total_memory")
+        or _safe_getattr(device, "capacity")
+    )
+    kind = _normalize_device_kind(kind_value)
+    name = _normalize_device_name(name_value)
+    hw_index = _normalize_hw_index(index_value)
+    memory_bytes = _normalize_memory_size(memory_value)
+    identifier_parts: List[str] = []
+    if kind:
+        identifier_parts.append(kind.lower())
+    if hw_index is not None:
+        identifier_parts.append(str(hw_index))
+    identifier = ":".join(identifier_parts) if identifier_parts else str(ordinal)
+    is_default = _mlx_device_equal(device, default_handle)
+    return _MLXDeviceInfo(
+        ordinal=ordinal,
+        identifier=identifier,
+        kind=kind,
+        name=name,
+        hw_index=hw_index,
+        handle=device,
+        is_default=is_default,
+        memory_bytes=memory_bytes,
+    )
+
+
+def _mlx_collect_devices() -> List[_MLXDeviceInfo]:
+    if mx is None:
+        return []
+    devices: Sequence[Any] = ()
+    for attr in ("devices", "list_devices"):
+        candidate = _safe_getattr(mx, attr)
+        if candidate is None:
+            continue
+        if callable(candidate):
+            try:
+                result = candidate()
+            except Exception:
+                continue
+        else:
+            result = candidate
+        if isinstance(result, dict):
+            result = list(result.values())
+        if isinstance(result, (list, tuple)):
+            devices = list(result)
+            break
+    if not devices:
+        default_handle = _mlx_get_default_device_handle()
+        if default_handle is not None:
+            devices = (default_handle,)
+    default_handle = _mlx_get_default_device_handle()
+    info_list: List[_MLXDeviceInfo] = []
+    for ordinal, device in enumerate(devices):
+        info_list.append(_mlx_describe_device(ordinal, device, default_handle))
+    return info_list
+
+
+def _mlx_resolve_device(spec: str, devices: Optional[Sequence[_MLXDeviceInfo]] = None) -> _MLXDeviceInfo:
+    if mx is None:
+        raise RuntimeError("MLX backend is unavailable.")
+    normalized = spec.strip().lower()
+    if devices is None:
+        devices = _mlx_collect_devices()
+    if not devices:
+        raise RuntimeError("No MLX devices detected.")
+    if normalized in {"", "default"}:
+        for info in devices:
+            if info.is_default:
+                return info
+        return devices[0]
+    for info in devices:
+        aliases = info.aliases()
+        if normalized in aliases:
+            return info
+    for info in devices:
+        aliases = info.aliases()
+        if any(normalized in alias for alias in aliases):
+            return info
+    raise ValueError(f"Unknown MLX device spec '{spec}'.")
+
+
+def _mlx_set_default_device(device: Any) -> None:
+    if mx is None:
+        raise RuntimeError("MLX backend is unavailable.")
+    setters = [
+        _safe_getattr(mx, "set_default_device"),
+        _safe_getattr(mx, "set_device"),
+    ]
+    for setter in setters:
+        if callable(setter):
+            setter(device)
+            return
+    default_attr = _safe_getattr(mx, "default_device")
+    if default_attr is not None and not callable(default_attr):
+        try:
+            setattr(mx, "default_device", device)
+            return
+        except Exception:
+            pass
+    raise RuntimeError(
+        "Unable to set MLX default device: no supported setter found in current mlx version."
+    )
+
+
+def _mlx_configure_device(spec: Optional[str]) -> Optional[_MLXDeviceInfo]:
+    if mx is None:
+        return None
+    devices = _mlx_collect_devices()
+    if not devices:
+        return None
+    if spec is None:
+        for info in devices:
+            if info.is_default:
+                return info
+        return devices[0]
+    info = _mlx_resolve_device(spec, devices)
+    _mlx_set_default_device(info.handle)
+    return info
+
+
+def _mlx_print_available_devices() -> int:
+    if mx is None:
+        print("MLX backend is unavailable; please install mlx to inspect devices.", file=sys.stderr)
+        return 1
+    devices = _mlx_collect_devices()
+    if not devices:
+        print("No MLX devices detected by the current mlx installation.", file=sys.stderr)
+        return 1
+    print("Available MLX devices:")
+    for info in devices:
+        line = f"  {info.summary()}"
+        alias = info.identifier.lower()
+        if alias and alias != str(info.ordinal):
+            line += f"  (alias: {alias})"
+        print(line)
+    return 0
 
 
 COMPONENT_FIELDS: Tuple[Tuple[str, str], ...] = (
@@ -2479,6 +2785,9 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
     payload["perf_mode"] = bool(getattr(args, "perf_mode", False))
     if args.policy_backend == "mlx":
         payload["mlx_inference_window"] = getattr(args, "mlx_inference_window", "last")
+        mlx_device_label = getattr(args, "mlx_device_label", None)
+        if mlx_device_label:
+            payload["mlx_device"] = mlx_device_label
     else:
         payload["torch_amp"] = bool(getattr(args, "torch_amp", False))
         payload["torch_compile"] = bool(getattr(args, "torch_compile", False))
@@ -2587,6 +2896,17 @@ def main() -> None:
         default="last",
         help="MLX-only: use the latest frame ('last') or the full stack ('stack') when selecting actions.",
     )
+    ap.add_argument(
+        "--mlx-device",
+        type=str,
+        default=None,
+        help="MLX-only: select the compute device (index or kind[:index]).",
+    )
+    ap.add_argument(
+        "--mlx-list-devices",
+        action="store_true",
+        help="List all available MLX devices and exit.",
+    )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
     ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
     ap.add_argument("--batch-runs", type=int, default=1, help="Episodes to accumulate before each policy update.")
@@ -2630,6 +2950,29 @@ def main() -> None:
     )
 
     args = ap.parse_args()
+
+    if args.mlx_list_devices:
+        exit_code = _mlx_print_available_devices()
+        sys.exit(exit_code)
+
+    selected_mlx_device: Optional[_MLXDeviceInfo] = None
+    if args.policy_backend == "mlx":
+        if mx is None:
+            print("MLX backend is unavailable; install mlx to use --policy-backend mlx.", file=sys.stderr)
+        else:
+            try:
+                selected_mlx_device = _mlx_configure_device(args.mlx_device)
+            except Exception as exc:
+                raise RuntimeError(f"Failed to select MLX device: {exc}") from exc
+            if selected_mlx_device is not None:
+                args.mlx_device_label = selected_mlx_device.summary()
+                args.mlx_device_identifier = selected_mlx_device.identifier
+    elif args.mlx_device:
+        print(
+            "Warning: --mlx-device specified but --policy-backend is not 'mlx'; ignoring MLX device selection.",
+            file=sys.stderr,
+        )
+        args.mlx_device = None
 
     if args.perf_mode:
         args.no_monitor = True
@@ -2780,6 +3123,9 @@ def main() -> None:
                 batch_runs=args.batch_runs,
                 use_last_frame_inference=(args.mlx_inference_window == "last"),
             )
+            if selected_mlx_device is not None:
+                setattr(agent, "mlx_device", selected_mlx_device.identifier)
+                setattr(agent, "mlx_device_label", selected_mlx_device.summary())
         else:
             agent = PolicyGradientAgent(
                 env.action_space,
