@@ -218,6 +218,51 @@ def _viewer_worker(
             lines[-1] += f"  ratio×{ratio:.2f}"
         else:
             lines[-1] += "  ratio×free"
+        perf_stats = stats.get("perf") if isinstance(stats, dict) else None
+        if isinstance(perf_stats, dict) and perf_stats:
+            wall_pct = perf_stats.get("inference_pct_wall")
+            compute_pct = perf_stats.get("inference_pct_compute")
+            if wall_pct is not None and compute_pct is not None:
+                lines.append(
+                    f"Inference wait {float(wall_pct):.1f}% wall ({float(compute_pct):.1f}% loop)"
+                )
+            last_infer = perf_stats.get("last_inference_ms")
+            last_step = perf_stats.get("last_step_ms")
+            if last_infer is not None or last_step is not None:
+                infer_text = f"{float(last_infer):.2f}" if last_infer is not None else "?"
+                step_text = f"{float(last_step):.2f}" if last_step is not None else "?"
+                lines.append(f"Last inference {infer_text} ms  step {step_text} ms")
+            episode_ms_last = perf_stats.get("episode_update_last_ms")
+            batch_ms_last = perf_stats.get("batch_update_last_ms")
+            if episode_ms_last is not None or batch_ms_last is not None:
+                episode_text = (
+                    f"{float(episode_ms_last):.2f}"
+                    if episode_ms_last is not None
+                    else "?"
+                )
+                batch_text = (
+                    f"{float(batch_ms_last):.2f}"
+                    if batch_ms_last is not None
+                    else "?"
+                )
+                lines.append(f"Update ms episode {episode_text}  batch {batch_text}")
+            episode_avg = perf_stats.get("episode_update_avg_ms")
+            batch_avg = perf_stats.get("batch_update_avg_ms")
+            if episode_avg is not None or batch_avg is not None:
+                episode_avg_text = (
+                    f"{float(episode_avg):.2f}"
+                    if episode_avg is not None
+                    else "?"
+                )
+                batch_avg_text = (
+                    f"{float(batch_avg):.2f}"
+                    if batch_avg is not None
+                    else "?"
+                )
+                lines.append(f"Avg update ms episode {episode_avg_text}  batch {batch_avg_text}")
+            call_count = perf_stats.get("inference_calls")
+            if call_count is not None:
+                lines.append(f"Inference calls {int(call_count)}")
         lines.append("Controls: 0=emu=viz  +=faster  -=slower")
         text_var.set("\n".join(lines))
 

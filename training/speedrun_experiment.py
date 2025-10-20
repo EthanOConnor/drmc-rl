@@ -1200,6 +1200,9 @@ class SpeedrunAgent:
         if self.epsilon > self._epsilon_min:
             self.epsilon = max(self._epsilon_min, self.epsilon * self._epsilon_decay)
 
+    def timing_snapshot(self) -> Dict[str, float]:
+        return {}
+
     def get_state(self) -> Dict[str, Any]:
         return {
             "epsilon": float(self.epsilon),
@@ -1263,6 +1266,12 @@ class _EnvSlot:
     next_step_time: float = field(default_factory=time.perf_counter)
     active: bool = False
     component_sums: Dict[str, float] = field(default_factory=dict)
+    inference_time: float = 0.0
+    step_compute_time: float = 0.0
+    inference_calls: int = 0
+    run_start_time: float = 0.0
+    last_inference_duration: float = 0.0
+    last_step_duration: float = 0.0
 
 
 class PolicyGradientAgent:
@@ -1377,6 +1386,12 @@ class PolicyGradientAgent:
 
         self._updates = 0
         self._last_metrics: Dict[str, float] = {}
+        self._last_episode_update_time = 0.0
+        self._episode_update_time_accum = 0.0
+        self._episode_update_count = 0
+        self._last_batch_update_time = 0.0
+        self._batch_update_time_accum = 0.0
+        self._batch_update_count = 0
 
     def _prepare_obs(self, obs: Any) -> torch.Tensor:
         stack = _extract_state_stack(obs)
@@ -1524,53 +1539,86 @@ class PolicyGradientAgent:
             reset_required = True
         ctx.reset_flags.append(bool(reset_required))
 
+    def _record_episode_update_time(self, duration: float) -> None:
+        self._last_episode_update_time = float(duration)
+        self._episode_update_time_accum += float(duration)
+        self._episode_update_count += 1
+
+    def _record_batch_update_time(self, duration: float) -> None:
+        self._last_batch_update_time = float(duration)
+        self._batch_update_time_accum += float(duration)
+        self._batch_update_count += 1
+
+    def timing_snapshot(self) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {
+            "episode_update_last_s": float(self._last_episode_update_time),
+            "batch_update_last_s": float(self._last_batch_update_time),
+            "episode_update_count": float(self._episode_update_count),
+            "batch_update_count": float(self._batch_update_count),
+        }
+        if self._episode_update_count > 0:
+            snapshot["episode_update_avg_s"] = (
+                self._episode_update_time_accum / float(self._episode_update_count)
+            )
+        else:
+            snapshot["episode_update_avg_s"] = 0.0
+        if self._batch_update_count > 0:
+            snapshot["batch_update_avg_s"] = (
+                self._batch_update_time_accum / float(self._batch_update_count)
+            )
+        else:
+            snapshot["batch_update_avg_s"] = 0.0
+        return snapshot
+
     def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
-        ctx = self._get_context(context_id)
-        if not ctx.actions:
-            return
+        start_time = time.perf_counter()
+        try:
+            ctx = self._get_context(context_id)
+            if not ctx.actions:
+                return
 
-        returns: list[float] = []
-        G = 0.0
-        # Drop the dummy terminal marker if present
-        rewards = [r for r in ctx.rewards if not np.isnan(r)]
-        for reward in reversed(rewards):
-            G = reward + self._gamma * G
-            returns.append(G)
-        returns.reverse()
-        returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self._device)
+            returns: list[float] = []
+            G = 0.0
+            # Drop the dummy terminal marker if present
+            rewards = [r for r in ctx.rewards if not np.isnan(r)]
+            for reward in reversed(rewards):
+                G = reward + self._gamma * G
+                returns.append(G)
+            returns.reverse()
+            returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self._device)
 
-        episode_len = min(
-            len(returns), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
-        )
-        if episode_len <= 0:
-            self._reset_context(context_id)
-            return
-        if returns_tensor.shape[0] != episode_len:
-            returns_tensor = returns_tensor[:episode_len]
+            episode_len = min(
+                len(returns), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
+            )
+            if episode_len <= 0:
+                self._reset_context(context_id)
+                return
+            if returns_tensor.shape[0] != episode_len:
+                returns_tensor = returns_tensor[:episode_len]
 
-        obs_sequence = ctx.observations[:episode_len]
-        action_sequence = ctx.actions[:episode_len]
-        reset_flags = ctx.reset_flags[:episode_len]
+            obs_sequence = ctx.observations[:episode_len]
+            action_sequence = ctx.actions[:episode_len]
+            reset_flags = ctx.reset_flags[:episode_len]
 
-        log_prob_list: list[torch.Tensor] = []
-        value_list: list[torch.Tensor] = []
-        entropy_list: list[torch.Tensor] = []
-        recurrent = None
-        autocast_ctx = (
-            torch.autocast(device_type=self._device.type, dtype=torch.float16)
-            if self._use_amp
-            else nullcontext()
-        )
-        with autocast_ctx:
-            for obs_cpu, action_val, reset_flag in zip(
-                obs_sequence, action_sequence, reset_flags
-            ):
-                obs_tensor = obs_cpu.to(self._device)
-                if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
-                    obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
-                action_tensor = torch.tensor(int(action_val), dtype=torch.long, device=self._device)
-                if self._policy_arch == "mlp":
-                    logits, values_seq = self.model(obs_tensor.unsqueeze(0))
+            log_prob_list: list[torch.Tensor] = []
+            value_list: list[torch.Tensor] = []
+            entropy_list: list[torch.Tensor] = []
+            recurrent = None
+            autocast_ctx = (
+                torch.autocast(device_type=self._device.type, dtype=torch.float16)
+                if self._use_amp
+                else nullcontext()
+            )
+            with autocast_ctx:
+                for obs_cpu, action_val, reset_flag in zip(
+                    obs_sequence, action_sequence, reset_flags
+                ):
+                    obs_tensor = obs_cpu.to(self._device)
+                    if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
+                        obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
+                    action_tensor = torch.tensor(int(action_val), dtype=torch.long, device=self._device)
+                    if self._policy_arch == "mlp":
+                        logits, values_seq = self.model(obs_tensor.unsqueeze(0))
                     dist = Categorical(logits=logits.squeeze(0))
                     log_prob_list.append(dist.log_prob(action_tensor))
                     value_list.append(values_seq.squeeze(0))
@@ -1599,77 +1647,92 @@ class PolicyGradientAgent:
                     if reset_flag:
                         recurrent = self._zero_like_recurrent(recurrent)
 
-        if not log_prob_list:
-            self._reset_context(context_id)
-            return
+            if not log_prob_list:
+                self._reset_context(context_id)
+                return
 
-        log_probs = torch.stack(log_prob_list).to(dtype=torch.float32)
-        values = torch.stack(value_list).to(dtype=torch.float32)
-        entropies = torch.stack(entropy_list).to(dtype=torch.float32)
+            log_probs = torch.stack(log_prob_list).to(dtype=torch.float32)
+            values = torch.stack(value_list).to(dtype=torch.float32)
+            entropies = torch.stack(entropy_list).to(dtype=torch.float32)
 
-        if self._episodes_in_batch == 0:
-            self.optimizer.zero_grad(set_to_none=True)
-            self._batch_accum_policy_loss = 0.0
-            self._batch_accum_value_loss = 0.0
-            self._batch_accum_entropy = 0.0
-            self._batch_accum_critic_ev = 0.0
+            if self._episodes_in_batch == 0:
+                self.optimizer.zero_grad(set_to_none=True)
+                self._batch_accum_policy_loss = 0.0
+                self._batch_accum_value_loss = 0.0
+                self._batch_accum_entropy = 0.0
+                self._batch_accum_critic_ev = 0.0
 
-        if returns_tensor.shape[0] != log_probs.shape[0]:
-            min_len = min(returns_tensor.shape[0], log_probs.shape[0])
-            returns_tensor = returns_tensor[:min_len]
-            log_probs = log_probs[:min_len]
-            values = values[:min_len]
-            entropies = entropies[:min_len]
+            if returns_tensor.shape[0] != log_probs.shape[0]:
+                min_len = min(returns_tensor.shape[0], log_probs.shape[0])
+                returns_tensor = returns_tensor[:min_len]
+                log_probs = log_probs[:min_len]
+                values = values[:min_len]
+                entropies = entropies[:min_len]
 
-        advantages = returns_tensor - values.detach()
-        adv_std = advantages.std(unbiased=False).clamp_min(1e-6)
-        advantages = (advantages - advantages.mean()) / adv_std
-        policy_loss = -(log_probs * advantages).mean()
-        value_errors = returns_tensor - values
-        value_sq = value_errors.pow(2)
-        value_mse = value_sq.mean()
-        value_loss = 0.5 * torch.clamp(value_sq, max=10.0).mean()
-        entropy_term = entropies.mean()
-        loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
+            advantages = returns_tensor - values.detach()
+            adv_std = advantages.std(unbiased=False).clamp_min(1e-6)
+            advantages = (advantages - advantages.mean()) / adv_std
+            policy_loss = -(log_probs * advantages).mean()
+            value_errors = returns_tensor - values
+            value_sq = value_errors.pow(2)
+            value_mse = value_sq.mean()
+            value_loss = 0.5 * torch.clamp(value_sq, max=10.0).mean()
+            entropy_term = entropies.mean()
+            loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
 
-        value_err_float = float(value_mse.item())
-        value_var_float = float(returns_tensor.var(unbiased=False).item())
-        if value_var_float <= 1e-8:
-            ev_value = 0.0
-        else:
-            ev_value = 1.0 - (value_err_float / (value_var_float + 1e-8))
-        ev_value = max(-1.0, min(1.0, ev_value))
+            value_err_float = float(value_mse.item())
+            value_var_float = float(returns_tensor.var(unbiased=False).item())
+            if value_var_float <= 1e-8:
+                ev_value = 0.0
+            else:
+                ev_value = 1.0 - (value_err_float / (value_var_float + 1e-8))
+            ev_value = max(-1.0, min(1.0, ev_value))
 
-        scale = 1.0 / float(max(1, self._batch_runs))
-        if self._grad_scaler is not None:
-            self._grad_scaler.scale(loss * scale).backward()
-        else:
-            (loss * scale).backward()
+            scale = 1.0 / float(max(1, self._batch_runs))
+            if self._grad_scaler is not None:
+                self._grad_scaler.scale(loss * scale).backward()
+            else:
+                (loss * scale).backward()
 
-        self._batch_accum_policy_loss += float(policy_loss.item())
-        self._batch_accum_value_loss += float(value_loss.item())
-        self._batch_accum_entropy += float(entropy_term.item())
-        self._batch_accum_critic_ev += ev_value
-        self._latest_critic_ev = ev_value
+            self._batch_accum_policy_loss += float(policy_loss.item())
+            self._batch_accum_value_loss += float(value_loss.item())
+            self._batch_accum_entropy += float(entropy_term.item())
+            self._batch_accum_critic_ev += ev_value
+            self._latest_critic_ev = ev_value
 
-        self._episodes_in_batch += 1
-        self._steps_in_batch += int(returns_tensor.shape[0])
+            self._episodes_in_batch += 1
+            self._steps_in_batch += int(returns_tensor.shape[0])
 
-        ctx.observations.clear()
-        ctx.actions.clear()
-        ctx.rewards.clear()
-        ctx.reset_flags.clear()
-        ctx.recurrent_state = None
-        ctx.last_spawn_id = None
+            ctx.observations.clear()
+            ctx.actions.clear()
+            ctx.rewards.clear()
+            ctx.reset_flags.clear()
+            ctx.recurrent_state = None
+            ctx.last_spawn_id = None
 
-        if self._episodes_in_batch >= self._batch_runs:
-            self._update_policy()
+            if self._episodes_in_batch >= self._batch_runs:
+                self._update_policy()
+        finally:
+            duration = time.perf_counter() - start_time
+            self._record_episode_update_time(duration)
 
     def latest_metrics(self) -> Dict[str, float]:
         metrics = dict(self._last_metrics)
         metrics["learner/pending_runs"] = float(self._episodes_in_batch)
         metrics["learner/pending_steps"] = float(self._steps_in_batch)
         metrics["critic/latest_ev"] = float(self._latest_critic_ev)
+        metrics["perf/episode_update_ms_last"] = self._last_episode_update_time * 1000.0
+        metrics["perf/batch_update_ms_last"] = self._last_batch_update_time * 1000.0
+        metrics["perf/episode_update_count"] = float(self._episode_update_count)
+        metrics["perf/batch_update_count"] = float(self._batch_update_count)
+        if self._episode_update_count > 0:
+            metrics["perf/episode_update_ms_avg"] = (
+                (self._episode_update_time_accum / float(self._episode_update_count)) * 1000.0
+            )
+        if self._batch_update_count > 0:
+            metrics["perf/batch_update_ms_avg"] = (
+                (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
+            )
         return metrics
 
     def _update_policy(self) -> None:
@@ -1681,6 +1744,7 @@ class PolicyGradientAgent:
     def _apply_optimizer_step(self, adjust_for_partial: bool) -> None:
         if self._episodes_in_batch <= 0:
             return
+        start_time = time.perf_counter()
         batch_count = max(1, self._episodes_in_batch)
         scaler = self._grad_scaler
         if scaler is not None:
@@ -1717,6 +1781,8 @@ class PolicyGradientAgent:
         self._batch_accum_value_loss = 0.0
         self._batch_accum_entropy = 0.0
         self._batch_accum_critic_ev = 0.0
+        duration = time.perf_counter() - start_time
+        self._record_batch_update_time(duration)
 
     def get_state(self) -> Dict[str, Any]:
         state: Dict[str, Any] = {
@@ -1854,6 +1920,12 @@ class PolicyGradientAgentMLX:
             pass
         self._updates = 0
         self._last_metrics: Dict[str, float] = {}
+        self._last_episode_update_time = 0.0
+        self._episode_update_time_accum = 0.0
+        self._episode_update_count = 0
+        self._last_batch_update_time = 0.0
+        self._batch_update_time_accum = 0.0
+        self._batch_update_count = 0
         self._latest_critic_ev = 0.0
         self._episodes_in_batch = 0
         self._steps_in_batch = 0
@@ -1970,104 +2042,152 @@ class PolicyGradientAgentMLX:
         except Exception:
             return np.array(value)
 
+    def _record_episode_update_time(self, duration: float) -> None:
+        self._last_episode_update_time = float(duration)
+        self._episode_update_time_accum += float(duration)
+        self._episode_update_count += 1
+
+    def _record_batch_update_time(self, duration: float) -> None:
+        self._last_batch_update_time = float(duration)
+        self._batch_update_time_accum += float(duration)
+        self._batch_update_count += 1
+
+    def timing_snapshot(self) -> Dict[str, float]:
+        snapshot: Dict[str, float] = {
+            "episode_update_last_s": float(self._last_episode_update_time),
+            "batch_update_last_s": float(self._last_batch_update_time),
+            "episode_update_count": float(self._episode_update_count),
+            "batch_update_count": float(self._batch_update_count),
+        }
+        if self._episode_update_count > 0:
+            snapshot["episode_update_avg_s"] = (
+                self._episode_update_time_accum / float(self._episode_update_count)
+            )
+        else:
+            snapshot["episode_update_avg_s"] = 0.0
+        if self._batch_update_count > 0:
+            snapshot["batch_update_avg_s"] = (
+                self._batch_update_time_accum / float(self._batch_update_count)
+            )
+        else:
+            snapshot["batch_update_avg_s"] = 0.0
+        return snapshot
+
     def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
-        ctx = self._get_context(context_id)
-        if not ctx.actions:
+        start_time = time.perf_counter()
+        try:
+            ctx = self._get_context(context_id)
+            if not ctx.actions:
+                self._reset_context(context_id)
+                return
+
+            observations = np.stack(ctx.observations, axis=0).astype(np.float32)
+            actions = np.array(ctx.actions, dtype=np.int32)
+            rewards = np.array(ctx.rewards, dtype=np.float32)
+
+            returns = np.zeros_like(rewards)
+            G = 0.0
+            for idx in range(len(rewards) - 1, -1, -1):
+                G = rewards[idx] + self._gamma * G
+                returns[idx] = G
+
+            obs_batch = mx.array(observations, dtype=mx.float32)
+            obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
+            actions_batch = mx.array(actions.reshape(-1, 1), dtype=mx.int32)
+            returns_tensor = mx.array(returns, dtype=mx.float32)
+
+            metrics_cache: Dict[str, Any] = {}
+
+            def loss_fn(obs_tensor, action_tensor):
+                logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
+                logits_seq = logits_seq[0]
+                values_seq = values_seq[0]
+                log_probs = _mlx_log_softmax(logits_seq, axis=-1)
+                selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
+                advantages_policy = returns_tensor - mx.stop_gradient(values_seq)
+                adv_mean = mx.mean(advantages_policy)
+                advantages_policy = advantages_policy - adv_mean
+                adv_sq = advantages_policy * advantages_policy
+                adv_std = mx.sqrt(mx.mean(adv_sq))
+                epsilon = mx.array(1e-6, dtype=advantages_policy.dtype)
+                advantages_policy = advantages_policy / mx.maximum(adv_std, epsilon)
+                policy_loss = -mx.mean(selected * advantages_policy)
+                advantages_value = returns_tensor - values_seq
+                value_sq = advantages_value * advantages_value
+                value_loss = 0.5 * mx.mean(mx.clip(value_sq, a_min=None, a_max=10.0))
+                probs = mx.softmax(logits_seq, axis=-1)
+                entropy = -mx.mean(mx.sum(probs * log_probs, axis=-1))
+                metrics_cache["policy_loss"] = policy_loss
+                metrics_cache["value_loss"] = value_loss
+                metrics_cache["entropy"] = entropy
+                metrics_cache["returns"] = returns_tensor
+                metrics_cache["values"] = values_seq
+                return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
+
+            if self._episodes_in_batch == 0:
+                self._grad_accum = None
+                self._batch_accum_policy_loss = 0.0
+                self._batch_accum_value_loss = 0.0
+                self._batch_accum_entropy = 0.0
+                self._batch_accum_critic_ev = 0.0
+
+            loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
+            _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
+            scale = 1.0 / float(max(1, self._batch_runs))
+            grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
+            if self._grad_accum is None:
+                self._grad_accum = grads
+            else:
+                self._grad_accum = self._tree_combine(self._grad_accum, grads, lambda a, b: a + b)
+
+            policy_loss_val = self._mx_to_float(metrics_cache.get("policy_loss", 0.0))
+            value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
+            entropy_val = self._mx_to_float(metrics_cache.get("entropy", 0.0))
+
+            returns_np = self._mx_to_numpy(metrics_cache.get("returns", returns_tensor))
+            values_np = self._mx_to_numpy(metrics_cache.get("values", np.zeros_like(returns_np)))
+            value_errors = returns_np - values_np
+            value_mse = float(np.mean(value_errors**2))
+            value_var = float(np.var(returns_np))
+            if value_var <= 1e-8:
+                ev = 0.0
+            else:
+                ev = 1.0 - (value_mse / (value_var + 1e-8))
+
+            ev = float(max(-1.0, min(1.0, ev)))
+            self._batch_accum_policy_loss += float(policy_loss_val)
+            self._batch_accum_value_loss += float(value_loss_val)
+            self._batch_accum_entropy += float(entropy_val)
+            self._batch_accum_critic_ev += ev
+            self._latest_critic_ev = ev
+            self._episodes_in_batch += 1
+            self._steps_in_batch += int(returns_tensor.shape[0])
+
             self._reset_context(context_id)
-            return
 
-        observations = np.stack(ctx.observations, axis=0).astype(np.float32)
-        actions = np.array(ctx.actions, dtype=np.int32)
-        rewards = np.array(ctx.rewards, dtype=np.float32)
-
-        returns = np.zeros_like(rewards)
-        G = 0.0
-        for idx in range(len(rewards) - 1, -1, -1):
-            G = rewards[idx] + self._gamma * G
-            returns[idx] = G
-
-        obs_batch = mx.array(observations, dtype=mx.float32)
-        obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
-        actions_batch = mx.array(actions.reshape(-1, 1), dtype=mx.int32)
-        returns_tensor = mx.array(returns, dtype=mx.float32)
-
-        metrics_cache: Dict[str, Any] = {}
-
-        def loss_fn(obs_tensor, action_tensor):
-            logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
-            logits_seq = logits_seq[0]
-            values_seq = values_seq[0]
-            log_probs = _mlx_log_softmax(logits_seq, axis=-1)
-            selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
-            advantages_policy = returns_tensor - mx.stop_gradient(values_seq)
-            adv_mean = mx.mean(advantages_policy)
-            advantages_policy = advantages_policy - adv_mean
-            adv_sq = advantages_policy * advantages_policy
-            adv_std = mx.sqrt(mx.mean(adv_sq))
-            epsilon = mx.array(1e-6, dtype=advantages_policy.dtype)
-            advantages_policy = advantages_policy / mx.maximum(adv_std, epsilon)
-            policy_loss = -mx.mean(selected * advantages_policy)
-            advantages_value = returns_tensor - values_seq
-            value_sq = advantages_value * advantages_value
-            value_loss = 0.5 * mx.mean(mx.clip(value_sq, a_min=None, a_max=10.0))
-            probs = mx.softmax(logits_seq, axis=-1)
-            entropy = -mx.mean(mx.sum(probs * log_probs, axis=-1))
-            metrics_cache["policy_loss"] = policy_loss
-            metrics_cache["value_loss"] = value_loss
-            metrics_cache["entropy"] = entropy
-            metrics_cache["returns"] = returns_tensor
-            metrics_cache["values"] = values_seq
-            return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
-
-        if self._episodes_in_batch == 0:
-            self._grad_accum = None
-            self._batch_accum_policy_loss = 0.0
-            self._batch_accum_value_loss = 0.0
-            self._batch_accum_entropy = 0.0
-            self._batch_accum_critic_ev = 0.0
-
-        loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
-        _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
-        scale = 1.0 / float(max(1, self._batch_runs))
-        grads = self._tree_map(grads, lambda g: g * scale if g is not None else None)
-        if self._grad_accum is None:
-            self._grad_accum = grads
-        else:
-            self._grad_accum = self._tree_combine(self._grad_accum, grads, lambda a, b: a + b)
-
-        policy_loss_val = self._mx_to_float(metrics_cache.get("policy_loss", 0.0))
-        value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
-        entropy_val = self._mx_to_float(metrics_cache.get("entropy", 0.0))
-
-        returns_np = self._mx_to_numpy(metrics_cache.get("returns", returns_tensor))
-        values_np = self._mx_to_numpy(metrics_cache.get("values", np.zeros_like(returns_np)))
-        value_errors = returns_np - values_np
-        value_mse = float(np.mean(value_errors ** 2))
-        value_var = float(np.var(returns_np))
-        if value_var <= 1e-8:
-            ev = 0.0
-        else:
-            ev = 1.0 - (value_mse / (value_var + 1e-8))
-
-        ev = float(max(-1.0, min(1.0, ev)))
-        self._batch_accum_policy_loss += float(policy_loss_val)
-        self._batch_accum_value_loss += float(value_loss_val)
-        self._batch_accum_entropy += float(entropy_val)
-        self._batch_accum_critic_ev += ev
-        self._latest_critic_ev = ev
-        self._episodes_in_batch += 1
-        self._steps_in_batch += int(returns_tensor.shape[0])
-
-        self._reset_context(context_id)
-
-        if self._episodes_in_batch >= self._batch_runs:
-            self._apply_optimizer_step(adjust_for_partial=False)
+            if self._episodes_in_batch >= self._batch_runs:
+                self._apply_optimizer_step(adjust_for_partial=False)
+        finally:
+            duration = time.perf_counter() - start_time
+            self._record_episode_update_time(duration)
 
     def latest_metrics(self) -> Dict[str, float]:
         metrics = dict(self._last_metrics)
         metrics["learner/pending_runs"] = float(self._episodes_in_batch)
         metrics["learner/pending_steps"] = float(self._steps_in_batch)
         metrics["critic/latest_ev"] = float(self._latest_critic_ev)
+        metrics["perf/episode_update_ms_last"] = self._last_episode_update_time * 1000.0
+        metrics["perf/batch_update_ms_last"] = self._last_batch_update_time * 1000.0
+        metrics["perf/episode_update_count"] = float(self._episode_update_count)
+        metrics["perf/batch_update_count"] = float(self._batch_update_count)
+        if self._episode_update_count > 0:
+            metrics["perf/episode_update_ms_avg"] = (
+                (self._episode_update_time_accum / float(self._episode_update_count)) * 1000.0
+            )
+        if self._batch_update_count > 0:
+            metrics["perf/batch_update_ms_avg"] = (
+                (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
+            )
         return metrics
 
     def finalize_updates(self) -> None:
@@ -2076,6 +2196,7 @@ class PolicyGradientAgentMLX:
     def _apply_optimizer_step(self, adjust_for_partial: bool) -> None:
         if self._episodes_in_batch <= 0 or self._grad_accum is None:
             return
+        start_time = time.perf_counter()
         batch_count = max(1, self._episodes_in_batch)
         grads = self._grad_accum
         if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
@@ -2110,6 +2231,8 @@ class PolicyGradientAgentMLX:
         self._batch_accum_entropy = 0.0
         self._batch_accum_critic_ev = 0.0
         self._grad_accum = None
+        duration = time.perf_counter() - start_time
+        self._record_batch_update_time(duration)
 
     def _tree_map(self, tree: Any, fn) -> Any:
         if tree is None:
@@ -2916,6 +3039,49 @@ def main() -> None:
             "frame": slot.frame_index,
             "time": time.perf_counter(),
         }
+        now_time = stats["time"]
+        wall_elapsed = 0.0
+        if slot.run_start_time > 0.0:
+            wall_elapsed = max(0.0, now_time - slot.run_start_time)
+        inference_time = float(slot.inference_time)
+        compute_time = float(slot.step_compute_time)
+        perf_stats: Dict[str, Any] = {
+            "inference_s": inference_time,
+            "compute_s": compute_time,
+            "wall_s": wall_elapsed,
+            "inference_pct_wall": (inference_time / wall_elapsed * 100.0)
+            if wall_elapsed > 1e-9
+            else 0.0,
+            "inference_pct_compute": (inference_time / compute_time * 100.0)
+            if compute_time > 1e-9
+            else 0.0,
+            "inference_calls": int(slot.inference_calls),
+            "last_inference_ms": float(slot.last_inference_duration) * 1000.0,
+            "last_step_ms": float(slot.last_step_duration) * 1000.0,
+        }
+        timing_snapshot_fn = getattr(agent, "timing_snapshot", None)
+        timing_info: Dict[str, Any] = {}
+        if callable(timing_snapshot_fn):
+            try:
+                timing_candidate = timing_snapshot_fn()
+            except Exception:
+                timing_candidate = {}
+            if isinstance(timing_candidate, dict):
+                timing_info = timing_candidate
+        if timing_info:
+            episode_last = float(timing_info.get("episode_update_last_s", 0.0))
+            batch_last = float(timing_info.get("batch_update_last_s", 0.0))
+            perf_stats["episode_update_last_ms"] = episode_last * 1000.0
+            perf_stats["batch_update_last_ms"] = batch_last * 1000.0
+            episode_avg = float(timing_info.get("episode_update_avg_s", 0.0))
+            batch_avg = float(timing_info.get("batch_update_avg_s", 0.0))
+            perf_stats["episode_update_avg_ms"] = episode_avg * 1000.0
+            perf_stats["batch_update_avg_ms"] = batch_avg * 1000.0
+            perf_stats["episode_update_count"] = float(
+                timing_info.get("episode_update_count", 0.0)
+            )
+            perf_stats["batch_update_count"] = float(timing_info.get("batch_update_count", 0.0))
+        stats["perf"] = perf_stats
         try:
             if args.mode == "state":
                 stack = _extract_state_stack(observation)
@@ -2958,6 +3124,12 @@ def main() -> None:
         slot.active = True
         slot.info = dict(slot.info or {})
         slot.component_sums.clear()
+        slot.inference_time = 0.0
+        slot.step_compute_time = 0.0
+        slot.inference_calls = 0
+        slot.run_start_time = time.perf_counter()
+        slot.last_inference_duration = 0.0
+        slot.last_step_duration = 0.0
         if (
             use_learning_agent
             and not randomize_rng_enabled
@@ -3023,7 +3195,12 @@ def main() -> None:
                         now = time.perf_counter()
                     slot.next_step_time = now + step_period
 
+                step_start = time.perf_counter()
                 action = agent.select_action(slot.obs, slot.info, context_id=slot.context_id)
+                inference_end = time.perf_counter()
+                slot.inference_time += inference_end - step_start
+                slot.inference_calls += 1
+                slot.last_inference_duration = inference_end - step_start
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
@@ -3054,6 +3231,10 @@ def main() -> None:
                             val = -val
                         slot.component_sums[comp_key] = slot.component_sums.get(comp_key, 0.0) + val
 
+                step_end = time.perf_counter()
+                slot.step_compute_time += step_end - step_start
+                slot.last_step_duration = step_end - step_start
+
                 done = step_done or slot.episode_steps >= args.max_steps
                 if not done:
                     continue
@@ -3066,7 +3247,11 @@ def main() -> None:
                 if monitor is not None:
                     monitor.publish_score(slot.run_idx, run_reward)
                     monitor.update_hyperparams(_format_hyperparams_for_monitor(args, agent))
-                    elapsed = max(1e-6, time.perf_counter() - experiment_start_time)
+                    now_time = time.perf_counter()
+                    elapsed = max(1e-6, now_time - experiment_start_time)
+                    run_wall = max(1e-6, now_time - slot.run_start_time)
+                    inference_s = float(slot.inference_time)
+                    compute_s = float(slot.step_compute_time)
                     diagnostics_payload = {
                         "episodes_completed": len(completed_rewards),
                         "episode_reward": run_reward,
@@ -3076,6 +3261,20 @@ def main() -> None:
                         "episode_steps": slot.episode_steps,
                         "total_steps": total_steps,
                         "steps_per_second": total_steps / elapsed,
+                        "perf/inference_time_s": inference_s,
+                        "perf/run_wall_time_s": run_wall,
+                        "perf/loop_compute_time_s": compute_s,
+                        "perf/inference_wait_wall_pct": (
+                            inference_s / run_wall * 100.0
+                            if run_wall > 1e-9
+                            else 0.0
+                        ),
+                        "perf/inference_wait_compute_pct": (
+                            inference_s / compute_s * 100.0
+                            if compute_s > 1e-9
+                            else 0.0
+                        ),
+                        "perf/inference_calls": float(slot.inference_calls),
                     }
                     for comp_key, _ in COMPONENT_FIELDS:
                         if comp_key == "episode_reward":
@@ -3093,6 +3292,37 @@ def main() -> None:
                         agent_metrics = agent_metrics_fn()
                         if agent_metrics:
                             diagnostics_payload.update(agent_metrics)
+                    timing_snapshot_fn = getattr(agent, "timing_snapshot", None)
+                    if callable(timing_snapshot_fn):
+                        try:
+                            timing_snapshot = timing_snapshot_fn()
+                        except Exception:
+                            timing_snapshot = {}
+                        if isinstance(timing_snapshot, dict) and timing_snapshot:
+                            episode_last = float(timing_snapshot.get("episode_update_last_s", 0.0))
+                            batch_last = float(timing_snapshot.get("batch_update_last_s", 0.0))
+                            diagnostics_payload["perf/update_episode_ms_last"] = (
+                                episode_last * 1000.0
+                            )
+                            diagnostics_payload["perf/update_batch_ms_last"] = batch_last * 1000.0
+                            episode_avg = float(
+                                timing_snapshot.get("episode_update_avg_s", 0.0)
+                            )
+                            batch_avg = float(
+                                timing_snapshot.get("batch_update_avg_s", 0.0)
+                            )
+                            diagnostics_payload["perf/update_episode_ms_avg"] = (
+                                episode_avg * 1000.0
+                            )
+                            diagnostics_payload["perf/update_batch_ms_avg"] = (
+                                batch_avg * 1000.0
+                            )
+                            diagnostics_payload["perf/update_episode_count"] = float(
+                                timing_snapshot.get("episode_update_count", 0.0)
+                            )
+                            diagnostics_payload["perf/update_batch_count"] = float(
+                                timing_snapshot.get("batch_update_count", 0.0)
+                            )
                     try:
                         monitor.publish_diagnostics(diagnostics_payload)
                         active_envs = sum(1 for s in slots if s.active)
