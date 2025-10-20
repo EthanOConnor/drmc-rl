@@ -78,6 +78,25 @@ def _mlx_log_softmax(tensor: "mx.array", axis: int = -1) -> "mx.array":
     logsumexp = mx.log(sum_exp)
     return shifted - logsumexp
 
+
+def _mlx_flip(tensor: "mx.array", axis: int = 0) -> "mx.array":
+    """Flip an MLX tensor along the provided axis with compatibility fallbacks."""
+
+    if mx is None:
+        raise RuntimeError("MLX backend is unavailable")
+
+    if hasattr(mx, "flip"):
+        return mx.flip(tensor, axis=axis)
+
+    if hasattr(mx, "reverse"):
+        return mx.reverse(tensor, axis=axis)
+
+    axis_normalized = axis if axis >= 0 else tensor.ndim + axis
+    np_view = np.asarray(tensor)
+    flipped = np.flip(np_view, axis=axis_normalized)
+    return mx.array(flipped, dtype=tensor.dtype)
+
+
 COMPONENT_FIELDS: Tuple[Tuple[str, str], ...] = (
     ("episode_reward", "Total"),
     ("pill_bonus_adjusted", "Pill"),
@@ -2122,8 +2141,8 @@ class PolicyGradientAgentMLX:
                 gamma_scalar = mx.array(float(self._gamma), dtype=rewards_tensor.dtype)
                 pow_gamma = mx.power(gamma_scalar, steps)
                 discounted = rewards_tensor * pow_gamma
-                cumulative = mx.cumsum(mx.flip(discounted, axis=0), axis=0)
-                returns_tensor = mx.flip(cumulative, axis=0)
+                cumulative = mx.cumsum(_mlx_flip(discounted, axis=0), axis=0)
+                returns_tensor = _mlx_flip(cumulative, axis=0)
                 if not math.isclose(self._gamma, 1.0, abs_tol=1e-8):
                     returns_tensor = returns_tensor / pow_gamma
 
