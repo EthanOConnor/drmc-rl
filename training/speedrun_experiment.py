@@ -1650,6 +1650,10 @@ class PolicyGradientAgent:
         augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
         self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
         self._input_dim = int(np.prod(augmented_stack.shape))
+        self._nan_rewards_seen = 0
+        self._nan_reward_episodes = 0
+        self._total_reward_steps = 0
+        self._last_episode_nan_repaired = False
         if policy_arch == "mlp":
             self.model = SimpleStateActorCritic(self._input_dim, int(action_space.n)).to(self._device)
         elif policy_arch == "drmario_cnn":
@@ -1903,12 +1907,12 @@ class PolicyGradientAgent:
         start_time = time.perf_counter()
         try:
             ctx = self._get_context(context_id)
+            self._last_episode_nan_repaired = False
             if not ctx.actions:
                 return
 
-            rewards = [r for r in ctx.rewards if not np.isnan(r)]
             episode_len = min(
-                len(rewards),
+                len(ctx.rewards),
                 len(ctx.actions),
                 len(ctx.observations),
                 len(ctx.reset_flags),
@@ -1917,8 +1921,20 @@ class PolicyGradientAgent:
             if episode_len <= 0:
                 self._reset_context(context_id)
                 return
+
+            rewards_np = np.asarray(ctx.rewards[:episode_len], dtype=np.float32)
+            nan_mask = np.isnan(rewards_np)
+            nan_count = int(nan_mask.sum())
+            self._total_reward_steps += episode_len
+            if nan_count:
+                self._nan_rewards_seen += nan_count
+                self._nan_reward_episodes += 1
+                self._last_episode_nan_repaired = True
+                rewards_np = rewards_np.copy()
+                rewards_np[nan_mask] = 0.0
+
             rewards_tensor = torch.as_tensor(
-                rewards[:episode_len], dtype=torch.float32, device=self._device
+                rewards_np, dtype=torch.float32, device=self._device
             )
             if rewards_tensor.dim() == 0:
                 rewards_tensor = rewards_tensor.unsqueeze(0)
@@ -2081,6 +2097,17 @@ class PolicyGradientAgent:
             metrics["perf/batch_update_ms_avg"] = (
                 (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
             )
+        metrics["rewards/nan_rewards_total"] = float(self._nan_rewards_seen)
+        metrics["rewards/nan_reward_episodes"] = float(self._nan_reward_episodes)
+        metrics["rewards/nan_reward_last_episode"] = (
+            1.0 if self._last_episode_nan_repaired else 0.0
+        )
+        if self._total_reward_steps > 0:
+            nan_rate = float(self._nan_rewards_seen) / float(self._total_reward_steps)
+        else:
+            nan_rate = 0.0
+        metrics["rewards/nan_reward_rate"] = nan_rate
+        metrics["alerts/nan_reward_rate_high"] = 1.0 if nan_rate > 0.001 else 0.0
         return metrics
 
     def _update_policy(self) -> None:
@@ -2146,6 +2173,9 @@ class PolicyGradientAgent:
             "obs_mode": self._obs_mode,
             "color_repr": self._color_repr,
             "latest_critic_ev": float(self._latest_critic_ev),
+            "nan_rewards_seen": int(self._nan_rewards_seen),
+            "nan_reward_episodes": int(self._nan_reward_episodes),
+            "reward_step_total": int(self._total_reward_steps),
         }
         if torch is None:
             return state
@@ -2203,6 +2233,11 @@ class PolicyGradientAgent:
             self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
             self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
             self._batch_runs = int(state.get("batch_runs", self._batch_runs))
+            self._nan_rewards_seen = int(state.get("nan_rewards_seen", self._nan_rewards_seen))
+            self._nan_reward_episodes = int(
+                state.get("nan_reward_episodes", self._nan_reward_episodes)
+            )
+            self._total_reward_steps = int(state.get("reward_step_total", self._total_reward_steps))
         except Exception:
             pass
         self.optimizer.zero_grad(set_to_none=True)
@@ -2283,6 +2318,10 @@ class PolicyGradientAgentMLX:
         self._batch_accum_entropy = 0.0
         self._batch_accum_critic_ev = 0.0
         self._grad_accum: Optional[Any] = None
+        self._nan_rewards_seen = 0
+        self._nan_reward_episodes = 0
+        self._total_reward_steps = 0
+        self._last_episode_nan_repaired = False
 
     def _context_key(self, context_id: Optional[int]) -> int:
         if context_id is None:
@@ -2450,6 +2489,7 @@ class PolicyGradientAgentMLX:
         start_time = time.perf_counter()
         try:
             ctx = self._get_context(context_id)
+            self._last_episode_nan_repaired = False
             if not ctx.actions or not ctx.observations or not ctx.rewards:
                 self._reset_context(context_id)
                 return
@@ -2461,17 +2501,27 @@ class PolicyGradientAgentMLX:
                 self._reset_context(context_id)
                 return
 
+            rewards_np = np.asarray(ctx.rewards[:episode_len], dtype=np.float32)
+            nan_mask = np.isnan(rewards_np)
+            nan_count = int(nan_mask.sum())
+            self._total_reward_steps += episode_len
+            if nan_count:
+                self._nan_rewards_seen += nan_count
+                self._nan_reward_episodes += 1
+                self._last_episode_nan_repaired = True
+                rewards_np = rewards_np.copy()
+                rewards_np[nan_mask] = 0.0
+
             obs_items = ctx.observations[:episode_len]
             obs_np = np.stack([np.asarray(item, dtype=np.float32) for item in obs_items], axis=0)
             obs_batch = mx.array(obs_np, dtype=mx.float32)
             obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
 
             action_array = ctx.actions[:episode_len]
-            reward_array = ctx.rewards[:episode_len]
             actions_batch = mx.expand_dims(
                 mx.array(action_array, dtype=mx.int32), axis=-1
             )
-            rewards_tensor = mx.array(reward_array, dtype=mx.float32)
+            rewards_tensor = mx.array(rewards_np, dtype=mx.float32)
             dones_tensor = mx.array(ctx.dones[:episode_len], dtype=mx.bool_)
             target_shape = rewards_tensor.shape
             last_done_flag = bool(ctx.dones[episode_len - 1])
@@ -2599,6 +2649,17 @@ class PolicyGradientAgentMLX:
             metrics["perf/batch_update_ms_avg"] = (
                 (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
             )
+        metrics["rewards/nan_rewards_total"] = float(self._nan_rewards_seen)
+        metrics["rewards/nan_reward_episodes"] = float(self._nan_reward_episodes)
+        metrics["rewards/nan_reward_last_episode"] = (
+            1.0 if self._last_episode_nan_repaired else 0.0
+        )
+        if self._total_reward_steps > 0:
+            nan_rate = float(self._nan_rewards_seen) / float(self._total_reward_steps)
+        else:
+            nan_rate = 0.0
+        metrics["rewards/nan_reward_rate"] = nan_rate
+        metrics["alerts/nan_reward_rate_high"] = 1.0 if nan_rate > 0.001 else 0.0
         return metrics
 
     def finalize_updates(self) -> None:
@@ -2704,6 +2765,9 @@ class PolicyGradientAgentMLX:
             "batch_accum_critic_ev": float(self._batch_accum_critic_ev),
             "batch_runs": int(self._batch_runs),
             "supports_checkpoint": True,
+            "nan_rewards_seen": int(self._nan_rewards_seen),
+            "nan_reward_episodes": int(self._nan_reward_episodes),
+            "reward_step_total": int(self._total_reward_steps),
         }
         try:
             mx.eval(self.model.parameters(), self.optimizer.state)
@@ -2723,6 +2787,11 @@ class PolicyGradientAgentMLX:
             self._batch_accum_value_loss = float(state.get("batch_accum_value_loss", 0.0))
             self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
             self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
+            self._nan_rewards_seen = int(state.get("nan_rewards_seen", self._nan_rewards_seen))
+            self._nan_reward_episodes = int(
+                state.get("nan_reward_episodes", self._nan_reward_episodes)
+            )
+            self._total_reward_steps = int(state.get("reward_step_total", self._total_reward_steps))
         except Exception:
             pass
 
