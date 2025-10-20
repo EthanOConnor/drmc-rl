@@ -76,9 +76,9 @@ class PolicyNet(nn.Module):
     ):
         # x: (B, T, C, H, W) -> flatten T into batch for encoding
         B, T, C, H, W = x.shape
-        x = x.view(B * T, C, H, W)
+        x = x.reshape(B * T, C, H, W)
         z = self.encoder(x)
-        z = z.view(B, T, -1)
+        z = z.reshape(B, T, -1)
         if risk_tau is None:
             risk_tau = torch.ones(B, T, 1, device=z.device)
         e = self.risk_embed(risk_tau)
@@ -131,7 +131,7 @@ class DrMarioFrameEncoder(nn.Module):
         self.output_dim = proj_dim
         self.register_buffer(
             "_row_from_bottom",
-            torch.arange(1, 17, dtype=torch.float32).flip(0).view(1, 16, 1),
+            torch.arange(1, 17, dtype=torch.float32).flip(0).reshape(1, 16, 1),
             persistent=False,
         )
         self.register_buffer(
@@ -232,8 +232,8 @@ class DrMarioStatePolicyNet(nn.Module):
     ]:
         # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
-        frames = x.view(B * T, C, H, W)
-        encoded = self.encoder(frames).view(B, T, -1)
+        frames = x.reshape(B * T, C, H, W)
+        encoded = self.encoder(frames).reshape(B, T, -1)
         encoded = self.pre_core_ln(encoded)
         if not self._flatten_called and hasattr(self.core, "flatten_parameters"):
             self.core.flatten_parameters()
@@ -335,8 +335,8 @@ class DrMarioPixelUNetPolicyNet(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # x: (B, T, C, H, W) with H=W=128
         B, T, C, H, W = x.shape
-        frames = x.view(B * T, C, H, W)
-        encoded = self.encoder(frames).view(B, T, -1)
+        frames = x.reshape(B * T, C, H, W)
+        encoded = self.encoder(frames).reshape(B, T, -1)
         outputs, hx = self.core(encoded, hx)
         logits = self.policy(outputs)
         values = self.value(outputs).squeeze(-1)

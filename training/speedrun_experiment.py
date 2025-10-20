@@ -17,6 +17,7 @@ import multiprocessing as mp
 import numbers
 import os
 import pickle
+import random
 import queue
 import sys
 import time
@@ -1237,10 +1238,10 @@ class SimpleStateActorCritic(nn.Module):
 
 @dataclass
 class _EpisodeContext:
-    log_probs: List["torch.Tensor"] = field(default_factory=list)
-    values: List["torch.Tensor"] = field(default_factory=list)
+    observations: List[Any] = field(default_factory=list)
+    actions: List[int] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
-    entropies: List["torch.Tensor"] = field(default_factory=list)
+    reset_flags: List[bool] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
     last_spawn_id: Optional[int] = None
 
@@ -1281,6 +1282,7 @@ class PolicyGradientAgent:
         batch_runs: int = 1,
         torch_amp: bool = False,
         torch_compile: bool = False,
+        torch_matmul_precision: Optional[str] = None,
     ) -> None:
         if torch is None or nn is None or optim is None or Categorical is None:
             raise RuntimeError("PyTorch is required for the policy gradient agent.")
@@ -1296,6 +1298,11 @@ class PolicyGradientAgent:
         self._color_repr = color_repr
         self._obs_mode = obs_mode
         self._batch_runs = max(1, int(batch_runs))
+        self._pixel_memory_format = (
+            torch.channels_last
+            if obs_mode == "pixel" and self._device.type == "cuda"
+            else torch.contiguous_format
+        )
         self._episodes_in_batch = 0
         self._steps_in_batch = 0
         self._batch_accum_policy_loss = 0.0
@@ -1334,6 +1341,17 @@ class PolicyGradientAgent:
             self.model = DrMarioPixelUNetPolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
         else:
             raise ValueError(f"Unknown policy architecture '{policy_arch}'")
+        if obs_mode == "pixel" and self._device.type == "cuda":
+            try:
+                self.model = self.model.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
+        if torch_matmul_precision and hasattr(torch, "set_float32_matmul_precision"):
+            if self._device.type != "mps":
+                try:
+                    torch.set_float32_matmul_precision(str(torch_matmul_precision))
+                except Exception:
+                    pass
         # Optional torch.compile for supported devices/backends
         self._use_compile = bool(torch_compile)
         if self._use_compile and hasattr(torch, "compile"):
@@ -1348,6 +1366,14 @@ class PolicyGradientAgent:
 
         # AMP controls
         self._use_amp = bool(torch_amp) and self._device.type in ("cuda", "mps")
+        self._grad_scaler: Optional[Any] = None
+        if self._use_amp and self._device.type == "cuda":
+            scaler_cls = getattr(getattr(torch.cuda, "amp", None), "GradScaler", None)
+            if scaler_cls is not None:
+                try:
+                    self._grad_scaler = scaler_cls()
+                except Exception:
+                    self._grad_scaler = None
 
         self._updates = 0
         self._last_metrics: Dict[str, float] = {}
@@ -1361,9 +1387,13 @@ class PolicyGradientAgent:
             flat = torch.from_numpy(stack_np).view(-1)
             return flat.to(self._device)
         if self._obs_mode == "pixel":
-            tensor = torch.from_numpy(stack_np).permute(0, 3, 1, 2).contiguous()
+            tensor = (
+                torch.from_numpy(stack_np)
+                .permute(0, 3, 1, 2)
+                .contiguous(memory_format=self._pixel_memory_format)
+            )
         else:
-            tensor = torch.from_numpy(stack_np)
+            tensor = torch.from_numpy(stack_np).contiguous()
         return tensor.to(self._device)
 
     def _context_key(self, context_id: Optional[int]) -> int:
@@ -1381,10 +1411,10 @@ class PolicyGradientAgent:
 
     def _reset_context(self, context_id: Optional[int]) -> _EpisodeContext:
         ctx = self._get_context(context_id)
-        ctx.log_probs.clear()
-        ctx.values.clear()
+        ctx.observations.clear()
+        ctx.actions.clear()
         ctx.rewards.clear()
-        ctx.entropies.clear()
+        ctx.reset_flags.clear()
         ctx.recurrent_state = None
         ctx.last_spawn_id = None
         return ctx
@@ -1400,6 +1430,24 @@ class PolicyGradientAgent:
         else:
             ctx.recurrent_state = None
 
+    def _detach_recurrent(self, hx: Optional[Any]) -> Optional[Any]:
+        if hx is None:
+            return None
+        if isinstance(hx, torch.Tensor):
+            return hx.detach()
+        if isinstance(hx, tuple):
+            return tuple(self._detach_recurrent(t) for t in hx)
+        return None
+
+    def _zero_like_recurrent(self, hx: Optional[Any]) -> Optional[Any]:
+        if hx is None:
+            return None
+        if isinstance(hx, torch.Tensor):
+            return torch.zeros_like(hx)
+        if isinstance(hx, tuple):
+            return tuple(self._zero_like_recurrent(t) for t in hx)
+        return None
+
     def begin_episode(self, context_id: Optional[int] = None) -> None:
         self.model.train(True)
         ctx = self._reset_context(context_id)
@@ -1409,6 +1457,7 @@ class PolicyGradientAgent:
     def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
         state_tensor = self._prepare_obs(obs)
+        ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
         autocast_ctx = (
             torch.autocast(device_type=self._device.type, dtype=torch.float16)
             if self._use_amp
@@ -1416,12 +1465,9 @@ class PolicyGradientAgent:
         )
         with autocast_ctx:
             if self._policy_arch == "mlp":
-                logits, value = self.model(state_tensor.unsqueeze(0))
+                logits, _ = self.model(state_tensor.unsqueeze(0))
                 dist = Categorical(logits=logits.squeeze(0))
                 action = dist.sample()
-                log_prob = dist.log_prob(action)
-                value_tensor = value.squeeze(0)
-                entropy = dist.entropy()
             else:
                 if state_tensor.dim() == 3:
                     input_tensor = state_tensor.unsqueeze(0).unsqueeze(0)
@@ -1429,19 +1475,13 @@ class PolicyGradientAgent:
                     input_tensor = state_tensor.unsqueeze(0)
                 else:
                     raise RuntimeError("Unexpected observation tensor shape")
-                logits, value, hx = self.model(input_tensor, ctx.recurrent_state)
+                logits, _, hx = self.model(input_tensor, ctx.recurrent_state)
                 if logits.dim() == 3:
                     logits_slice = logits[:, -1, :]
                 else:
                     logits_slice = logits
-                if value.dim() == 2:
-                    value_tensor = value[:, -1]
-                else:
-                    value_tensor = value
                 dist = Categorical(logits=logits_slice.squeeze(0))
                 action = dist.sample()
-                log_prob = dist.log_prob(action)
-                entropy = dist.entropy()
                 if isinstance(hx, torch.Tensor):
                     ctx.recurrent_state = hx.detach()
                 elif isinstance(hx, tuple):
@@ -1449,9 +1489,7 @@ class PolicyGradientAgent:
                 else:
                     ctx.recurrent_state = None
 
-        ctx.log_probs.append(log_prob)
-        ctx.values.append(value_tensor.squeeze(0))
-        ctx.entropies.append(entropy)
+        ctx.actions.append(int(action.item()))
 
         return int(action.item())
 
@@ -1472,19 +1510,23 @@ class PolicyGradientAgent:
                 spawn_id = int(raw_spawn)
             elif isinstance(raw_spawn, numbers.Number):
                 spawn_id = int(raw_spawn)
+        reset_required = False
         if spawn_id is not None:
             if ctx.last_spawn_id is None:
                 ctx.last_spawn_id = spawn_id
             elif spawn_id != ctx.last_spawn_id:
                 self._zero_recurrent_state(ctx)
                 ctx.last_spawn_id = spawn_id
+                reset_required = True
         if done:
             self._zero_recurrent_state(ctx)
             ctx.last_spawn_id = None
+            reset_required = True
+        ctx.reset_flags.append(bool(reset_required))
 
     def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
         ctx = self._get_context(context_id)
-        if not ctx.log_probs:
+        if not ctx.actions:
             return
 
         returns: list[float] = []
@@ -1497,15 +1539,73 @@ class PolicyGradientAgent:
         returns.reverse()
         returns_tensor = torch.tensor(returns, dtype=torch.float32, device=self._device)
 
-        log_probs = torch.stack(ctx.log_probs)
-        values = torch.stack(ctx.values)
-        entropies = torch.stack(ctx.entropies)
-        if returns_tensor.shape[0] != log_probs.shape[0]:
-            min_len = min(returns_tensor.shape[0], log_probs.shape[0])
-            returns_tensor = returns_tensor[:min_len]
-            log_probs = log_probs[:min_len]
-            values = values[:min_len]
-            entropies = entropies[:min_len]
+        episode_len = min(
+            len(returns), len(ctx.actions), len(ctx.observations), len(ctx.reset_flags)
+        )
+        if episode_len <= 0:
+            self._reset_context(context_id)
+            return
+        if returns_tensor.shape[0] != episode_len:
+            returns_tensor = returns_tensor[:episode_len]
+
+        obs_sequence = ctx.observations[:episode_len]
+        action_sequence = ctx.actions[:episode_len]
+        reset_flags = ctx.reset_flags[:episode_len]
+
+        log_prob_list: list[torch.Tensor] = []
+        value_list: list[torch.Tensor] = []
+        entropy_list: list[torch.Tensor] = []
+        recurrent = None
+        autocast_ctx = (
+            torch.autocast(device_type=self._device.type, dtype=torch.float16)
+            if self._use_amp
+            else nullcontext()
+        )
+        with autocast_ctx:
+            for obs_cpu, action_val, reset_flag in zip(
+                obs_sequence, action_sequence, reset_flags
+            ):
+                obs_tensor = obs_cpu.to(self._device)
+                if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
+                    obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
+                action_tensor = torch.tensor(int(action_val), dtype=torch.long, device=self._device)
+                if self._policy_arch == "mlp":
+                    logits, values_seq = self.model(obs_tensor.unsqueeze(0))
+                    dist = Categorical(logits=logits.squeeze(0))
+                    log_prob_list.append(dist.log_prob(action_tensor))
+                    value_list.append(values_seq.squeeze(0))
+                    entropy_list.append(dist.entropy())
+                else:
+                    if obs_tensor.dim() == 3:
+                        input_tensor = obs_tensor.unsqueeze(0).unsqueeze(0)
+                    elif obs_tensor.dim() == 4:
+                        input_tensor = obs_tensor.unsqueeze(0)
+                    else:
+                        raise RuntimeError("Unexpected observation tensor shape")
+                    logits, values_seq, hx = self.model(input_tensor, recurrent)
+                    if logits.dim() == 3:
+                        logits_slice = logits[:, -1, :]
+                    else:
+                        logits_slice = logits
+                    if values_seq.dim() == 2:
+                        value_tensor = values_seq[:, -1]
+                    else:
+                        value_tensor = values_seq
+                    dist = Categorical(logits=logits_slice.squeeze(0))
+                    log_prob_list.append(dist.log_prob(action_tensor))
+                    value_list.append(value_tensor.squeeze(0))
+                    entropy_list.append(dist.entropy())
+                    recurrent = self._detach_recurrent(hx)
+                    if reset_flag:
+                        recurrent = self._zero_like_recurrent(recurrent)
+
+        if not log_prob_list:
+            self._reset_context(context_id)
+            return
+
+        log_probs = torch.stack(log_prob_list).to(dtype=torch.float32)
+        values = torch.stack(value_list).to(dtype=torch.float32)
+        entropies = torch.stack(entropy_list).to(dtype=torch.float32)
 
         if self._episodes_in_batch == 0:
             self.optimizer.zero_grad(set_to_none=True)
@@ -1514,13 +1614,21 @@ class PolicyGradientAgent:
             self._batch_accum_entropy = 0.0
             self._batch_accum_critic_ev = 0.0
 
+        if returns_tensor.shape[0] != log_probs.shape[0]:
+            min_len = min(returns_tensor.shape[0], log_probs.shape[0])
+            returns_tensor = returns_tensor[:min_len]
+            log_probs = log_probs[:min_len]
+            values = values[:min_len]
+            entropies = entropies[:min_len]
+
         advantages = returns_tensor - values.detach()
         adv_std = advantages.std(unbiased=False).clamp_min(1e-6)
         advantages = (advantages - advantages.mean()) / adv_std
         policy_loss = -(log_probs * advantages).mean()
         value_errors = returns_tensor - values
-        value_mse = value_errors.pow(2).mean()
-        value_loss = 0.5 * torch.clamp(value_mse, max=10.0)
+        value_sq = value_errors.pow(2)
+        value_mse = value_sq.mean()
+        value_loss = 0.5 * torch.clamp(value_sq, max=10.0).mean()
         entropy_term = entropies.mean()
         loss = policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy_term
 
@@ -1533,7 +1641,10 @@ class PolicyGradientAgent:
         ev_value = max(-1.0, min(1.0, ev_value))
 
         scale = 1.0 / float(max(1, self._batch_runs))
-        (loss * scale).backward()
+        if self._grad_scaler is not None:
+            self._grad_scaler.scale(loss * scale).backward()
+        else:
+            (loss * scale).backward()
 
         self._batch_accum_policy_loss += float(policy_loss.item())
         self._batch_accum_value_loss += float(value_loss.item())
@@ -1544,11 +1655,12 @@ class PolicyGradientAgent:
         self._episodes_in_batch += 1
         self._steps_in_batch += int(returns_tensor.shape[0])
 
-        ctx.log_probs.clear()
-        ctx.values.clear()
+        ctx.observations.clear()
+        ctx.actions.clear()
         ctx.rewards.clear()
-        ctx.entropies.clear()
+        ctx.reset_flags.clear()
         ctx.recurrent_state = None
+        ctx.last_spawn_id = None
 
         if self._episodes_in_batch >= self._batch_runs:
             self._update_policy()
@@ -1570,6 +1682,12 @@ class PolicyGradientAgent:
         if self._episodes_in_batch <= 0:
             return
         batch_count = max(1, self._episodes_in_batch)
+        scaler = self._grad_scaler
+        if scaler is not None:
+            try:
+                scaler.unscale_(self.optimizer)
+            except Exception:
+                pass
         if adjust_for_partial and self._episodes_in_batch < self._batch_runs:
             scale = float(self._batch_runs) / float(batch_count)
             for param in self.model.parameters():
@@ -1577,7 +1695,11 @@ class PolicyGradientAgent:
                 if grad is not None:
                     grad.mul_(scale)
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._max_grad_norm)
-        self.optimizer.step()
+        if scaler is not None:
+            scaler.step(self.optimizer)
+            scaler.update()
+        else:
+            self.optimizer.step()
         self._updates += 1
 
         denom = float(batch_count)
@@ -1622,8 +1744,14 @@ class PolicyGradientAgent:
                         group[key] = value.detach().cpu()
             state["model_state"] = model_state
             state["optimizer_state"] = optim_state
+            if self._grad_scaler is not None:
+                try:
+                    state["grad_scaler_state"] = self._grad_scaler.state_dict()
+                except Exception:
+                    pass
         except Exception:
             pass
+        return state
 
     def set_state(self, state: Dict[str, Any]) -> None:
         if torch is None:
@@ -1631,16 +1759,26 @@ class PolicyGradientAgent:
         try:
             model_state = state.get("model_state")
             if isinstance(model_state, dict):
-                self.model.load_state_dict(model_state)
-                self.model.to(self._device)
+                mapped_state = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v for k, v in model_state.items()}
+                self.model.load_state_dict(mapped_state)
         except Exception:
             pass
         try:
             optim_state = state.get("optimizer_state")
             if isinstance(optim_state, dict):
+                for group in optim_state.get("state", {}).values():
+                    for key, value in list(group.items()):
+                        if isinstance(value, torch.Tensor):
+                            group[key] = value.to(self._device)
                 self.optimizer.load_state_dict(optim_state)
         except Exception:
             pass
+        scaler_state = state.get("grad_scaler_state")
+        if self._grad_scaler is not None and scaler_state is not None:
+            try:
+                self._grad_scaler.load_state_dict(scaler_state)
+            except Exception:
+                pass
         try:
             self._updates = int(state.get("updates", self._updates))
             self._episodes_in_batch = int(state.get("episodes_in_batch", 0))
@@ -1650,8 +1788,10 @@ class PolicyGradientAgent:
             self._batch_accum_entropy = float(state.get("batch_accum_entropy", 0.0))
             self._batch_accum_critic_ev = float(state.get("batch_accum_critic_ev", 0.0))
             self._latest_critic_ev = float(state.get("latest_critic_ev", 0.0))
+            self._batch_runs = int(state.get("batch_runs", self._batch_runs))
         except Exception:
             pass
+        self.optimizer.zero_grad(set_to_none=True)
 
 
 @dataclass
@@ -2131,12 +2271,31 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
         payload["max_grad_norm"] = args.max_grad_norm
         if args.device:
             payload["device"] = args.device
+    payload["perf_mode"] = bool(getattr(args, "perf_mode", False))
     if args.policy_backend == "mlx":
         payload["mlx_inference_window"] = getattr(args, "mlx_inference_window", "last")
     else:
         payload["torch_amp"] = bool(getattr(args, "torch_amp", False))
         payload["torch_compile"] = bool(getattr(args, "torch_compile", False))
+        payload["torch_matmul_high"] = bool(getattr(args, "torch_matmul_high", False))
+        payload["torch_seed"] = getattr(args, "torch_seed", None)
     return payload
+
+
+def seed_policy_rng(seed_val: int) -> None:
+    if torch is None:
+        return
+    try:
+        torch.manual_seed(seed_val)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed_val)
+    except Exception:
+        pass
+    if hasattr(torch, "mps") and callable(getattr(torch.mps, "manual_seed", None)):
+        try:
+            torch.mps.manual_seed(seed_val)  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 def _soft_reset_env(env: Any) -> bool:
@@ -2190,6 +2349,11 @@ def main() -> None:
     ap.add_argument("--no-show-window", action="store_true")
     ap.add_argument("--no-monitor", action="store_true")
     ap.add_argument(
+        "--perf-mode",
+        action="store_true",
+        help="Enable performance preset (no viewer/monitor, zero throttling, max parallel envs).",
+    )
+    ap.add_argument(
         "--strategy",
         choices=["random", "down", "down_hold", "noop", "policy"],
         default="random",
@@ -2227,6 +2391,17 @@ def main() -> None:
     ap.add_argument("--torch-amp", action="store_true", help="Enable torch autocast for policy forward (CUDA/MPS only).")
     ap.add_argument("--torch-compile", action="store_true", help="Compile torch model where supported (not MPS).")
     ap.add_argument(
+        "--torch-matmul-high",
+        action="store_true",
+        help="Request high precision float32 matmuls on CPU/CUDA backends.",
+    )
+    ap.add_argument(
+        "--torch-seed",
+        type=int,
+        default=None,
+        help="Seed torch (and numpy/random) RNGs for reproducible policy sampling.",
+    )
+    ap.add_argument(
         "--num-envs",
         type=int,
         default=None,
@@ -2249,6 +2424,44 @@ def main() -> None:
     )
 
     args = ap.parse_args()
+
+    if args.perf_mode:
+        args.no_monitor = True
+        args.no_show_window = True
+        args.viz_sync = False
+        args.emu_target_hz = 0.0
+        if hasattr(args, "intent_action_space"):
+            setattr(args, "intent_action_space", False)
+        if args.num_envs is None:
+            cpu_local = os.cpu_count() or 1
+            args.num_envs = max(1, cpu_local - 1)
+
+    if args.torch_seed is not None:
+        seed_val = int(args.torch_seed)
+        args.torch_seed = seed_val
+        try:
+            random.seed(seed_val)
+        except Exception:
+            pass
+        try:
+            np.random.seed(seed_val)
+        except Exception:
+            pass
+        if torch is not None:
+            try:
+                torch.manual_seed(seed_val)
+            except Exception:
+                pass
+            if hasattr(torch, "cuda") and callable(getattr(torch.cuda, "manual_seed_all", None)):
+                try:
+                    torch.cuda.manual_seed_all(seed_val)
+                except Exception:
+                    pass
+            if hasattr(torch, "mps") and callable(getattr(torch.mps, "manual_seed", None)):
+                try:
+                    torch.mps.manual_seed(seed_val)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
 
     ram_specs.set_state_representation(args.state_repr)
 
@@ -2377,6 +2590,7 @@ def main() -> None:
                 batch_runs=args.batch_runs,
                 torch_amp=bool(getattr(args, "torch_amp", False)),
                 torch_compile=bool(getattr(args, "torch_compile", False)),
+                torch_matmul_precision="high" if bool(getattr(args, "torch_matmul_high", False)) else None,
             )
     else:
         agent = SpeedrunAgent(
@@ -2743,6 +2957,8 @@ def main() -> None:
         slot.active = True
         slot.info = dict(slot.info or {})
         slot.component_sums.clear()
+        if use_learning_agent and not randomize_rng_enabled:
+            seed_policy_rng(current_seed_index + slot.index)
         agent.begin_episode(context_id=slot.context_id)
         publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0)
         if monitor is not None:
