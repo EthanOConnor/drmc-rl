@@ -2283,6 +2283,15 @@ def _format_hyperparams_for_monitor(args: argparse.Namespace, agent: Any) -> Dic
 
 
 def seed_policy_rng(seed_val: int) -> None:
+    """Seed policy-related RNGs for deterministic-but-unique sampling."""
+    try:
+        random.seed(seed_val)
+    except Exception:
+        pass
+    try:
+        np.random.seed(seed_val % (2**32))
+    except Exception:
+        pass
     if torch is None:
         return
     try:
@@ -2951,14 +2960,20 @@ def main() -> None:
         slot.episode_steps = 0
         slot.frame_index = 0
         slot.emu_fps = 0.0
-        slot.step_times.clear()
-        slot.step_times.append(time.perf_counter())
-        slot.next_step_time = time.perf_counter()
-        slot.active = True
-        slot.info = dict(slot.info or {})
-        slot.component_sums.clear()
-        if use_learning_agent and not randomize_rng_enabled:
-            seed_policy_rng(current_seed_index + slot.index)
+    slot.step_times.clear()
+    slot.step_times.append(time.perf_counter())
+    slot.next_step_time = time.perf_counter()
+    slot.active = True
+    slot.info = dict(slot.info or {})
+    slot.component_sums.clear()
+    if (
+        use_learning_agent
+        and not randomize_rng_enabled
+        and args.policy_backend == "torch"
+        and args.torch_seed is None
+    ):
+        policy_seed = current_seed_index + run_idx * max(1, num_envs) + slot.index
+        seed_policy_rng(policy_seed)
         agent.begin_episode(context_id=slot.context_id)
         publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0)
         if monitor is not None:
