@@ -1896,7 +1896,7 @@ class PolicyGradientAgent:
 
 @dataclass
 class _MLXEpisodeContext:
-    observations: List[Any] = field(default_factory=list)
+    observations: List[np.ndarray] = field(default_factory=list)
     rewards: List[float] = field(default_factory=list)
     actions: List[int] = field(default_factory=list)
     recurrent_state: Optional[Any] = None
@@ -1991,12 +1991,40 @@ class PolicyGradientAgentMLX:
         ctx.last_spawn_id = None
         return ctx
 
-    def _prepare_obs(self, obs: Any) -> Any:
+    def _prepare_obs(self, obs: Any) -> Tuple[Any, np.ndarray]:
         stack = _extract_state_stack(obs)
         stack_np = np.asarray(stack, dtype=np.float32)
         if self._obs_mode == "state":
             stack_np = _apply_color_representation(stack_np, self._color_repr)
-        return mx.array(stack_np, dtype=mx.float32)
+        stack_tensor = mx.array(stack_np, dtype=mx.float32)
+        return stack_tensor, stack_np
+
+    def _detach_recurrent_state(self, hx: Optional[Any]) -> Optional[Any]:
+        if hx is None:
+            return None
+        if hasattr(mx, "stop_gradient"):
+            stop_grad = mx.stop_gradient
+        else:  # pragma: no cover - fallback for older MLX builds
+            def stop_grad(value: Any) -> Any:
+                array_value = np.array(value, copy=True)
+                dtype = getattr(value, "dtype", None)
+                if dtype is not None:
+                    return mx.array(array_value, dtype=dtype)
+                return mx.array(array_value)
+
+        def _detach_leaf(value: Any) -> Any:
+            try:
+                detached_value = stop_grad(value)
+            except Exception:
+                return None
+            if hasattr(mx, "eval"):
+                try:  # pragma: no cover - optional evaluation for lazy arrays
+                    mx.eval(detached_value)
+                except Exception:
+                    pass
+            return detached_value
+
+        return self._tree_map(hx, _detach_leaf)
 
     def _zero_recurrent_state(self, ctx: _MLXEpisodeContext) -> None:
         ctx.recurrent_state = None
@@ -2032,15 +2060,16 @@ class PolicyGradientAgentMLX:
 
     def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
-        stack_tensor = self._prepare_obs(obs)
+        stack_tensor, stack_np = self._prepare_obs(obs)
         if stack_tensor.ndim == 3:
             sequence_tensor = mx.expand_dims(stack_tensor, axis=0)
-            ctx.observations.append(stack_tensor)
+            ctx.observations.append(np.array(stack_np, dtype=np.float32, copy=True))
         elif stack_tensor.ndim == 4:
-            latest_frame = stack_tensor[-1]
-            ctx.observations.append(latest_frame)
+            latest_frame_tensor = stack_tensor[-1]
+            latest_frame_np = np.array(stack_np[-1], dtype=np.float32, copy=True)
+            ctx.observations.append(latest_frame_np)
             if self._use_last_frame_inference:
-                sequence_tensor = mx.expand_dims(latest_frame, axis=0)
+                sequence_tensor = mx.expand_dims(latest_frame_tensor, axis=0)
             else:
                 sequence_tensor = stack_tensor
         else:
@@ -2048,7 +2077,7 @@ class PolicyGradientAgentMLX:
         obs_tensor = mx.expand_dims(sequence_tensor, axis=0)  # (1, T, C, H, W)
         logits, value, hx = self.model(obs_tensor, ctx.recurrent_state, last_only=True)
         logits_vec = logits[0]
-        ctx.recurrent_state = hx
+        ctx.recurrent_state = self._detach_recurrent_state(hx)
 
         probs = mx.softmax(logits_vec, axis=-1)
         probs_np = np.asarray(probs, dtype=np.float64)
@@ -2114,17 +2143,8 @@ class PolicyGradientAgentMLX:
                 return
 
             obs_items = ctx.observations[:episode_len]
-            if hasattr(mx, "stack"):
-                obs_batch = mx.stack(obs_items, axis=0)
-            elif hasattr(mx, "concatenate"):
-                expanded_frames = [mx.expand_dims(item, axis=0) for item in obs_items]
-                obs_batch = expanded_frames[0]
-                for frame in expanded_frames[1:]:
-                    obs_batch = mx.concatenate((obs_batch, frame), axis=0)
-            else:  # pragma: no cover - fallback to host stacking when MX lacks helpers
-                obs_batch = mx.array(
-                    np.stack([np.asarray(item) for item in obs_items], axis=0), dtype=mx.float32
-                )
+            obs_np = np.stack([np.asarray(item, dtype=np.float32) for item in obs_items], axis=0)
+            obs_batch = mx.array(obs_np, dtype=mx.float32)
             obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
 
             action_array = ctx.actions[:episode_len]
