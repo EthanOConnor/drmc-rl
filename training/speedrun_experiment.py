@@ -1609,8 +1609,6 @@ class PolicyGradientAgent:
                 if self._use_amp
                 else nullcontext()
             )
-            action_tensor = torch.empty((), dtype=torch.long, device=self._device)
-
             with autocast_ctx:
                 for obs_cpu, action_val, reset_flag in zip(
                     obs_sequence, action_sequence, reset_flags
@@ -1618,7 +1616,9 @@ class PolicyGradientAgent:
                     obs_tensor = obs_cpu.to(self._device)
                     if self._obs_mode == "pixel" and obs_tensor.dim() >= 4:
                         obs_tensor = obs_tensor.contiguous(memory_format=self._pixel_memory_format)
-                    action_tensor.fill_(int(action_val))
+                    action_tensor = torch.as_tensor(
+                        int(action_val), dtype=torch.long, device=self._device
+                    )
 
                     if self._policy_arch == "mlp":
                         logits, values_seq = self.model(obs_tensor.unsqueeze(0))
