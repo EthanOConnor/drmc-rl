@@ -63,6 +63,7 @@ class PlacementTranslator:
         self._board = board
         if pill is None:
             self._current_snapshot = None
+            self._last_spawn_id = None
             self._legal_mask[:] = False
             self._feasible_mask[:] = False
             self._paths = tuple()
@@ -84,13 +85,17 @@ class PlacementTranslator:
         self._mask_identical_colors(pill)
 
     def info(self) -> Dict[str, Any]:
-        return {
+        info = {
             "placements/legal_mask": self._legal_mask.copy(),
             "placements/feasible_mask": self._feasible_mask.copy(),
             "placements/options": int(self._feasible_mask.sum()),
             "placements/costs": self._costs.copy(),
             "placements/path_indices": self._path_indices.copy(),
         }
+        if self._last_spawn_id is not None:
+            info["pill/spawn_id"] = int(self._last_spawn_id)
+            info["placements/spawn_id"] = int(self._last_spawn_id)
+        return info
 
     def get_plan(self, action: int) -> Optional[PlanResult]:
         idx = int(self._path_indices[int(action)])
