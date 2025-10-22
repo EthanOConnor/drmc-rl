@@ -218,6 +218,57 @@ def _viewer_worker(
             lines[-1] += f"  ratio×{ratio:.2f}"
         else:
             lines[-1] += "  ratio×free"
+
+        planner_totals = stats.get("planner") if isinstance(stats, dict) else None
+        if isinstance(planner_totals, dict):
+            calls_total = float(planner_totals.get("calls_total", 0.0) or 0.0)
+            latency_avg = float(planner_totals.get("latency_ms_avg", 0.0) or 0.0)
+            latency_max = float(planner_totals.get("latency_ms_max", 0.0) or 0.0)
+            options_avg = float(planner_totals.get("options_avg", 0.0) or 0.0)
+            options_last = float(planner_totals.get("options_last", 0.0) or 0.0)
+            replans = float(planner_totals.get("replan_attempts", 0.0) or 0.0)
+            replan_failures = float(planner_totals.get("replan_failures", 0.0) or 0.0)
+            if (
+                calls_total > 0.0
+                or replans > 0.0
+                or replan_failures > 0.0
+                or latency_avg > 0.0
+            ):
+                lines.append(
+                    "Planner totals: calls "
+                    f"{calls_total:.0f}  avg {latency_avg:.2f} ms  max {latency_max:.2f} ms"
+                )
+                lines.append(
+                    "  options avg "
+                    f"{options_avg:.2f}  last {options_last:.2f}"
+                    f"  replans {replans:.0f} (fail {replan_failures:.0f})"
+                )
+
+        plan_calls = info.get("placements/plan_calls") if isinstance(info, dict) else None
+        plan_latency_total = (
+            info.get("placements/plan_latency_ms_total") if isinstance(info, dict) else None
+        )
+        plan_latency_max = (
+            info.get("placements/plan_latency_ms_max") if isinstance(info, dict) else None
+        )
+        plan_options = info.get("placements/plan_count_last") if isinstance(info, dict) else None
+        plan_replans = info.get("placements/replan_attempts") if isinstance(info, dict) else None
+        if plan_calls:
+            try:
+                call_count = int(plan_calls)
+            except Exception:
+                call_count = 0
+            if call_count > 0:
+                latency_total = float(plan_latency_total or 0.0)
+                latency_max = float(plan_latency_max or 0.0)
+                options_last = float(plan_options or 0.0)
+                replans = float(plan_replans or 0.0)
+                lines.append(
+                    "Planner step: "
+                    f"calls {call_count}  latency {latency_total:.2f} ms (max {latency_max:.2f})"
+                )
+                lines.append(f"  options {options_last:.2f}  replans {replans:.0f}")
+
         perf_stats = stats.get("perf") if isinstance(stats, dict) else None
         if isinstance(perf_stats, dict) and perf_stats:
             wall_pct = perf_stats.get("inference_pct_wall")

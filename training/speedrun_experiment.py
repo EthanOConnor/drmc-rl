@@ -1701,6 +1701,10 @@ class _EnvSlot:
     planner_plan_count_last: float = 0.0
     planner_replan_attempts: int = 0
     planner_replan_failures: int = 0
+    planner_last_publish_calls: int = 0
+    planner_last_publish_replans: int = 0
+    planner_last_publish_failures: int = 0
+    planner_last_publish_time: float = 0.0
 
 
 class PolicyGradientAgent:
@@ -3840,6 +3844,46 @@ def main() -> None:
             show_window = False
             return None
 
+    def _planner_metrics_from_slot(slot: _EnvSlot) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        calls = max(0, int(slot.planner_calls))
+        metrics["planner/calls_total"] = float(calls)
+        metrics["planner/latency_ms_total"] = float(slot.planner_latency_ms_total)
+        metrics["planner/latency_ms_avg"] = (
+            float(slot.planner_latency_ms_total) / calls if calls > 0 else 0.0
+        )
+        metrics["planner/latency_ms_max"] = float(slot.planner_latency_ms_max)
+        avg_options = (
+            float(slot.planner_plan_count_total) / calls
+            if calls > 0
+            else float(slot.planner_plan_count_last)
+        )
+        metrics["planner/options_avg"] = avg_options
+        metrics["planner/options_last"] = float(slot.planner_plan_count_last)
+        metrics["planner/replan_attempts"] = float(slot.planner_replan_attempts)
+        metrics["planner/replan_failures"] = float(slot.planner_replan_failures)
+        return metrics
+
+    def maybe_publish_planner_diagnostics(slot: _EnvSlot) -> None:
+        if monitor is None or not args.placement_action_space:
+            return
+        now = time.perf_counter()
+        if (
+            slot.planner_calls == slot.planner_last_publish_calls
+            and slot.planner_replan_attempts == slot.planner_last_publish_replans
+            and slot.planner_replan_failures == slot.planner_last_publish_failures
+            and (now - slot.planner_last_publish_time) < 1.0
+        ):
+            return
+        try:
+            monitor.publish_diagnostics(_planner_metrics_from_slot(slot))
+        except Exception:
+            pass
+        slot.planner_last_publish_calls = slot.planner_calls
+        slot.planner_last_publish_replans = slot.planner_replan_attempts
+        slot.planner_last_publish_failures = slot.planner_replan_failures
+        slot.planner_last_publish_time = now
+
     def publish_frame(
         slot: _EnvSlot,
         observation: Any,
@@ -3907,6 +3951,18 @@ def main() -> None:
             )
             perf_stats["batch_update_count"] = float(timing_info.get("batch_update_count", 0.0))
         stats["perf"] = perf_stats
+        if args.placement_action_space:
+            planner_metrics = _planner_metrics_from_slot(slot)
+            stats["planner"] = {
+                "calls_total": planner_metrics["planner/calls_total"],
+                "latency_ms_total": planner_metrics["planner/latency_ms_total"],
+                "latency_ms_avg": planner_metrics["planner/latency_ms_avg"],
+                "latency_ms_max": planner_metrics["planner/latency_ms_max"],
+                "options_avg": planner_metrics["planner/options_avg"],
+                "options_last": planner_metrics["planner/options_last"],
+                "replan_attempts": planner_metrics["planner/replan_attempts"],
+                "replan_failures": planner_metrics["planner/replan_failures"],
+            }
         try:
             if args.mode == "state":
                 stack = _extract_state_stack(observation)
@@ -3964,6 +4020,10 @@ def main() -> None:
         slot.planner_plan_count_last = 0.0
         slot.planner_replan_attempts = 0
         slot.planner_replan_failures = 0
+        slot.planner_last_publish_calls = 0
+        slot.planner_last_publish_replans = 0
+        slot.planner_last_publish_failures = 0
+        slot.planner_last_publish_time = time.perf_counter()
         if (
             use_learning_agent
             and not randomize_rng_enabled
@@ -4090,8 +4150,6 @@ def main() -> None:
                     if span > 0:
                         slot.emu_fps = float(len(slot.step_times) - 1) / span
 
-                publish_frame(slot, next_obs, step_info, int(action), reward, total_steps, slot.episode_reward)
-
                 slot.obs = next_obs
                 slot.info = step_info
                 if args.placement_action_space:
@@ -4129,6 +4187,18 @@ def main() -> None:
                 step_end = time.perf_counter()
                 slot.step_compute_time += step_end - step_start
                 slot.last_step_duration = step_end - step_start
+
+                maybe_publish_planner_diagnostics(slot)
+
+                publish_frame(
+                    slot,
+                    next_obs,
+                    step_info,
+                    int(action),
+                    reward,
+                    total_steps,
+                    slot.episode_reward,
+                )
 
                 done = step_done or slot.episode_steps >= args.max_steps
                 if not done:
@@ -4178,33 +4248,7 @@ def main() -> None:
                     diagnostics_payload["parallel_envs"] = num_envs
                     diagnostics_payload["active_envs"] = sum(1 for s in slots if s.active)
                     if args.placement_action_space:
-                        diagnostics_payload["planner/calls_total"] = float(slot.planner_calls)
-                        diagnostics_payload["planner/latency_ms_total"] = float(
-                            slot.planner_latency_ms_total
-                        )
-                        diagnostics_payload["planner/latency_ms_avg"] = (
-                            float(slot.planner_latency_ms_total) / slot.planner_calls
-                            if slot.planner_calls > 0
-                            else 0.0
-                        )
-                        diagnostics_payload["planner/latency_ms_max"] = float(
-                            slot.planner_latency_ms_max
-                        )
-                        avg_options = (
-                            float(slot.planner_plan_count_total) / slot.planner_calls
-                            if slot.planner_calls > 0
-                            else float(slot.planner_plan_count_last)
-                        )
-                        diagnostics_payload["planner/options_avg"] = avg_options
-                        diagnostics_payload["planner/options_last"] = float(
-                            slot.planner_plan_count_last
-                        )
-                        diagnostics_payload["planner/replan_attempts"] = float(
-                            slot.planner_replan_attempts
-                        )
-                        diagnostics_payload["planner/replan_failures"] = float(
-                            slot.planner_replan_failures
-                        )
+                        diagnostics_payload.update(_planner_metrics_from_slot(slot))
                     if hasattr(agent, "epsilon"):
                         diagnostics_payload["epsilon"] = float(getattr(agent, "epsilon"))
                     network_metrics = network_tracker.collect()
