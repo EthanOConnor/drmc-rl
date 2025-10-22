@@ -1,0 +1,11 @@
+algo: simple_pg
+simple_pg:
+  lr: 0.0003
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  batch_steps: 16384
+  advantage:
+    type: mc
+    gae_lambda: 0.95
+    gamma: 0.997
