@@ -1673,9 +1673,9 @@ class _EpisodeContext:
 class _EnvSlot:
     index: int
     env: Any
-    viewer: Optional[_ProcessViewer]
-    planner_viewer: Optional[_ProcessViewer] = None
     context_id: int
+    viewer: Optional[_ProcessViewer] = None
+    planner_viewer: Optional[_ProcessViewer] = None
     obs: Any = None
     info: Dict[str, Any] = field(default_factory=dict)
     run_idx: Optional[int] = None
