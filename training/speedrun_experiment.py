@@ -34,7 +34,8 @@ import envs.specs.ram_to_state as ram_specs
 from envs.retro.demo import _ProcessViewer
 from envs.retro.drmario_env import Action
 from envs.retro.intent_wrapper import DrMarioIntentEnv
-from envs.retro.register_env import register_env_id, register_intent_env_id
+from envs.retro.placement_wrapper import DrMarioPlacementEnv
+from envs.retro.register_env import register_env_id, register_intent_env_id, register_placement_env_id
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
 from training.discounting import discounted_returns_mlx, discounted_returns_torch
@@ -201,6 +202,24 @@ def _normalize_memory_size(memory_value: Any) -> Optional[int]:
         first = memory_value[0]
         if isinstance(first, numbers.Integral):
             return int(first)
+    return None
+
+
+def _extract_action_mask(info: Optional[Dict[str, Any]]) -> Optional[np.ndarray]:
+    if not info:
+        return None
+    for key in ("placements/feasible_mask", "placements/legal_mask"):
+        mask = info.get(key)
+        if mask is None:
+            continue
+        if isinstance(mask, np.ndarray):
+            return mask.astype(bool)
+        try:
+            arr = np.asarray(mask, dtype=bool)
+            if arr.shape[0] > 0:
+                return arr
+        except Exception:
+            continue
     return None
 
 
@@ -1516,15 +1535,27 @@ class SpeedrunAgent:
     ) -> None:
         pass
 
-    def select_action(self, _obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(self, _obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+        mask = _extract_action_mask(info)
+        available = None
+        if mask is not None:
+            available = np.flatnonzero(mask)
         if self._rng.random() < self.epsilon:
+            if available is not None and available.size > 0:
+                return int(self._rng.choice(available))
             return int(self._action_space.sample())
+        preferred: Optional[int] = None
         if self._strategy == "down":
-            return int(Action.DOWN)
-        if self._strategy == "down_hold":
-            return int(Action.DOWN_HOLD)
-        if self._strategy == "noop":
-            return int(Action.NOOP)
+            preferred = int(Action.DOWN)
+        elif self._strategy == "down_hold":
+            preferred = int(Action.DOWN_HOLD)
+        elif self._strategy == "noop":
+            preferred = int(Action.NOOP)
+        if preferred is not None:
+            if available is None or available.size == 0 or preferred in available:
+                return preferred
+        if available is not None and available.size > 0:
+            return int(self._rng.choice(available))
         return int(self._action_space.sample())
 
     def end_episode(self, _score: float, context_id: Optional[int] = None) -> None:
@@ -1845,7 +1876,7 @@ class PolicyGradientAgent:
         if self._policy_arch == "mlp":
             ctx.recurrent_state = None
 
-    def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
         state_tensor = self._prepare_obs(obs)
         ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
@@ -1857,7 +1888,13 @@ class PolicyGradientAgent:
         with autocast_ctx:
             if self._policy_arch == "mlp":
                 logits, _ = self.model(state_tensor.unsqueeze(0))
-                dist = Categorical(logits=logits.squeeze(0))
+                logits_vec = logits.squeeze(0)
+                mask_np = _extract_action_mask(info)
+                if mask_np is not None:
+                    mask_tensor = torch.as_tensor(mask_np, dtype=torch.bool, device=logits_vec.device)
+                    if mask_tensor.any():
+                        logits_vec = logits_vec.masked_fill(~mask_tensor, float("-inf"))
+                dist = Categorical(logits=logits_vec)
                 action = dist.sample()
             else:
                 if state_tensor.dim() == 3:
@@ -1871,7 +1908,13 @@ class PolicyGradientAgent:
                     logits_slice = logits[:, -1, :]
                 else:
                     logits_slice = logits
-                dist = Categorical(logits=logits_slice.squeeze(0))
+                logits_vec = logits_slice.squeeze(0)
+                mask_np = _extract_action_mask(info)
+                if mask_np is not None:
+                    mask_tensor = torch.as_tensor(mask_np, dtype=torch.bool, device=logits_vec.device)
+                    if mask_tensor.any():
+                        logits_vec = logits_vec.masked_fill(~mask_tensor, float("-inf"))
+                dist = Categorical(logits=logits_vec)
                 action = dist.sample()
                 if isinstance(hx, torch.Tensor):
                     ctx.recurrent_state = hx.detach()
@@ -2531,7 +2574,7 @@ class PolicyGradientAgentMLX:
             self._zero_recurrent_state(ctx)
             ctx.last_spawn_id = None
 
-    def select_action(self, obs: Any, _info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
         ctx = self._get_context(context_id)
         stack_tensor, stack_np = self._prepare_obs(obs)
         if stack_tensor.ndim == 3:
@@ -2550,6 +2593,10 @@ class PolicyGradientAgentMLX:
         obs_tensor = mx.expand_dims(sequence_tensor, axis=0)  # (1, T, C, H, W)
         logits, value, hx = self.model(obs_tensor, ctx.recurrent_state, last_only=True)
         logits_vec = logits[0]
+        mask_np = _extract_action_mask(info)
+        if mask_np is not None and mask_np.any():
+            mask_array = mx.array(mask_np.astype(np.float32))
+            logits_vec = mx.where(mask_array > 0.5, logits_vec, mx.full_like(logits_vec, -1e9))
         ctx.recurrent_state = self._detach_recurrent_state(hx)
 
         probs = mx.softmax(logits_vec, axis=-1)
@@ -3208,8 +3255,16 @@ def main() -> None:
         action="store_true",
         help="Allow the intent translator to perform safe backend writes (experimental).",
     )
+    ap.add_argument(
+        "--placement-action-space",
+        action="store_true",
+        help="Use the placement planner wrapper with the 464-way action head.",
+    )
 
     args = ap.parse_args()
+
+    if getattr(args, "intent_action_space", False) and getattr(args, "placement_action_space", False):
+        ap.error("--intent-action-space and --placement-action-space are mutually exclusive")
 
     if args.mlx_list_devices:
         exit_code = _mlx_print_available_devices()
@@ -3241,6 +3296,8 @@ def main() -> None:
         args.emu_target_hz = 0.0
         if hasattr(args, "intent_action_space"):
             setattr(args, "intent_action_space", False)
+        if hasattr(args, "placement_action_space"):
+            setattr(args, "placement_action_space", False)
         if args.num_envs is None:
             cpu_local = os.cpu_count() or 1
             args.num_envs = max(1, cpu_local - 1)
@@ -3277,6 +3334,8 @@ def main() -> None:
     register_env_id()
     if args.intent_action_space:
         register_intent_env_id()
+    if args.placement_action_space:
+        register_placement_env_id()
 
     if args.mode != "state" and args.color_repr != "none":
         raise ValueError("--color-repr shared_color is only supported for state mode observations")
@@ -3307,6 +3366,8 @@ def main() -> None:
         env_instance = build_env()
         if args.intent_action_space:
             env_instance = DrMarioIntentEnv(env_instance, safe_writes=args.intent_safe_writes)
+        if args.placement_action_space:
+            env_instance = DrMarioPlacementEnv(env_instance)
         return env_instance
 
     randomize_rng_enabled = bool(args.randomize_rng)

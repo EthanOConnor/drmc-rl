@@ -29,6 +29,13 @@ def parse_args(argv: Any = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--obs_mode", type=str, default=None)
+    parser.add_argument(
+        "--action_space",
+        type=str,
+        choices=["controller", "intent", "placement"],
+        default=None,
+        help="Select action space translation layer for environment wrappers.",
+    )
     parser.add_argument("--total_steps", type=float, default=None)
     parser.add_argument("--dry_run", type=str, default="false")
     parser.add_argument("--device", type=str, default=None)
@@ -57,6 +64,8 @@ def load_config(args: argparse.Namespace) -> Any:
         cfg_dict.setdefault("env", {})["num_envs"] = int(args.num_envs)
     if args.obs_mode is not None:
         cfg_dict.setdefault("env", {})["obs_mode"] = args.obs_mode
+    if args.action_space is not None:
+        cfg_dict.setdefault("env", {})["action_space"] = args.action_space
     if args.total_steps is not None:
         cfg_dict.setdefault("train", {})["total_steps"] = int(args.total_steps)
     if args.device is not None:
