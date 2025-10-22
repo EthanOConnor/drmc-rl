@@ -320,6 +320,7 @@ class PlanResult:
     states: List[CapsuleState]
     cost: int
     path_index: int = -1
+    spawn_id: Optional[int] = None
 
 
 @dataclass
@@ -362,6 +363,7 @@ class PlacementPlanner:
             feasible_mask[action_idx] = True
             plan_idx = len(plans)
             plan.path_index = plan_idx
+            plan.spawn_id = capsule.spawn_id
             plans.append(plan)
             costs[action_idx] = float(plan.cost)
             path_indices[action_idx] = plan_idx

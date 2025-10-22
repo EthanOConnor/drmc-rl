@@ -121,13 +121,17 @@ class PlacementTranslator:
             return None
         return self._paths[idx]
 
-    def capture_capsule_state(self) -> Optional[CapsuleState]:
+    def capture_capsule_state(self) -> Tuple[Optional[CapsuleState], Optional[int]]:
         state, ram_bytes = self._read_state()
         self._board = BoardState.from_state(state)
         pill = self._extract_pill(state, ram_bytes)
         if pill is None:
-            return None
-        return snapshot_to_capsule_state(pill)
+            self._current_snapshot = None
+            self._last_spawn_id = None
+            return None, None
+        self._current_snapshot = pill
+        self._last_spawn_id = pill.spawn_id
+        return snapshot_to_capsule_state(pill), pill.spawn_id
 
     def current_board(self) -> Optional[BoardState]:
         return self._board
@@ -168,7 +172,20 @@ class PlacementTranslator:
     # Internal utilities
     # ------------------------------------------------------------------
 
-    def states_consistent(self, actual: Optional[CapsuleState], expected: CapsuleState) -> bool:
+    def states_consistent(
+        self,
+        actual: Optional[CapsuleState],
+        expected: CapsuleState,
+        *,
+        actual_spawn_id: Optional[int] = None,
+        expected_spawn_id: Optional[int] = None,
+    ) -> bool:
+        if (
+            actual_spawn_id is not None
+            and expected_spawn_id is not None
+            and actual_spawn_id != expected_spawn_id
+        ):
+            return expected.locked
         if actual is None:
             return expected.locked
         return (
@@ -389,12 +406,22 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if terminated or truncated:
                 break
             expected_state = states[min(idx + 1, len(states) - 1)]
-            actual_state = self._translator.capture_capsule_state()
-            if not self._translator.states_consistent(actual_state, expected_state):
+            actual_state, actual_spawn_id = self._translator.capture_capsule_state()
+            if not self._translator.states_consistent(
+                actual_state,
+                expected_state,
+                actual_spawn_id=actual_spawn_id,
+                expected_spawn_id=plan.spawn_id,
+            ):
                 previous_state = states[idx]
                 if (
                     retry_budget > 0
-                    and self._translator.states_consistent(actual_state, previous_state)
+                    and self._translator.states_consistent(
+                        actual_state,
+                        previous_state,
+                        actual_spawn_id=actual_spawn_id,
+                        expected_spawn_id=plan.spawn_id,
+                    )
                 ):
                     retry_budget -= 1
                     continue
