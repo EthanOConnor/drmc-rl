@@ -53,24 +53,39 @@ def test_simple_pg_smoke(tmp_path) -> None:
     assert checkpoints, "Expected checkpoint artifact to be created"
 
 
-def test_sf2_smoke_dependency(tmp_path) -> None:
+@pytest.mark.skipif(torch is None, reason="PPO smoke test requires PyTorch")
+def test_sf2_smoke_train(tmp_path) -> None:
     cfg_dict = load_and_merge_cfg("training/configs/base.yaml", "training/configs/ppo.yaml")
     cfg_dict["logdir"] = str(tmp_path / "run")
     cfg_dict["viz"] = []
+    cfg_dict.setdefault("env", {})["num_envs"] = 2
+    cfg_dict["env"]["episode_length"] = 8
+    cfg_dict.setdefault("train", {})["total_steps"] = 64
+    cfg_dict["train"]["checkpoint_interval"] = 32
+    cfg_dict.setdefault("ppo", {})["rollout"] = 4
+    cfg_dict["ppo"]["batch_size"] = 16
+    cfg_dict["ppo"]["minibatch_size"] = 8
+    cfg_dict["ppo"]["mini_epochs"] = 2
+
     cfg = to_config_node(cfg_dict)
+
     logger = DiagLogger(cfg)
     event_bus = EventBus()
+    VideoEventHandler(event_bus, logger, Path(cfg.logdir) / "videos", interval=4)
     env = make_vec_env(cfg)
-    try:
-        if SampleFactoryAdapter.__module__:
-            pass
-        try:
-            adapter = SampleFactoryAdapter(cfg, env, logger, event_bus, device="cpu")
-        except RuntimeError:
-            pytest.skip("Sample Factory not installed")
-        with pytest.raises(NotImplementedError):
-            adapter.train_forever()
-    finally:
-        logger.close()
-        if hasattr(env, "close"):
-            env.close()
+
+    updates = []
+    event_bus.on("update_end", lambda payload: updates.append(payload))
+
+    adapter = SampleFactoryAdapter(cfg, env, logger, event_bus, device="cpu")
+    adapter.train_forever()
+
+    logger.close()
+    if hasattr(env, "close"):
+        env.close()
+
+    assert updates, "Adapter failed to emit update_end events"
+    metrics = updates[-1]
+    assert "loss/policy" in metrics
+    checkpoints = list((Path(cfg.logdir) / "checkpoints").glob("*.pt"))
+    assert checkpoints, "Expected checkpoint artifact to be created"
