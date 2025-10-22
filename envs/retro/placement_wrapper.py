@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -25,6 +26,7 @@ from envs.retro.placement_planner import (
     PlanResult,
     PlacementPlanner,
     PlannerError,
+    ControllerStep,
     iter_cells,
     snapshot_to_capsule_state,
 )
@@ -38,6 +40,7 @@ class _ExecutionOutcome:
     terminated: bool
     truncated: bool
     replan_required: bool
+    planner_resynced: bool = False
 
 
 @dataclass
@@ -49,6 +52,64 @@ class PlannerDebugSnapshot:
     plans: Tuple[PlanResult, ...]
     selected_plan: Optional[PlanResult]
     selected_action: Optional[int]
+
+
+class _InputTimingCalibrator:
+    """Adaptive retry budgets for input timing mismatches."""
+
+    def __init__(self, *, smoothing: float = 0.25, max_frames: int = 6) -> None:
+        self._smoothing = float(np.clip(smoothing, 0.0, 1.0)) if smoothing > 0 else 0.0
+        self._max_frames = max(1, int(max_frames))
+        # Start with conservative defaults matching the legacy retry budget of two
+        # additional frames (three total attempts per command).
+        self._horizontal_frames = 3.0
+        self._down_frames = 3.0
+
+    @staticmethod
+    def _is_horizontal(ctrl: ControllerStep) -> bool:
+        return bool(ctrl.hold_left) ^ bool(ctrl.hold_right)
+
+    @staticmethod
+    def _is_soft_drop(ctrl: ControllerStep) -> bool:
+        return bool(ctrl.hold_down)
+
+    def _ema(self, current: float, observed: float) -> float:
+        if self._smoothing <= 0.0:
+            return observed
+        return (1.0 - self._smoothing) * current + self._smoothing * observed
+
+    def retry_budget_for(self, ctrl: ControllerStep) -> int:
+        frames = 1.0
+        if self._is_horizontal(ctrl):
+            frames = self._horizontal_frames
+        elif self._is_soft_drop(ctrl):
+            frames = self._down_frames
+        budget = int(math.ceil(min(self._max_frames, max(1.0, frames))) - 1)
+        return max(0, budget)
+
+    def observe_success(self, ctrl: ControllerStep, frames_used: int) -> None:
+        if frames_used <= 0:
+            return
+        observed = float(min(self._max_frames, max(1, frames_used)))
+        if self._is_horizontal(ctrl):
+            self._horizontal_frames = self._ema(self._horizontal_frames, observed)
+        elif self._is_soft_drop(ctrl):
+            self._down_frames = self._ema(self._down_frames, observed)
+
+    def observe_failure(self, ctrl: ControllerStep) -> None:
+        increment = 1.0
+        if self._is_horizontal(ctrl):
+            self._horizontal_frames = min(self._max_frames, self._horizontal_frames + increment)
+        elif self._is_soft_drop(ctrl):
+            self._down_frames = min(self._max_frames, self._down_frames + increment)
+
+    def info(self) -> Dict[str, float]:
+        return {
+            "placements/timing/frames_horizontal": float(self._horizontal_frames),
+            "placements/timing/frames_down": float(self._down_frames),
+            "placements/timing/retry_horizontal": float(self.retry_budget_for(ControllerStep(hold_left=True))),
+            "placements/timing/retry_down": float(self.retry_budget_for(ControllerStep(hold_down=True))),
+        }
 
 
 class PlacementTranslator:
@@ -69,6 +130,7 @@ class PlacementTranslator:
         self._identical_color_pairs: Tuple[int, ...] = tuple()
         self._last_plan_latency: float = 0.0
         self._last_plan_count: int = 0
+        self._timing = _InputTimingCalibrator()
 
     # ------------------------------------------------------------------
     # Snapshot helpers
@@ -113,6 +175,7 @@ class PlacementTranslator:
         if self._last_spawn_id is not None:
             info["pill/spawn_id"] = int(self._last_spawn_id)
             info["placements/spawn_id"] = int(self._last_spawn_id)
+        info.update(self._timing.info())
         return info
 
     def get_plan(self, action: int) -> Optional[PlanResult]:
@@ -140,6 +203,15 @@ class PlacementTranslator:
             "plan_latency_ms": self._last_plan_latency * 1000.0,
             "plan_count": self._last_plan_count,
         }
+
+    def retry_budget(self, ctrl: ControllerStep) -> int:
+        return self._timing.retry_budget_for(ctrl)
+
+    def record_timing_success(self, ctrl: ControllerStep, frames_used: int) -> None:
+        self._timing.observe_success(ctrl, frames_used)
+
+    def record_timing_failure(self, ctrl: ControllerStep) -> None:
+        self._timing.observe_failure(ctrl)
 
     def debug_snapshot(
         self, selected_action: Optional[int] = None
@@ -308,8 +380,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if replan_attempts > 3:
                 last_info.setdefault("placements/replan_fail", replan_attempts)
                 break
-            self._translator.refresh()
-            record_refresh_metrics()
+            if not outcome.planner_resynced:
+                self._translator.refresh()
+                record_refresh_metrics()
 
         self._last_obs = last_obs
         enriched_info = dict(last_info)
@@ -348,6 +421,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         last_obs = self._last_obs
         last_info: Dict[str, Any] = {}
         replan_required = False
+        planner_resynced = False
 
         if plan is None:
             obs, reward, terminated, truncated, info = self.env.step(int(Action.NOOP))
@@ -370,37 +444,50 @@ class DrMarioPlacementEnv(gym.Wrapper):
             base._hold_right = False
             base._hold_down = False
             return _ExecutionOutcome(
-                last_obs, last_info, total_reward, terminated, truncated, False
+                last_obs,
+                last_info,
+                total_reward,
+                terminated,
+                truncated,
+                False,
+                False,
             )
 
         states = plan.states
-        max_retries = 2
-        retry_budget = max_retries
         idx = 0
         while idx < len(plan.controller):
             ctrl = plan.controller[idx]
-            base._hold_left = bool(ctrl.hold_left)
-            base._hold_right = bool(ctrl.hold_right)
-            base._hold_down = bool(ctrl.hold_down)
-            obs, reward, terminated, truncated, info = self.env.step(int(ctrl.action))
-            total_reward += float(reward)
-            last_obs = obs
-            last_info = info or {}
-            if terminated or truncated:
-                break
+            retry_budget = self._translator.retry_budget(ctrl)
+            frames_for_step = 0
+            previous_state = states[idx]
             expected_state = states[min(idx + 1, len(states) - 1)]
-            actual_state = self._translator.capture_capsule_state()
-            if not self._translator.states_consistent(actual_state, expected_state):
-                previous_state = states[idx]
+            while True:
+                frames_for_step += 1
+                base._hold_left = bool(ctrl.hold_left)
+                base._hold_right = bool(ctrl.hold_right)
+                base._hold_down = bool(ctrl.hold_down)
+                obs, reward, terminated, truncated, info = self.env.step(int(ctrl.action))
+                total_reward += float(reward)
+                last_obs = obs
+                last_info = info or {}
+                if terminated or truncated:
+                    break
+                actual_state = self._translator.capture_capsule_state()
+                if self._translator.states_consistent(actual_state, expected_state):
+                    if frames_for_step > 0:
+                        self._translator.record_timing_success(ctrl, frames_for_step)
+                    break
                 if (
                     retry_budget > 0
                     and self._translator.states_consistent(actual_state, previous_state)
                 ):
                     retry_budget -= 1
                     continue
+                self._translator.record_timing_failure(ctrl)
                 replan_required = True
                 break
-            retry_budget = max_retries
+            if terminated or truncated or replan_required:
+                break
             idx += 1
 
         base._hold_left = False
@@ -419,8 +506,21 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if replan_required:
             last_info = dict(last_info)
             last_info["placements/replan_triggered"] = 1
+            if not (terminated or truncated):
+                self._translator.refresh()
+                planner_resynced = True
+                if record_refresh is not None:
+                    record_refresh()
 
-        return _ExecutionOutcome(last_obs, last_info, total_reward, terminated, truncated, replan_required)
+        return _ExecutionOutcome(
+            last_obs,
+            last_info,
+            total_reward,
+            terminated,
+            truncated,
+            replan_required,
+            planner_resynced,
+        )
 
     def _await_next_pill(
         self,
