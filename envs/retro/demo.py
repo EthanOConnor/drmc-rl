@@ -151,9 +151,16 @@ def _viewer_worker(
         if control_queue is None:
             return
         sym = getattr(event, "keysym", "")
-        if sym in {"plus", "equal", "+"}:
+        sym_lower = sym.lower()
+        if sym_lower in {"space", "p"}:
+            send_control({"type": "pause_toggle"})
+            return
+        if sym_lower in {"n", "period"}:
+            send_control({"type": "step_once", "frames": 1})
+            return
+        if sym_lower in {"plus", "equal", "+"}:
             send_control({"type": "ratio", "mode": "faster"})
-        elif sym in {"minus", "underscore", "-"}:
+        elif sym_lower in {"minus", "underscore", "-"}:
             send_control({"type": "ratio", "mode": "slower"})
         elif sym == "0":
             send_control({"type": "ratio", "mode": "match", "viz_fps": viz_fps})
@@ -243,6 +250,23 @@ def _viewer_worker(
                     f"{options_avg:.2f}  last {options_last:.2f}"
                     f"  replans {replans:.0f} (fail {replan_failures:.0f})"
                 )
+
+        planner_debug = stats.get("planner_debug") if isinstance(stats, dict) else None
+        if isinstance(planner_debug, dict) and planner_debug:
+            legal = planner_debug.get("legal_count")
+            feasible = planner_debug.get("feasible_count")
+            selected = planner_debug.get("selected_action")
+            plan_cost = planner_debug.get("plan_cost")
+            lines.append(
+                "Planner debug: legal "
+                f"{int(legal) if legal is not None else '?'}  "
+                f"feasible {int(feasible) if feasible is not None else '?'}"
+            )
+            lines.append(
+                "  selected "
+                f"{selected if selected is not None else '-'}  "
+                f"cost {int(plan_cost) if plan_cost is not None else '-'}"
+            )
 
         plan_calls = info.get("placements/plan_calls") if isinstance(info, dict) else None
         plan_latency_total = (
@@ -776,6 +800,8 @@ def main():
     episodes = 0
     last_info = info
     interrupted = False
+    paused = False
+    step_requests = 0
     try:
         while steps < args.steps:
             if viewer is not None:
@@ -799,6 +825,11 @@ def main():
                                 apply_ratio(1.0 / ratio_step)
                             else:
                                 apply_ratio(emu_vis_ratio / ratio_step)
+                    elif command.get("type") == "pause_toggle":
+                        paused = not paused
+                    elif command.get("type") == "step_once":
+                        frames = int(command.get("frames", 1) or 1)
+                        step_requests += max(1, frames)
             if step_period > 0:
                 now = time.perf_counter()
                 if now < next_step_time:
@@ -807,6 +838,9 @@ def main():
                 else:
                     now = time.perf_counter()
                 next_step_time = now + step_period
+            if paused and step_requests <= 0:
+                time.sleep(0.01)
+                continue
             a = env.action_space.sample()
             obs, r, term, trunc, info = env.step(a)
             step_times.append(time.perf_counter())
@@ -824,6 +858,8 @@ def main():
             steps += 1
             publish_frame(obs, info, int(a), r, steps, cumulative_reward)
             last_info = info
+            if paused and step_requests > 0:
+                step_requests = max(0, step_requests - 1)
             if term or trunc:
                 episodes += 1
                 if steps >= args.steps:

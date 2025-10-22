@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -11,7 +11,13 @@ from time import perf_counter
 
 import envs.specs.ram_to_state as ram_specs
 from envs.retro.drmario_env import Action
-from envs.retro.placement_actions import action_count, opposite_actions
+from envs.retro.placement_actions import (
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    PLACEMENT_EDGES,
+    action_count,
+    opposite_actions,
+)
 from envs.retro.placement_planner import (
     BoardState,
     CapsuleState,
@@ -19,6 +25,7 @@ from envs.retro.placement_planner import (
     PlanResult,
     PlacementPlanner,
     PlannerError,
+    iter_cells,
     snapshot_to_capsule_state,
 )
 
@@ -31,6 +38,17 @@ class _ExecutionOutcome:
     terminated: bool
     truncated: bool
     replan_required: bool
+
+
+@dataclass
+class PlannerDebugSnapshot:
+    board: BoardState
+    pill: Optional[PillSnapshot]
+    legal_mask: np.ndarray
+    feasible_mask: np.ndarray
+    plans: Tuple[PlanResult, ...]
+    selected_plan: Optional[PlanResult]
+    selected_action: Optional[int]
 
 
 class PlacementTranslator:
@@ -122,6 +140,29 @@ class PlacementTranslator:
             "plan_latency_ms": self._last_plan_latency * 1000.0,
             "plan_count": self._last_plan_count,
         }
+
+    def debug_snapshot(
+        self, selected_action: Optional[int] = None
+    ) -> Optional[PlannerDebugSnapshot]:
+        if self._board is None:
+            return None
+        board_copy = BoardState(columns=self._board.columns.copy())
+        selected_plan: Optional[PlanResult] = None
+        action_value: Optional[int] = None
+        if selected_action is not None:
+            plan_candidate = self.get_plan(int(selected_action))
+            if plan_candidate is not None:
+                selected_plan = plan_candidate
+                action_value = int(selected_action)
+        return PlannerDebugSnapshot(
+            board=board_copy,
+            pill=self._current_snapshot,
+            legal_mask=self._legal_mask.copy(),
+            feasible_mask=self._feasible_mask.copy(),
+            plans=self._paths,
+            selected_plan=selected_plan,
+            selected_action=action_value,
+        )
 
     # ------------------------------------------------------------------
     # Internal utilities
@@ -328,10 +369,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
             base._hold_left = False
             base._hold_right = False
             base._hold_down = False
-            return _ExecutionOutcome(last_obs, last_info, total_reward, terminated, truncated, False)
+            return _ExecutionOutcome(
+                last_obs, last_info, total_reward, terminated, truncated, False
+            )
 
         states = plan.states
-        for idx, ctrl in enumerate(plan.controller):
+        max_retries = 2
+        retry_budget = max_retries
+        idx = 0
+        while idx < len(plan.controller):
+            ctrl = plan.controller[idx]
             base._hold_left = bool(ctrl.hold_left)
             base._hold_right = bool(ctrl.hold_right)
             base._hold_down = bool(ctrl.hold_down)
@@ -344,8 +391,17 @@ class DrMarioPlacementEnv(gym.Wrapper):
             expected_state = states[min(idx + 1, len(states) - 1)]
             actual_state = self._translator.capture_capsule_state()
             if not self._translator.states_consistent(actual_state, expected_state):
+                previous_state = states[idx]
+                if (
+                    retry_budget > 0
+                    and self._translator.states_consistent(actual_state, previous_state)
+                ):
+                    retry_budget -= 1
+                    continue
                 replan_required = True
                 break
+            retry_budget = max_retries
+            idx += 1
 
         base._hold_left = False
         base._hold_right = False
@@ -401,4 +457,109 @@ class DrMarioPlacementEnv(gym.Wrapper):
         return obs, info, total_reward, terminated, truncated
 
 
-__all__ = ["DrMarioPlacementEnv"]
+def _board_occupancy(board: BoardState) -> np.ndarray:
+    occupancy = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.bool_)
+    for col in range(GRID_WIDTH):
+        mask = int(board.columns[col])
+        if mask == 0:
+            continue
+        for row in range(GRID_HEIGHT):
+            if mask & (1 << row):
+                occupancy[row, col] = True
+    return occupancy
+
+
+def _blend(base: np.ndarray, color: Tuple[float, float, float], alpha: float) -> np.ndarray:
+    return (1.0 - alpha) * base + alpha * np.asarray(color, dtype=np.float32)
+
+
+def _cells_from_state(state: CapsuleState) -> List[Tuple[int, int]]:
+    cells: List[Tuple[int, int]] = []
+    for row, col in iter_cells(state.row, state.col, state.orient):
+        if 0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH:
+            cells.append((row, col))
+    return cells
+
+
+def render_planner_debug_view(
+    snapshot: PlannerDebugSnapshot,
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    board_mask = _board_occupancy(snapshot.board)
+    canvas = np.zeros((GRID_HEIGHT, GRID_WIDTH, 3), dtype=np.float32)
+    canvas[:] = (24.0, 24.0, 32.0)
+    canvas[board_mask] = (118.0, 118.0, 118.0)
+
+    legal_cells = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.int32)
+    feasible_cells = np.zeros_like(legal_cells)
+    for edge in PLACEMENT_EDGES:
+        if edge.index >= snapshot.legal_mask.size:
+            continue
+        row, col = edge.origin
+        if not (0 <= row < GRID_HEIGHT and 0 <= col < GRID_WIDTH):
+            continue
+        if snapshot.legal_mask[edge.index]:
+            legal_cells[row, col] += 1
+        if snapshot.feasible_mask[edge.index]:
+            feasible_cells[row, col] += 1
+
+    legal_mask = legal_cells > 0
+    feasible_mask = feasible_cells > 0
+    if legal_mask.any():
+        canvas[legal_mask] = _blend(canvas[legal_mask], (70.0, 70.0, 200.0), 0.35)
+    if feasible_mask.any():
+        canvas[feasible_mask] = _blend(canvas[feasible_mask], (40.0, 160.0, 90.0), 0.55)
+
+    plan_to_show: Optional[PlanResult] = snapshot.selected_plan
+    plan_action: Optional[int] = snapshot.selected_action
+    if plan_to_show is None and snapshot.plans:
+        plan_to_show = min(snapshot.plans, key=lambda plan: plan.cost)
+        plan_action = plan_to_show.action
+
+    if plan_to_show is not None:
+        path_cells = set()
+        for state in plan_to_show.states:
+            path_cells.update(_cells_from_state(state))
+        final_cells = _cells_from_state(plan_to_show.states[-1]) if plan_to_show.states else []
+        for row, col in path_cells:
+            canvas[row, col] = _blend(canvas[row, col], (255.0, 160.0, 40.0), 0.65)
+        for row, col in final_cells:
+            canvas[row, col] = (240.0, 32.0, 64.0)
+
+    pill_cells: List[Tuple[int, int]] = []
+    if snapshot.pill is not None:
+        pill_cells = _cells_from_state(snapshot_to_capsule_state(snapshot.pill))
+        for row, col in pill_cells:
+            canvas[row, col] = _blend(canvas[row, col], (80.0, 200.0, 255.0), 0.6)
+
+    cell_height = 8
+    cell_width = 16
+    enlarged = np.repeat(np.repeat(canvas, cell_height, axis=0), cell_width, axis=1)
+    image = np.clip(enlarged, 0.0, 255.0).astype(np.uint8)
+
+    stats: Dict[str, Any] = {
+        "planner_debug": {
+            "legal_count": int(snapshot.legal_mask.sum()),
+            "feasible_count": int(snapshot.feasible_mask.sum()),
+            "selected_action": None if plan_action is None else int(plan_action),
+            "plan_cost": None if plan_to_show is None else int(plan_to_show.cost),
+            "plan_steps": None
+            if plan_to_show is None
+            else int(len(plan_to_show.controller)),
+        }
+    }
+    if snapshot.pill is not None:
+        stats["planner_debug"]["pill_row"] = int(snapshot.pill.row)
+        stats["planner_debug"]["pill_col"] = int(snapshot.pill.col)
+        stats["planner_debug"]["pill_orient"] = int(snapshot.pill.orient)
+        stats["planner_debug"]["pill_spawn_id"] = (
+            None if snapshot.pill.spawn_id is None else int(snapshot.pill.spawn_id)
+        )
+
+    return image, stats
+
+
+__all__ = [
+    "DrMarioPlacementEnv",
+    "PlannerDebugSnapshot",
+    "render_planner_debug_view",
+]
