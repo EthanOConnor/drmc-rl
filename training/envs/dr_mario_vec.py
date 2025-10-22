@@ -52,7 +52,8 @@ class DummyVecEnv:
         self._obs = self._sample_obs()
 
     def _sample_obs(self) -> np.ndarray:
-        base = self._rng.random(self.observation_space.shape, dtype=np.float32)
+        full_shape = (self.num_envs,) + self.observation_space.shape
+        base = self._rng.random(full_shape, dtype=np.float32)
         return base.astype(np.float32)
 
     def reset(self, *, seed: Optional[int] = None) -> Tuple[np.ndarray, List[Dict[str, object]]]:
@@ -121,9 +122,10 @@ class DummyVecEnv:
         return next_obs.copy(), rewards, terminated, truncated, infos
 
     def render(self) -> np.ndarray:
-        frame = np.clip(self._obs[0] * 255.0, 0, 255).astype(np.uint8)
+        frame_stack = self._obs[0]
+        frame = np.clip(frame_stack[-1] * 255.0, 0, 255).astype(np.uint8)
         # Arrange to (H, W, C)
-        frame = np.transpose(frame[0], (1, 2, 0))
+        frame = np.transpose(frame, (1, 2, 0))
         return frame
 
     def close(self) -> None:  # pragma: no cover - trivial cleanup hook
