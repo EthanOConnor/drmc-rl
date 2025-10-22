@@ -219,7 +219,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if info is None:
             info = {}
         self._translator.refresh()
-        info.update(self._translator.info())
+        obs, info, _, _, _ = self._await_next_pill(obs, info)
+        self._last_obs = obs
         self._last_info = info
         return obs, info
 
@@ -273,7 +274,14 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info = info or {}
             if not (terminated or truncated):
                 self._translator.refresh()
-                last_info.update(self._translator.info())
+                if self._translator.current_pill() is None:
+                    last_obs, last_info, extra_reward, terminated, truncated = (
+                        self._await_next_pill(last_obs, last_info)
+                    )
+                    total_reward += extra_reward
+                else:
+                    last_info = dict(last_info)
+                    last_info.update(self._translator.info())
             base._hold_left = False
             base._hold_right = False
             base._hold_down = False
@@ -302,13 +310,45 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
         if not (terminated or truncated) and not replan_required:
             self._translator.refresh()
-            last_info.update(self._translator.info())
+            last_obs, last_info, extra_reward, terminated, truncated = self._await_next_pill(
+                last_obs, last_info
+            )
+            total_reward += extra_reward
 
         if replan_required:
             last_info = dict(last_info)
             last_info["placements/replan_triggered"] = 1
 
         return _ExecutionOutcome(last_obs, last_info, total_reward, terminated, truncated, replan_required)
+
+    def _await_next_pill(
+        self, last_obs: Any, last_info: Dict[str, Any]
+    ) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
+        """Advance the emulator until a new pill snapshot becomes available."""
+
+        total_reward = 0.0
+        terminated = False
+        truncated = False
+        obs = last_obs
+        info = dict(last_info) if last_info is not None else {}
+
+        if self._translator.current_pill() is not None:
+            info.update(self._translator.info())
+            return obs, info, total_reward, terminated, truncated
+
+        while True:
+            obs, reward, terminated, truncated, step_info = self.env.step(int(Action.NOOP))
+            total_reward += float(reward)
+            info = step_info or {}
+            if terminated or truncated:
+                break
+            self._translator.refresh()
+            if self._translator.current_pill() is not None:
+                info = dict(info)
+                info.update(self._translator.info())
+                break
+
+        return obs, info, total_reward, terminated, truncated
 
 
 __all__ = ["DrMarioPlacementEnv"]
