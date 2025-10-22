@@ -1,0 +1,20 @@
+seed: 42
+device: auto
+logdir: runs/auto
+viz:
+  - tb
+video_interval: 5000
+env:
+  id: DrMario-v0
+  obs_mode: pixels
+  num_envs: 16
+  frame_stack: 4
+  render: false
+  episode_length: 200
+train:
+  total_steps: 2000000
+  eval_interval: 50000
+  checkpoint_interval: 50000
+model:
+  use_lstm: true
+  hidden_size: 256

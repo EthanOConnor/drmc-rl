@@ -25,3 +25,4 @@ legal_ROMs/
 *.nes
 debug_dumps/
 out_frames/
+runs/
