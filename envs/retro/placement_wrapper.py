@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -231,10 +231,29 @@ class DrMarioPlacementEnv(gym.Wrapper):
         last_obs = self._last_obs
         last_info: Dict[str, Any] = {}
         replan_attempts = 0
+        planner_calls = 0
+        planner_latency_ms_total = 0.0
+        planner_latency_ms_max = 0.0
+        planner_plan_count_total = 0.0
+        planner_plan_count_last = 0.0
+        planner_latency_ms_last = 0.0
+
+        def record_refresh_metrics() -> None:
+            nonlocal planner_calls, planner_latency_ms_total, planner_latency_ms_max
+            nonlocal planner_plan_count_total, planner_plan_count_last
+            diagnostics = self._translator.diagnostics()
+            latency = float(diagnostics.get("plan_latency_ms", 0.0))
+            plan_count = float(diagnostics.get("plan_count", 0.0))
+            planner_calls += 1
+            planner_latency_ms_total += latency
+            planner_latency_ms_max = max(planner_latency_ms_max, latency)
+            planner_plan_count_total += plan_count
+            planner_plan_count_last = plan_count
+            planner_latency_ms_last = latency
 
         while True:
             plan = self._translator.get_plan(int(action))
-            outcome = self._execute_plan(plan)
+            outcome = self._execute_plan(plan, record_refresh_metrics)
             total_reward += outcome.reward
             last_obs = outcome.last_obs
             last_info = outcome.info
@@ -249,16 +268,38 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 last_info.setdefault("placements/replan_fail", replan_attempts)
                 break
             self._translator.refresh()
+            record_refresh_metrics()
 
         self._last_obs = last_obs
-        self._last_info = last_info
-        return last_obs, total_reward, terminated, truncated, last_info
+        enriched_info = dict(last_info)
+        planner_latency_ms_avg = (
+            planner_latency_ms_total / planner_calls if planner_calls > 0 else 0.0
+        )
+        if planner_calls > 0:
+            planner_plan_count_avg = planner_plan_count_total / planner_calls
+        else:
+            planner_plan_count_avg = planner_plan_count_last
+        enriched_info["placements/replan_attempts"] = replan_attempts
+        enriched_info["placements/plan_calls"] = planner_calls
+        enriched_info["placements/plan_latency_ms_total"] = planner_latency_ms_total
+        enriched_info["placements/plan_latency_ms_avg"] = planner_latency_ms_avg
+        enriched_info["placements/plan_latency_ms_max"] = planner_latency_ms_max
+        enriched_info["placements/plan_count_total"] = planner_plan_count_total
+        enriched_info["placements/plan_count_avg"] = planner_plan_count_avg
+        enriched_info["placements/plan_count_last"] = planner_plan_count_last
+        enriched_info["placements/plan_latency_ms_last"] = planner_latency_ms_last
+        self._last_info = enriched_info
+        return last_obs, total_reward, terminated, truncated, enriched_info
 
     # ------------------------------------------------------------------
     # Execution helpers
     # ------------------------------------------------------------------
 
-    def _execute_plan(self, plan: Optional[PlanResult]) -> _ExecutionOutcome:
+    def _execute_plan(
+        self,
+        plan: Optional[PlanResult],
+        record_refresh: Optional[Callable[[], None]] = None,
+    ) -> _ExecutionOutcome:
         base = self.env.unwrapped
         total_reward = 0.0
         terminated = False
@@ -274,9 +315,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info = info or {}
             if not (terminated or truncated):
                 self._translator.refresh()
+                if record_refresh is not None:
+                    record_refresh()
                 if self._translator.current_pill() is None:
                     last_obs, last_info, extra_reward, terminated, truncated = (
-                        self._await_next_pill(last_obs, last_info)
+                        self._await_next_pill(last_obs, last_info, record_refresh)
                     )
                     total_reward += extra_reward
                 else:
@@ -310,8 +353,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
         if not (terminated or truncated) and not replan_required:
             self._translator.refresh()
+            if record_refresh is not None:
+                record_refresh()
             last_obs, last_info, extra_reward, terminated, truncated = self._await_next_pill(
-                last_obs, last_info
+                last_obs, last_info, record_refresh
             )
             total_reward += extra_reward
 
@@ -322,7 +367,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
         return _ExecutionOutcome(last_obs, last_info, total_reward, terminated, truncated, replan_required)
 
     def _await_next_pill(
-        self, last_obs: Any, last_info: Dict[str, Any]
+        self,
+        last_obs: Any,
+        last_info: Dict[str, Any],
+        record_refresh: Optional[Callable[[], None]] = None,
     ) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
         """Advance the emulator until a new pill snapshot becomes available."""
 
@@ -343,6 +391,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if terminated or truncated:
                 break
             self._translator.refresh()
+            if record_refresh is not None:
+                record_refresh()
             if self._translator.current_pill() is not None:
                 info = dict(info)
                 info.update(self._translator.info())
