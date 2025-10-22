@@ -34,7 +34,7 @@ import envs.specs.ram_to_state as ram_specs
 from envs.retro.demo import _ProcessViewer
 from envs.retro.drmario_env import Action
 from envs.retro.intent_wrapper import DrMarioIntentEnv
-from envs.retro.placement_wrapper import DrMarioPlacementEnv
+from envs.retro.placement_wrapper import DrMarioPlacementEnv, render_planner_debug_view
 from envs.retro.register_env import register_env_id, register_intent_env_id, register_placement_env_id
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
@@ -1674,6 +1674,7 @@ class _EnvSlot:
     index: int
     env: Any
     viewer: Optional[_ProcessViewer]
+    planner_viewer: Optional[_ProcessViewer] = None
     context_id: int
     obs: Any = None
     info: Dict[str, Any] = field(default_factory=dict)
@@ -3816,11 +3817,13 @@ def main() -> None:
     target_hz = max(0.0, float(args.emu_target_hz))
     step_period = 1.0 / target_hz if target_hz > 0 else 0.0
     experiment_start_time = time.perf_counter()
+    viewer_paused = False
+    viewer_step_requests = 0
 
-    def create_viewer(slot_index: int) -> Optional[_ProcessViewer]:
+    def create_viewers(slot_index: int) -> Tuple[Optional[_ProcessViewer], Optional[_ProcessViewer]]:
         nonlocal show_window
         if not show_window:
-            return None
+            return None, None
         try:
             viewer_kwargs: Dict[str, Any] = {
                 "mode": args.mode,
@@ -3832,9 +3835,9 @@ def main() -> None:
                     raise RuntimeError("State viewer requires shape information")
                 viewer_kwargs["state_shape"] = state_shape
                 viewer_kwargs["state_dtype"] = state_dtype
-            title = "Dr. Mario Trainer" if num_envs == 1 else f"Dr. Mario Trainer #{slot_index + 1}"
-            return _ProcessViewer(
-                title,
+            base_title = "Dr. Mario Trainer" if num_envs == 1 else f"Dr. Mario Trainer #{slot_index + 1}"
+            main_viewer = _ProcessViewer(
+                base_title,
                 float(args.display_scale),
                 with_stats=(args.mode == "state"),
                 **viewer_kwargs,
@@ -3842,7 +3845,21 @@ def main() -> None:
         except Exception as exc:
             print(f"Viewer unavailable: {exc}", file=sys.stderr)
             show_window = False
-            return None
+            return None, None
+        planner_viewer: Optional[_ProcessViewer] = None
+        if args.placement_action_space:
+            try:
+                planner_viewer = _ProcessViewer(
+                    f"{base_title} — Planner",
+                    float(args.display_scale),
+                    with_stats=True,
+                    mode="pixel",
+                    refresh_hz=args.viz_refresh_hz,
+                )
+            except Exception as exc:
+                print(f"Planner viewer unavailable: {exc}", file=sys.stderr)
+                planner_viewer = None
+        return main_viewer, planner_viewer
 
     def _planner_metrics_from_slot(slot: _EnvSlot) -> Dict[str, float]:
         metrics: Dict[str, float] = {}
@@ -3883,6 +3900,23 @@ def main() -> None:
         slot.planner_last_publish_replans = slot.planner_replan_attempts
         slot.planner_last_publish_failures = slot.planner_replan_failures
         slot.planner_last_publish_time = now
+
+    def process_viewer_controls() -> None:
+        nonlocal viewer_paused, viewer_step_requests
+        for slot in slots:
+            for viewer_obj in (slot.viewer, slot.planner_viewer):
+                if viewer_obj is None:
+                    continue
+                while True:
+                    command = viewer_obj.poll_control()
+                    if not command:
+                        break
+                    command_type = command.get("type")
+                    if command_type == "pause_toggle":
+                        viewer_paused = not viewer_paused
+                    elif command_type == "step_once":
+                        frames = int(command.get("frames", 1) or 1)
+                        viewer_step_requests += max(1, frames)
 
     def publish_frame(
         slot: _EnvSlot,
@@ -3993,6 +4027,24 @@ def main() -> None:
             return
         slot.frame_index += 1
 
+        if slot.planner_viewer is not None and args.placement_action_space:
+            translator = getattr(slot.env, "_translator", None)
+            if translator is not None:
+                snapshot = translator.debug_snapshot(
+                    None if action_val is None else int(action_val)
+                )
+                if snapshot is not None:
+                    image, planner_stats = render_planner_debug_view(snapshot)
+                    planner_stats["step"] = step_idx
+                    planner_stats["reward"] = reward_val
+                    planner_stats["cumulative"] = episode_reward
+                    try:
+                        pushed = slot.planner_viewer.push(image, planner_stats)
+                    except Exception:
+                        pushed = False
+                    if not pushed:
+                        slot.planner_viewer = None
+
     def assign_run(slot: _EnvSlot, run_idx: int) -> None:
         slot.run_idx = run_idx
         slot.episode_reward = 0.0
@@ -4050,12 +4102,13 @@ def main() -> None:
         else:
             slot_env = build_training_env()
             slot_obs, slot_info = reset_environment(slot_env)
-        viewer_instance = create_viewer(slot_idx)
+        viewer_instance, planner_viewer = create_viewers(slot_idx)
         slots.append(
             _EnvSlot(
                 index=slot_idx,
                 env=slot_env,
                 viewer=viewer_instance,
+                planner_viewer=planner_viewer,
                 context_id=slot_idx,
                 obs=slot_obs,
                 info=dict(slot_info or {}),
@@ -4077,7 +4130,12 @@ def main() -> None:
         while completed_runs < args.runs:
             process_monitor_commands()
             check_reward_config_updates()
+            process_viewer_controls()
+            if viewer_paused and viewer_step_requests <= 0:
+                time.sleep(0.01)
+                continue
             active_any = False
+            stepped_any = False
             for slot in slots:
                 if not slot.active or slot.run_idx is None:
                     continue
@@ -4135,6 +4193,7 @@ def main() -> None:
                 else:
                     slot.last_inference_duration = 0.0
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
+                stepped_any = True
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
 
@@ -4337,6 +4396,8 @@ def main() -> None:
                     slot.run_idx = None
                     slot.step_times.clear()
 
+            if viewer_paused and stepped_any and viewer_step_requests > 0:
+                viewer_step_requests = max(0, viewer_step_requests - 1)
             if not active_any:
                 process_monitor_commands()
                 check_reward_config_updates()
