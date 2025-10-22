@@ -223,6 +223,63 @@ def _extract_action_mask(info: Optional[Dict[str, Any]]) -> Optional[np.ndarray]
     return None
 
 
+def _extract_spawn_id(info: Optional[Dict[str, Any]]) -> Optional[int]:
+    if not info:
+        return None
+    for key in ("spawn_id", "pill/spawn_id", "placements/spawn_id"):
+        value = info.get(key)
+        if isinstance(value, numbers.Integral):
+            return int(value)
+        if isinstance(value, numbers.Number):
+            try:
+                return int(value)
+            except Exception:
+                continue
+        if hasattr(value, "item"):
+            try:
+                item = value.item()  # type: ignore[attr-defined]
+            except Exception:
+                continue
+            if isinstance(item, numbers.Number):
+                try:
+                    return int(item)
+                except Exception:
+                    continue
+    return None
+
+
+def _extract_placement_option_count(info: Optional[Dict[str, Any]]) -> int:
+    if not info:
+        return 0
+    options = info.get("placements/options")
+    if options is None:
+        return 0
+    if isinstance(options, numbers.Integral):
+        return int(options)
+    if isinstance(options, numbers.Number):
+        return int(options)
+    if isinstance(options, np.ndarray):
+        try:
+            if options.size == 0:
+                return 0
+            return int(options.item())
+        except Exception:
+            return 0
+    if hasattr(options, "item"):
+        try:
+            item = options.item()  # type: ignore[attr-defined]
+        except Exception:
+            return 0
+        try:
+            return int(item)
+        except Exception:
+            return 0
+    try:
+        return int(options)
+    except Exception:
+        return 0
+
+
 def _mlx_device_tokens(device: Any) -> set[str]:
     tokens: set[str] = set()
     if device is None:
@@ -1635,6 +1692,8 @@ class _EnvSlot:
     run_start_time: float = 0.0
     last_inference_duration: float = 0.0
     last_step_duration: float = 0.0
+    last_spawn_id: Optional[int] = None
+    cached_action: Optional[int] = None
 
 
 class PolicyGradientAgent:
@@ -3889,6 +3948,8 @@ def main() -> None:
         slot.run_start_time = time.perf_counter()
         slot.last_inference_duration = 0.0
         slot.last_step_duration = 0.0
+        slot.last_spawn_id = None
+        slot.cached_action = None
         if (
             use_learning_agent
             and not randomize_rng_enabled
@@ -3955,11 +4016,50 @@ def main() -> None:
                     slot.next_step_time = now + step_period
 
                 step_start = time.perf_counter()
-                action = agent.select_action(slot.obs, slot.info, context_id=slot.context_id)
-                inference_end = time.perf_counter()
-                slot.inference_time += inference_end - step_start
-                slot.inference_calls += 1
-                slot.last_inference_duration = inference_end - step_start
+                performed_inference = False
+                inference_duration = 0.0
+
+                if args.placement_action_space:
+                    info_payload = slot.info or {}
+                    spawn_id = _extract_spawn_id(info_payload)
+                    if spawn_id is None:
+                        slot.last_spawn_id = None
+                    elif slot.last_spawn_id is None or spawn_id != slot.last_spawn_id:
+                        slot.last_spawn_id = spawn_id
+                        slot.cached_action = None
+                    if bool(info_payload.get("placements/replan_fail", 0)):
+                        slot.cached_action = None
+
+                    option_count = _extract_placement_option_count(info_payload)
+                    if option_count <= 0:
+                        slot.cached_action = None
+                        action = 0
+                    elif slot.cached_action is None:
+                        inference_start = time.perf_counter()
+                        sampled = agent.select_action(
+                            slot.obs, slot.info, context_id=slot.context_id
+                        )
+                        inference_duration = time.perf_counter() - inference_start
+                        action = int(sampled)
+                        slot.cached_action = int(action)
+                        performed_inference = True
+                    else:
+                        action = int(slot.cached_action)
+                else:
+                    inference_start = time.perf_counter()
+                    sampled = agent.select_action(
+                        slot.obs, slot.info, context_id=slot.context_id
+                    )
+                    inference_duration = time.perf_counter() - inference_start
+                    action = int(sampled)
+                    performed_inference = True
+
+                if performed_inference:
+                    slot.inference_time += inference_duration
+                    slot.inference_calls += 1
+                    slot.last_inference_duration = inference_duration
+                else:
+                    slot.last_inference_duration = 0.0
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
