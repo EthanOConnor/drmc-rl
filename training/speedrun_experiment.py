@@ -2110,7 +2110,6 @@ class PolicyGradientAgent:
             self._episodes_in_batch += 1
             self._steps_in_batch += episode_steps
             self._total_env_steps += episode_steps
-            self._apply_lr_schedule()
 
             ctx.observations.clear()
             ctx.actions.clear()
@@ -2174,6 +2173,7 @@ class PolicyGradientAgent:
         start_time = time.perf_counter()
         batch_count = max(1, self._episodes_in_batch)
         scaler = self._grad_scaler
+        self._apply_lr_schedule()
         if scaler is not None:
             try:
                 scaler.unscale_(self.optimizer)
@@ -2644,7 +2644,6 @@ class PolicyGradientAgentMLX:
             last_done_flag = bool(ctx.dones[episode_len - 1])
 
             metrics_cache: Dict[str, Any] = {}
-            returns_tensor = None
 
             def loss_fn(obs_tensor, action_tensor):
                 logits_seq, values_seq, _ = self.model(obs_tensor, None, last_only=False)
@@ -2682,11 +2681,21 @@ class PolicyGradientAgentMLX:
                 value_loss = 0.5 * mx.mean(mx.clip(value_sq, a_min=None, a_max=10.0))
                 probs = mx.softmax(logits_seq, axis=-1)
                 entropy = -mx.mean(mx.sum(probs * log_probs, axis=-1))
-                metrics_cache["policy_loss"] = policy_loss
-                metrics_cache["value_loss"] = value_loss
-                metrics_cache["entropy"] = entropy
-                metrics_cache["returns"] = returns_tensor
-                metrics_cache["values"] = values_seq_shaped
+                metrics_cache["policy_loss"] = self._mx_to_float(policy_loss)
+                metrics_cache["value_loss"] = self._mx_to_float(value_loss)
+                metrics_cache["entropy"] = self._mx_to_float(entropy)
+                value_mse = self._mx_to_float(mx.mean(value_sq))
+                if hasattr(mx, "var"):
+                    returns_var = self._mx_to_float(mx.var(returns_tensor))
+                else:  # pragma: no cover - fallback for older MLX versions
+                    mean_returns = mx.mean(returns_tensor)
+                    diff = returns_tensor - mean_returns
+                    returns_var = self._mx_to_float(mx.mean(diff * diff))
+                if returns_var <= 1e-8:
+                    ev_value = 0.0
+                else:
+                    ev_value = 1.0 - (value_mse / (returns_var + 1e-8))
+                metrics_cache["critic_ev"] = max(-1.0, min(1.0, float(ev_value)))
                 return policy_loss + self._value_coef * value_loss - self._entropy_coef * entropy
 
             if self._episodes_in_batch == 0:
@@ -2698,49 +2707,24 @@ class PolicyGradientAgentMLX:
 
             loss_fn_grad = nn_mlx.value_and_grad(self.model, loss_fn)
             _loss_value, grads = loss_fn_grad(obs_batch, actions_batch)
-            returns_tensor = metrics_cache.get("returns", rewards_tensor)
             if self._grad_accum is None:
                 self._grad_accum = grads
             else:
                 self._grad_accum = self._tree_combine(self._grad_accum, grads, lambda a, b: a + b)
 
-            policy_loss_val = self._mx_to_float(metrics_cache.get("policy_loss", 0.0))
-            value_loss_val = self._mx_to_float(metrics_cache.get("value_loss", 0.0))
-            entropy_val = self._mx_to_float(metrics_cache.get("entropy", 0.0))
-
-            returns_arr = metrics_cache.get("returns", returns_tensor)
-            default_values = (
-                mx.zeros_like(returns_arr)
-                if hasattr(mx, "zeros_like")
-                else mx.zeros(returns_arr.shape, dtype=returns_arr.dtype)
-            )
-            values_arr = metrics_cache.get("values", default_values)
-            value_errors = returns_arr - values_arr
-            value_sq = value_errors * value_errors
-            value_mse = self._mx_to_float(mx.mean(value_sq))
-            if hasattr(mx, "var"):
-                returns_var_arr = mx.var(returns_arr)
-            else:  # pragma: no cover - fallback for older MLX versions
-                mean_returns = mx.mean(returns_arr)
-                diff = returns_arr - mean_returns
-                returns_var_arr = mx.mean(diff * diff)
-            value_var = self._mx_to_float(returns_var_arr)
-            if value_var <= 1e-8:
-                ev = 0.0
-            else:
-                ev = 1.0 - (value_mse / (value_var + 1e-8))
-
-            ev = float(max(-1.0, min(1.0, ev)))
-            self._batch_accum_policy_loss += float(policy_loss_val)
-            self._batch_accum_value_loss += float(value_loss_val)
-            self._batch_accum_entropy += float(entropy_val)
+            policy_loss_val = float(metrics_cache.get("policy_loss", 0.0))
+            value_loss_val = float(metrics_cache.get("value_loss", 0.0))
+            entropy_val = float(metrics_cache.get("entropy", 0.0))
+            ev = float(metrics_cache.get("critic_ev", 0.0))
+            self._batch_accum_policy_loss += policy_loss_val
+            self._batch_accum_value_loss += value_loss_val
+            self._batch_accum_entropy += entropy_val
             self._batch_accum_critic_ev += ev
             self._latest_critic_ev = ev
-            episode_steps = int(returns_tensor.shape[0])
+            episode_steps = int(episode_len)
             self._episodes_in_batch += 1
             self._steps_in_batch += episode_steps
             self._total_env_steps += episode_steps
-            self._apply_lr_schedule()
 
             self._reset_context(context_id)
 
@@ -2805,6 +2789,7 @@ class PolicyGradientAgentMLX:
                 clip_scale = self._max_grad_norm / (norm + 1e-8)
                 grads = self._tree_map(grads, lambda g: g * clip_scale if g is not None else None)
 
+        self._apply_lr_schedule()
         self.optimizer.update(self.model, grads)
         try:  # pragma: no cover - optional evaluation for lazy arrays
             mx.eval(self.model.parameters(), self.optimizer.state)
@@ -3153,7 +3138,7 @@ def main() -> None:
         "--batch-runs",
         type=int,
         default=32,
-        help="Episodes to accumulate before each policy update.",
+        help="Episodes to accumulate before each policy update (0 disables).",
     )
     ap.add_argument(
         "--batch-steps",
