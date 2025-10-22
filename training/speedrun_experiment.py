@@ -1694,6 +1694,13 @@ class _EnvSlot:
     last_step_duration: float = 0.0
     last_spawn_id: Optional[int] = None
     cached_action: Optional[int] = None
+    planner_calls: int = 0
+    planner_latency_ms_total: float = 0.0
+    planner_latency_ms_max: float = 0.0
+    planner_plan_count_total: float = 0.0
+    planner_plan_count_last: float = 0.0
+    planner_replan_attempts: int = 0
+    planner_replan_failures: int = 0
 
 
 class PolicyGradientAgent:
@@ -3950,6 +3957,13 @@ def main() -> None:
         slot.last_step_duration = 0.0
         slot.last_spawn_id = None
         slot.cached_action = None
+        slot.planner_calls = 0
+        slot.planner_latency_ms_total = 0.0
+        slot.planner_latency_ms_max = 0.0
+        slot.planner_plan_count_total = 0.0
+        slot.planner_plan_count_last = 0.0
+        slot.planner_replan_attempts = 0
+        slot.planner_replan_failures = 0
         if (
             use_learning_agent
             and not randomize_rng_enabled
@@ -4080,6 +4094,28 @@ def main() -> None:
 
                 slot.obs = next_obs
                 slot.info = step_info
+                if args.placement_action_space:
+                    planner_calls = int(step_info.get("placements/plan_calls", 0) or 0)
+                    slot.planner_calls += planner_calls
+                    slot.planner_latency_ms_total += float(
+                        step_info.get("placements/plan_latency_ms_total", 0.0) or 0.0
+                    )
+                    slot.planner_latency_ms_max = max(
+                        slot.planner_latency_ms_max,
+                        float(step_info.get("placements/plan_latency_ms_max", 0.0) or 0.0),
+                    )
+                    slot.planner_plan_count_total += float(
+                        step_info.get("placements/plan_count_total", 0.0) or 0.0
+                    )
+                    if "placements/plan_count_last" in step_info:
+                        slot.planner_plan_count_last = float(
+                            step_info.get("placements/plan_count_last", 0.0) or 0.0
+                        )
+                    slot.planner_replan_attempts += int(
+                        step_info.get("placements/replan_attempts", 0) or 0
+                    )
+                    if "placements/replan_fail" in step_info:
+                        slot.planner_replan_failures += 1
                 for comp_key, _ in COMPONENT_FIELDS:
                     if comp_key == "episode_reward":
                         continue
@@ -4141,6 +4177,34 @@ def main() -> None:
                         diagnostics_payload[comp_key] = slot.component_sums.get(comp_key, 0.0)
                     diagnostics_payload["parallel_envs"] = num_envs
                     diagnostics_payload["active_envs"] = sum(1 for s in slots if s.active)
+                    if args.placement_action_space:
+                        diagnostics_payload["planner/calls_total"] = float(slot.planner_calls)
+                        diagnostics_payload["planner/latency_ms_total"] = float(
+                            slot.planner_latency_ms_total
+                        )
+                        diagnostics_payload["planner/latency_ms_avg"] = (
+                            float(slot.planner_latency_ms_total) / slot.planner_calls
+                            if slot.planner_calls > 0
+                            else 0.0
+                        )
+                        diagnostics_payload["planner/latency_ms_max"] = float(
+                            slot.planner_latency_ms_max
+                        )
+                        avg_options = (
+                            float(slot.planner_plan_count_total) / slot.planner_calls
+                            if slot.planner_calls > 0
+                            else float(slot.planner_plan_count_last)
+                        )
+                        diagnostics_payload["planner/options_avg"] = avg_options
+                        diagnostics_payload["planner/options_last"] = float(
+                            slot.planner_plan_count_last
+                        )
+                        diagnostics_payload["planner/replan_attempts"] = float(
+                            slot.planner_replan_attempts
+                        )
+                        diagnostics_payload["planner/replan_failures"] = float(
+                            slot.planner_replan_failures
+                        )
                     if hasattr(agent, "epsilon"):
                         diagnostics_payload["epsilon"] = float(getattr(agent, "epsilon"))
                     network_metrics = network_tracker.collect()
