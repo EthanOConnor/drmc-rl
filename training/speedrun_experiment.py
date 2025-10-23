@@ -25,7 +25,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from contextlib import nullcontext
 
 import numpy as np
@@ -1744,6 +1744,9 @@ class _EnvSlot:
     planner_last_publish_replans: int = 0
     planner_last_publish_failures: int = 0
     planner_last_publish_time: float = 0.0
+    viewer_step_base: int = 0
+    viewer_step_offset: int = 0
+    intermediate_reward: float = 0.0
 
 
 class PolicyGradientAgent:
@@ -3966,8 +3969,6 @@ def main() -> None:
         episode_reward: float,
     ) -> None:
         viewer_local = slot.viewer
-        if viewer_local is None:
-            return
         stack_for_planner: Optional[np.ndarray] = None
         stats = {
             "info": info_payload,
@@ -4036,6 +4037,7 @@ def main() -> None:
                 "replan_attempts": planner_metrics["planner/replan_attempts"],
                 "replan_failures": planner_metrics["planner/replan_failures"],
             }
+        pushed_main = False
         try:
             if args.mode == "state":
                 stack = _extract_state_stack(observation)
@@ -4043,30 +4045,40 @@ def main() -> None:
                     return
                 stack_np = np.asarray(stack)
                 stack_for_planner = stack_np
-                if not viewer_local.push(stack_np, stats):
-                    slot.viewer = None
-                    return
-            else:
-                try:
-                    frame = slot.env.render()
-                except Exception:
-                    slot.viewer = None
-                    return
-                if frame is None:
-                    slot.viewer = None
-                    return
-                frame_np = np.asarray(frame)
-                if frame_np.ndim == 3 and frame_np.shape[-1] == 3:
-                    if not viewer_local.push(frame_np, stats):
+                if viewer_local is not None:
+                    if not viewer_local.push(stack_np, stats):
                         slot.viewer = None
-                        return
-                else:
-                    slot.viewer = None
-                    return
+                        viewer_local = None
+                    else:
+                        pushed_main = True
+            else:
+                if viewer_local is not None:
+                    try:
+                        frame = slot.env.render()
+                    except Exception:
+                        slot.viewer = None
+                        viewer_local = None
+                        frame = None
+                    if frame is None:
+                        slot.viewer = None
+                        viewer_local = None
+                    else:
+                        frame_np = np.asarray(frame)
+                        if frame_np.ndim == 3 and frame_np.shape[-1] == 3:
+                            if not viewer_local.push(frame_np, stats):
+                                slot.viewer = None
+                                viewer_local = None
+                            else:
+                                pushed_main = True
+                        else:
+                            slot.viewer = None
+                            viewer_local = None
         except Exception:
-            slot.viewer = None
-            return
-        slot.frame_index += 1
+            if viewer_local is not None:
+                slot.viewer = None
+            viewer_local = None
+        if pushed_main or viewer_local is None:
+            slot.frame_index += 1
 
         if slot.planner_viewer is not None and args.placement_action_space:
             translator = getattr(slot.env, "_translator", None)
@@ -4094,6 +4106,43 @@ def main() -> None:
                         pushed = False
                     if not pushed:
                         slot.planner_viewer = None
+
+    def attach_step_callback(slot: _EnvSlot) -> None:
+        if not args.placement_action_space:
+            return
+        setter = getattr(slot.env, "set_step_callback", None)
+        if not callable(setter):
+            return
+
+        def step_callback(
+            obs_val: Any,
+            info_val: Dict[str, Any],
+            action_val: Optional[int],
+            reward_val: float,
+            terminated_flag: bool,
+            truncated_flag: bool,
+        ) -> None:
+            if slot.viewer is None and slot.planner_viewer is None:
+                return
+            info_copy = dict(info_val or {})
+            slot.intermediate_reward += float(reward_val)
+            slot.viewer_step_offset += 1
+            frame_step = slot.viewer_step_base + slot.viewer_step_offset
+            cumulative = slot.episode_reward + slot.intermediate_reward
+            publish_frame(
+                slot,
+                obs_val,
+                info_copy,
+                None if action_val is None else int(action_val),
+                float(reward_val),
+                frame_step,
+                cumulative,
+            )
+
+        try:
+            setter(step_callback)
+        except Exception:
+            pass
 
     def assign_run(slot: _EnvSlot, run_idx: int) -> None:
         slot.run_idx = run_idx
@@ -4128,6 +4177,9 @@ def main() -> None:
         slot.planner_last_publish_replans = 0
         slot.planner_last_publish_failures = 0
         slot.planner_last_publish_time = time.perf_counter()
+        slot.viewer_step_base = 0
+        slot.viewer_step_offset = 0
+        slot.intermediate_reward = 0.0
         if (
             use_learning_agent
             and not randomize_rng_enabled
@@ -4166,6 +4218,7 @@ def main() -> None:
                 info=dict(slot_info or {}),
             )
         )
+        attach_step_callback(slots[-1])
 
     check_reward_config_updates()
 
@@ -4285,6 +4338,9 @@ def main() -> None:
                 else:
                     slot.last_inference_duration = 0.0
                 responded_to_request = needs_action_flag and args.placement_action_space
+                slot.viewer_step_base = max(0, slot.frame_index - 1)
+                slot.viewer_step_offset = 0
+                slot.intermediate_reward = 0.0
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
                 stepped_any = True
                 step_info = dict(step_info or {})
@@ -4353,9 +4409,11 @@ def main() -> None:
                     step_info,
                     int(action),
                     reward,
-                    total_steps,
+                    slot.viewer_step_base + slot.viewer_step_offset + 1,
                     slot.episode_reward,
                 )
+                slot.intermediate_reward = 0.0
+                slot.viewer_step_offset = 0
 
                 done = step_done or slot.episode_steps >= args.max_steps
                 if not done:
@@ -4479,6 +4537,7 @@ def main() -> None:
                         except Exception:
                             pass
                         slot.env = build_training_env()
+                        attach_step_callback(slot)
                     else:
                         if not _soft_reset_env(slot.env):
                             try:
@@ -4486,6 +4545,7 @@ def main() -> None:
                             except Exception:
                                 pass
                             slot.env = build_training_env()
+                            attach_step_callback(slot)
                     slot.obs, slot.info = reset_environment(slot.env)
                     slot.info = dict(slot.info or {})
                     assign_run(slot, next_run_idx)
