@@ -135,8 +135,11 @@ class PlacementTranslator:
             self._falling_size_addr = None
         self._last_spawn_id: Optional[int] = None
         self._identical_color_pairs: Tuple[int, ...] = tuple()
-        self._last_plan_latency: float = 0.0
+        self._last_plan_latency_ms: float = 0.0
         self._last_plan_count: int = 0
+        self._cached_spawn_marker: Optional[int] = None
+        self._spawn_generation: int = -1
+        self._options_prepared: bool = False
         self._timing = _InputTimingCalibrator()
 
     # ------------------------------------------------------------------
@@ -144,37 +147,6 @@ class PlacementTranslator:
     # ------------------------------------------------------------------
 
     def refresh(self) -> None:
-        state, ram_bytes = self._read_state()
-        board = BoardState.from_state(state)
-        pill = self._extract_pill(state, ram_bytes)
-        self._board = board
-        self._last_state = np.array(state, copy=True)
-        if pill is None:
-            self._current_snapshot = None
-            self._last_spawn_id = None
-            self._legal_mask[:] = False
-            self._feasible_mask[:] = False
-            self._paths = tuple()
-            self._costs.fill(np.inf)
-            self._path_indices.fill(-1)
-            self._last_plan_count = 0
-            return
-        self._current_snapshot = pill
-        self._last_spawn_id = pill.spawn_id
-        start = perf_counter()
-        planner_out = self._planner.plan_all(board, pill)
-        self._last_plan_latency = perf_counter() - start
-        self._legal_mask = planner_out.legal_mask
-        self._feasible_mask = planner_out.feasible_mask
-        self._paths = planner_out.plans
-        self._costs = planner_out.costs.copy()
-        self._path_indices = planner_out.path_indices.copy()
-        self._last_plan_count = planner_out.plan_count
-        self._mask_identical_colors(pill)
-
-    def refresh_state_only(self) -> None:
-        """Refresh cached state without recomputing full planner outputs."""
-
         try:
             state, ram_bytes = self._read_state()
         except Exception:
@@ -189,12 +161,50 @@ class PlacementTranslator:
         pill = self._extract_pill(state, ram_bytes, require_mask=False)
         if pill is None:
             self._current_snapshot = None
+            self._last_spawn_id = None
+            self._clear_cached_options()
             return
         self._current_snapshot = pill
         try:
             self._last_spawn_id = int(pill.spawn_id) if pill.spawn_id is not None else None
         except Exception:
             self._last_spawn_id = None
+        if not self._spawn_matches_cache(pill):
+            self._spawn_generation += 1
+            self._clear_cached_options()
+        else:
+            # Cheap refresh does not trigger planning; ensure diagnostics reflect that.
+            self._last_plan_latency_ms = 0.0
+            self._last_plan_count = 0
+
+    def refresh_state_only(self) -> None:
+        """Deprecated shim; :meth:`refresh` is already cheap."""
+
+        self.refresh()
+
+    def prepare_options(self, *, force: bool = False) -> None:
+        """Ensure placement options are prepared for the current spawn."""
+
+        pill = self._current_snapshot
+        board = self._board
+        if pill is None or board is None:
+            self._clear_cached_options()
+            return
+        spawn_marker = self._spawn_marker_for(pill)
+        if not force and self._options_prepared and self._cached_spawn_marker == spawn_marker:
+            return
+        start = perf_counter()
+        planner_out = self._planner.plan_all(board, pill)
+        self._last_plan_latency_ms = (perf_counter() - start) * 1000.0
+        self._legal_mask = planner_out.legal_mask.copy()
+        self._feasible_mask = planner_out.feasible_mask.copy()
+        self._paths = planner_out.plans
+        self._costs = planner_out.costs.copy()
+        self._path_indices = planner_out.path_indices.copy()
+        self._cached_spawn_marker = spawn_marker
+        self._options_prepared = True
+        self._last_plan_count = int(planner_out.plan_count)
+        self._mask_identical_colors(pill)
 
     def info(self) -> Dict[str, Any]:
         info = {
@@ -211,6 +221,8 @@ class PlacementTranslator:
         return info
 
     def get_plan(self, action: int) -> Optional[PlanResult]:
+        # Lazily prepare options if they have not been computed yet for this spawn.
+        self.prepare_options()
         idx = int(self._path_indices[int(action)])
         if idx < 0 or idx >= len(self._paths):
             return None
@@ -239,7 +251,7 @@ class PlacementTranslator:
 
     def diagnostics(self) -> Dict[str, Any]:
         return {
-            "plan_latency_ms": self._last_plan_latency * 1000.0,
+            "plan_latency_ms": self._last_plan_latency_ms,
             "plan_count": self._last_plan_count,
         }
 
@@ -363,6 +375,31 @@ class PlacementTranslator:
             return PillSnapshot.from_ram_state(state, ram_bytes, self._offsets)
         except PlannerError:
             return None
+
+    def _spawn_marker_for(self, pill: PillSnapshot) -> int:
+        if pill.spawn_id is not None:
+            try:
+                return int(pill.spawn_id)
+            except Exception:
+                pass
+        return int(self._spawn_generation)
+
+    def _spawn_matches_cache(self, pill: PillSnapshot) -> bool:
+        if self._cached_spawn_marker is None:
+            return False
+        return self._cached_spawn_marker == self._spawn_marker_for(pill)
+
+    def _clear_cached_options(self) -> None:
+        self._legal_mask[:] = False
+        self._feasible_mask[:] = False
+        self._costs.fill(np.inf)
+        self._path_indices.fill(-1)
+        self._paths = tuple()
+        self._identical_color_pairs = tuple()
+        self._options_prepared = False
+        self._cached_spawn_marker = None
+        self._last_plan_latency_ms = 0.0
+        self._last_plan_count = 0
 
 
 class DrMarioPlacementEnv(gym.Wrapper):
@@ -488,6 +525,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 "placements/path_indices",
             ):
                 info_payload.pop(key, None)
+            self._translator.prepare_options(force=True)
+            record_refresh_metrics()
+            info_payload.update(self._translator.info() or {})
             return info_payload
 
         while True:
@@ -546,6 +586,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._spawn_marker = marker_now
                 self._spawn_id += 1
                 self._capsule_present = True
+                self._translator.prepare_options(force=True)
+                record_refresh_metrics()
                 info_now = _mark_needs_action(self._translator.info())
                 info_now["pill_changed"] = 1
                 last_info = {**last_info, **info_now}
@@ -783,6 +825,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info["placements/replan_triggered"] = 1
             if not (terminated or truncated):
                 self._translator.refresh()
+                self._translator.prepare_options(force=True)
                 planner_resynced = True
                 if record_refresh is not None:
                     record_refresh()
@@ -820,6 +863,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._spawn_id += 1
             self._capsule_present = True
             self._spawn_marker = None
+            self._translator.prepare_options(force=True)
+            if record_refresh is not None:
+                record_refresh()
             try:
                 self._spawn_marker = int((self._translator.info() or {}).get(
                     "placements/spawn_id", getattr(self._translator.current_pill(), "spawn_id", None)
@@ -864,6 +910,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 )
             if self._translator.current_pill() is not None:
                 info = dict(info)
+                self._translator.prepare_options(force=True)
+                if record_refresh is not None:
+                    record_refresh()
                 info.update(self._translator.info() or {})
                 if not self._capsule_present:
                     self._spawn_id += 1

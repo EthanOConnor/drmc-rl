@@ -41,6 +41,7 @@ def test_translator_refresh_populates_masks():
     env = _StubEnv()
     translator = PlacementTranslator(env, planner=PlacementPlanner())
     translator.refresh()
+    translator.prepare_options(force=True)
     info = translator.info()
     assert info["placements/options"] >= 1
     assert info["placements/costs"].shape[0] == action_count()
@@ -56,6 +57,7 @@ def test_identical_color_masks_canonical_direction():
     env._ram[0x0302] = 2
     translator = PlacementTranslator(env, planner=PlacementPlanner())
     translator.refresh()
+    translator.prepare_options(force=True)
     info = translator.info()
     legal = info["placements/legal_mask"]
     feasible = info["placements/feasible_mask"]
