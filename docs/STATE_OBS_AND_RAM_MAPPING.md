@@ -24,18 +24,41 @@ Falling pill and preview (P1)
 
 Scalars
 - Gravity counter: `$0312` (frames since last Y advance at current speed).
-- Settle/lock proxy: `$0307` (`p1_pillPlacedStep` micro-step state).
+- Lock counter: `$0307` (micro-step state approaching lock).
 - Level: `$0316`.
 
-Channel spec (14 total)
-1–3. Viruses (R, Y, B): bytes with type `0xD0` and color 1/0/2 map to channels 0/1/2.
-4–6. Fixed pill halves (R, Y, B): bytes with type in `{0x40,0x50,0x60,0x70,0x80,0x90,0xA0}` and color 1/0/2 map to channels 3/4/5.
-7–9. Falling halves (R, Y, B): painted at `(row,col)` and its neighbor `(row+1,col)` if vertical else `(row,col+1)` using falling colors.
-10. Orientation: broadcast scalar (0 vertical, 1 horizontal).
-11–13. Gravity counter, settle/lock proxy, level (normalized planes).
-14. Spare (currently 0) reserved for an explicit settle flag if needed.
+## Channel specs
+
+Two observation layouts are supported and can be selected via `ram_to_state.set_state_representation("extended" | "bitplane")`.
+
+### Extended representation (16 channels)
+1-3. Virus color channels (R, Y, B) – only virus tiles are hot in these planes.
+4-6. Static pill color channels (R, Y, B) – locked pill halves.
+7-9. Falling pill color channels (R, Y, B) – current falling capsule halves.
+10. Orientation – scalar plane (`0.0` vertical, `1.0` horizontal).
+11. Gravity counter – normalized `[0,1]`.
+12. Lock counter – normalized `[0,1]`.
+13. Level – normalized by 20.
+14. Preview first color – scalar in `{0.0, 0.5, 1.0}` representing `{yellow, red, blue}`.
+15. Preview second color – same encoding as channel 14.
+16. Preview rotation – scalar in `[0,1]` mapping to NES rotation states `/3`.
+
+### Bitplane representation (12 channels)
+1-3. Color bitplanes (all tiles) for red/yellow/blue.
+4. Virus mask.
+5. Locked pill mask.
+6. Falling pill mask.
+7. Preview mask (HUD-projected capsule in spawn area).
+8. Clearing mask (`0xB0` or `0xF0`).
+9. Empty mask (available cells).
+10. Gravity counter.
+11. Lock counter.
+12. Level scalar.
 
 Implementation
-- Code: `envs/specs/ram_to_state.py:1` implements the decoder using the above masks and addresses.
-- Offsets source: `envs/specs/ram_offsets.json:1` for the current ROM; `re/out/ram_map.json:1` contains an expanded spec including inputs/timers/RNG for reference.
+- Code: `envs/specs/ram_to_state.py` implements the decoder using the above masks and addresses.
+- Offsets source: `envs/specs/ram_offsets.json` for the current ROM; `re/out/ram_map.json` contains an expanded spec including inputs/timers/RNG for reference.
+- `envs/retro/state_viz.py` renders the extended representation into RGB overlays for debugging.
 
+Verification tips
+- See `docs/VERIFICATION_CHECKLIST.md` for step-by-step validation of offsets and plane semantics.
