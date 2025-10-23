@@ -23,7 +23,7 @@ import queue
 import sys
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from contextlib import nullcontext
@@ -1731,6 +1731,8 @@ class _EnvSlot:
     last_step_duration: float = 0.0
     last_spawn_id: Optional[int] = None
     cached_action: Optional[int] = None
+    awaiting_decision: bool = False
+    pending_spawn_id: Optional[int] = None
     planner_calls: int = 0
     planner_latency_ms_total: float = 0.0
     planner_latency_ms_max: float = 0.0
@@ -3966,6 +3968,7 @@ def main() -> None:
         viewer_local = slot.viewer
         if viewer_local is None:
             return
+        stack_for_planner: Optional[np.ndarray] = None
         stats = {
             "info": info_payload,
             "step": step_idx,
@@ -4038,7 +4041,9 @@ def main() -> None:
                 stack = _extract_state_stack(observation)
                 if stack is None:
                     return
-                if not viewer_local.push(stack, stats):
+                stack_np = np.asarray(stack)
+                stack_for_planner = stack_np
+                if not viewer_local.push(stack_np, stats):
                     slot.viewer = None
                     return
             else:
@@ -4070,6 +4075,15 @@ def main() -> None:
                     None if action_val is None else int(action_val)
                 )
                 if snapshot is not None:
+                    if stack_for_planner is not None:
+                        latest_state = np.asarray(stack_for_planner)
+                        if latest_state.ndim == 4:
+                            latest_state = latest_state[-1]
+                        if latest_state.ndim == 3:
+                            snapshot = replace(
+                                snapshot,
+                                state=np.array(latest_state, copy=True),
+                            )
                     image, planner_stats = render_planner_debug_view(snapshot)
                     planner_stats["step"] = step_idx
                     planner_stats["reward"] = reward_val
@@ -4101,6 +4115,8 @@ def main() -> None:
         slot.last_step_duration = 0.0
         slot.last_spawn_id = None
         slot.cached_action = None
+        slot.awaiting_decision = False
+        slot.pending_spawn_id = None
         slot.planner_calls = 0
         slot.planner_latency_ms_total = 0.0
         slot.planner_latency_ms_max = 0.0
@@ -4187,34 +4203,49 @@ def main() -> None:
                 performed_inference = False
                 inference_duration = 0.0
 
+                previous_request_pending = slot.awaiting_decision
+                previous_pending_spawn = slot.pending_spawn_id
+                needs_action_flag = False
                 if args.placement_action_space:
                     info_payload = slot.info or {}
                     spawn_id = _extract_spawn_id(info_payload)
                     needs_action = bool(info_payload.get("placements/needs_action", False))
+                    needs_action_flag = needs_action
                     option_count = _extract_placement_option_count(info_payload)
+                    replan_fail = bool(info_payload.get("placements/replan_fail", 0))
+                    replan_triggered = bool(info_payload.get("placements/replan_triggered", 0))
+                    pill_changed = bool(info_payload.get("pill_changed", 0))
 
-                    if bool(info_payload.get("placements/replan_fail", 0)):
+                    if replan_fail:
                         slot.cached_action = None
+                        slot.pending_spawn_id = None
+                        previous_request_pending = False
 
                     if (
                         slot.cached_action is not None
                         and not _placement_action_reachable(info_payload, slot.cached_action)
                     ):
                         slot.cached_action = None
+                        slot.pending_spawn_id = None
 
                     action = 0
                     if needs_action:
                         spawn_changed = (
-                            spawn_id is not None and slot.last_spawn_id != spawn_id
+                            spawn_id is None
+                            or previous_pending_spawn is None
+                            or spawn_id != previous_pending_spawn
                         )
-                        unknown_spawn = spawn_id is None
-                        if spawn_changed:
-                            slot.last_spawn_id = spawn_id
+                        new_request = (
+                            not previous_request_pending
+                            or spawn_changed
+                            or replan_triggered
+                            or (pill_changed and not spawn_changed)
+                        )
+                        if new_request:
                             slot.cached_action = None
-                        elif unknown_spawn:
-                            slot.last_spawn_id = None
-                            slot.cached_action = None
-
+                        slot.awaiting_decision = True
+                        slot.pending_spawn_id = spawn_id
+                        slot.last_spawn_id = spawn_id
                         if slot.cached_action is None:
                             if option_count <= 0:
                                 action = 0
@@ -4230,13 +4261,15 @@ def main() -> None:
                         else:
                             action = int(slot.cached_action)
                     else:
-                        if spawn_id is not None:
-                            slot.last_spawn_id = spawn_id
-                        if slot.cached_action is None:
-                            action = 0
-                        else:
-                            action = int(slot.cached_action)
+                        slot.awaiting_decision = False
+                        slot.pending_spawn_id = None
+                        slot.cached_action = None
+                        slot.last_spawn_id = spawn_id if spawn_id is not None else None
+                        action = 0
                 else:
+                    slot.awaiting_decision = False
+                    slot.pending_spawn_id = None
+                    slot.cached_action = None
                     inference_start = time.perf_counter()
                     sampled = agent.select_action(
                         slot.obs, slot.info, context_id=slot.context_id
@@ -4251,10 +4284,16 @@ def main() -> None:
                     slot.last_inference_duration = inference_duration
                 else:
                     slot.last_inference_duration = 0.0
+                responded_to_request = needs_action_flag and args.placement_action_space
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
                 stepped_any = True
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
+
+                if responded_to_request:
+                    slot.awaiting_decision = False
+                    slot.pending_spawn_id = None
+                    slot.cached_action = None
 
                 slot.episode_reward += reward
                 slot.episode_steps += 1
