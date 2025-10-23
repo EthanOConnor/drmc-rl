@@ -212,14 +212,16 @@ def _extract_action_mask(info: Optional[Dict[str, Any]]) -> Optional[np.ndarray]
         mask = info.get(key)
         if mask is None:
             continue
-        if isinstance(mask, np.ndarray):
-            return mask.astype(bool)
         try:
             arr = np.asarray(mask, dtype=bool)
-            if arr.shape[0] > 0:
-                return arr
         except Exception:
             continue
+        if arr.size == 0:
+            continue
+        arr = np.reshape(arr, (-1,))
+        if arr.size == 0:
+            continue
+        return arr
     return None
 
 
@@ -294,7 +296,7 @@ def _placement_action_reachable(info: Optional[Dict[str, Any]], action: int) -> 
 
     mask = _extract_action_mask(info)
     if mask is not None:
-        if action_idx >= mask.shape[0]:
+        if action_idx >= mask.size:
             return False
         return bool(mask[action_idx])
 
