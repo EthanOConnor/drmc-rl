@@ -172,6 +172,30 @@ class PlacementTranslator:
         self._last_plan_count = planner_out.plan_count
         self._mask_identical_colors(pill)
 
+    def refresh_state_only(self) -> None:
+        """Refresh cached state without recomputing full planner outputs."""
+
+        try:
+            state, ram_bytes = self._read_state()
+        except Exception:
+            return
+        try:
+            board = BoardState.from_state(state)
+        except Exception:
+            board = None
+        if board is not None:
+            self._board = board
+        self._last_state = np.array(state, copy=True)
+        pill = self._extract_pill(state, ram_bytes, require_mask=False)
+        if pill is None:
+            self._current_snapshot = None
+            return
+        self._current_snapshot = pill
+        try:
+            self._last_spawn_id = int(pill.spawn_id) if pill.spawn_id is not None else None
+        except Exception:
+            self._last_spawn_id = None
+
     def info(self) -> Dict[str, Any]:
         info = {
             "placements/legal_mask": self._legal_mask.copy(),
@@ -356,6 +380,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._spawn_id: int = 0
         self._capsule_present: bool = False
         self._spawn_marker: Optional[int] = None
+        self._step_callback: Optional[
+            Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]
+        ] = None
 
     # ------------------------------------------------------------------
     # Gym API
@@ -556,6 +583,40 @@ class DrMarioPlacementEnv(gym.Wrapper):
         enriched_info.setdefault("placements/spawn_id", int(self._spawn_id))
         return last_obs, total_reward, terminated, truncated, enriched_info
 
+    # ------------------------------------------------------------------
+    # Viewer callback plumbing
+    # ------------------------------------------------------------------
+
+    def set_step_callback(
+        self,
+        callback: Optional[Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]],
+    ) -> None:
+        self._step_callback = callback
+
+    def _notify_step_callback(
+        self,
+        obs: Any,
+        info: Optional[Dict[str, Any]],
+        action: Optional[int],
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+    ) -> None:
+        if self._step_callback is None:
+            return
+        payload = dict(info or {})
+        try:
+            self._step_callback(
+                obs,
+                payload,
+                None if action is None else int(action),
+                float(reward),
+                bool(terminated),
+                bool(truncated),
+            )
+        except Exception:
+            pass
+
     def _clear_latch(self) -> None:
         self._active_plan = None
         self._latched_action = None
@@ -588,15 +649,27 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._translator.refresh()
                 if record_refresh is not None:
                     record_refresh()
+                if self._step_callback is not None:
+                    self._translator.refresh_state_only()
                 if self._translator.current_pill() is None:
                     last_obs, last_info, extra_reward, terminated, truncated = (
                         self._await_next_pill(last_obs, last_info, record_refresh)
                     )
                     total_reward += extra_reward
                 else:
-                    last_info.update(self._translator.info())
+                    extra_info = self._translator.info() or {}
+                    if extra_info:
+                        last_info.update(extra_info)
                     last_info["placements/needs_action"] = False
                     last_info.setdefault("pill_changed", 0)
+            self._notify_step_callback(
+                last_obs,
+                last_info,
+                int(Action.NOOP),
+                float(reward),
+                terminated,
+                truncated,
+            )
             base._hold_left = False
             base._hold_right = False
             base._hold_down = False
@@ -628,6 +701,20 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 total_reward += float(reward)
                 last_obs = obs
                 last_info = info or {}
+                info_for_cb = dict(last_info)
+                if self._step_callback is not None:
+                    self._translator.refresh_state_only()
+                    extra_info = self._translator.info() or {}
+                    if extra_info:
+                        info_for_cb.update(extra_info)
+                    self._notify_step_callback(
+                        obs,
+                        info_for_cb,
+                        int(ctrl.action),
+                        float(reward),
+                        terminated,
+                        truncated,
+                    )
                 if terminated or truncated:
                     break
                 actual_state = self._translator.capture_capsule_state()
@@ -663,6 +750,18 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 total_reward += float(reward)
                 last_obs = obs
                 last_info = info or {}
+                if self._step_callback is not None:
+                    self._translator.refresh_state_only()
+                    info_for_cb = dict(last_info)
+                    info_for_cb.update(self._translator.info() or {})
+                    self._notify_step_callback(
+                        obs,
+                        info_for_cb,
+                        int(Action.NOOP),
+                        float(reward),
+                        terminated,
+                        truncated,
+                    )
                 if terminated or truncated:
                     break
                 self._translator.refresh()
@@ -739,10 +838,30 @@ class DrMarioPlacementEnv(gym.Wrapper):
             total_reward += float(reward)
             info = step_info or {}
             if terminated or truncated:
+                self._notify_step_callback(
+                    obs,
+                    info,
+                    int(Action.NOOP),
+                    float(reward),
+                    terminated,
+                    truncated,
+                )
                 break
             self._translator.refresh()
             if record_refresh is not None:
                 record_refresh()
+            if self._step_callback is not None:
+                info = dict(info)
+                info.update(self._translator.info() or {})
+                self._translator.refresh_state_only()
+                self._notify_step_callback(
+                    obs,
+                    info,
+                    int(Action.NOOP),
+                    float(reward),
+                    terminated,
+                    truncated,
+                )
             if self._translator.current_pill() is not None:
                 info = dict(info)
                 info.update(self._translator.info() or {})
