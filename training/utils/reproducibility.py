@@ -70,12 +70,36 @@ def pick_device(device_pref: str | None = None) -> str:
 def write_environment_file(path: Path) -> None:
     """Record installed packages for experiment provenance."""
 
-    try:
-        import pkg_resources
-    except Exception:  # pragma: no cover - pkg_resources optional in some envs
-        return
+    try:  # Python 3.8+
+        import importlib.metadata as importlib_metadata
+    except ImportError:  # pragma: no cover - Python <3.8 fallback
+        try:
+            import importlib_metadata  # type: ignore
+        except Exception:  # pragma: no cover - metadata unavailable
+            return
 
-    distributions = sorted(pkg_resources.working_set, key=lambda dist: dist.project_name.lower())
+    def _distribution_name(dist: importlib_metadata.Distribution) -> str | None:
+        metadata = getattr(dist, "metadata", None)
+        if metadata is None:
+            return getattr(dist, "name", None)
+        name = metadata.get("Name")
+        if name:
+            return name
+        try:
+            return metadata["Name"]
+        except Exception:  # pragma: no cover - metadata missing name key
+            return getattr(dist, "name", None)
+
+    distributions: dict[str, tuple[str, str]] = {}
+    for dist in importlib_metadata.distributions():
+        name = _distribution_name(dist)
+        if not name:
+            continue
+        key = name.lower()
+        distributions[key] = (name, dist.version)
+
+    ordered_distributions = [distributions[key] for key in sorted(distributions)]
+
     with path.open("w", encoding="utf-8") as fp:
-        for dist in distributions:
-            fp.write(f"{dist.project_name}=={dist.version}\n")
+        for name, version in ordered_distributions:
+            fp.write(f"{name}=={version}\n")
