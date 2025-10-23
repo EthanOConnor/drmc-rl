@@ -280,6 +280,42 @@ def _extract_placement_option_count(info: Optional[Dict[str, Any]]) -> int:
         return 0
 
 
+def _placement_action_reachable(info: Optional[Dict[str, Any]], action: int) -> bool:
+    """Return ``True`` if the planner can still reach ``action``."""
+
+    if info is None:
+        return True
+    try:
+        action_idx = int(action)
+    except Exception:
+        return False
+    if action_idx < 0:
+        return False
+
+    mask = _extract_action_mask(info)
+    if mask is not None:
+        if action_idx >= mask.shape[0]:
+            return False
+        return bool(mask[action_idx])
+
+    path_indices = info.get("placements/path_indices")
+    if path_indices is not None:
+        try:
+            indices_arr = np.asarray(path_indices)
+        except Exception:
+            indices_arr = None
+        if indices_arr is not None:
+            flat = indices_arr.reshape(-1) if indices_arr.ndim > 1 else indices_arr
+            if action_idx >= flat.size:
+                return False
+            try:
+                return int(flat[action_idx]) >= 0
+            except Exception:
+                return False
+
+    return True
+
+
 def _mlx_device_tokens(device: Any) -> set[str]:
     tokens: set[str] = set()
     if device is None:
@@ -4160,6 +4196,12 @@ def main() -> None:
                         slot.last_spawn_id = spawn_id
                         slot.cached_action = None
                     if bool(info_payload.get("placements/replan_fail", 0)):
+                        slot.cached_action = None
+
+                    if (
+                        slot.cached_action is not None
+                        and not _placement_action_reachable(info_payload, slot.cached_action)
+                    ):
                         slot.cached_action = None
 
                     option_count = _extract_placement_option_count(info_payload)
