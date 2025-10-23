@@ -4190,9 +4190,13 @@ def main() -> None:
                 if args.placement_action_space:
                     info_payload = slot.info or {}
                     spawn_id = _extract_spawn_id(info_payload)
-                    if spawn_id is None:
-                        slot.last_spawn_id = None
-                    elif slot.last_spawn_id is None or spawn_id != slot.last_spawn_id:
+                    if (
+                        spawn_id is not None
+                        and (
+                            slot.last_spawn_id is None
+                            or spawn_id != slot.last_spawn_id
+                        )
+                    ):
                         slot.last_spawn_id = spawn_id
                         slot.cached_action = None
                     if bool(info_payload.get("placements/replan_fail", 0)):
@@ -4206,8 +4210,10 @@ def main() -> None:
 
                     option_count = _extract_placement_option_count(info_payload)
                     if option_count <= 0:
-                        slot.cached_action = None
-                        action = 0
+                        if slot.cached_action is not None:
+                            action = int(slot.cached_action)
+                        else:
+                            action = 0
                     elif slot.cached_action is None:
                         inference_start = time.perf_counter()
                         sampled = agent.select_action(
