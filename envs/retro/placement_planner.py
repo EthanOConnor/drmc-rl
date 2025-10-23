@@ -190,9 +190,19 @@ class PillSnapshot:
             except (ValueError, IndexError, TypeError):
                 spawn_id = None
 
-        # RAM row counts from the bottom of the bottle (0 == bottom).
+        # RAM row counts from the bottom of the bottle (0 == bottom) and the
+        # column register always references the *left* half when horizontal.
+        # The planner, however, anchors orientation ``2`` (reversed horizontal)
+        # on the right half and orientation ``3`` (reversed vertical) on the
+        # upper half.  Adjust the decoded coordinates so that
+        # :func:`iter_cells` produces positions that match the pixels inferred
+        # via :func:`envs.specs.ram_to_state.get_falling_mask`.
         row = (GRID_HEIGHT - 1) - raw_row
         col = raw_col
+        if orient == 2:
+            col += 1
+        elif orient == 3:
+            row -= 1
         if not (0 <= col < GRID_WIDTH):
             raise PlannerError(f"Falling pill column out of range: {col}")
         if not (-2 <= row < GRID_HEIGHT + 2):
