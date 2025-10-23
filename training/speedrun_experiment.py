@@ -4190,15 +4190,9 @@ def main() -> None:
                 if args.placement_action_space:
                     info_payload = slot.info or {}
                     spawn_id = _extract_spawn_id(info_payload)
-                    if (
-                        spawn_id is not None
-                        and (
-                            slot.last_spawn_id is None
-                            or spawn_id != slot.last_spawn_id
-                        )
-                    ):
-                        slot.last_spawn_id = spawn_id
-                        slot.cached_action = None
+                    needs_action = bool(info_payload.get("placements/needs_action", False))
+                    option_count = _extract_placement_option_count(info_payload)
+
                     if bool(info_payload.get("placements/replan_fail", 0)):
                         slot.cached_action = None
 
@@ -4208,23 +4202,40 @@ def main() -> None:
                     ):
                         slot.cached_action = None
 
-                    option_count = _extract_placement_option_count(info_payload)
-                    if option_count <= 0:
-                        if slot.cached_action is not None:
-                            action = int(slot.cached_action)
-                        else:
-                            action = 0
-                    elif slot.cached_action is None:
-                        inference_start = time.perf_counter()
-                        sampled = agent.select_action(
-                            slot.obs, slot.info, context_id=slot.context_id
+                    action = 0
+                    if needs_action:
+                        spawn_changed = (
+                            spawn_id is not None and slot.last_spawn_id != spawn_id
                         )
-                        inference_duration = time.perf_counter() - inference_start
-                        action = int(sampled)
-                        slot.cached_action = int(action)
-                        performed_inference = True
+                        unknown_spawn = spawn_id is None
+                        if spawn_changed:
+                            slot.last_spawn_id = spawn_id
+                            slot.cached_action = None
+                        elif unknown_spawn:
+                            slot.last_spawn_id = None
+                            slot.cached_action = None
+
+                        if slot.cached_action is None:
+                            if option_count <= 0:
+                                action = 0
+                            else:
+                                inference_start = time.perf_counter()
+                                sampled = agent.select_action(
+                                    slot.obs, slot.info, context_id=slot.context_id
+                                )
+                                inference_duration = time.perf_counter() - inference_start
+                                action = int(sampled)
+                                performed_inference = True
+                            slot.cached_action = int(action)
+                        else:
+                            action = int(slot.cached_action)
                     else:
-                        action = int(slot.cached_action)
+                        if spawn_id is not None:
+                            slot.last_spawn_id = spawn_id
+                        if slot.cached_action is None:
+                            action = 0
+                        else:
+                            action = int(slot.cached_action)
                 else:
                     inference_start = time.perf_counter()
                     sampled = agent.select_action(

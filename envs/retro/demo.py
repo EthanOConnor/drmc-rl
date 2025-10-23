@@ -71,9 +71,16 @@ def _viewer_worker(
     img_label = tk.Label(root)
     img_label.pack()
     text_var: Optional[tk.StringVar] = tk.StringVar(value="") if with_stats else None
+    default_fg: Optional[str] = None
+    redecision_fg = "#ff6b6b"
+    text_label: Optional[tk.Label] = None
     if text_var is not None:
         text_label = tk.Label(root, textvariable=text_var, anchor="w", justify="left")
         text_label.pack(fill="x", padx=4, pady=2)
+        try:
+            default_fg = str(text_label.cget("fg"))
+        except Exception:
+            default_fg = None
     holder: Dict[str, Any] = {"img": None}
     scale = max(0.5, float(scale))
 
@@ -127,6 +134,8 @@ def _viewer_worker(
 
     viz_times: deque[float] = deque(maxlen=120)
     viz_fps = 0.0
+    spawn_decision_counts: Dict[int, int] = {}
+    last_spawn_id_seen: Optional[int] = None
 
     def record_viz_update() -> None:
         nonlocal viz_fps
@@ -169,6 +178,7 @@ def _viewer_worker(
         root.bind("<Key>", on_key)
 
     def update_text(stats: Optional[Dict[str, Any]]) -> None:
+        nonlocal last_spawn_id_seen
         if text_var is None or stats is None:
             return
         info = stats.get("info", {}) if isinstance(stats, dict) else {}
@@ -180,6 +190,29 @@ def _viewer_worker(
             if abs(value) < 1e-6:
                 return "0.00"
             return f"{value:+.2f}"
+
+        needs_action = bool(info.get("placements/needs_action", False))
+        spawn_id_val = info.get("placements/spawn_id")
+        spawn_id_int: Optional[int] = None
+        try:
+            if spawn_id_val is not None:
+                spawn_id_int = int(spawn_id_val)
+        except (TypeError, ValueError):
+            spawn_id_int = None
+        highlight_spawn = False
+        if spawn_id_int is not None:
+            if last_spawn_id_seen is None or spawn_id_int > last_spawn_id_seen:
+                last_spawn_id_seen = spawn_id_int
+            if needs_action:
+                current_count = spawn_decision_counts.get(spawn_id_int, 0) + 1
+                spawn_decision_counts[spawn_id_int] = current_count
+                highlight_spawn = current_count > 1
+            else:
+                spawn_decision_counts.setdefault(spawn_id_int, 0)
+            # prune stale entries to keep memory bounded
+            stale_keys = [key for key in spawn_decision_counts.keys() if key < spawn_id_int - 8]
+            for key in stale_keys:
+                spawn_decision_counts.pop(key, None)
 
         lines = [
             f"Step {stats.get('step', 0)}  Total {stats.get('cumulative', 0.0):.1f}",
@@ -211,6 +244,13 @@ def _viewer_worker(
         action = stats.get("action")
         if action is not None:
             lines.append(f"Action: {action}")
+        if spawn_id_int is not None:
+            spawn_line = f"Spawn {spawn_id_int}"
+            if needs_action:
+                spawn_line += " (needs action)"
+                if highlight_spawn:
+                    spawn_line += " – re-decide"
+            lines.append(spawn_line)
         emu_fps = stats.get("emu_fps")
         target_hz = stats.get("target_hz")
         ratio = stats.get("emu_vis_ratio")
@@ -340,6 +380,14 @@ def _viewer_worker(
                 lines.append(f"Inference calls {int(call_count)}")
         lines.append("Controls: 0=emu=viz  +=faster  -=slower")
         text_var.set("\n".join(lines))
+        if default_fg is not None and text_label is not None:
+            try:
+                if highlight_spawn and needs_action:
+                    text_label.configure(fg=redecision_fg)
+                else:
+                    text_label.configure(fg=default_fg)
+            except Exception:
+                pass
 
     def pump() -> None:
         nonlocal latest_stats, last_generation

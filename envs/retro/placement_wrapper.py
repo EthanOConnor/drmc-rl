@@ -342,7 +342,7 @@ class PlacementTranslator:
 
 
 class DrMarioPlacementEnv(gym.Wrapper):
-    """Wrapper exposing the 464-way placement action space."""
+    """Wrapper exposing the 464-way placement action space with per-spawn masks."""
 
     def __init__(self, env: gym.Env, *, planner: Optional[PlacementPlanner] = None) -> None:
         super().__init__(env)
@@ -350,6 +350,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._translator = PlacementTranslator(env, planner)
         self._last_obs: Any = None
         self._last_info: Dict[str, Any] = {}
+        self._active_plan: Optional[PlanResult] = None
+        self._latched_action: Optional[int] = None
+        self._latched_spawn_id: int = -1
+        self._spawn_id: int = 0
+        self._capsule_present: bool = False
 
     # ------------------------------------------------------------------
     # Gym API
@@ -361,9 +366,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if info is None:
             info = {}
         self._translator.refresh()
+        self._active_plan = None
+        self._latched_action = None
+        self._latched_spawn_id = -1
+        self._capsule_present = False
+        self._spawn_id = 0
         obs, info, _, _, _ = self._await_next_pill(obs, info)
         self._last_obs = obs
         self._last_info = info
+        self._capsule_present = bool(self._translator.current_pill() is not None)
+        self._spawn_id = max(0, int(info.get("placements/spawn_id", 0)))
         return obs, info
 
     def step(self, action: int):
@@ -382,7 +394,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
         def record_refresh_metrics() -> None:
             nonlocal planner_calls, planner_latency_ms_total, planner_latency_ms_max
-            nonlocal planner_plan_count_total, planner_plan_count_last
+            nonlocal planner_plan_count_total, planner_plan_count_last, planner_latency_ms_last
             diagnostics = self._translator.diagnostics()
             latency = float(diagnostics.get("plan_latency_ms", 0.0))
             plan_count = float(diagnostics.get("plan_count", 0.0))
@@ -393,8 +405,52 @@ class DrMarioPlacementEnv(gym.Wrapper):
             planner_plan_count_last = plan_count
             planner_latency_ms_last = latency
 
+        if self._translator.current_pill() is None:
+            obs, info, reward_delta, terminated, truncated = self._await_next_pill(
+                self._last_obs, self._last_info, record_refresh_metrics
+            )
+            total_reward += reward_delta
+            last_obs = obs
+            last_info = info
+            self._last_obs = last_obs
+            self._last_info = last_info
+            self._active_plan = None
+            self._latched_action = None
+            self._latched_spawn_id = -1
+            return last_obs, total_reward, terminated, truncated, last_info
+
+        def request_new_decision(base_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            info_payload = dict(base_info or {})
+            info_payload["placements/needs_action"] = True
+            info_payload["placements/spawn_id"] = int(self._spawn_id)
+            info_payload["pill_changed"] = 0
+            for key in (
+                "placements/legal_mask",
+                "placements/feasible_mask",
+                "placements/options",
+                "placements/costs",
+                "placements/path_indices",
+            ):
+                if key in info_payload:
+                    info_payload.pop(key)
+            return info_payload
+
         while True:
-            plan = self._translator.get_plan(int(action))
+            if self._active_plan is None or self._latched_spawn_id != self._spawn_id:
+                plan = self._translator.get_plan(int(action))
+                if plan is None:
+                    last_obs = self._last_obs
+                    last_info = request_new_decision(self._last_info)
+                    terminated = False
+                    truncated = False
+                    self._clear_latch()
+                    break
+                self._active_plan = plan
+                self._latched_action = int(action)
+                self._latched_spawn_id = int(self._spawn_id)
+            else:
+                plan = self._active_plan
+
             outcome = self._execute_plan(plan, record_refresh_metrics)
             total_reward += outcome.reward
             last_obs = outcome.last_obs
@@ -402,16 +458,20 @@ class DrMarioPlacementEnv(gym.Wrapper):
             terminated = outcome.terminated
             truncated = outcome.truncated
             if terminated or truncated:
+                self._clear_latch()
                 break
-            if not outcome.replan_required:
+            if outcome.replan_required:
+                replan_attempts += 1
+                last_info = request_new_decision(last_info)
+                self._clear_latch()
                 break
-            replan_attempts += 1
-            if replan_attempts > 3:
-                last_info.setdefault("placements/replan_fail", replan_attempts)
+            pill_rolled = bool(last_info.get("pill_changed", False))
+            capsule_missing = self._translator.current_pill() is None
+            if pill_rolled or capsule_missing:
+                self._clear_latch()
                 break
-            if not outcome.planner_resynced:
-                self._translator.refresh()
-                record_refresh_metrics()
+            # Continue executing the same plan; ignore the external action while latched.
+            continue
 
         self._last_obs = last_obs
         enriched_info = dict(last_info)
@@ -432,7 +492,15 @@ class DrMarioPlacementEnv(gym.Wrapper):
         enriched_info["placements/plan_count_last"] = planner_plan_count_last
         enriched_info["placements/plan_latency_ms_last"] = planner_latency_ms_last
         self._last_info = enriched_info
+        if "placements/needs_action" not in enriched_info:
+            enriched_info["placements/needs_action"] = False
+            enriched_info.setdefault("placements/spawn_id", int(self._spawn_id))
         return last_obs, total_reward, terminated, truncated, enriched_info
+
+    def _clear_latch(self) -> None:
+        self._active_plan = None
+        self._latched_action = None
+        self._latched_spawn_id = -1
 
     # ------------------------------------------------------------------
     # Execution helpers
@@ -456,7 +524,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             obs, reward, terminated, truncated, info = self.env.step(int(Action.NOOP))
             total_reward += float(reward)
             last_obs = obs
-            last_info = info or {}
+            last_info = dict(info or {})
             if not (terminated or truncated):
                 self._translator.refresh()
                 if record_refresh is not None:
@@ -467,11 +535,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     )
                     total_reward += extra_reward
                 else:
-                    last_info = dict(last_info)
                     last_info.update(self._translator.info())
+                    last_info["placements/needs_action"] = False
+                    last_info.setdefault("pill_changed", 0)
             base._hold_left = False
             base._hold_right = False
             base._hold_down = False
+            last_info.setdefault("pill_changed", 0)
             return _ExecutionOutcome(
                 last_obs,
                 last_info,
@@ -527,10 +597,28 @@ class DrMarioPlacementEnv(gym.Wrapper):
             self._translator.refresh()
             if record_refresh is not None:
                 record_refresh()
-            last_obs, last_info, extra_reward, terminated, truncated = self._await_next_pill(
-                last_obs, last_info, record_refresh
-            )
-            total_reward += extra_reward
+            # Wait until the current capsule locks before surfacing the next spawn.
+            stall_checks = 0
+            while self._translator.current_pill() is not None:
+                obs, reward, terminated, truncated, info = self.env.step(int(Action.NOOP))
+                total_reward += float(reward)
+                last_obs = obs
+                last_info = info or {}
+                if terminated or truncated:
+                    break
+                self._translator.refresh()
+                if record_refresh is not None:
+                    record_refresh()
+                stall_checks += 1
+                if stall_checks > 180 and self._translator.current_pill() is not None:
+                    replan_required = True
+                    break
+
+            if not (terminated or truncated) and not replan_required:
+                last_obs, last_info, extra_reward, terminated, truncated = self._await_next_pill(
+                    last_obs, last_info, record_refresh
+                )
+                total_reward += extra_reward
 
         if replan_required:
             last_info = dict(last_info)
@@ -540,6 +628,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 planner_resynced = True
                 if record_refresh is not None:
                     record_refresh()
+
+        if "pill_changed" not in last_info:
+            last_info = dict(last_info)
+            last_info.setdefault("pill_changed", 0)
 
         return _ExecutionOutcome(
             last_obs,
@@ -566,9 +658,17 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info = dict(last_info) if last_info is not None else {}
 
         if self._translator.current_pill() is not None:
+            new_spawn = not self._capsule_present
+            if new_spawn:
+                self._spawn_id += 1
+            self._capsule_present = True
             info.update(self._translator.info())
+            info["placements/spawn_id"] = int(self._spawn_id)
+            info["placements/needs_action"] = True
+            info["pill_changed"] = 1 if new_spawn else 0
             return obs, info, total_reward, terminated, truncated
 
+        self._capsule_present = False
         while True:
             obs, reward, terminated, truncated, step_info = self.env.step(int(Action.NOOP))
             total_reward += float(reward)
@@ -581,8 +681,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if self._translator.current_pill() is not None:
                 info = dict(info)
                 info.update(self._translator.info())
+                new_spawn = not self._capsule_present
+                if new_spawn:
+                    self._spawn_id += 1
+                self._capsule_present = True
+                info["placements/spawn_id"] = int(self._spawn_id)
+                info["placements/needs_action"] = True
+                info["pill_changed"] = 1 if new_spawn else 0
                 break
 
+        info.setdefault("pill_changed", 0)
         return obs, info, total_reward, terminated, truncated
 
 
