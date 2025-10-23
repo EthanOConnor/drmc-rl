@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
 
+from envs.retro.core_utils import resolve_libretro_core
 from training.algo.base import AlgoAdapter
 from training.diagnostics.event_bus import EventBus
 from training.diagnostics.logger import DiagLogger
@@ -72,6 +74,26 @@ def load_config(args: argparse.Namespace) -> Any:
         cfg_dict["device"] = args.device
 
     apply_dot_overrides(cfg_dict, args.override)
+
+    env_cfg = cfg_dict.setdefault("env", {})
+    core_name = env_cfg.get("core")
+    core_path_value = env_cfg.get("core_path")
+    resolved_core_path: Path | None = None
+    if isinstance(core_name, str) and core_name:
+        resolved_core_path = resolve_libretro_core(core_name)
+        env_cfg["core_path"] = str(resolved_core_path)
+    elif isinstance(core_path_value, str) and core_path_value:
+        candidate = Path(core_path_value).expanduser()
+        if not candidate.is_absolute():
+            candidate = (Path(args.cfg).expanduser().parent / candidate).resolve()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Libretro core not found at {candidate}")
+        resolved_core_path = candidate
+        env_cfg["core_path"] = str(resolved_core_path)
+
+    if resolved_core_path is not None:
+        os.environ["DRMARIO_CORE_PATH"] = str(resolved_core_path)
+        os.environ["LIBRETRO_CORE"] = str(resolved_core_path)
 
     # Normalise viz configuration
     viz = cfg_dict.get("viz", [])

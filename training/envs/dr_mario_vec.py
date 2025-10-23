@@ -19,6 +19,8 @@ class VecEnvConfig:
     frame_stack: int = 1
     render: bool = False
     episode_length: int = 200
+    core: Optional[str] = None
+    core_path: Optional[str] = None
 
 
 class DummyVecEnv:
