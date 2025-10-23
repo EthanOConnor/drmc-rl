@@ -52,6 +52,7 @@ class PlannerDebugSnapshot:
     plans: Tuple[PlanResult, ...]
     selected_plan: Optional[PlanResult]
     selected_action: Optional[int]
+    state: Optional[np.ndarray] = None
 
 
 class _InputTimingCalibrator:
@@ -126,6 +127,12 @@ class PlacementTranslator:
         self._paths: Tuple[PlanResult, ...] = tuple()
         self._current_snapshot: Optional[PillSnapshot] = None
         self._board: Optional[BoardState] = None
+        self._last_state: Optional[np.ndarray] = None
+        size_hex = self._offsets.get("falling_pill", {}).get("size_addr")
+        try:
+            self._falling_size_addr: Optional[int] = int(size_hex, 16) if size_hex else None
+        except (TypeError, ValueError):
+            self._falling_size_addr = None
         self._last_spawn_id: Optional[int] = None
         self._identical_color_pairs: Tuple[int, ...] = tuple()
         self._last_plan_latency: float = 0.0
@@ -141,6 +148,7 @@ class PlacementTranslator:
         board = BoardState.from_state(state)
         pill = self._extract_pill(state, ram_bytes)
         self._board = board
+        self._last_state = np.array(state, copy=True)
         if pill is None:
             self._current_snapshot = None
             self._last_spawn_id = None
@@ -185,9 +193,16 @@ class PlacementTranslator:
         return self._paths[idx]
 
     def capture_capsule_state(self) -> Optional[CapsuleState]:
-        state, ram_bytes = self._read_state()
-        self._board = BoardState.from_state(state)
-        pill = self._extract_pill(state, ram_bytes)
+        ram_bytes = self._read_ram_bytes()
+        if ram_bytes is None:
+            return None
+        if self._falling_size_addr is not None:
+            if self._falling_size_addr >= len(ram_bytes):
+                return None
+            size_val = ram_bytes[self._falling_size_addr]
+            if size_val < 2:
+                return None
+        pill = self._extract_pill(None, ram_bytes, require_mask=False)
         if pill is None:
             return None
         return snapshot_to_capsule_state(pill)
@@ -234,6 +249,7 @@ class PlacementTranslator:
             plans=self._paths,
             selected_plan=selected_plan,
             selected_action=action_value,
+            state=None if self._last_state is None else np.array(self._last_state, copy=True),
         )
 
     # ------------------------------------------------------------------
@@ -293,19 +309,32 @@ class PlacementTranslator:
         self._identical_color_pairs = tuple(masked)
         self._last_plan_count = int(np.count_nonzero(self._path_indices >= 0))
 
-    def _read_state(self) -> Tuple[np.ndarray, bytes]:
+    def _read_ram_bytes(self) -> Optional[bytes]:
         base = self.env.unwrapped
         ram_arr = base._read_ram_array(refresh=True)
         if ram_arr is None:
+            return None
+        return bytes(ram_arr)
+
+    def _read_state(self) -> Tuple[np.ndarray, bytes]:
+        ram_bytes = self._read_ram_bytes()
+        if ram_bytes is None:
             ram_arr = np.zeros(0x800, dtype=np.uint8)
-        ram_bytes = bytes(ram_arr)
+            ram_bytes = bytes(ram_arr)
         state = ram_specs.ram_to_state(ram_bytes, self._offsets)
         return state, ram_bytes
 
-    def _extract_pill(self, state: np.ndarray, ram_bytes: bytes) -> Optional[PillSnapshot]:
-        falling_mask = ram_specs.get_falling_mask(state)
-        if falling_mask.sum() == 0:
-            return None
+    def _extract_pill(
+        self,
+        state: Optional[np.ndarray],
+        ram_bytes: bytes,
+        *,
+        require_mask: bool = True,
+    ) -> Optional[PillSnapshot]:
+        if require_mask and state is not None:
+            falling_mask = ram_specs.get_falling_mask(state)
+            if falling_mask.sum() == 0:
+                return None
         try:
             return PillSnapshot.from_ram_state(state, ram_bytes, self._offsets)
         except PlannerError:
@@ -581,13 +610,76 @@ def _cells_from_state(state: CapsuleState) -> List[Tuple[int, int]]:
     return cells
 
 
+_BACKGROUND_COLOR = np.array((24.0, 24.0, 32.0), dtype=np.float32)
+_OCCUPIED_FALLBACK_COLOR = np.array((118.0, 118.0, 118.0), dtype=np.float32)
+_STATIC_RGB = np.array(((180.0, 0.0, 0.0), (200.0, 180.0, 0.0), (0.0, 80.0, 200.0)), dtype=np.float32)
+_VIRUS_RGB = np.array(((220.0, 40.0, 40.0), (240.0, 220.0, 40.0), (40.0, 120.0, 240.0)), dtype=np.float32)
+_FALLING_RGB = np.array(((255.0, 128.0, 128.0), (255.0, 255.0, 120.0), (120.0, 120.0, 255.0)), dtype=np.float32)
+_FALLING_COLOR_LOOKUP = {
+    0: _FALLING_RGB[1],  # yellow
+    1: _FALLING_RGB[0],  # red
+    2: _FALLING_RGB[2],  # blue
+}
+_LEGAL_ONLY_COLOR = (150.0, 235.0, 170.0)
+_FEASIBLE_COLOR = (40.0, 160.0, 90.0)
+_PATH_COLOR = (255.0, 160.0, 40.0)
+_TARGET_COLOR = (250.0, 250.0, 250.0)
+_CELL_SCALE = 6
+
+
+def _board_color_grid(state: Optional[np.ndarray]) -> np.ndarray:
+    colors = np.zeros((GRID_HEIGHT, GRID_WIDTH, 3), dtype=np.float32)
+    if state is None:
+        return colors
+    try:
+        static_planes = ram_specs.get_static_color_planes(state)
+        virus_planes = ram_specs.get_virus_color_planes(state)
+    except Exception:
+        return colors
+    for idx, rgb in enumerate(_STATIC_RGB):
+        if idx >= static_planes.shape[0]:
+            break
+        mask = static_planes[idx] > 0.1
+        if mask.any():
+            colors[mask] = rgb
+    for idx, rgb in enumerate(_VIRUS_RGB):
+        if idx >= virus_planes.shape[0]:
+            break
+        mask = virus_planes[idx] > 0.1
+        if mask.any():
+            colors[mask] = rgb
+    return colors
+
+
+def _apply_falling_colors(canvas: np.ndarray, state: Optional[np.ndarray]) -> None:
+    if state is None:
+        return
+    try:
+        falling_planes = ram_specs.get_falling_color_planes(state)
+    except Exception:
+        return
+    for idx, rgb in enumerate(_FALLING_RGB):
+        if idx >= falling_planes.shape[0]:
+            break
+        mask = falling_planes[idx] > 0.1
+        if mask.any():
+            canvas[mask] = rgb
+
+
 def render_planner_debug_view(
     snapshot: PlannerDebugSnapshot,
 ) -> Tuple[np.ndarray, Dict[str, Any]]:
     board_mask = _board_occupancy(snapshot.board)
     canvas = np.zeros((GRID_HEIGHT, GRID_WIDTH, 3), dtype=np.float32)
-    canvas[:] = (24.0, 24.0, 32.0)
-    canvas[board_mask] = (118.0, 118.0, 118.0)
+    canvas[:] = _BACKGROUND_COLOR
+
+    board_colors = _board_color_grid(snapshot.state)
+    colored_mask = board_colors.sum(axis=-1) > 0.1
+    if colored_mask.any():
+        canvas[colored_mask] = board_colors[colored_mask]
+    fallback_mask = np.logical_and(board_mask, np.logical_not(colored_mask))
+    if fallback_mask.any():
+        canvas[fallback_mask] = _OCCUPIED_FALLBACK_COLOR
 
     legal_cells = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.int32)
     feasible_cells = np.zeros_like(legal_cells)
@@ -604,10 +696,11 @@ def render_planner_debug_view(
 
     legal_mask = legal_cells > 0
     feasible_mask = feasible_cells > 0
-    if legal_mask.any():
-        canvas[legal_mask] = _blend(canvas[legal_mask], (70.0, 70.0, 200.0), 0.35)
+    legal_only_mask = np.logical_and(legal_mask, np.logical_not(feasible_mask))
+    if legal_only_mask.any():
+        canvas[legal_only_mask] = _blend(canvas[legal_only_mask], _LEGAL_ONLY_COLOR, 0.5)
     if feasible_mask.any():
-        canvas[feasible_mask] = _blend(canvas[feasible_mask], (40.0, 160.0, 90.0), 0.55)
+        canvas[feasible_mask] = _blend(canvas[feasible_mask], _FEASIBLE_COLOR, 0.55)
 
     plan_to_show: Optional[PlanResult] = snapshot.selected_plan
     plan_action: Optional[int] = snapshot.selected_action
@@ -615,25 +708,32 @@ def render_planner_debug_view(
         plan_to_show = min(snapshot.plans, key=lambda plan: plan.cost)
         plan_action = plan_to_show.action
 
+    final_cells: List[Tuple[int, int]] = []
     if plan_to_show is not None:
         path_cells = set()
         for state in plan_to_show.states:
             path_cells.update(_cells_from_state(state))
-        final_cells = _cells_from_state(plan_to_show.states[-1]) if plan_to_show.states else []
+        if plan_to_show.states:
+            final_cells = _cells_from_state(plan_to_show.states[-1])
         for row, col in path_cells:
-            canvas[row, col] = _blend(canvas[row, col], (255.0, 160.0, 40.0), 0.65)
+            canvas[row, col] = _blend(canvas[row, col], _PATH_COLOR, 0.65)
+
+    _apply_falling_colors(canvas, snapshot.state)
+    if snapshot.state is None and snapshot.pill is not None:
+        pill_state = snapshot_to_capsule_state(snapshot.pill)
+        pill_cells = _cells_from_state(pill_state)
+        for index, (row, col) in enumerate(pill_cells):
+            color_value = snapshot.pill.colors[min(index, len(snapshot.pill.colors) - 1)]
+            tint = _FALLING_COLOR_LOOKUP.get(int(color_value))
+            if tint is None:
+                continue
+            canvas[row, col] = tint
+
+    if final_cells:
         for row, col in final_cells:
-            canvas[row, col] = (240.0, 32.0, 64.0)
+            canvas[row, col] = _TARGET_COLOR
 
-    pill_cells: List[Tuple[int, int]] = []
-    if snapshot.pill is not None:
-        pill_cells = _cells_from_state(snapshot_to_capsule_state(snapshot.pill))
-        for row, col in pill_cells:
-            canvas[row, col] = _blend(canvas[row, col], (80.0, 200.0, 255.0), 0.6)
-
-    cell_height = 8
-    cell_width = 16
-    enlarged = np.repeat(np.repeat(canvas, cell_height, axis=0), cell_width, axis=1)
+    enlarged = np.repeat(np.repeat(canvas, _CELL_SCALE, axis=0), _CELL_SCALE, axis=1)
     image = np.clip(enlarged, 0.0, 255.0).astype(np.uint8)
 
     stats: Dict[str, Any] = {
