@@ -130,7 +130,7 @@ class PillSnapshot:
     @classmethod
     def from_ram_state(
         cls,
-        state: np.ndarray,
+        state: Optional[np.ndarray],
         ram_bytes: bytes,
         offsets: Dict[str, Dict],
     ) -> "PillSnapshot":
