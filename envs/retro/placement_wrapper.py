@@ -436,6 +436,20 @@ class DrMarioPlacementEnv(gym.Wrapper):
             return info_payload
 
         while True:
+            if (
+                self._active_plan is not None
+                and self._latched_spawn_id == self._spawn_id
+                and self._latched_action is not None
+                and int(action) != self._latched_action
+            ):
+                # Allow the caller to override a latched decision when they
+                # deliberately pick a different placement for the current
+                # spawn. This keeps the execution latch from suppressing
+                # legitimate replans while the capsule is still active.
+                self._active_plan = None
+                self._latched_action = None
+                self._latched_spawn_id = -1
+
             if self._active_plan is None or self._latched_spawn_id != self._spawn_id:
                 plan = self._translator.get_plan(int(action))
                 if plan is None:
