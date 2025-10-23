@@ -31,6 +31,7 @@ from contextlib import nullcontext
 import numpy as np
 
 import envs.specs.ram_to_state as ram_specs
+from envs.retro.core_utils import discover_libretro_cores, resolve_libretro_core
 from envs.retro.demo import _ProcessViewer
 from envs.retro.drmario_env import Action
 from envs.retro.intent_wrapper import DrMarioIntentEnv
@@ -3219,6 +3220,7 @@ def _soft_reset_env(env: Any) -> bool:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Level-0 speedrun experiment harness")
+    core_choices = sorted(discover_libretro_cores().keys())
     ap.add_argument("--mode", choices=["pixel", "state"], default="state")
     ap.add_argument("--level", type=int, default=0)
     ap.add_argument("--runs", type=int, default=10, help="Number of training runs (episodes)")
@@ -3228,6 +3230,21 @@ def main() -> None:
     ap.add_argument("--randomize-rng", action="store_true")
     ap.add_argument("--seed-index", type=int, default=0, help="Seed index used when RNG randomization is disabled.")
     ap.add_argument("--backend", type=str, default=None)
+    if core_choices:
+        ap.add_argument(
+            "--core",
+            choices=core_choices,
+            default=None,
+            help="Select a bundled libretro core (available: %s)."
+            % ", ".join(core_choices),
+        )
+    else:
+        ap.add_argument(
+            "--core",
+            type=str,
+            default=None,
+            help="Select a libretro core by name.",
+        )
     ap.add_argument("--core-path", type=str, default=None)
     ap.add_argument("--rom-path", type=str, default=None)
     ap.add_argument("--reward-config", type=str, default=None, help="Path to reward config override (JSON).")
@@ -3460,10 +3477,20 @@ def main() -> None:
         "learner_discount": args.gamma,
         "state_repr": args.state_repr,
     }
+    selected_core_path: Optional[Path] = None
+    if args.core:
+        selected_core_path = resolve_libretro_core(args.core)
+    if args.core_path:
+        candidate = Path(args.core_path).expanduser()
+        if not candidate.is_file():
+            raise FileNotFoundError(f"Libretro core not found at {candidate}")
+        selected_core_path = candidate
     if args.backend:
         env_kwargs["backend"] = args.backend
-    if args.core_path:
-        env_kwargs["core_path"] = Path(args.core_path).expanduser()
+    if selected_core_path is not None:
+        env_kwargs["core_path"] = selected_core_path
+        os.environ["DRMARIO_CORE_PATH"] = str(selected_core_path)
+        os.environ["LIBRETRO_CORE"] = str(selected_core_path)
     if args.rom_path:
         env_kwargs["rom_path"] = Path(args.rom_path).expanduser()
     if args.reward_config:
