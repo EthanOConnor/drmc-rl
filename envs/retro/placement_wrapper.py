@@ -272,9 +272,16 @@ class PlacementTranslator:
         self.prepare_options()
         idx = int(self._path_indices[int(action)])
         if idx < 0 or idx >= len(self._paths):
-            # Fallback: if we have no recorded path for this action but the
-            # placement is legal/feasible, synthesize a minimal "locked" plan
-            # so the planner visualizer can display a selected target.
+            # Try on-demand single-target planning for the requested action.
+            if self._board is not None and self._current_snapshot is not None:
+                try:
+                    single = self._planner.plan_action(self._board, self._current_snapshot, int(action))
+                except Exception:
+                    single = None
+                if single is not None:
+                    return single
+            # Fallback: synthesize a minimal locked plan so the visualizer can
+            # at least show the selected target when feasibility is bypassed.
             legal = bool(self._legal_mask[int(action)])
             feasible = bool(self._feasible_mask[int(action)])
             if legal or feasible:
