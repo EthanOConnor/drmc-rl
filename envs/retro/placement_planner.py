@@ -353,8 +353,9 @@ class PlannerOutput:
 class PlacementPlanner:
     """Search for frame-perfect placement plans."""
 
-    def __init__(self, params: Optional[PlannerParams] = None) -> None:
+    def __init__(self, params: Optional[PlannerParams] = None, *, debug: bool = False) -> None:
         self.params = params or PlannerParams()
+        self._debug = bool(debug)
 
     # ------------------------------------------------------------------
     # Public API
@@ -503,7 +504,7 @@ class PlacementPlanner:
                 came_from[nk] = (ck, ctrl)
                 state_cache[nk] = nxt
 
-        if not plans:
+        if not plans and getattr(self, "_debug", False):
             try:
                 # Lightweight diagnostic to help identify anchor/orientation mismatches
                 print(

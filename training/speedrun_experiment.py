@@ -3270,6 +3270,11 @@ def main() -> None:
     ap.add_argument("--no-show-window", action="store_true")
     ap.add_argument("--no-monitor", action="store_true")
     ap.add_argument(
+        "--placement-debug-log",
+        action="store_true",
+        help="Enable verbose placement planner/translator logging (stdout).",
+    )
+    ap.add_argument(
         "--perf-mode",
         action="store_true",
         help="Enable performance preset (no viewer/monitor, zero throttling, max parallel envs).",
@@ -3511,7 +3516,10 @@ def main() -> None:
         if args.intent_action_space:
             env_instance = DrMarioIntentEnv(env_instance, safe_writes=args.intent_safe_writes)
         if args.placement_action_space:
-            env_instance = DrMarioPlacementEnv(env_instance)
+            env_instance = DrMarioPlacementEnv(
+                env_instance,
+                debug_log=bool(getattr(args, "placement_debug_log", False)),
+            )
         return env_instance
 
     randomize_rng_enabled = bool(args.randomize_rng)

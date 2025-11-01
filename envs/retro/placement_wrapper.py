@@ -116,9 +116,10 @@ class _InputTimingCalibrator:
 class PlacementTranslator:
     """Bridges emulator RAM and the placement planner."""
 
-    def __init__(self, env: gym.Env, planner: Optional[PlacementPlanner] = None) -> None:
+    def __init__(self, env: gym.Env, planner: Optional[PlacementPlanner] = None, *, debug: bool = False) -> None:
         self.env = env
-        self._planner = planner or PlacementPlanner()
+        self._debug = bool(debug)
+        self._planner = planner or PlacementPlanner(debug=self._debug)
         self._offsets = getattr(env.unwrapped, "_ram_offsets", {})
         self._legal_mask = np.zeros(action_count(), dtype=np.bool_)
         self._feasible_mask = np.zeros_like(self._legal_mask)
@@ -207,10 +208,10 @@ class PlacementTranslator:
         self._options_prepared = True
         self._last_plan_count = int(planner_out.plan_count)
         self._mask_identical_colors(pill)
-        # Diagnostics: log when legal>0 but no feasible plans are found
+        # Diagnostics: log when legal>0 but no feasible plans are found (controlled by debug flag)
         try:
             legal_n = int(self._legal_mask.sum())
-            if legal_n > 0 and self._last_plan_count == 0:
+            if self._debug and legal_n > 0 and self._last_plan_count == 0:
                 # Compose a signature of the board + pill to avoid duplicate logs
                 board_sig = (
                     b"" if self._board is None else self._board.columns.tobytes()
@@ -451,10 +452,10 @@ class PlacementTranslator:
 class DrMarioPlacementEnv(gym.Wrapper):
     """Wrapper exposing the 464-way placement action space (spawn-latched)."""
 
-    def __init__(self, env: gym.Env, *, planner: Optional[PlacementPlanner] = None) -> None:
+    def __init__(self, env: gym.Env, *, planner: Optional[PlacementPlanner] = None, debug_log: bool = False) -> None:
         super().__init__(env)
         self.action_space = gym.spaces.Discrete(action_count())
-        self._translator = PlacementTranslator(env, planner)
+        self._translator = PlacementTranslator(env, planner, debug=debug_log)
         self._last_obs: Any = None
         self._last_info: Dict[str, Any] = {}
         self._active_plan: Optional[PlanResult] = None

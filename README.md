@@ -31,6 +31,13 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
       Then create your venv with that interpreter (e.g., `/opt/homebrew/bin/python3.13 -m venv .venv`).
     - Linux: install your distro's Tk package (e.g., `sudo apt-get install python3-tk`).
     - Note: Tk is a system dependency; `uv`/pip cannot install it from PyPI.
+  - Optional viewer pacing: `--viz-refresh-hz 60` (caps redraws). `--viz-sync` forces the runner to wait for the viewer per frame (debugging).
+
+### Placement Action Space Debug Logging
+
+- The speedrun harness can enable verbose placement diagnostics:
+  - `--placement-debug-log` prints a compact 16×8 board occupancy and pill snapshot when the planner returns zero feasible options, plus planner search stats.
+  - Off by default. Intended for development; emits to stdout only on meaningful changes to avoid spam.
   - QuickNES ships with a muted palette; for faithful colors switch to the Mesen core (`mesen_libretro.dylib`).
 - Kick off Sample Factory: `python -m sample_factory.launcher.run --cfg training/sf_configs/pixel_baseline.yaml --override env.backend=libretro env.auto_start=true`
 
