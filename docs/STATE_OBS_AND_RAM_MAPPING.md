@@ -39,3 +39,8 @@ Implementation
 - Code: `envs/specs/ram_to_state.py:1` implements the decoder using the above masks and addresses.
 - Offsets source: `envs/specs/ram_offsets.json:1` for the current ROM; `re/out/ram_map.json:1` contains an expanded spec including inputs/timers/RNG for reference.
 
+Termination (state mode)
+- The environment uses canonical game flags to end episodes when running with RAM access:
+  - Fail: `$0309` (p1_levelFailFlag) non-zero.
+  - Success: `$0055 == 0x01` (whoWon) or `$0324 == 0` (p1_virusLeft).
+- Pixel mode continues to rely on heuristics (virus deltas, inactivity patterns) as it has no RAM access.

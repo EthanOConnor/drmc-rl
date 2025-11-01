@@ -11,6 +11,10 @@ This document captures the concrete environment spec, training stack, evaluator 
   - 0 noop; 1 left; 2 right; 3 down; 4 rotate_A; 5 rotate_B; 6 left_hold; 7 right_hold; 8 down_hold; 9 both_rot
 - Episode & termination
   - One level per episode; terminate on clear or timeout T_max (2–4× median clear time)
+  - State mode (RAM-backed): canonical detection using game flags
+    - Fail: `$0309 != 0` (p1_levelFailFlag)
+    - Success: `$0055 == 0x01` (whoWon) or `$0324 == 0` (p1_virusLeft)
+  - Pixel mode: heuristic detection (virus deltas, inactivity/top-out pattern) remains as fallback
   - Info: viruses cleared, total frames, chains, drops
 - Rewards (speedrun baseline + shaping)
   - r_t = −1 + α·ΔV + β·chain_bonus − γ·settle_penalty; terminal clear +C

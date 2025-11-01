@@ -238,6 +238,50 @@ class DrMarioRetroEnv(gym.Env):
         self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
         self._backend_reset_done = False
         self._prev_height_penalty = 0.0
+
+    # ------------------------------------------------------------------
+    # Canonical termination detection (state/RAM mode)
+    # ------------------------------------------------------------------
+
+    def _canonical_ram_outcome(self) -> Tuple[Optional[bool], Optional[bool]]:
+        """Return (fail, clear) booleans from canonical RAM flags when available.
+
+        For emulator-backed state modes, we rely on the game's own flags:
+          - Failure: p1_levelFailFlag at $0309 (non-zero when player topped out)
+          - Success: p1_virusLeft at $0324 equals 0, or whoWon at $0055 equals 0x01
+
+        If RAM is unavailable or not in state mode, returns (None, None).
+        """
+        if self.obs_mode != "state" or not self._using_backend:
+            return None, None
+        ram_arr = self._read_ram_array(refresh=False)
+        if ram_arr is None:
+            return None, None
+        try:
+            p1_fail = int(ram_arr[0x0309]) if ram_arr.shape[0] > 0x0309 else None
+        except Exception:
+            p1_fail = None
+        try:
+            p1_virus_left = int(ram_arr[0x0324]) if ram_arr.shape[0] > 0x0324 else None
+        except Exception:
+            p1_virus_left = None
+        try:
+            who_won = int(ram_arr[0x0055]) if ram_arr.shape[0] > 0x0055 else None
+        except Exception:
+            who_won = None
+
+        fail_flag: Optional[bool] = None
+        clear_flag: Optional[bool] = None
+
+        if p1_fail is not None:
+            fail_flag = bool(p1_fail != 0)
+        # Success if either the zero-page winner flag is set to P1, or viruses reach zero.
+        if who_won is not None and who_won == 0x01:
+            clear_flag = True
+        elif p1_virus_left is not None:
+            clear_flag = bool(p1_virus_left == 0)
+
+        return fail_flag, clear_flag
         self._elapsed_frames = 0
 
     def _resolve_reward_config(
@@ -1195,10 +1239,14 @@ class DrMarioRetroEnv(gym.Env):
                     elif v_now > 0 and not self._in_game:
                         self._in_game = True
                     detected_topout = False
-                    if self._in_game and self._viruses_prev > 0:
-                        if self._detect_topout(v_now):
-                            detected_topout = True
+                    if self.obs_mode != "state":
+                        if self._in_game and self._viruses_prev > 0:
+                            if self._detect_topout(v_now):
+                                detected_topout = True
+                        else:
+                            self._frames_without_active_pill = 0
                     else:
+                        # In state mode, skip heuristic topout detection (fast path via RAM flags)
                         self._frames_without_active_pill = 0
                     if detected_topout:
                         topout = True
@@ -1238,6 +1286,15 @@ class DrMarioRetroEnv(gym.Env):
         placement_height_diff: Optional[float] = None
         penalty_unit = float(self.reward_cfg.action_penalty_scale)
 
+        # Fast-path feature flags (skip heavy computations when disabled by config)
+        adjacency_enabled = (
+            float(self.reward_cfg.adjacency_pair_bonus) != 0.0
+            or float(self.reward_cfg.adjacency_triplet_bonus) != 0.0
+        )
+        height_penalty_enabled = float(self.reward_cfg.column_height_penalty) != 0.0
+        placement_bonus_enabled = float(self.reward_cfg.pill_place_base) != 0.0
+        placement_height_analysis_enabled = placement_bonus_enabled and bool(self.reward_cfg.punish_high_placements)
+
         # Pill placement bonus (subject to placement height adjustment)
         current_pill_count = self._pill_spawn_counter or 0
         placement_bonus = 0.0
@@ -1247,10 +1304,9 @@ class DrMarioRetroEnv(gym.Env):
             growth = float(self.reward_cfg.pill_place_growth)
             placement_bonus = base_bonus * (1.0 + growth * float((placements - 1) ** 2))
             placement_bonus_adjusted = placement_bonus
-            height_threshold = float(self.reward_cfg.placement_height_threshold)
-            penalty_multiplier = float(self.reward_cfg.placement_height_penalty_multiplier)
-            punish_high_placements = bool(self.reward_cfg.punish_high_placements)
-            if state_prev_frame is not None and state_next_frame is not None:
+            if placement_height_analysis_enabled and state_prev_frame is not None and state_next_frame is not None:
+                height_threshold = float(self.reward_cfg.placement_height_threshold)
+                penalty_multiplier = float(self.reward_cfg.placement_height_penalty_multiplier)
                 prev_static = ram_specs.get_static_color_planes(state_prev_frame)
                 next_static = ram_specs.get_static_color_planes(state_next_frame)
                 new_static = (next_static > 0.1) & (prev_static <= 0.1)
@@ -1269,17 +1325,14 @@ class DrMarioRetroEnv(gym.Env):
                         virus_height = board_h - highest_virus_row
                 if placement_heights is not None and placement_heights.size > 0:
                     placement_height_diff = float(placement_heights.max() - virus_height)
-                    if virus_mask.any() and punish_high_placements:
+                    if virus_mask.any():
                         if np.any(placement_heights <= virus_height):
                             placement_bonus_adjusted = placement_bonus
                         elif np.all(placement_heights > virus_height + height_threshold):
                             placement_bonus_adjusted = penalty_multiplier * abs(placement_bonus)
                         else:
                             placement_bonus_adjusted = placement_bonus
-                    else:
-                        placement_bonus_adjusted = placement_bonus
-                else:
-                    placement_height_diff = None
+                # If analysis disabled or insufficient data, keep adjusted=base and diff=None
             r_env += placement_bonus_adjusted
         self._prev_pill_count = current_pill_count
         if placement_bonus > 0.0:
@@ -1303,50 +1356,65 @@ class DrMarioRetroEnv(gym.Env):
                 if total_cleared < 0:
                     total_cleared = 0 # Pills can be added, so don't count negative clears
 
-                # Heuristic for game over: if a large number of pieces are cleared at once,
-                # it's likely a game over screen transition.
-                if total_cleared > 20:
-                    topout = True
-                    done = True
-                else:
-                    cleared_non_virus = total_cleared - delta_v
-                    if cleared_non_virus > 0:
-                        nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
-                        r_env += nonvirus_bonus
+                # Heuristics below are superseded by canonical RAM checks in state mode; keep
+                # reward signals but gate them based on coefficients for efficiency.
+                cleared_non_virus = total_cleared - delta_v
+                if cleared_non_virus > 0 and float(self.reward_cfg.non_virus_clear_bonus) != 0.0:
+                    nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
+                    r_env += nonvirus_bonus
+                if adjacency_enabled:
                     adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
                 static_pills = ram_specs.get_static_mask(s_next_latest_frame)
-                if static_pills.any():
-                    board_h = static_pills.shape[0]
-                    tallest_height = 0
-                    for c in range(static_pills.shape[1]):
-                        rows = np.nonzero(static_pills[:, c])[0]
-                        if rows.size > 0:
-                            highest_row = int(rows[-1])
-                            height_from_bottom = board_h - highest_row
-                            if height_from_bottom > tallest_height:
-                                tallest_height = height_from_bottom
-                    if tallest_height > 0:
-                        virus_mask = ram_specs.get_virus_mask(s_next_latest_frame)
-                        virus_height = 0
-                        if virus_mask.any():
-                            virus_rows = np.nonzero(virus_mask)[0]
-                            highest_virus_row = int(virus_rows.max())
-                            virus_height = board_h - highest_virus_row
-                        lines_above_virus = max(0, tallest_height - virus_height)
-                        penalty_units = min(tallest_height + 2 * lines_above_virus, 40)
-                        height_penalty_raw = -self.reward_cfg.column_height_penalty * float(penalty_units)
-                        height_penalty_delta = height_penalty_raw - self._prev_height_penalty
+                if height_penalty_enabled:
+                    if static_pills.any():
+                        board_h = static_pills.shape[0]
+                        tallest_height = 0
+                        for c in range(static_pills.shape[1]):
+                            rows = np.nonzero(static_pills[:, c])[0]
+                            if rows.size > 0:
+                                highest_row = int(rows[-1])
+                                height_from_bottom = board_h - highest_row
+                                if height_from_bottom > tallest_height:
+                                    tallest_height = height_from_bottom
+                        if tallest_height > 0:
+                            virus_mask = ram_specs.get_virus_mask(s_next_latest_frame)
+                            virus_height = 0
+                            if virus_mask.any():
+                                virus_rows = np.nonzero(virus_mask)[0]
+                                highest_virus_row = int(virus_rows.max())
+                                virus_height = board_h - highest_virus_row
+                            lines_above_virus = max(0, tallest_height - virus_height)
+                            penalty_units = min(tallest_height + 2 * lines_above_virus, 40)
+                            height_penalty_raw = -self.reward_cfg.column_height_penalty * float(penalty_units)
+                            height_penalty_delta = height_penalty_raw - self._prev_height_penalty
+                            r_env += height_penalty_delta
+                            self._prev_height_penalty = height_penalty_raw
+                    else:
+                        # No static pills: decay penalty to 0 when enabled
+                        height_penalty_raw = 0.0
+                        height_penalty_delta = -self._prev_height_penalty
                         r_env += height_penalty_delta
-                        self._prev_height_penalty = height_penalty_raw
+                        self._prev_height_penalty = 0.0
                 else:
+                    # Disabled: ensure internal state is neutral without adding reward cost
                     height_penalty_raw = 0.0
-                    height_penalty_delta = -self._prev_height_penalty
-                    r_env += height_penalty_delta
+                    height_penalty_delta = 0.0
                     self._prev_height_penalty = 0.0
         if adjacency_bonus > 0.0:
             r_env += adjacency_bonus
 
         r_env += self.reward_cfg.virus_clear_bonus * float(delta_v)
+
+        # Canonical termination from RAM (state mode): overrides any heuristic earlier.
+        can_fail, can_clear = self._canonical_ram_outcome()
+        if self.obs_mode == "state":
+            if can_fail is True:
+                topout = True
+                done = True
+            elif can_clear is True:
+                # Prefer clear over any prior heuristic failure
+                topout = False
+                done = True
 
         # Terminal conditions
         if self._viruses_remaining == 0 and not topout:

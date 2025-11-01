@@ -127,3 +127,6 @@ See code: `envs/specs/ram_to_state.py:1` for the exact mapping and masks.
   - Picks column from `rng1 & lastColumn` and combines with field row offset to index bottle.
   - Ensures color distribution across groups of 4 (`virusRndMask`, `virusRndColor` logic) and adjacency constraints (no same color within 2 rows/cols; uses `virusVerCheck`/`virusHorCheck`).
   - Writes color/type value at the chosen field byte when empty, else tries next position/defers.
+### Canonical termination flags (used in state mode)
+- Fail (P1 top-out): `$0309` (p1_levelFailFlag) non-zero when the newly generated pill cannot be placed.
+- Success (stage clear): `$0324 == 0` (p1_virusLeft) and/or zero-page `$0055 == 0x01` (whoWon=player1). The engine sets `$0055` during win handling.
