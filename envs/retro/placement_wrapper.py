@@ -272,6 +272,39 @@ class PlacementTranslator:
         self.prepare_options()
         idx = int(self._path_indices[int(action)])
         if idx < 0 or idx >= len(self._paths):
+            # Fallback: if we have no recorded path for this action but the
+            # placement is legal/feasible, synthesize a minimal "locked" plan
+            # so the planner visualizer can display a selected target.
+            legal = bool(self._legal_mask[int(action)])
+            feasible = bool(self._feasible_mask[int(action)])
+            if legal or feasible:
+                try:
+                    edge = PLACEMENT_EDGES[int(action)]
+                    orient = PlacementPlanner._orientation_for_edge(edge.origin, edge.dest)
+                    row, col = edge.origin
+                    final_state = CapsuleState(
+                        row=row,
+                        col=col,
+                        orient=orient,
+                        gravity=0,
+                        gravity_period=1,
+                        lock_buffer=0,
+                        grounded=True,
+                        locked=True,
+                        hold_left=False,
+                        hold_right=False,
+                        hold_down=False,
+                        frames=0,
+                    )
+                    return PlanResult(
+                        action=int(action),
+                        controller=[],
+                        states=[final_state],
+                        cost=0,
+                        path_index=0,
+                    )
+                except Exception:
+                    return None
             return None
         return self._paths[idx]
 
