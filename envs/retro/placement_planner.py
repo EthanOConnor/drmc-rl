@@ -538,13 +538,13 @@ class PlacementPlanner:
     def _state_matches_action(self, board: BoardState, state: CapsuleState, action: int) -> bool:
         if not state.locked:
             return False
-        edge = PLACEMENT_EDGES[action]
-        orient = self._orientation_for_edge(edge.origin, edge.dest)
-        if state.orient != orient:
-            return False
-        cells = list(iter_cells(state.row, state.col, state.orient))
-        cell_set = {cell for cell in cells}
-        if edge.origin not in cell_set or edge.dest not in cell_set:
+        # Match by occupied cells only; ignore orientation numbering to avoid
+        # false negatives due to convention drift. A valid placement must occupy
+        # exactly the two cells of the directed edge and be resting on support.
+        edge = PLACEMENT_EDGES[int(action)]
+        target = {edge.origin, edge.dest}
+        cells = {cell for cell in iter_cells(state.row, state.col, state.orient)}
+        if not target.issubset(cells):
             return False
         if board.fits(state.row + 1, state.col, state.orient):
             return False
