@@ -1753,6 +1753,7 @@ class _EnvSlot:
     viewer_step_base: int = 0
     viewer_step_offset: int = 0
     intermediate_reward: float = 0.0
+    selected_action: Optional[int] = None
 
 
 class PolicyGradientAgent:
@@ -4123,9 +4124,8 @@ def main() -> None:
         if slot.planner_viewer is not None and args.placement_action_space:
             translator = getattr(slot.env, "_translator", None)
             if translator is not None:
-                snapshot = translator.debug_snapshot(
-                    None if action_val is None else int(action_val)
-                )
+                sel = getattr(slot, "selected_action", None)
+                snapshot = translator.debug_snapshot(None if sel is None else int(sel))
                 if snapshot is not None:
                     if stack_for_planner is not None:
                         latest_state = np.asarray(stack_for_planner)
@@ -4351,8 +4351,11 @@ def main() -> None:
                                 action = int(sampled)
                                 performed_inference = True
                             slot.cached_action = int(action)
-                        else:
-                            action = int(slot.cached_action)
+                            # Persist selected placement action for viewer until next spawn
+                            if option_count > 0:
+                                slot.selected_action = int(action)
+                            else:
+                                action = int(slot.cached_action)
                     else:
                         slot.awaiting_decision = False
                         slot.pending_spawn_id = None
