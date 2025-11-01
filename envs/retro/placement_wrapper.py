@@ -580,10 +580,15 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if self._active_plan is None or self._latched_spawn_id != self._spawn_id:
                 plan = self._translator.get_plan(int(action))
                 if plan is None:
-                    last_obs = self._last_obs
-                    last_info = request_new_decision(self._last_info)
-                    terminated = False
-                    truncated = False
+                    # Advance emulator by one NOOP frame while requesting a new decision,
+                    # so the environment and viewers continue to progress.
+                    outcome = self._execute_plan(None, record_refresh_metrics)
+                    total_reward += outcome.reward
+                    last_obs = outcome.last_obs
+                    # Overlay a fresh request for options/decision on top of the latest info
+                    last_info = request_new_decision(outcome.info)
+                    terminated = outcome.terminated
+                    truncated = outcome.truncated
                     self._clear_latch()
                     break
                 self._active_plan = plan
