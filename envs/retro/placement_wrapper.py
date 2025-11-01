@@ -141,6 +141,8 @@ class PlacementTranslator:
         self._spawn_generation: int = -1
         self._options_prepared: bool = False
         self._timing = _InputTimingCalibrator()
+        # Diagnostics: track last zero-feasible snapshot to avoid repeated logs
+        self._last_diag_signature: Optional[Tuple[bytes, Tuple[int, int, int, Tuple[int, int], int, int, int]]] = None
 
     # ------------------------------------------------------------------
     # Snapshot helpers
@@ -209,15 +211,44 @@ class PlacementTranslator:
         try:
             legal_n = int(self._legal_mask.sum())
             if legal_n > 0 and self._last_plan_count == 0:
-                print(
-                    (
-                        f"[translator] spawn={getattr(pill, 'spawn_id', None)} legal={legal_n} "
-                        f"feasible=0 pill(row={pill.row}, col={pill.col}, orient={pill.orient}, "
-                        f"colors={getattr(pill, 'colors', None)}, grav={pill.gravity_counter}/"
-                        f"{pill.gravity_period}, lock={pill.lock_counter})"
-                    ),
-                    flush=True,
+                # Compose a signature of the board + pill to avoid duplicate logs
+                board_sig = (
+                    b"" if self._board is None else self._board.columns.tobytes()
                 )
+                pill_sig = (
+                    int(pill.row),
+                    int(pill.col),
+                    int(pill.orient),
+                    (int(pill.colors[0]), int(pill.colors[1])),
+                    int(pill.gravity_counter),
+                    int(pill.gravity_period),
+                    int(pill.lock_counter),
+                )
+                diag_sig = (board_sig, pill_sig)
+                if diag_sig != self._last_diag_signature:
+                    self._last_diag_signature = diag_sig
+                    print(
+                        (
+                            f"[translator] spawn={getattr(pill, 'spawn_id', None)} legal={legal_n} "
+                            f"feasible=0 pill(row={pill.row}, col={pill.col}, orient={pill.orient}, "
+                            f"colors={getattr(pill, 'colors', None)}, grav={pill.gravity_counter}/"
+                            f"{pill.gravity_period}, lock={pill.lock_counter})"
+                        ),
+                        flush=True,
+                    )
+                    # Dump a compact board occupancy for external diagnostics
+                    occ = _board_occupancy(self._board) if self._board is not None else None
+                    if occ is not None:
+                        try:
+                            rows = []
+                            for r in range(GRID_HEIGHT):
+                                line = ''.join('#' if occ[r, c] else '.' for c in range(GRID_WIDTH))
+                                rows.append(line)
+                            print("[translator] board:", flush=True)
+                            for line in rows:
+                                print("[translator] ", line, flush=True)
+                        except Exception:
+                            pass
         except Exception:
             pass
 
