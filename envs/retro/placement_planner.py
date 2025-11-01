@@ -431,31 +431,6 @@ class PlacementPlanner:
         if not remaining:
             return {}
 
-        # 1) build O(1) goal lookup
-        goals_by_pos = {}
-
-        def add_goal(k, a):
-            goals_by_pos.setdefault(k, []).append(a)
-
-        kept = set()
-        for a in remaining:
-            col, lock_row, orient = self._decode_action(a)
-            add_goal((col, lock_row, orient), a)
-            kept.add(a)
-        remaining = kept
-
-        # 2) reachability envelope to pre-prune & later bound successors
-        L, R = self._reachability_envelope(capsule)
-        remaining = {
-            a
-            for a in remaining
-            if L[self._decode_action(a)[1]]
-            <= self._decode_action(a)[0]
-            <= R[self._decode_action(a)[1]]
-        }
-        if not remaining:
-            return {}
-
         start = CapsuleState(
             row=capsule.row,
             col=capsule.col,
@@ -499,23 +474,18 @@ class PlacementPlanner:
                 continue
             dom[dkey] = cand
 
-            # GOAL lookup (no scan)
-            if cur.locked:
-                hit = goals_by_pos.get((cur.col, cur.row, cur.orient))
-                if hit:
-                    for a in list(hit):
-                        if a in remaining:
-                            plan = self._reconstruct_plan(came_from, state_cache, ck, a, gc)
-                            plans[a] = plan
-                            remaining.remove(a)
-                    if not remaining:
-                        break
+            # Goal match via predicate (robust to anchor conventions)
+            if cur.locked and remaining:
+                matched = [a for a in remaining if self._state_matches_action(board, cur, a)]
+                for a in matched:
+                    plan = self._reconstruct_plan(came_from, state_cache, ck, a, gc)
+                    plans[a] = plan
+                    remaining.remove(a)
+                if not remaining:
+                    break
 
             # successors
             for nxt, ctrl in self._successors(board, cur):
-                # envelope bound
-                if not (L[nxt.row] <= nxt.col <= R[nxt.row]):
-                    continue
                 nk = nxt.key()
                 g2 = gc + 1
                 if cost_so_far.get(nk, 1 << 30) <= g2:
