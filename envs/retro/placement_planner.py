@@ -550,6 +550,21 @@ class PlacementPlanner:
         row, col = edge.origin  # origin is the anchor under our orientation convention
         return int(col), int(row), int(orient)
 
+    def _reachability_envelope(self, capsule: PillSnapshot) -> Tuple[List[int], List[int]]:
+        """Conservative horizontal reachability envelope by row.
+
+        Returns two lists ``(L, R)`` of length ``GRID_HEIGHT`` such that a
+        placement whose anchor locks at ``(row, col)`` passes this pre-prune if
+        ``L[row] <= col <= R[row]``. This implementation is deliberately
+        conservative and allows the full width for every row, which preserves
+        correctness and keeps the search functional if a more precise envelope
+        is not available. More precise envelopes can be implemented to tighten
+        successors and goals for performance.
+        """
+        L = [0 for _ in range(GRID_HEIGHT)]
+        R = [GRID_WIDTH - 1 for _ in range(GRID_HEIGHT)]
+        return L, R
+
     def _state_matches_action(self, board: BoardState, state: CapsuleState, action: int) -> bool:
         if not state.locked:
             return False
