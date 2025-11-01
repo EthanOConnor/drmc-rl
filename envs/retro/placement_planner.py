@@ -457,6 +457,8 @@ class PlacementPlanner:
         counter = 0
         plans = {}
         locked_seen = 0
+        grounded_seen = 0
+        max_row = -1
         sample_locked: Optional[Tuple[int, int, int, Tuple[GridCoord, GridCoord]]] = None
 
         while frontier and remaining:
@@ -465,6 +467,11 @@ class PlacementPlanner:
             gc = cost_so_far.get(ck, 0)
             if cur.frames > self.params.max_search_frames:
                 continue
+
+            if cur.row > max_row:
+                max_row = cur.row
+            if cur.grounded:
+                grounded_seen += 1
 
             # dominance prune
             dkey = (cur.col, cur.row, cur.orient)
@@ -508,7 +515,7 @@ class PlacementPlanner:
             try:
                 # Lightweight diagnostic to help identify anchor/orientation mismatches
                 print(
-                    f"[planner] zero feasible plans; locked_seen={locked_seen} "
+                    f"[planner] zero feasible plans; locked_seen={locked_seen} grounded_seen={grounded_seen} max_row={max_row} "
                     f"sample_locked={sample_locked}",
                     flush=True,
                 )
