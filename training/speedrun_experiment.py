@@ -579,6 +579,11 @@ def _monitor_worker(
     rng_label = tk.Label(root, textvariable=rng_state_var, anchor="w", justify="left")
     rng_label.pack(fill="x", padx=8, pady=2)
 
+    # Display the current seed index in the monitor window.
+    set_seed_label()
+    seed_label = tk.Label(root, textvariable=seed_state_var, anchor="w", justify="left")
+    seed_label.pack(fill="x", padx=8, pady=2)
+
     diag_frame = tk.LabelFrame(root, text="Diagnostics")
     diag_frame.pack(fill="x", padx=8, pady=6)
     diagnostics_var = tk.StringVar(value="No diagnostics yet.")
@@ -4619,7 +4624,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    # Entry point: run the experiment harness. Any UI elements (monitor/viewer)
+    # are created inside their respective processes; avoid referencing them here.
     main()
-    set_seed_label()
-    seed_label = tk.Label(root, textvariable=seed_state_var, anchor="w", justify="left")
-    seed_label.pack(fill="x", padx=8, pady=2)

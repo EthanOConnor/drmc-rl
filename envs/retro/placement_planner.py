@@ -60,10 +60,10 @@ GridCoord = Tuple[int, int]
 
 
 ORIENT_OFFSETS: Tuple[Tuple[GridCoord, GridCoord], ...] = (
-    ((0, 0), (0, 1)),   # 0: horizontal, anchor on left
+    ((0, 0), (0, 1)),  # 0: horizontal, anchor on left
     ((0, 0), (-1, 0)),  # 1: vertical, anchor on bottom
     ((0, 0), (0, -1)),  # 2: horizontal, anchor on right
-    ((0, 0), (1, 0)),   # 3: vertical, anchor on top
+    ((0, 0), (1, 0)),  # 3: vertical, anchor on top
 )
 
 _ROTATION_KICKS: Dict[Tuple[int, int], Tuple[GridCoord, ...]] = {
@@ -426,17 +426,37 @@ class PlacementPlanner:
     # Search
     # ------------------------------------------------------------------
 
-    def _multi_goal_search(
-        self,
-        board: BoardState,
-        capsule: PillSnapshot,
-        targets: Iterable[int],
-    ) -> Dict[int, PlanResult]:
+    def _multi_goal_search(self, board, capsule, targets):
         remaining = set(targets)
         if not remaining:
             return {}
 
-        start_state = CapsuleState(
+        # 1) build O(1) goal lookup
+        goals_by_pos = {}
+
+        def add_goal(k, a):
+            goals_by_pos.setdefault(k, []).append(a)
+
+        kept = set()
+        for a in remaining:
+            col, lock_row, orient = self._decode_action(a)
+            add_goal((col, lock_row, orient), a)
+            kept.add(a)
+        remaining = kept
+
+        # 2) reachability envelope to pre-prune & later bound successors
+        L, R = self._reachability_envelope(capsule)
+        remaining = {
+            a
+            for a in remaining
+            if L[self._decode_action(a)[1]]
+            <= self._decode_action(a)[0]
+            <= R[self._decode_action(a)[1]]
+        }
+        if not remaining:
+            return {}
+
+        start = CapsuleState(
             row=capsule.row,
             col=capsule.col,
             orient=capsule.orient,
@@ -450,49 +470,85 @@ class PlacementPlanner:
             hold_down=False,
             frames=0,
         )
+        start_key = start.key()
+        frontier = [(0, 0, start)]
+        came_from = {}
+        state_cache = {start_key: start}
+        cost_so_far = {start_key: 0}
 
-        frontier: List[Tuple[int, int, CapsuleState]] = []
+        # dominance by (col,row,orient)
+        dom = {}
+
         counter = 0
-        start_key = start_state.key()
-        heapq.heappush(frontier, (0, counter, start_state))
-        came_from: Dict[Tuple[int, ...], Tuple[Tuple[int, ...], ControllerStep]] = {}
-        state_cache: Dict[Tuple[int, ...], CapsuleState] = {start_key: start_state}
-        cost_so_far: Dict[Tuple[int, ...], int] = {start_key: 0}
-        plans: Dict[int, PlanResult] = {}
+        plans = {}
 
         while frontier and remaining:
-            _, _, current = heapq.heappop(frontier)
-            current_key = current.key()
-            current_cost = cost_so_far.get(current_key, 0)
-
-            if current.frames > self.params.max_search_frames:
+            _, _, cur = heapq.heappop(frontier)
+            ck = cur.key()
+            gc = cost_so_far.get(ck, 0)
+            if cur.frames > self.params.max_search_frames:
                 continue
 
-            matched = [action for action in remaining if self._state_matches_action(board, current, action)]
-            for action in matched:
-                plan = self._reconstruct_plan(came_from, state_cache, current_key, action, current_cost)
-                plans[action] = plan
-                remaining.remove(action)
-            if not remaining:
-                break
+            # dominance prune
+            dkey = (cur.col, cur.row, cur.orient)
+            cand = (cur.gravity, cur.lock_buffer, int(cur.hold_down) * -1)
+            best = dom.get(dkey)
+            if best is not None and (
+                best[0] >= cand[0] and best[1] >= cand[1] and best[2] >= cand[2]
+            ):
+                continue
+            dom[dkey] = cand
 
-            for next_state, ctrl in self._successors(board, current):
-                key_next = next_state.key()
-                tentative_cost = current_cost + 1
-                if key_next in cost_so_far and tentative_cost >= cost_so_far[key_next]:
+            # GOAL lookup (no scan)
+            if cur.locked:
+                hit = goals_by_pos.get((cur.col, cur.row, cur.orient))
+                if hit:
+                    for a in list(hit):
+                        if a in remaining:
+                            plan = self._reconstruct_plan(came_from, state_cache, ck, a, gc)
+                            plans[a] = plan
+                            remaining.remove(a)
+                    if not remaining:
+                        break
+
+            # successors
+            for nxt, ctrl in self._successors(board, cur):
+                # envelope bound
+                if not (L[nxt.row] <= nxt.col <= R[nxt.row]):
                     continue
-                cost_so_far[key_next] = tentative_cost
-                priority = tentative_cost + self._heuristic(next_state)
+                nk = nxt.key()
+                g2 = gc + 1
+                if cost_so_far.get(nk, 1 << 30) <= g2:
+                    continue
+                cost_so_far[nk] = g2
+                f2 = g2 + self._heuristic(nxt)  # make this tick-aware!
                 counter += 1
-                heapq.heappush(frontier, (priority, counter, next_state))
-                came_from[key_next] = (current_key, ctrl)
-                state_cache[key_next] = next_state
+                heapq.heappush(frontier, (f2, counter, nxt))
+                came_from[nk] = (ck, ctrl)
+                state_cache[nk] = nxt
 
         return plans
 
     def _heuristic(self, state: CapsuleState) -> int:
         # Encourage descent; horizontal distance is cheap relative to falling.
         return (GRID_HEIGHT - state.row) + (2 if state.orient in (1, 3) else 0)
+
+    def _decode_action(self, action: int) -> Tuple[int, int, int]:
+        """Map a placement action index to (col, row, orient).
+
+        The tuple corresponds to the anchor used by the planner's state
+        representation such that ``iter_cells(row, col, orient)`` yields the two
+        cells for the placement encoded by ``PLACEMENT_EDGES[action]``.
+
+        - Horizontal right (orient 0): anchor is the left cell (origin).
+        - Horizontal left  (orient 2): anchor is the right cell (origin).
+        - Vertical up      (orient 1): anchor is the bottom cell (origin).
+        - Vertical down    (orient 3): anchor is the top cell (origin).
+        """
+        edge = PLACEMENT_EDGES[int(action)]
+        orient = self._orientation_for_edge(edge.origin, edge.dest)
+        row, col = edge.origin  # origin is the anchor under our orientation convention
+        return int(col), int(row), int(orient)
 
     def _state_matches_action(self, board: BoardState, state: CapsuleState, action: int) -> bool:
         if not state.locked:
@@ -509,7 +565,9 @@ class PlacementPlanner:
             return False
         return True
 
-    def _successors(self, board: BoardState, state: CapsuleState) -> Iterator[Tuple[CapsuleState, ControllerStep]]:
+    def _successors(
+        self, board: BoardState, state: CapsuleState
+    ) -> Iterator[Tuple[CapsuleState, ControllerStep]]:
         holds = [
             (False, False, False),
             (True, False, False),
@@ -610,7 +668,12 @@ class PlacementPlanner:
                     lock_buffer = max(lock_buffer - 1, 0)
         else:
             gravity = gravity
-            if grounded and lock_buffer == 0 and not moved_horizontally and rotation is Rotation.NONE:
+            if (
+                grounded
+                and lock_buffer == 0
+                and not moved_horizontally
+                and rotation is Rotation.NONE
+            ):
                 lock_buffer = 0
 
         if grounded and lock_buffer == 0 and not board.fits(row + 1, col, orient):

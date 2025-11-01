@@ -26,7 +26,11 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 - Auto-start tuning: `python envs/retro/demo.py --backend libretro --start-presses 3 --start-level-taps 12 --start-settle-frames 180 --start-wait-frames 600`
 - Capture frames: `python envs/retro/demo.py --backend libretro --save-frames out_frames`
 - Live window (requires system Tk + Pillow): `python envs/retro/demo.py --backend libretro --show-window --display-scale 2`
-  - If you see `No module named '_tkinter'`, install Tk (`brew install python-tk` or use the python.org macOS installer) and re-create your venv.
+  - If you see `No module named '_tkinter'`, install Tk and re-create your venv.
+    - macOS (Homebrew): match your Python version, e.g. `brew install python-tk@3.13` (or `@3.12`).
+      Then create your venv with that interpreter (e.g., `/opt/homebrew/bin/python3.13 -m venv .venv`).
+    - Linux: install your distro's Tk package (e.g., `sudo apt-get install python3-tk`).
+    - Note: Tk is a system dependency; `uv`/pip cannot install it from PyPI.
   - QuickNES ships with a muted palette; for faithful colors switch to the Mesen core (`mesen_libretro.dylib`).
 - Kick off Sample Factory: `python -m sample_factory.launcher.run --cfg training/sf_configs/pixel_baseline.yaml --override env.backend=libretro env.auto_start=true`
 
