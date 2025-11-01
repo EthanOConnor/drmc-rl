@@ -456,6 +456,8 @@ class PlacementPlanner:
 
         counter = 0
         plans = {}
+        locked_seen = 0
+        sample_locked: Optional[Tuple[int, int, int, Tuple[GridCoord, GridCoord]]] = None
 
         while frontier and remaining:
             _, _, cur = heapq.heappop(frontier)
@@ -475,8 +477,13 @@ class PlacementPlanner:
             dom[dkey] = cand
 
             # Goal match via predicate (robust to anchor conventions)
-            if cur.locked and remaining:
-                matched = [a for a in remaining if self._state_matches_action(board, cur, a)]
+            if cur.locked:
+                locked_seen += 1
+                if sample_locked is None:
+                    cells = tuple(iter_cells(cur.row, cur.col, cur.orient))
+                    if len(cells) == 2:
+                        sample_locked = (cur.row, cur.col, cur.orient, (cells[0], cells[1]))
+                matched = [a for a in list(remaining) if self._state_matches_action(board, cur, a)]
                 for a in matched:
                     plan = self._reconstruct_plan(came_from, state_cache, ck, a, gc)
                     plans[a] = plan
@@ -497,6 +504,16 @@ class PlacementPlanner:
                 came_from[nk] = (ck, ctrl)
                 state_cache[nk] = nxt
 
+        if not plans:
+            try:
+                # Lightweight diagnostic to help identify anchor/orientation mismatches
+                print(
+                    f"[planner] zero feasible plans; locked_seen={locked_seen} "
+                    f"sample_locked={sample_locked}",
+                    flush=True,
+                )
+            except Exception:
+                pass
         return plans
 
     def _heuristic(self, state: CapsuleState) -> int:

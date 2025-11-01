@@ -205,6 +205,21 @@ class PlacementTranslator:
         self._options_prepared = True
         self._last_plan_count = int(planner_out.plan_count)
         self._mask_identical_colors(pill)
+        # Diagnostics: log when legal>0 but no feasible plans are found
+        try:
+            legal_n = int(self._legal_mask.sum())
+            if legal_n > 0 and self._last_plan_count == 0:
+                print(
+                    (
+                        f"[translator] spawn={getattr(pill, 'spawn_id', None)} legal={legal_n} "
+                        f"feasible=0 pill(row={pill.row}, col={pill.col}, orient={pill.orient}, "
+                        f"colors={getattr(pill, 'colors', None)}, grav={pill.gravity_counter}/"
+                        f"{pill.gravity_period}, lock={pill.lock_counter})"
+                    ),
+                    flush=True,
+                )
+        except Exception:
+            pass
 
     def info(self) -> Dict[str, Any]:
         info = {
