@@ -4011,6 +4011,13 @@ def main() -> None:
     ) -> None:
         viewer_local = slot.viewer
         stack_for_planner: Optional[np.ndarray] = None
+        # Clear persisted selection on lock so the next decision will set a fresh
+        # selection for the upcoming spawn.
+        try:
+            if args.placement_action_space and bool(info_payload.get("is_locked", False)):
+                slot.selected_action = None
+        except Exception:
+            pass
         stats = {
             "info": info_payload,
             "step": step_idx,
