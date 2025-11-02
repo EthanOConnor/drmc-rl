@@ -286,11 +286,30 @@ class PlacementTranslator:
         if idx < 0 or idx >= len(self._paths):
             # Try on-demand single-target planning for the requested action.
             if self._board is not None and self._current_snapshot is not None:
+                # Micro-cache: reuse single-target plan for same spawn marker + board + action
+                try:
+                    board_sig = self._board.columns.tobytes()
+                except Exception:
+                    board_sig = b""
+                # Use translated spawn counter if available; else derive
+                try:
+                    tinfo = self.info()
+                    marker_int = int(tinfo.get("placements/spawn_id", -1))
+                except Exception:
+                    marker_int = -1
+                cached_sig = getattr(self, "_last_single_plan_sig", None)
+                cached_plan = getattr(self, "_last_single_plan", None)
+                current_sig = (marker_int, board_sig, int(action))
+                if cached_sig == current_sig and cached_plan is not None:
+                    return cached_plan
                 try:
                     single = self._planner.plan_action(self._board, self._current_snapshot, int(action))
                 except Exception:
                     single = None
                 if single is not None:
+                    # Save to micro-cache on translator
+                    self._last_single_plan_sig = current_sig
+                    self._last_single_plan = single
                     return single
             # Fallback: synthesize a minimal locked plan so the visualizer can
             # at least show the selected target when feasibility is bypassed.
@@ -524,6 +543,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         super().__init__(env)
         self.action_space = gym.spaces.Discrete(action_count())
         self._translator = PlacementTranslator(env, planner, debug=debug_log)
+        # Micro-cache for single-target plans within a spawn
+        self._last_single_plan_sig: Optional[Tuple[int, bytes, int]] = None
+        self._last_single_plan: Optional[PlanResult] = None
         self._last_obs: Any = None
         self._last_info: Dict[str, Any] = {}
         self._active_plan: Optional[PlanResult] = None

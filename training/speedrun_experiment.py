@@ -4379,8 +4379,9 @@ def main() -> None:
                             or (pill_changed and not spawn_changed)
                         )
                         if new_request:
-                            # Keep cached action to reuse if still reachable
-                            pass
+                            # If this is a new spawn, drop cached action from prior spawn; otherwise keep
+                            if spawn_changed:
+                                slot.cached_action = None
                             if getattr(args, "placement_debug_log", False):
                                 try:
                                     print(
