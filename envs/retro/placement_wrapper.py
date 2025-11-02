@@ -285,6 +285,14 @@ class PlacementTranslator:
             legal = bool(self._legal_mask[int(action)])
             feasible = bool(self._feasible_mask[int(action)])
             if legal or feasible:
+                if getattr(self._planner, "_debug", False):
+                    try:
+                        print(
+                            f"[plan_action_fail] action={int(action)} legal={int(legal)} feasible={int(feasible)} "
+                            f"paths={len(self._paths)}", flush=True,
+                        )
+                    except Exception:
+                        pass
                 try:
                     edge = PLACEMENT_EDGES[int(action)]
                     orient = PlacementPlanner._orientation_for_edge(edge.origin, edge.dest)

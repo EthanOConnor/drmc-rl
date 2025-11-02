@@ -4381,6 +4381,23 @@ def main() -> None:
                         )
                         if new_request:
                             slot.cached_action = None
+                            if getattr(args, "placement_debug_log", False):
+                                try:
+                                    print(
+                                        "[decision] slot=%d spawn=%s new_request=1 prev_pending=%s "
+                                        "replan=%d pill_changed=%d spawn_changed=%d options=%d" % (
+                                            slot.index,
+                                            str(spawn_id),
+                                            str(previous_request_pending),
+                                            int(replan_triggered),
+                                            int(pill_changed),
+                                            int(spawn_changed),
+                                            int(option_count),
+                                        ),
+                                        flush=True,
+                                    )
+                                except Exception:
+                                    pass
                         slot.awaiting_decision = True
                         slot.pending_spawn_id = spawn_id
                         slot.last_spawn_id = spawn_id
@@ -4403,6 +4420,14 @@ def main() -> None:
                             # Persist selected placement action for viewer until next spawn
                             if option_count > 0:
                                 slot.selected_action = int(action)
+                                if getattr(args, "placement_debug_log", False):
+                                    try:
+                                        print(
+                                            f"[select] slot={slot.index} action={int(action)} at spawn {spawn_id}",
+                                            flush=True,
+                                        )
+                                    except Exception:
+                                        pass
                             else:
                                 action = int(slot.cached_action)
                     else:
