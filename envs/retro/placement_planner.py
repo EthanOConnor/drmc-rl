@@ -445,9 +445,6 @@ class PlacementPlanner:
         state_cache = {start_key: start}
         cost_so_far = {start_key: 0}
 
-        # dominance by (col,row,orient)
-        dom = {}
-
         counter = 0
         plans = {}
         locked_seen = 0
@@ -466,16 +463,6 @@ class PlacementPlanner:
                 max_row = cur.row
             if cur.grounded:
                 grounded_seen += 1
-
-            # dominance prune
-            dkey = (cur.col, cur.row, cur.orient)
-            cand = (cur.gravity, cur.lock_buffer, int(cur.hold_down) * -1)
-            best = dom.get(dkey)
-            if best is not None and (
-                best[0] >= cand[0] and best[1] >= cand[1] and best[2] >= cand[2]
-            ):
-                continue
-            dom[dkey] = cand
 
             # Goal match via predicate (robust to anchor conventions)
             if cur.locked:
