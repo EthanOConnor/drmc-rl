@@ -317,6 +317,36 @@ def _placement_action_reachable(info: Optional[Dict[str, Any]], action: int) -> 
     return True
 
 
+def _best_feasible_action(info: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Pick a feasible action, preferring lowest cost when available.
+
+    Returns None if no feasible actions are present in the info payload.
+    """
+    if not info:
+        return None
+    mask = _extract_action_mask(info)
+    if mask is None or mask.shape[0] <= 0:
+        return None
+    try:
+        costs = info.get("placements/costs")
+        if costs is not None:
+            arr = np.asarray(costs, dtype=float).reshape(-1)
+        else:
+            arr = None
+    except Exception:
+        arr = None
+    feasible_idx = np.flatnonzero(mask)
+    if feasible_idx.size == 0:
+        return None
+    if arr is not None and arr.shape[0] == mask.shape[0]:
+        # Argmin among feasible
+        sub = arr[feasible_idx]
+        k = int(np.argmin(sub))
+        return int(feasible_idx[k])
+    # Fall back to first feasible
+    return int(feasible_idx[0])
+
+
 def _mlx_device_tokens(device: Any) -> set[str]:
     tokens: set[str] = set()
     if device is None:
@@ -4173,6 +4203,27 @@ def main() -> None:
                                 state=np.array(latest_state, copy=True),
                             )
                     image, planner_stats = render_planner_debug_view(snapshot)
+                    # Overlay current execution/holds if present in step info
+                    pd = planner_stats.get("planner_debug", {}) if isinstance(planner_stats, dict) else {}
+                    try:
+                        exec_step = info_payload.get("placements/exec_step")
+                        exec_total = info_payload.get("placements/exec_total")
+                        ctrl_l = info_payload.get("placements/ctrl_left")
+                        ctrl_r = info_payload.get("placements/ctrl_right")
+                        ctrl_d = info_payload.get("placements/ctrl_down")
+                        if isinstance(pd, dict):
+                            if exec_step is not None and exec_total is not None:
+                                pd["exec_step"] = int(exec_step)
+                                pd["exec_total"] = int(exec_total)
+                            if ctrl_l is not None:
+                                pd["ctrl_left"] = int(ctrl_l)
+                            if ctrl_r is not None:
+                                pd["ctrl_right"] = int(ctrl_r)
+                            if ctrl_d is not None:
+                                pd["ctrl_down"] = int(ctrl_d)
+                            planner_stats["planner_debug"] = pd
+                    except Exception:
+                        pass
                     planner_stats["step"] = step_idx
                     planner_stats["reward"] = reward_val
                     planner_stats["cumulative"] = episode_reward
@@ -4410,13 +4461,30 @@ def main() -> None:
                                     action = int(slot.preselected_action)
                                     slot.preselected_action = None
                                 else:
+                                    # Try to reuse policy choice if feasible; otherwise pick best feasible
                                     inference_start = time.perf_counter()
                                     sampled = agent.select_action(
                                         slot.obs, slot.info, context_id=slot.context_id
                                     )
                                     inference_duration = time.perf_counter() - inference_start
-                                    action = int(sampled)
-                                    performed_inference = True
+                                    candidate = int(sampled)
+                                    if _placement_action_reachable(info_payload, candidate):
+                                        action = candidate
+                                        performed_inference = True
+                                    else:
+                                        fallback = _best_feasible_action(info_payload)
+                                        if fallback is not None:
+                                            action = int(fallback)
+                                        else:
+                                            action = 0
+                                        if getattr(args, "placement_debug_log", False):
+                                            try:
+                                                print(
+                                                    f"[select_fallback] slot={slot.index} action={int(action)} (policy {candidate} unreachable)",
+                                                    flush=True,
+                                                )
+                                            except Exception:
+                                                pass
                             slot.cached_action = int(action)
                             # Persist selected placement action for viewer until next spawn
                             if option_count > 0:

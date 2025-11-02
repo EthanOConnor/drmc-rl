@@ -874,7 +874,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 total_reward,
                 terminated,
                 truncated,
-                True if plan is not None and not plan.controller else False,
+                True,
                 False,
             )
 
@@ -896,6 +896,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 last_obs = obs
                 last_info = info or {}
                 info_for_cb = dict(last_info)
+                # Expose current controller step and holds for viewer overlay
+                try:
+                    info_for_cb["placements/exec_step"] = int(idx)
+                    info_for_cb["placements/exec_total"] = int(len(plan.controller))
+                    info_for_cb["placements/ctrl_action"] = int(ctrl.action)
+                    info_for_cb["placements/ctrl_left"] = int(bool(ctrl.hold_left))
+                    info_for_cb["placements/ctrl_right"] = int(bool(ctrl.hold_right))
+                    info_for_cb["placements/ctrl_down"] = int(bool(ctrl.hold_down))
+                except Exception:
+                    pass
                 if self._step_callback is not None:
                     self._translator.refresh_state_only()
                     extra_info = self._translator.info() or {}

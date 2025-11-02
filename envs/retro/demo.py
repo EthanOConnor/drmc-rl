@@ -307,6 +307,15 @@ def _viewer_worker(
                 f"{selected if selected is not None else '-'}  "
                 f"cost {int(plan_cost) if plan_cost is not None else '-'}"
             )
+            exec_step = planner_debug.get("exec_step")
+            exec_total = planner_debug.get("exec_total")
+            ctrl_l = planner_debug.get("ctrl_left")
+            ctrl_r = planner_debug.get("ctrl_right")
+            ctrl_d = planner_debug.get("ctrl_down")
+            if exec_step is not None and exec_total is not None:
+                lines.append(
+                    f"  exec {int(exec_step)}/{int(exec_total)}  holds L:{int(ctrl_l or 0)} R:{int(ctrl_r or 0)} D:{int(ctrl_d or 0)}"
+                )
 
         plan_calls = info.get("placements/plan_calls") if isinstance(info, dict) else None
         plan_latency_total = (
