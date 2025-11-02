@@ -144,8 +144,8 @@ class PlacementTranslator:
         self._timing = _InputTimingCalibrator()
         # Diagnostics: track last zero-feasible snapshot to avoid repeated logs
         self._last_diag_signature: Optional[Tuple[bytes, Tuple[int, int, int, Tuple[int, int], int, int, int]]] = None
-        # Fast-path: avoid recomputing options if board/pill signature hasn't changed
-        self._last_options_signature: Optional[Tuple[bytes, Tuple[int, int, int, Tuple[int, int]]]] = None
+        # Fast-path: avoid recomputing options if board hasn't changed for this spawn
+        self._last_options_board_sig: Optional[bytes] = None
 
     # ------------------------------------------------------------------
     # Snapshot helpers
@@ -196,14 +196,16 @@ class PlacementTranslator:
             self._clear_cached_options()
             return
         spawn_marker = self._spawn_marker_for(pill)
-        # Compute lightweight signature to detect unchanged inputs even when force=True
+        # Compute lightweight signature to detect unchanged board for this spawn
         try:
             board_sig = board.columns.tobytes()
         except Exception:
             board_sig = b""
-        pill_sig = (int(pill.row), int(pill.col), int(pill.orient), (int(pill.colors[0]), int(pill.colors[1])))
-        signature = (board_sig, pill_sig)
-        if self._options_prepared and self._cached_spawn_marker == spawn_marker and self._last_options_signature == signature:
+        if (
+            self._options_prepared
+            and self._cached_spawn_marker == spawn_marker
+            and self._last_options_board_sig == board_sig
+        ):
             return
         start = perf_counter()
         planner_out = self._planner.plan_all(board, pill)
@@ -215,7 +217,7 @@ class PlacementTranslator:
         self._path_indices = planner_out.path_indices.copy()
         self._cached_spawn_marker = spawn_marker
         self._options_prepared = True
-        self._last_options_signature = signature
+        self._last_options_board_sig = board_sig
         self._last_plan_count = int(planner_out.plan_count)
         self._mask_identical_colors(pill)
         # Diagnostics: log when legal>0 but no feasible plans are found (controlled by debug flag)
