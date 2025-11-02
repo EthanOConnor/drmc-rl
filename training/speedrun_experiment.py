@@ -4466,8 +4466,8 @@ def main() -> None:
                 step_done = bool(term or trunc)
 
                 if responded_to_request:
-                    slot.awaiting_decision = False
-                    # Keep pending_spawn_id and cached_action to avoid retriggering
+                    # Keep awaiting_decision True until spawn changes
+                    pass
 
                 slot.episode_reward += reward
                 slot.episode_steps += 1
