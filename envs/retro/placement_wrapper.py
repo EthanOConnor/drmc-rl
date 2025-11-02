@@ -287,9 +287,17 @@ class PlacementTranslator:
             if legal or feasible:
                 if getattr(self._planner, "_debug", False):
                     try:
+                        stats = getattr(self._planner, "_last_search_stats", None)
+                        extra = ""
+                        if isinstance(stats, dict):
+                            extra = (
+                                f" start_fits={stats.get('start_fits')} expanded={stats.get('expanded')}"
+                                f" grounded_seen={stats.get('grounded_seen')} max_row={stats.get('max_row')}"
+                            )
                         print(
-                            f"[plan_action_fail] action={int(action)} legal={int(legal)} feasible={int(feasible)} "
-                            f"paths={len(self._paths)}", flush=True,
+                            f"[plan_action_fail] action={int(action)} legal={int(legal)} feasible={int(feasible)}"
+                            f" paths={len(self._paths)}{extra}",
+                            flush=True,
                         )
                     except Exception:
                         pass

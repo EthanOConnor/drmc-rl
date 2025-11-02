@@ -505,6 +505,22 @@ class PlacementPlanner:
                 came_from[nk] = (ck, ctrl)
                 state_cache[nk] = nxt
 
+        # Store last-search stats for external diagnostics.
+        try:
+            start_fits = board.fits(
+                int(capsule.row), int(capsule.col), int(capsule.orient)
+            )
+        except Exception:
+            start_fits = False
+        self._last_search_stats = {
+            "initial_targets": int(initial_target_count),
+            "expanded": int(counter),
+            "locked_seen": int(locked_seen),
+            "grounded_seen": int(grounded_seen),
+            "max_row": int(max_row),
+            "start_fits": bool(start_fits),
+        }
+
         # Only emit the "zero feasible" diagnostic for full/multi-target searches.
         # Single-target planning (plan_action) may legitimately fail for the chosen
         # action while other placements remain feasible, which is not actionable noise.
