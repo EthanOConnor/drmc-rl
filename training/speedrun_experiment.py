@@ -4369,9 +4369,9 @@ def main() -> None:
                     action = 0
                     if needs_action:
                         spawn_changed = (
-                            spawn_id is None
-                            or previous_pending_spawn is None
-                            or spawn_id != previous_pending_spawn
+                            previous_pending_spawn is not None
+                            and spawn_id is not None
+                            and spawn_id != previous_pending_spawn
                         )
                         new_request = (
                             not previous_request_pending
@@ -4465,7 +4465,8 @@ def main() -> None:
 
                 if responded_to_request:
                     slot.awaiting_decision = False
-                    slot.pending_spawn_id = None
+                    # Keep pending_spawn_id set for this spawn to avoid retriggering
+                    # spurious new_request on subsequent frames.
                     slot.cached_action = None
 
                 slot.episode_reward += reward
