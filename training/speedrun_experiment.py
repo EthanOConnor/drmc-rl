@@ -4433,6 +4433,10 @@ def main() -> None:
                             # If this is a new spawn, drop cached action from prior spawn; otherwise keep
                             if spawn_changed:
                                 slot.cached_action = None
+                            # Refresh options/info now so reachability/costs are up to date for selection
+                            refreshed = request_new_decision(slot.info)
+                            slot.info = dict(refreshed or {})
+                            info_payload = slot.info
                             if getattr(args, "placement_debug_log", False):
                                 try:
                                     print(
