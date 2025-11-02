@@ -307,6 +307,14 @@ class PlacementTranslator:
                 except Exception:
                     single = None
                 if single is not None:
+                    if getattr(self._planner, "_debug", False):
+                        try:
+                            print(
+                                f"[plan_action_ok] action={int(action)} steps={len(single.controller)}",
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
                     # Save to micro-cache on translator
                     self._last_single_plan_sig = current_sig
                     self._last_single_plan = single
@@ -826,7 +834,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         replan_required = False
         planner_resynced = False
 
-        if plan is None:
+        if plan is None or not plan.controller:
             obs, reward, terminated, truncated, info = self.env.step(int(Action.NOOP))
             total_reward += float(reward)
             last_obs = obs
@@ -866,7 +874,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 total_reward,
                 terminated,
                 truncated,
-                False,
+                True if plan is not None and not plan.controller else False,
                 False,
             )
 
