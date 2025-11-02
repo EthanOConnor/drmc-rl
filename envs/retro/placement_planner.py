@@ -421,6 +421,7 @@ class PlacementPlanner:
 
     def _multi_goal_search(self, board, capsule, targets):
         remaining = set(targets)
+        initial_target_count = len(remaining)
         if not remaining:
             return {}
 
@@ -504,11 +505,15 @@ class PlacementPlanner:
                 came_from[nk] = (ck, ctrl)
                 state_cache[nk] = nxt
 
-        if not plans and getattr(self, "_debug", False):
+        # Only emit the "zero feasible" diagnostic for full/multi-target searches.
+        # Single-target planning (plan_action) may legitimately fail for the chosen
+        # action while other placements remain feasible, which is not actionable noise.
+        if not plans and getattr(self, "_debug", False) and initial_target_count > 1:
             try:
                 # Lightweight diagnostic to help identify anchor/orientation mismatches
                 print(
-                    f"[planner] zero feasible plans; locked_seen={locked_seen} grounded_seen={grounded_seen} max_row={max_row} "
+                    f"[planner] zero feasible plans (multi) targets={initial_target_count}; "
+                    f"locked_seen={locked_seen} grounded_seen={grounded_seen} max_row={max_row} "
                     f"sample_locked={sample_locked}",
                     flush=True,
                 )
