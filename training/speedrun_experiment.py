@@ -1754,6 +1754,7 @@ class _EnvSlot:
     viewer_step_offset: int = 0
     intermediate_reward: float = 0.0
     selected_action: Optional[int] = None
+    preselected_action: Optional[int] = None
 
 
 class PolicyGradientAgent:
@@ -4011,6 +4012,34 @@ def main() -> None:
     ) -> None:
         viewer_local = slot.viewer
         stack_for_planner: Optional[np.ndarray] = None
+        # Anticipatory planning at lock: when the current pill locks, select the
+        # next placement using the latest observation (preview+board) and persist
+        # it until the next spawn requests an action.
+        try:
+            if (
+                args.placement_action_space
+                and bool(info_payload.get("is_locked", False))
+                and slot.preselected_action is None
+            ):
+                inf_start = time.perf_counter()
+                pre_sel = agent.select_action(observation, info_payload, context_id=slot.context_id)
+                duration = time.perf_counter() - inf_start
+                slot.preselected_action = int(pre_sel)
+                slot.selected_action = int(pre_sel)
+                # Account inference timing
+                slot.inference_calls += 1
+                slot.inference_time += duration
+                slot.last_inference_duration = duration
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        print(
+                            f"[preselect] slot={slot.index} action={int(pre_sel)} at lock frame={slot.frame_index}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
+        except Exception:
+            pass
         # Clear persisted selection on lock so the next decision will set a fresh
         # selection for the upcoming spawn.
         try:
@@ -4325,6 +4354,15 @@ def main() -> None:
                         slot.cached_action is not None
                         and not _placement_action_reachable(info_payload, slot.cached_action)
                     ):
+                        if getattr(args, "placement_debug_log", False):
+                            try:
+                                print(
+                                    f"[reselect] slot={slot.index} unreachable action={slot.cached_action} "
+                                    f"spawn={spawn_id}; requesting new decision",
+                                    flush=True,
+                                )
+                            except Exception:
+                                pass
                         slot.cached_action = None
                         slot.pending_spawn_id = None
 
@@ -4350,13 +4388,17 @@ def main() -> None:
                             if option_count <= 0:
                                 action = 0
                             else:
-                                inference_start = time.perf_counter()
-                                sampled = agent.select_action(
-                                    slot.obs, slot.info, context_id=slot.context_id
-                                )
-                                inference_duration = time.perf_counter() - inference_start
-                                action = int(sampled)
-                                performed_inference = True
+                                if slot.preselected_action is not None:
+                                    action = int(slot.preselected_action)
+                                    slot.preselected_action = None
+                                else:
+                                    inference_start = time.perf_counter()
+                                    sampled = agent.select_action(
+                                        slot.obs, slot.info, context_id=slot.context_id
+                                    )
+                                    inference_duration = time.perf_counter() - inference_start
+                                    action = int(sampled)
+                                    performed_inference = True
                             slot.cached_action = int(action)
                             # Persist selected placement action for viewer until next spawn
                             if option_count > 0:
