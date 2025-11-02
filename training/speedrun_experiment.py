@@ -4376,11 +4376,11 @@ def main() -> None:
                         new_request = (
                             not previous_request_pending
                             or spawn_changed
-                            or replan_triggered
                             or (pill_changed and not spawn_changed)
                         )
                         if new_request:
-                            slot.cached_action = None
+                            # Keep cached action to reuse if still reachable
+                            pass
                             if getattr(args, "placement_debug_log", False):
                                 try:
                                     print(
@@ -4401,7 +4401,7 @@ def main() -> None:
                         slot.awaiting_decision = True
                         slot.pending_spawn_id = spawn_id
                         slot.last_spawn_id = spawn_id
-                        if slot.cached_action is None:
+                        if slot.cached_action is None or not _placement_action_reachable(info_payload, slot.cached_action):
                             if option_count <= 0:
                                 action = 0
                             else:
@@ -4429,6 +4429,7 @@ def main() -> None:
                                     except Exception:
                                         pass
                             else:
+                                # Reuse cached action without inference
                                 action = int(slot.cached_action)
                     else:
                         slot.awaiting_decision = False
@@ -4465,9 +4466,7 @@ def main() -> None:
 
                 if responded_to_request:
                     slot.awaiting_decision = False
-                    # Keep pending_spawn_id set for this spawn to avoid retriggering
-                    # spurious new_request on subsequent frames.
-                    slot.cached_action = None
+                    # Keep pending_spawn_id and cached_action to avoid retriggering
 
                 slot.episode_reward += reward
                 slot.episode_steps += 1
