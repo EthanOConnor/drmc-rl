@@ -4256,6 +4256,7 @@ def main() -> None:
             slot.viewer_step_offset += 1
             frame_step = slot.viewer_step_base + slot.viewer_step_offset
             cumulative = slot.episode_reward + slot.intermediate_reward
+            pf0 = time.perf_counter()
             publish_frame(
                 slot,
                 obs_val,
@@ -4265,6 +4266,16 @@ def main() -> None:
                 frame_step,
                 cumulative,
             )
+            pf1 = time.perf_counter()
+            if getattr(args, "placement_debug_log", False):
+                try:
+                    if (pf1 - pf0) > 0.1:
+                        print(
+                            f"{_ts()} [timing] slot={slot.index} step_cb_publish_ms={(pf1-pf0)*1000:.3f}",
+                            flush=True,
+                        )
+                except Exception:
+                    pass
 
         try:
             setter(step_callback)
@@ -4372,6 +4383,18 @@ def main() -> None:
                 if not slot.active or slot.run_idx is None:
                     continue
                 active_any = True
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        now_loop = time.perf_counter()
+                        last_loop = getattr(slot, "_last_loop_ts", None)
+                        if last_loop is not None:
+                            dt = now_loop - last_loop
+                            if dt > 1.0:
+                                print(f"{_ts()} [timing] slot={slot.index} loop_gap_ms={dt*1000:.3f}", flush=True)
+                        slot._last_loop_ts = now_loop
+                        print(f"{_ts()} [timing] slot={slot.index} loop_iter_begin", flush=True)
+                    except Exception:
+                        pass
                 if target_hz > 0:
                     now = time.perf_counter()
                     if now < slot.next_step_time:
@@ -4416,6 +4439,8 @@ def main() -> None:
                                 pass
                         slot.cached_action = None
                         slot.pending_spawn_id = None
+                        # Force a fresh decision immediately
+                        previous_request_pending = False
 
                     action = 0
                     if needs_action:
@@ -4433,10 +4458,30 @@ def main() -> None:
                             # If this is a new spawn, drop cached action from prior spawn; otherwise keep
                             if spawn_changed:
                                 slot.cached_action = None
-                            # Refresh options/info now so reachability/costs are up to date for selection
-                            refreshed = request_new_decision(slot.info)
-                            slot.info = dict(refreshed or {})
-                            info_payload = slot.info
+                            # Refresh planner options/info so reachability/costs are up to date for selection
+                            try:
+                                tr = getattr(slot.env, "_translator", None)
+                                if tr is not None:
+                                    t0 = time.perf_counter()
+                                    tr.refresh()
+                                    t1 = time.perf_counter()
+                                    tr.prepare_options(force=False)
+                                    t2 = time.perf_counter()
+                                    slot.info = dict(tr.info() or {})
+                                    info_payload = slot.info
+                                    if getattr(args, "placement_debug_log", False):
+                                        try:
+                                            print(
+                                                (
+                                                    f"{_ts()} [timing] slot={slot.index} decision refresh_ms={(t1-t0)*1000:.3f} "
+                                                    f"prepare_ms={(t2-t1)*1000:.3f} options={int(info_payload.get('placements/options',0))}"
+                                                ),
+                                                flush=True,
+                                            )
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
                             if getattr(args, "placement_debug_log", False):
                                 try:
                                     print(
@@ -4489,21 +4534,101 @@ def main() -> None:
                                                 )
                                             except Exception:
                                                 pass
-                            slot.cached_action = int(action)
-                            # Persist selected placement action for viewer until next spawn
-                            if option_count > 0:
-                                slot.selected_action = int(action)
-                                if getattr(args, "placement_debug_log", False):
+                            # Ensure selected action has a non-empty plan; if not, try other feasible actions
+                            try:
+                                tr = getattr(slot.env, "_translator", None)
+                                if tr is not None:
+                                    tr.refresh(); tr.prepare_options(force=False)
+                                    # First try the chosen action
+                                    plan_ok = False
+                                    force_new_request = False
                                     try:
-                                        print(
-                                            f"[select] slot={slot.index} action={int(action)} at spawn {spawn_id}",
-                                            flush=True,
-                                        )
+                                        gp0 = time.perf_counter()
+                                        plan = tr.get_plan(int(action))
+                                        gp1 = time.perf_counter()
+                                        plan_ok = plan is not None and bool(getattr(plan, "controller", []))
+                                        if getattr(args, "placement_debug_log", False):
+                                            try:
+                                                print(
+                                                    f"{_ts()} [timing] slot={slot.index} get_plan action={int(action)} ms={(gp1-gp0)*1000:.3f}",
+                                                    flush=True,
+                                                )
+                                            except Exception:
+                                                pass
                                     except Exception:
-                                        pass
+                                        plan_ok = False
+                                    # If not ok, sweep other feasible actions (sorted by cost ascending)
+                                    if not plan_ok:
+                                        info_now = tr.info() or {}
+                                        mask = _extract_action_mask(info_now)
+                                        costs_val = info_now.get("placements/costs") if isinstance(info_now, dict) else None
+                                        costs = None
+                                        if mask is not None and costs_val is not None:
+                                            try:
+                                                costs = np.asarray(costs_val, dtype=float).reshape(-1)
+                                            except Exception:
+                                                costs = None
+                                        candidates = np.flatnonzero(mask) if mask is not None else np.array([], dtype=int)
+                                        if candidates.size > 0:
+                                            order = candidates
+                                            if costs is not None and costs.shape[0] == (mask.shape[0] if mask is not None else costs.shape[0]):
+                                                try:
+                                                    order = candidates[np.argsort(costs[candidates])]
+                                                except Exception:
+                                                    order = candidates
+                                            for cand in order:
+                                                try:
+                                                    gp0 = time.perf_counter()
+                                                    p = tr.get_plan(int(cand))
+                                                    gp1 = time.perf_counter()
+                                                    if getattr(args, "placement_debug_log", False):
+                                                        try:
+                                                            print(
+                                                                f"{_ts()} [timing] slot={slot.index} get_plan cand={int(cand)} ms={(gp1-gp0)*1000:.3f}",
+                                                                flush=True,
+                                                            )
+                                                        except Exception:
+                                                            pass
+                                                    if p is not None and bool(getattr(p, "controller", [])):
+                                                        action = int(cand)
+                                                        plan_ok = True
+                                                        if getattr(args, "placement_debug_log", False):
+                                                            try:
+                                                                print(f"[select_plan_ok] slot={slot.index} action={int(action)}", flush=True)
+                                                            except Exception:
+                                                                pass
+                                                        break
+                                                except Exception:
+                                                    continue
+                                        # If still no executable plan, do not latch a cached action
+                                        if not plan_ok:
+                                            force_new_request = True
+                                    if not plan_ok and getattr(args, "placement_debug_log", False):
+                                        try:
+                                            print(f"[select_plan_fail] slot={slot.index} action={int(action)}", flush=True)
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            # Latch cached action only if we have an executable plan
+                            if plan_ok:
+                                slot.cached_action = int(action)
+                                # Persist selected placement action for viewer until next spawn
+                                if option_count > 0:
+                                    slot.selected_action = int(action)
+                                    if getattr(args, "placement_debug_log", False):
+                                        try:
+                                            print(
+                                                f"[select] slot={slot.index} action={int(action)} at spawn {spawn_id}",
+                                                flush=True,
+                                            )
+                                        except Exception:
+                                            pass
                             else:
-                                # Reuse cached action without inference
-                                action = int(slot.cached_action)
+                                # No executable plan found; take a NOOP frame and force a new decision next loop
+                                action = 0
+                                previous_request_pending = False
+                                slot.awaiting_decision = False
                     else:
                         slot.awaiting_decision = False
                         slot.pending_spawn_id = None
@@ -4532,14 +4657,31 @@ def main() -> None:
                 slot.viewer_step_base = max(0, slot.frame_index - 1)
                 slot.viewer_step_offset = 0
                 slot.intermediate_reward = 0.0
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        print(f"{_ts()} [timing] pre_env_step main action={int(action)}", flush=True)
+                    except Exception:
+                        pass
+                estep_t0 = time.perf_counter()
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
+                estep_t1 = time.perf_counter()
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        print(
+                            f"{_ts()} [timing] slot={slot.index} env.step action={int(action)} ms={(estep_t1-estep_t0)*1000:.3f}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 stepped_any = True
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
 
                 if responded_to_request:
-                    # Keep awaiting_decision True until spawn changes
-                    pass
+                    # If the wrapper surfaced another decision request and no plan was latched,
+                    # drop the pending flag so we can reselect immediately next loop.
+                    if bool(step_info.get("placements/needs_action", False)) and slot.cached_action is None:
+                        slot.awaiting_decision = False
 
                 slot.episode_reward += reward
                 slot.episode_steps += 1
@@ -4591,8 +4733,11 @@ def main() -> None:
                 slot.step_compute_time += step_end - step_start
                 slot.last_step_duration = step_end - step_start
 
+                t_pub0 = time.perf_counter()
                 maybe_publish_planner_diagnostics(slot)
+                t_pub1 = time.perf_counter()
 
+                pf0 = time.perf_counter()
                 publish_frame(
                     slot,
                     next_obs,
@@ -4602,8 +4747,22 @@ def main() -> None:
                     slot.viewer_step_base + slot.viewer_step_offset + 1,
                     slot.episode_reward,
                 )
+                pf1 = time.perf_counter()
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        if (t_pub1 - t_pub0) > 0.1:
+                            print(f"{_ts()} [timing] slot={slot.index} publish_diagnostics_ms={(t_pub1-t_pub0)*1000:.3f}", flush=True)
+                        if (pf1 - pf0) > 0.1:
+                            print(f"{_ts()} [timing] slot={slot.index} publish_frame_ms={(pf1-pf0)*1000:.3f}", flush=True)
+                    except Exception:
+                        pass
                 slot.intermediate_reward = 0.0
                 slot.viewer_step_offset = 0
+                if getattr(args, "placement_debug_log", False):
+                    try:
+                        print(f"{_ts()} [timing] slot={slot.index} loop_iter_end", flush=True)
+                    except Exception:
+                        pass
 
                 done = step_done or slot.episode_steps >= args.max_steps
                 if not done:
@@ -4785,3 +4944,10 @@ if __name__ == "__main__":
     # Entry point: run the experiment harness. Any UI elements (monitor/viewer)
     # are created inside their respective processes; avoid referencing them here.
     main()
+_LOG_T0 = time.perf_counter()
+
+def _ts() -> str:
+    try:
+        return f"[t={time.perf_counter() - _LOG_T0:.6f}s]"
+    except Exception:
+        return "[t=0.000000s]"

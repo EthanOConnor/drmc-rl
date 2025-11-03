@@ -5,8 +5,8 @@ description = "Dr. Mario RL environment, training, and evaluation"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
-    "gymnasium>=1.2,<2",
-    "numpy>=2.0,<3",
+    "gymnasium",
+    "numpy",
 ]
 
 [tool.black]
@@ -29,27 +29,27 @@ exclude = [
 
 [project.optional-dependencies]
 rl = [
-    "torch>=2.8,<2.10",
-    "torchvision==0.24.*",
-    "torchaudio==2.9.*",
-    "torchrl>=0.9,<1.0",
-    "sample-factory>=2.0,<3.0",
-    "pettingzoo>=1.25,<2",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "torchrl",
+    "sample-factory",
+    "pettingzoo",
 ]
 viz = [
-    "opencv-python-headless>=4.12,<5",
-    "pillow>=11",
+    "opencv-python-headless",
+    "pillow",
 ]
 apple = [
-    "mlx>=0.29,<1",
+    "mlx",
 ]
 dev = [
-    "black>=25.0",
-    "ruff>=0.14",
-    "pytest>=8.4",
-    "pandas>=2.3,<2.4",
-    "pyarrow>=21,<22",
-    "matplotlib>=3.10,<3.11",
+    "black",
+    "ruff",
+    "pytest",
+    "pandas",
+    "pyarrow",
+    "matplotlib",
 ]
 
 [build-system]

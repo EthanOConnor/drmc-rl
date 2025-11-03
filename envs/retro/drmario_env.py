@@ -22,6 +22,23 @@ from envs.backends.base import NES_BUTTONS
 A_BUTTON_INDEX = NES_BUTTONS.index("A")
 B_BUTTON_INDEX = NES_BUTTONS.index("B")
 from envs.retro.action_adapters import discrete10_to_buttons
+from time import perf_counter
+import os
+
+def _env_flag(name: str) -> bool:
+    """Parse a boolean-like environment variable.
+
+    Recognizes: 1/true/yes/on (case-insensitive) as True; 0/false/no/off as False.
+    Any other value or unset -> False.
+    """
+    try:
+        val = os.environ.get(name)
+        if val is None:
+            return False
+        v = str(val).strip().lower()
+        return v in ("1", "true", "yes", "on")
+    except Exception:
+        return False
 
 
 class Action(IntEnum):
@@ -1192,6 +1209,16 @@ class DrMarioRetroEnv(gym.Env):
         # Drive Retro forward for frame_skip steps; update pixel stack and RAM-based counters
         held = {"LEFT": self._hold_left, "RIGHT": self._hold_right, "DOWN": self._hold_down}
         buttons = discrete10_to_buttons(int(action), held)
+        # Optional low-noise debug of input state
+        try:
+            if _env_flag("DRMARIO_DEBUG_INPUT"):
+                print(
+                    f"[input] t={int(self._t)} action={int(action)} holds L:{int(self._hold_left)} R:{int(self._hold_right)} D:{int(self._hold_down)} "
+                    f"buttons={buttons}",
+                    flush=True,
+                )
+        except Exception:
+            pass
         self._hold_left, self._hold_right, self._hold_down = (
             bool(held["LEFT"]),
             bool(held["RIGHT"]),
@@ -1220,7 +1247,26 @@ class DrMarioRetroEnv(gym.Env):
         if self._using_backend and self._backend is not None:
             gameplay_flag: Optional[bool] = None
             try:
+                _timing = _env_flag("DRMARIO_TIMING")
+                _t0 = perf_counter() if _timing else 0.0
+                if _timing:
+                    try:
+                        print(
+                            f"[backend] pre_step t={_t0:.6f} action={int(action)} holds L:{int(self._hold_left)} R:{int(self._hold_right)} D:{int(self._hold_down)}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 self._backend_step_buttons(buttons, repeat=self.frame_skip)
+                if _timing:
+                    _t1 = perf_counter()
+                    try:
+                        print(
+                            f"[backend] post_step dt_ms={( _t1-_t0 )*1000:.3f}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 mode_val, gameplay_flag = self._read_gameplay_flag()
                 self._game_mode_val = mode_val
                 self._gameplay_active = gameplay_flag

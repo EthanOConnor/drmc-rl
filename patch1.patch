@@ -1,0 +1,142 @@
+diff --git a/envs/retro/placement_wrapper.py b/envs/retro/placement_wrapper.py
+index 1f668aa..bde2f0d 100644
+--- a/envs/retro/placement_wrapper.py
++++ b/envs/retro/placement_wrapper.py
+@@ -118,6 +118,12 @@ class PlacementTranslator:
+         self._env = env
+         self._planner: PlacementPlanner = planner or PlacementPlanner()
+         self._offsets = ram_specs.get_offsets()
++        # Cache per spawn
++        self._cached_spawn_id: int = -1
++        self._cached_masks: Optional[Dict[str, Any]] = None
++        self._plan_latency_ms: float = 0.0
++        self._plan_count: int = 0
++        self._last_snapshot: Optional[PillSnapshot] = None
+ 
+     def refresh(self) -> None:
+-        """Resync internal snapshot. May recompute masks if required."""
+-        self._planner.refresh()
+-        self._plan_latency_ms = self._planner.plan_latency_ms
+-        self._plan_count = self._planner.plan_count
++        """Cheap resync of RAM/pill snapshot only. No planning here."""
++        self._planner.refresh(peek_only=True)
++        self._plan_latency_ms = 0.0
++        self._plan_count = 0
++        self._last_snapshot = self._planner.current_pill()
+ 
+     def current_pill(self) -> Optional[PillSnapshot]:
+-        return self._planner.current_pill()
++        return self._last_snapshot or self._planner.current_pill()
+ 
+     def diagnostics(self) -> Dict[str, Any]:
+         return {
+             "plan_latency_ms": float(self._plan_latency_ms),
+             "plan_count": int(self._plan_count),
+         }
+ 
++    def prepare_options(self, *, force: bool = False) -> None:
++        """Compute legal/feasible masks once per spawn and cache them."""
++        snap = self.current_pill()
++        if snap is None:
++            self._cached_masks = None
++            self._cached_spawn_id = -1
++            return
++        if not force and self._cached_masks is not None and self._cached_spawn_id == int(snap.spawn_id):
++            return
++        t0 = time.perf_counter()
++        masks = self._planner.plan_all_for_spawn()  # fast path inside planner; see patch 2
++        dt = (time.perf_counter() - t0) * 1000.0
++        self._cached_masks = masks or {}
++        self._cached_spawn_id = int(snap.spawn_id)
++        self._plan_latency_ms = dt
++        self._plan_count = 1
++
+     def info(self) -> Dict[str, Any]:
+-        return self._planner.info()
++        # Do not recompute; just expose cached planner info if present.
++        base = self._planner.info()
++        if self._cached_masks:
++            base = dict(base)
++            base.update(self._cached_masks)
++        return base
+ 
+     def get_plan(self, action_idx: int) -> Optional[PlanResult]:
+-        return self._planner.get_plan(action_idx)
++        # Micro-schedule for the chosen placement; do not enumerate all.
++        return self._planner.get_plan_for_action(action_idx)
+ 
+@@ -342,11 +374,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
+         self._last_info = info
+         self._capsule_present = bool(self._translator.current_pill() is not None)
+         self._spawn_id = max(0, int(info.get("placements/spawn_id", 0)))
+         return obs, info
+ 
+     def step(self, action: int):
++        # Always do a cheap resync first (no planning here).
+         self._translator.refresh()
++        # (rest of method unchanged until decision request helpers)
+ 
+         total_reward = 0.0
+         terminated = False
+         truncated = False
+@@ -404,13 +438,19 @@ class DrMarioPlacementEnv(gym.Wrapper):
+             return
+ 
+         def request_new_decision(base_info: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+-            info_payload = dict(base_info or {})
+-            info_payload["placements/needs_action"] = True
+-            info_payload["placements/spawn_id"] = int(self._spawn_id)
++            info_payload = dict(base_info or {})
++            info_payload["placements/needs_action"] = True
++            info_payload["placements/spawn_id"] = int(self._spawn_id)
+             info_payload["pill_changed"] = 0
+             for key in (
+                 "placements/legal_mask",
+                 "placements/feasible_mask",
+                 "placements/options",
+                 "placements/costs",
+                 "placements/path_indices",
+             ):
+                 if key in info_payload:
+                     info_payload.pop(key)
++            # Plan once per spawn here; cache masks for policy.
++            self._translator.prepare_options(force=True)
++            info_payload.update(self._translator.info())
+             return info_payload
+ 
+         while True:
+             if self._active_plan is None or self._latched_spawn_id != self._spawn_id:
+                 plan = self._translator.get_plan(int(action))
+@@ -450,6 +490,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
+             # After executing a (multi-frame) plan, RAM has advanced; resync translator snapshot.
+             self._translator.refresh()
+             record_refresh_metrics()
++            # Do not recompute masks here. Only replan on failure or next spawn.
++            # If the plan succeeded, let the emulator advance; we’ll request a new
++            # decision when a new pill actually spawns.
+ 
+             if terminated or truncated:
+                 self._clear_latch()
+                 break
+@@ -481,6 +525,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
+                 info_now["placements/spawn_id"] = int(self._spawn_id)
+                 info_now["placements/needs_action"] = True
++                # Fill masks for the new spawn exactly once
++                self._translator.prepare_options(force=True)
++                info_now.update(self._translator.info())
+                 previous_spawn = last_info.get("placements/spawn_id")
+                 previous_spawn_int = int(previous_spawn) if previous_spawn is not None else None
+                 pill_changed = previous_spawn_int is None or previous_spawn_int != self._spawn_id
+                 info_now["pill_changed"] = 1 if pill_changed else 0
+                 last_info = {**last_info, **info_now}
+@@ -524,6 +571,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
+         if "placements/needs_action" not in enriched_info:
+             if self._translator.current_pill() is not None:
+                 info_now = self._translator.info()
++                # masks may be empty if no request happened; populate once here
++                self._translator.prepare_options(force=True)
++                info_now.update(self._translator.info())
+                 enriched_info.update(info_now)
+                 enriched_info["placements/needs_action"] = True
+                 if not self._capsule_present:
+                     self._spawn_id += 1

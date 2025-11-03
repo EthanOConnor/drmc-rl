@@ -34,6 +34,13 @@ def test_plan_simple_drop():
         gravity_counter=6,
         gravity_period=6,
         lock_counter=0,
+        hor_velocity=0,
+        hold_left=False,
+        hold_right=False,
+        hold_down=False,
+        frame_parity=0,
+        speed_setting=0,
+        speed_ups=0,
         spawn_id=1,
     )
     planner = PlacementPlanner()
@@ -54,6 +61,13 @@ def test_legal_mask_has_bottom_placements():
         gravity_counter=6,
         gravity_period=6,
         lock_counter=0,
+        hor_velocity=0,
+        hold_left=False,
+        hold_right=False,
+        hold_down=False,
+        frame_parity=0,
+        speed_setting=0,
+        speed_ups=0,
         spawn_id=2,
     )
     planner = PlacementPlanner()
@@ -91,6 +105,13 @@ def test_plan_all_returns_paths():
         gravity_counter=8,
         gravity_period=8,
         lock_counter=0,
+        hor_velocity=0,
+        hold_left=False,
+        hold_right=False,
+        hold_down=False,
+        frame_parity=0,
+        speed_setting=0,
+        speed_ups=0,
         spawn_id=4,
     )
     planner = PlacementPlanner()

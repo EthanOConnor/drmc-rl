@@ -1,123 +1,98 @@
-"""Frame-accurate placement planner for Dr. Mario capsules.
-
-The planner bridges the low-level emulator controller and the policy network's
-placement intent head.  It receives a RAM-derived state snapshot at pill spawn
-and enumerates every geometry-legal landing pose, then searches for micro plans
-that respect gravity timing, lock-buffer windows, and the NES input model.  For
-all reachable placements the planner records a per-frame controller script that
-can be executed closed-loop by :class:`envs.retro.placement_wrapper`
-(``DrMarioPlacementEnv``).
-
-Design highlights
------------------
-
-* **Bitboard board model** – The static board is encoded as eight 16-bit column
-  bitmasks.  Collision queries and support checks reduce to a few integer
-  operations which keeps the successor generator tight even in Python.
-* **Time-expanded search** – Each planner node encodes
-  ``(row, col, orient, gravity, lock_buffer, held_left, held_right, held_down)``
-  along with whether the capsule is currently grounded.  Successors advance one
-  frame applying taps/holds and automatic gravity.  The branching factor is
-  bounded (< 10) so A* over the reachable state space typically expands a few
-  thousand nodes (< 2 ms on modern CPUs).
-* **Slide/tuck modelling** – Horizontal movement or rotation while grounded
-  resets a configurable lock buffer.  As long as the buffer remains positive the
-  planner allows additional micro-adjustments, enabling classic Dr. Mario slides
-  and boosted tucks.  The rotation helper mirrors the console behaviour closely
-  enough to hit the timing windows observed in the disassembly/Java AI.
-* **Multi-goal planning** – ``plan_all`` runs a single multi-target search,
-  returning per-placement controller schedules alongside ``legal`` and
-  ``feasible`` masks of length 464 (the directed edges in the bottle grid).
-* **Closed-loop ready** – ``PlanResult`` stores both the controller script and
-  the state trace so the wrapper can verify emulator state after each action and
-  trigger replanning on mismatches.
-"""
+"""NES-accurate placement planner built on the counter-aware fast reach core."""
 
 from __future__ import annotations
 
-import enum
-import heapq
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
 import envs.specs.ram_to_state as ram_specs
 from envs.retro.drmario_env import Action
+from envs.retro.fast_reach import (
+    FrameState,
+    HoldDir,
+    ReachabilityConfig,
+    ReachabilityResult,
+    Rotation,
+    build_reachability,
+    compute_speed_threshold,
+    frame_action_from_index,
+    iter_frame_states,
+    reconstruct_actions,
+)
 from envs.retro.placement_actions import (
     GRID_HEIGHT,
     GRID_WIDTH,
     PLACEMENT_EDGES,
     action_count,
+    action_from_cells,
     opposite_actions,
 )
 
 GridCoord = Tuple[int, int]
 
 # ---------------------------------------------------------------------------
-# Capsule geometry helpers
+# Capsule geometry helpers (shared with translator visualisations)
 # ---------------------------------------------------------------------------
 
 
 ORIENT_OFFSETS: Tuple[Tuple[GridCoord, GridCoord], ...] = (
-    ((0, 0), (0, 1)),  # 0: horizontal, anchor on left
-    ((0, 0), (-1, 0)),  # 1: vertical, anchor on bottom
+    ((0, 0), (0, 1)),   # 0: horizontal, anchor on left
+    ((0, 0), (1, 0)),   # 1: vertical (down), anchor on top
     ((0, 0), (0, -1)),  # 2: horizontal, anchor on right
-    ((0, 0), (1, 0)),  # 3: vertical, anchor on top
+    ((0, 0), (-1, 0)),  # 3: vertical (up), anchor on bottom
 )
-
-_ROTATION_KICKS: Dict[Tuple[int, int], Tuple[GridCoord, ...]] = {
-    (0, 1): ((0, 0), (0, -1), (1, 0)),
-    (1, 0): ((0, 0), (0, 1), (-1, 0)),
-    (1, 2): ((0, 0), (1, 0), (0, 1)),
-    (2, 1): ((0, 0), (-1, 0), (0, -1)),
-    (2, 3): ((0, 0), (0, 1), (-1, 0)),
-    (3, 2): ((0, 0), (0, -1), (1, 0)),
-    (0, 3): ((0, 0), (0, 1), (-1, 0)),
-    (3, 0): ((0, 0), (0, -1), (1, 0)),
-    (1, 3): ((0, 0), (1, 0)),
-    (3, 1): ((0, 0), (-1, 0)),
-    (0, 2): ((0, 0),),
-    (2, 0): ((0, 0),),
-}
-
-
-class Rotation(enum.Enum):
-    NONE = 0
-    CW = 1
-    CCW = 2
-    HALF = 3
-
-
-def orientation_successor(orient: int, rotation: Rotation) -> int:
-    if rotation is Rotation.NONE:
-        return orient
-    if rotation is Rotation.HALF:
-        return (orient + 2) % 4
-    if rotation is Rotation.CW:
-        return (orient + 1) % 4
-    if rotation is Rotation.CCW:
-        return (orient - 1) % 4
-    raise ValueError(rotation)
 
 
 def iter_cells(row: int, col: int, orient: int) -> Iterator[GridCoord]:
-    offsets = ORIENT_OFFSETS[orient]
+    offsets = ORIENT_OFFSETS[int(orient) & 3]
     for dr, dc in offsets:
         yield row + dr, col + dc
 
 
 # ---------------------------------------------------------------------------
-# RAM snapshot decoding
+# RAM snapshot decoding helpers
 # ---------------------------------------------------------------------------
+
+
+BTN_RIGHT = 0x01
+BTN_LEFT = 0x02
+BTN_DOWN = 0x04
+
+ZP_SPEED_COUNTER = 0x0092
+ZP_SPEED_UPS = 0x008A
+ZP_SPEED_SETTING = 0x008B
+ZP_HOR_VELOCITY = 0x0093
 
 
 class PlannerError(RuntimeError):
     """Raised when the planner cannot interpret the provided snapshot."""
 
 
+def _read_byte(ram_bytes: bytes, addr: int) -> int:
+    if addr < 0 or addr >= len(ram_bytes):
+        return 0
+    return int(ram_bytes[addr])
+
+
+def _read_optional_hex(offsets: Dict[str, Dict], category: str, key: str, default: Optional[int] = None) -> Optional[int]:
+    try:
+        raw = offsets.get(category, {}).get(key)
+    except Exception:
+        raw = None
+    if raw is None:
+        return default
+    try:
+        return int(raw, 16)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass
 class PillSnapshot:
+    """Decoded RAM snapshot describing the currently falling capsule."""
+
     row: int
     col: int
     orient: int
@@ -125,7 +100,18 @@ class PillSnapshot:
     gravity_counter: int
     gravity_period: int
     lock_counter: int
+    hor_velocity: int
+    hold_left: bool
+    hold_right: bool
+    hold_down: bool
+    frame_parity: int
+    speed_setting: int
+    speed_ups: int
     spawn_id: Optional[int] = None
+
+    @property
+    def speed_counter(self) -> int:
+        return self.gravity_counter
 
     @classmethod
     def from_ram_state(
@@ -145,27 +131,44 @@ class PillSnapshot:
         try:
             raw_row = int(ram_bytes[int(row_addr, 16)])
             raw_col = int(ram_bytes[int(col_addr, 16)])
-            orient = int(ram_bytes[int(orient_addr, 16)]) & 0x03
+            orient_raw = int(ram_bytes[int(orient_addr, 16)]) & 0x03
         except (ValueError, IndexError, TypeError) as exc:
             raise PlannerError(f"Failed to decode pill RAM: {exc}") from exc
 
+        # Counters and lock buffer
         gravity_offsets = offsets.get("gravity_lock", {})
-        gravity_counter = gravity_period = 1
         lock_counter = 0
         if gravity_offsets:
-            g_addr = gravity_offsets.get("gravity_counter_addr")
             p_addr = gravity_offsets.get("lock_counter_addr")
-            if g_addr:
-                try:
-                    gravity_counter = max(0, int(ram_bytes[int(g_addr, 16)]))
-                    gravity_period = max(1, gravity_counter or 1)
-                except (ValueError, IndexError, TypeError):
-                    gravity_counter = gravity_period = 1
             if p_addr:
                 try:
                     lock_counter = max(0, int(ram_bytes[int(p_addr, 16)]))
                 except (ValueError, IndexError, TypeError):
                     lock_counter = 0
+
+        speed_counter = _read_byte(ram_bytes, ZP_SPEED_COUNTER)
+        speed_setting = _read_byte(ram_bytes, ZP_SPEED_SETTING)
+        speed_setting_hi = _read_optional_hex(offsets, "gravity_lock", "speed_setting_addr")
+        if speed_setting_hi is not None:
+            hi_val = _read_byte(ram_bytes, speed_setting_hi)
+            if hi_val:
+                speed_setting = hi_val
+        speed_ups = _read_byte(ram_bytes, ZP_SPEED_UPS)
+        speed_index_hi = _read_optional_hex(offsets, "gravity_lock", "speed_index_addr")
+        if speed_index_hi is not None:
+            hi_val = _read_byte(ram_bytes, speed_index_hi)
+            if hi_val:
+                speed_ups = hi_val
+        speed_threshold = compute_speed_threshold(speed_setting, speed_ups)
+
+        hor_velocity = _read_byte(ram_bytes, ZP_HOR_VELOCITY)
+        frame_counter_addr = _read_optional_hex(offsets, "timers", "frame_counter_addr", 0x0043) or 0x0043
+        frame_parity = _read_byte(ram_bytes, frame_counter_addr) & 0x01
+        btns_addr = _read_optional_hex(offsets, "inputs", "p1_buttons_held_addr", 0x00F7) or 0x00F7
+        btns_held = _read_byte(ram_bytes, btns_addr)
+        hold_left = bool(btns_held & BTN_LEFT)
+        hold_right = bool(btns_held & BTN_RIGHT)
+        hold_down = bool(btns_held & BTN_DOWN)
 
         color_left = 0
         color_right = 0
@@ -190,35 +193,45 @@ class PillSnapshot:
             except (ValueError, IndexError, TypeError):
                 spawn_id = None
 
-        # RAM row counts from the bottom of the bottle (0 == bottom) and the
-        # column register always references the *left* half when horizontal.
-        # The planner, however, anchors orientation ``2`` (reversed horizontal)
-        # on the right half and orientation ``3`` (reversed vertical) on the
-        # upper half.  Adjust the decoded coordinates so that
-        # :func:`iter_cells` produces positions that match the pixels inferred
-        # via :func:`envs.specs.ram_to_state.get_falling_mask`.
+        # Convert RAM coordinates: rows count from bottom, orientation labels swapped.
         row = (GRID_HEIGHT - 1) - raw_row
         col = raw_col
+        orient = orient_raw
+        if orient == 1:
+            orient = 3
+        elif orient == 3:
+            orient = 1
         if orient == 2:
             col += 1
-        elif orient == 3:
+        elif orient == 1:
             row -= 1
         if not (0 <= col < GRID_WIDTH):
             raise PlannerError(f"Falling pill column out of range: {col}")
         if not (-2 <= row < GRID_HEIGHT + 2):
             raise PlannerError(f"Falling pill row out of range: {row}")
 
-        colors = (color_left, color_right)
         return cls(
             row=int(row),
             col=int(col),
             orient=int(orient),
-            colors=colors,
-            gravity_counter=int(gravity_counter),
-            gravity_period=int(gravity_period),
+            colors=(int(color_left), int(color_right)),
+            gravity_counter=int(speed_counter),
+            gravity_period=int(speed_threshold),
             lock_counter=int(lock_counter),
+            hor_velocity=int(hor_velocity),
+            hold_left=hold_left,
+            hold_right=hold_right,
+            hold_down=hold_down,
+            frame_parity=int(frame_parity),
+            speed_setting=int(speed_setting) & 0xFF,
+            speed_ups=int(speed_ups) & 0xFF,
             spawn_id=spawn_id,
         )
+
+
+# ---------------------------------------------------------------------------
+# Board representation (bitboard for static occupancy)
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -242,13 +255,6 @@ class BoardState:
             col_bits[col] = mask
         return cls(columns=col_bits)
 
-    def occupied(self, row: int, col: int) -> bool:
-        if row < 0 or col < 0 or col >= GRID_WIDTH:
-            return True
-        if row >= GRID_HEIGHT:
-            return True
-        return bool(self.columns[col] & (1 << row))
-
     def fits(self, row: int, col: int, orient: int) -> bool:
         for rr, cc in iter_cells(row, col, orient):
             if rr < 0 or cc < 0 or cc >= GRID_WIDTH:
@@ -259,29 +265,15 @@ class BoardState:
                 return False
         return True
 
-    def resting(self, row: int, col: int, orient: int) -> bool:
-        if not self.fits(row, col, orient):
-            return False
-        for rr, cc in iter_cells(row, col, orient):
-            below = rr + 1
-            if below >= GRID_HEIGHT:
-                continue
-            if not (self.columns[cc] & (1 << below)):
-                return False
-        return True
-
 
 # ---------------------------------------------------------------------------
-# Planner configuration
+# Planner API types
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class PlannerParams:
-    lock_buffer_frames: int = 2
-    soft_drop_gravity: int = 1
     max_search_frames: int = GRID_HEIGHT * 6
-    allow_half_rotations: bool = True
 
 
 @dataclass
@@ -297,30 +289,15 @@ class CapsuleState:
     row: int
     col: int
     orient: int
-    gravity: int
-    gravity_period: int
-    lock_buffer: int
-    grounded: bool
-    locked: bool
+    speed_counter: int
+    speed_threshold: int
+    hor_velocity: int
+    frame_parity: int
     hold_left: bool
     hold_right: bool
     hold_down: bool
+    locked: bool
     frames: int = 0
-
-    def key(self) -> Tuple[int, int, int, int, int, int, bool, bool, bool]:
-        gravity_norm = min(max(self.gravity, 0), 60)
-        lock_norm = min(max(self.lock_buffer, 0), 4)
-        return (
-            self.row,
-            self.col,
-            self.orient,
-            gravity_norm,
-            lock_norm,
-            1 if self.grounded else 0,
-            self.hold_left,
-            self.hold_right,
-            self.hold_down,
-        )
 
 
 @dataclass
@@ -330,6 +307,7 @@ class PlanResult:
     states: List[CapsuleState]
     cost: int
     path_index: int = -1
+    bfs_spawn: Tuple[int, int, int] | None = None  # (sx, sy, so)
 
 
 @dataclass
@@ -339,6 +317,7 @@ class PlannerOutput:
     costs: np.ndarray
     path_indices: np.ndarray
     plans: Tuple[PlanResult, ...] = field(default_factory=tuple)
+    stats: Dict[str, int] = field(default_factory=dict)
 
     @property
     def plan_count(self) -> int:
@@ -346,12 +325,12 @@ class PlannerOutput:
 
 
 # ---------------------------------------------------------------------------
-# Planner implementation
+# Placement planner implementation
 # ---------------------------------------------------------------------------
 
 
 class PlacementPlanner:
-    """Search for frame-perfect placement plans."""
+    """Fast reachability planner over the placement action space."""
 
     def __init__(self, params: Optional[PlannerParams] = None, *, debug: bool = False) -> None:
         self.params = params or PlannerParams()
@@ -362,43 +341,247 @@ class PlacementPlanner:
     # ------------------------------------------------------------------
 
     def plan_all(self, board: BoardState, capsule: PillSnapshot) -> PlannerOutput:
+        cols = board.columns.astype(np.uint16)
+        spawn_state = self._spawn_state_from_snapshot(capsule)
+        reach = build_reachability(
+            cols,
+            spawn_state,
+            speed_threshold=int(capsule.gravity_period),
+            config=ReachabilityConfig(max_frames=int(self.params.max_search_frames)),
+        )
+
         legal_mask = self._compute_legal(board)
-        feasible_mask = np.zeros_like(legal_mask)
+        feasible_mask = np.zeros(action_count(), dtype=np.bool_)
         costs = np.full(action_count(), np.inf, dtype=np.float32)
         path_indices = np.full(action_count(), -1, dtype=np.int32)
-        targets = {idx for idx, is_legal in enumerate(legal_mask) if is_legal}
-        plan_map = self._multi_goal_search(board, capsule, targets)
+
         plans: List[PlanResult] = []
-        for action_idx, plan in sorted(plan_map.items()):
-            feasible_mask[action_idx] = True
-            plan_idx = len(plans)
-            plan.path_index = plan_idx
+        for anchor, node_idx in reach.terminal_nodes.items():
+            action_index = self._action_index_for_anchor(anchor)
+            plan = self._build_plan(reach, node_idx, action_index, capsule)
+            plan.path_index = len(plans)
             plans.append(plan)
-            costs[action_idx] = float(plan.cost)
-            path_indices[action_idx] = plan_idx
+            feasible_mask[action_index] = True
+            path_indices[action_index] = plan.path_index
+            costs[action_index] = float(plan.cost)
+
         return PlannerOutput(
             legal_mask=legal_mask,
             feasible_mask=feasible_mask,
             costs=costs,
             path_indices=path_indices,
             plans=tuple(plans),
+            stats=dict(reach.stats),
         )
 
     def plan_action(
-        self, board: BoardState, capsule: PillSnapshot, action: int
+        self,
+        board: BoardState,
+        capsule: PillSnapshot,
+        action: int,
     ) -> Optional[PlanResult]:
-        legal_mask = self._compute_legal(board)
-        if action < 0 or action >= legal_mask.size or not legal_mask[action]:
+        if action < 0 or action >= action_count():
             return None
-        plan_map = self._multi_goal_search(board, capsule, {int(action)})
-        plan = plan_map.get(int(action))
-        if plan is not None:
-            plan.path_index = 0
+        cols = board.columns.astype(np.uint16)
+        spawn_state = self._spawn_state_from_snapshot(capsule)
+        reach = build_reachability(
+            cols,
+            spawn_state,
+            speed_threshold=int(capsule.gravity_period),
+            config=ReachabilityConfig(max_frames=int(self.params.max_search_frames)),
+        )
+        target_anchor = self._anchor_for_action(int(action))
+        node_idx = reach.best_node_for(target_anchor)
+        if node_idx is None:
+            return None
+        plan = self._build_plan(reach, node_idx, int(action), capsule)
+        plan.path_index = 0
         return plan
 
+    def plan_action_fast(self, board: BoardState, capsule: PillSnapshot, action: int) -> Optional[PlanResult]:
+        from envs.retro.reach512 import feasibility_and_costs, reconstruct_actions_to, run_reachability
+        if action < 0 or action >= action_count():
+            return None
+        cols = board.columns.astype(np.uint16)
+        sx, sy, so = int(capsule.col), int(capsule.row), int(capsule.orient) & 3
+        legal, feasible, costs = feasibility_and_costs(cols, sx, sy, so)
+        if not (bool(legal[int(action)]) and bool(feasible[int(action)])):
+            return None
+        # Target anchor for this directed action
+        edge = PLACEMENT_EDGES[int(action)]
+        r0, c0 = edge.origin
+        r1, c1 = edge.dest
+        dr = r1 - r0
+        dc = c1 - c0
+        if dr == 0 and dc == 1:
+            to = 0
+        elif dr == 0 and dc == -1:
+            to = 2
+        elif dr == 1 and dc == 0:
+            to = 1
+        elif dr == -1 and dc == 0:
+            to = 3
+        else:
+            return None
+        tx, ty = int(c0), int(r0)
+        reach = run_reachability(cols, sx, sy, so)
+        route = reconstruct_actions_to(reach, tx, ty, to)
+        if not route:
+            return None
+        # Build minimal controller and state trace
+        states: List[CapsuleState] = []
+        controller: List[ControllerStep] = []
+        for i, (x, y, o, code) in enumerate(route):
+            states.append(
+                CapsuleState(
+                    row=int(y), col=int(x), orient=int(o),
+                    speed_counter=0, speed_threshold=int(capsule.gravity_period),
+                    hor_velocity=0, frame_parity=0,
+                    hold_left=False, hold_right=False, hold_down=False,
+                    locked=False, frames=i,
+                )
+            )
+            if i + 1 < len(route):
+                # Map reach512 transition code to controller step.
+                # Infer if a left kick happened by comparing x.
+                x_prev, y_prev, o_prev, _ = route[i]
+                x_next, y_next, o_next, code_next = route[i + 1]
+                if code_next == 1:  # DOWN
+                    controller.append(ControllerStep(action=Action.DOWN_HOLD, hold_down=True))
+                elif code_next == 2:  # LEFT
+                    controller.append(ControllerStep(action=Action.NOOP, hold_left=True))
+                elif code_next == 3:  # RIGHT
+                    controller.append(ControllerStep(action=Action.NOOP, hold_right=True))
+                elif code_next == 4:  # ROT CW
+                    controller.append(ControllerStep(action=Action.ROTATE_A, hold_left=(x_next < x_prev)))
+                elif code_next == 5:  # ROT CCW
+                    controller.append(ControllerStep(action=Action.ROTATE_B, hold_left=(x_next < x_prev)))
+                else:
+                    controller.append(ControllerStep(action=Action.NOOP))
+        if states:
+            states[-1].locked = True
+        cost_val = int(costs[int(action)]) if np.isfinite(costs[int(action)]) else len(controller)
+        return PlanResult(action=int(action), controller=controller, states=states, cost=cost_val, path_index=0, bfs_spawn=(sx, sy, so))
+
     # ------------------------------------------------------------------
-    # Legal geometry enumeration
+    # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _hold_dir_from_bools(hold_left: bool, hold_right: bool) -> HoldDir:
+        if hold_left and not hold_right:
+            return HoldDir.LEFT
+        if hold_right and not hold_left:
+            return HoldDir.RIGHT
+        return HoldDir.NEUTRAL
+
+    def _spawn_state_from_snapshot(self, snapshot: PillSnapshot) -> FrameState:
+        hold_dir = self._hold_dir_from_bools(snapshot.hold_left, snapshot.hold_right)
+        return FrameState(
+            x=int(snapshot.col),
+            y=int(snapshot.row),
+            orient=int(snapshot.orient) & 3,
+            speed_counter=int(snapshot.gravity_counter),
+            hor_velocity=int(snapshot.hor_velocity),
+            hold_dir=hold_dir,
+            hold_down=bool(snapshot.hold_down),
+            frame_parity=int(snapshot.frame_parity) & 0x01,
+            grounded=False,
+            lock_timer=max(0, int(snapshot.lock_counter)) or 2,
+            locked=False,
+        )
+
+    def _capsule_state_from_frame(
+        self,
+        frame_state: FrameState,
+        capsule: PillSnapshot,
+        frame_index: int,
+    ) -> CapsuleState:
+        hold_left = (frame_state.hold_dir is HoldDir.LEFT)
+        hold_right = (frame_state.hold_dir is HoldDir.RIGHT)
+        return CapsuleState(
+            row=int(frame_state.y),
+            col=int(frame_state.x),
+            orient=int(frame_state.orient),
+            speed_counter=int(frame_state.speed_counter),
+            speed_threshold=int(capsule.gravity_period),
+            hor_velocity=int(frame_state.hor_velocity),
+            frame_parity=int(frame_state.frame_parity) & 0x01,
+            hold_left=hold_left,
+            hold_right=hold_right,
+            hold_down=bool(frame_state.hold_down),
+            locked=bool(frame_state.locked),
+            frames=int(frame_index),
+        )
+
+    def _controller_from_action(self, action_index: int) -> ControllerStep:
+        frame_action = frame_action_from_index(action_index)
+        ctrl = ControllerStep()
+        if frame_action.rotation is Rotation.CW:
+            ctrl.action = Action.ROTATE_A
+        elif frame_action.rotation is Rotation.CCW:
+            ctrl.action = Action.ROTATE_B
+        else:
+            ctrl.action = Action.NOOP
+        ctrl.hold_left = frame_action.hold_dir is HoldDir.LEFT
+        ctrl.hold_right = frame_action.hold_dir is HoldDir.RIGHT
+        ctrl.hold_down = bool(frame_action.hold_down)
+        return ctrl
+
+    def _build_plan(
+        self,
+        reach: ReachabilityResult,
+        terminal_index: int,
+        action_index: int,
+        capsule: PillSnapshot,
+    ) -> PlanResult:
+        action_sequence = reconstruct_actions(reach, terminal_index)
+        frame_states = list(iter_frame_states(reach, terminal_index))
+
+        states: List[CapsuleState] = []
+        for idx, frame_state in enumerate(frame_states):
+            states.append(self._capsule_state_from_frame(frame_state, capsule, idx))
+        if states:
+            states[-1].locked = True
+
+        controller = [self._controller_from_action(idx) for idx in action_sequence]
+        cost = len(controller)
+        bfs_spawn = (
+            int(frame_states[0].x) if frame_states else int(capsule.col),
+            int(frame_states[0].y) if frame_states else int(capsule.row),
+            int(frame_states[0].orient) if frame_states else int(capsule.orient),
+        )
+        return PlanResult(
+            action=int(action_index),
+            controller=controller,
+            states=states,
+            cost=int(cost),
+            bfs_spawn=bfs_spawn,
+        )
+
+    def _anchor_for_action(self, action: int) -> Tuple[int, int, int]:
+        edge = PLACEMENT_EDGES[int(action)]
+        origin, dest = edge.origin, edge.dest
+        dr = dest[0] - origin[0]
+        dc = dest[1] - origin[1]
+        if dr == 0 and dc == 1:
+            orient = 0
+        elif dr == 0 and dc == -1:
+            orient = 2
+        elif dr == 1 and dc == 0:
+            orient = 1
+        elif dr == -1 and dc == 0:
+            orient = 3
+        else:
+            raise ValueError("Invalid directed edge")
+        return int(origin[1]), int(origin[0]), int(orient)
+
+    def _action_index_for_anchor(self, anchor: Tuple[int, int, int]) -> int:
+        x, y, orient = anchor
+        origin = (int(y), int(x))
+        offsets = ORIENT_OFFSETS[int(orient) & 3]
+        dest = (origin[0] + offsets[1][0], origin[1] + offsets[1][1])
+        return action_from_cells(origin, dest)
 
     def _compute_legal(self, board: BoardState) -> np.ndarray:
         legal = np.zeros(action_count(), dtype=np.bool_)
@@ -417,324 +600,16 @@ class PlacementPlanner:
             return 0
         if dr == 0 and dc == -1:
             return 2
-        if dr == -1 and dc == 0:
-            return 1
         if dr == 1 and dc == 0:
+            return 1
+        if dr == -1 and dc == 0:
             return 3
-        raise ValueError(f"Invalid directed edge {origin}->{dest}")
+        raise ValueError("Invalid directed edge")
 
-    # ------------------------------------------------------------------
-    # Search
-    # ------------------------------------------------------------------
 
-    def _multi_goal_search(self, board, capsule, targets):
-        remaining = set(targets)
-        initial_target_count = len(remaining)
-        if not remaining:
-            return {}
-
-        start = CapsuleState(
-            row=capsule.row,
-            col=capsule.col,
-            orient=capsule.orient,
-            gravity=max(0, capsule.gravity_counter),
-            gravity_period=max(1, capsule.gravity_period),
-            lock_buffer=max(0, capsule.lock_counter // 4),
-            grounded=False,
-            locked=False,
-            hold_left=False,
-            hold_right=False,
-            hold_down=False,
-            frames=0,
-        )
-        start_key = start.key()
-        frontier = [(0, 0, start)]
-        came_from = {}
-        state_cache = {start_key: start}
-        cost_so_far = {start_key: 0}
-
-        counter = 0
-        plans = {}
-        locked_seen = 0
-        grounded_seen = 0
-        max_row = -1
-        sample_locked: Optional[Tuple[int, int, int, Tuple[GridCoord, GridCoord]]] = None
-
-        while frontier and remaining:
-            _, _, cur = heapq.heappop(frontier)
-            ck = cur.key()
-            gc = cost_so_far.get(ck, 0)
-            if cur.frames > self.params.max_search_frames:
-                continue
-
-            if cur.row > max_row:
-                max_row = cur.row
-            if cur.grounded:
-                grounded_seen += 1
-
-            # Goal match via predicate (robust to anchor conventions)
-            if cur.locked:
-                locked_seen += 1
-                if sample_locked is None:
-                    cells = tuple(iter_cells(cur.row, cur.col, cur.orient))
-                    if len(cells) == 2:
-                        sample_locked = (cur.row, cur.col, cur.orient, (cells[0], cells[1]))
-                matched = [a for a in list(remaining) if self._state_matches_action(board, cur, a)]
-                for a in matched:
-                    plan = self._reconstruct_plan(came_from, state_cache, ck, a, gc)
-                    plans[a] = plan
-                    remaining.remove(a)
-                if not remaining:
-                    break
-
-            # successors
-            for nxt, ctrl in self._successors(board, cur):
-                nk = nxt.key()
-                g2 = gc + 1
-                if cost_so_far.get(nk, 1 << 30) <= g2:
-                    continue
-                cost_so_far[nk] = g2
-                f2 = g2 + self._heuristic(nxt)  # make this tick-aware!
-                counter += 1
-                heapq.heappush(frontier, (f2, counter, nxt))
-                came_from[nk] = (ck, ctrl)
-                state_cache[nk] = nxt
-
-        # Store last-search stats for external diagnostics.
-        try:
-            start_fits = board.fits(
-                int(capsule.row), int(capsule.col), int(capsule.orient)
-            )
-        except Exception:
-            start_fits = False
-        self._last_search_stats = {
-            "initial_targets": int(initial_target_count),
-            "expanded": int(counter),
-            "locked_seen": int(locked_seen),
-            "grounded_seen": int(grounded_seen),
-            "max_row": int(max_row),
-            "start_fits": bool(start_fits),
-        }
-
-        # Only emit the "zero feasible" diagnostic for full/multi-target searches.
-        # Single-target planning (plan_action) may legitimately fail for the chosen
-        # action while other placements remain feasible, which is not actionable noise.
-        if not plans and getattr(self, "_debug", False) and initial_target_count > 1:
-            try:
-                # Lightweight diagnostic to help identify anchor/orientation mismatches
-                print(
-                    f"[planner] zero feasible plans (multi) targets={initial_target_count}; "
-                    f"locked_seen={locked_seen} grounded_seen={grounded_seen} max_row={max_row} "
-                    f"sample_locked={sample_locked}",
-                    flush=True,
-                )
-            except Exception:
-                pass
-        return plans
-
-    def _heuristic(self, state: CapsuleState) -> int:
-        # Encourage descent; horizontal distance is cheap relative to falling.
-        return (GRID_HEIGHT - state.row) + (2 if state.orient in (1, 3) else 0)
-
-    def _decode_action(self, action: int) -> Tuple[int, int, int]:
-        """Map a placement action index to (col, row, orient).
-
-        The tuple corresponds to the anchor used by the planner's state
-        representation such that ``iter_cells(row, col, orient)`` yields the two
-        cells for the placement encoded by ``PLACEMENT_EDGES[action]``.
-
-        - Horizontal right (orient 0): anchor is the left cell (origin).
-        - Horizontal left  (orient 2): anchor is the right cell (origin).
-        - Vertical up      (orient 1): anchor is the bottom cell (origin).
-        - Vertical down    (orient 3): anchor is the top cell (origin).
-        """
-        edge = PLACEMENT_EDGES[int(action)]
-        orient = self._orientation_for_edge(edge.origin, edge.dest)
-        row, col = edge.origin  # origin is the anchor under our orientation convention
-        return int(col), int(row), int(orient)
-
-    def _reachability_envelope(self, capsule: PillSnapshot) -> Tuple[List[int], List[int]]:
-        """Conservative horizontal reachability envelope by row.
-
-        Returns two lists ``(L, R)`` of length ``GRID_HEIGHT`` such that a
-        placement whose anchor locks at ``(row, col)`` passes this pre-prune if
-        ``L[row] <= col <= R[row]``. This implementation is deliberately
-        conservative and allows the full width for every row, which preserves
-        correctness and keeps the search functional if a more precise envelope
-        is not available. More precise envelopes can be implemented to tighten
-        successors and goals for performance.
-        """
-        L = [0 for _ in range(GRID_HEIGHT)]
-        R = [GRID_WIDTH - 1 for _ in range(GRID_HEIGHT)]
-        return L, R
-
-    def _state_matches_action(self, board: BoardState, state: CapsuleState, action: int) -> bool:
-        if not state.locked:
-            return False
-        # Match by occupied cells only; ignore orientation numbering to avoid
-        # false negatives due to convention drift. A valid placement must occupy
-        # exactly the two cells of the directed edge and be resting on support.
-        edge = PLACEMENT_EDGES[int(action)]
-        target = {edge.origin, edge.dest}
-        cells = {cell for cell in iter_cells(state.row, state.col, state.orient)}
-        if not target.issubset(cells):
-            return False
-        if board.fits(state.row + 1, state.col, state.orient):
-            return False
-        return True
-
-    def _successors(
-        self, board: BoardState, state: CapsuleState
-    ) -> Iterator[Tuple[CapsuleState, ControllerStep]]:
-        holds = [
-            (False, False, False),
-            (True, False, False),
-            (False, True, False),
-            (False, False, True),
-            (True, False, True),
-            (False, True, True),
-        ]
-        rotations = [Rotation.NONE, Rotation.CW, Rotation.CCW]
-        if self.params.allow_half_rotations:
-            rotations.append(Rotation.HALF)
-        for hold_left, hold_right, hold_down in holds:
-            for rotation in rotations:
-                ctrl = ControllerStep(
-                    action=self._rotation_to_action(rotation),
-                    hold_left=hold_left,
-                    hold_right=hold_right,
-                    hold_down=hold_down,
-                )
-                next_state = self._apply_control(board, state, ctrl, rotation)
-                if next_state is None:
-                    continue
-                yield next_state, ctrl
-
-    def _rotation_to_action(self, rotation: Rotation) -> Action:
-        if rotation is Rotation.CW:
-            return Action.ROTATE_A
-        if rotation is Rotation.CCW:
-            return Action.ROTATE_B
-        if rotation is Rotation.HALF:
-            return Action.BOTH_ROT
-        return Action.NOOP
-
-    def _apply_control(
-        self,
-        board: BoardState,
-        state: CapsuleState,
-        ctrl: ControllerStep,
-        rotation: Rotation,
-    ) -> Optional[CapsuleState]:
-        row, col, orient = state.row, state.col, state.orient
-        gravity = max(state.gravity - 1, 0)
-        gravity_period = max(state.gravity_period, 1)
-        lock_buffer = max(state.lock_buffer - 1, 0)
-        grounded = state.grounded
-        locked = False
-
-        # Rotation attempt (before horizontal movement)
-        if rotation is not Rotation.NONE:
-            orient_new = orientation_successor(orient, rotation)
-            pivot = (row, col)
-            kicks = _ROTATION_KICKS.get((orient, orient_new), ((0, 0),))
-            rotated = False
-            for kick in kicks:
-                candidate_row = pivot[0] + kick[0]
-                candidate_col = pivot[1] + kick[1]
-                if board.fits(candidate_row, candidate_col, orient_new):
-                    row, col, orient = candidate_row, candidate_col, orient_new
-                    rotated = True
-                    grounded = False
-                    lock_buffer = self.params.lock_buffer_frames
-                    break
-            if not rotated:
-                return None
-
-        moved_horizontally = False
-        if ctrl.hold_left and not ctrl.hold_right:
-            candidate_col = col - 1
-            if board.fits(row, candidate_col, orient):
-                col = candidate_col
-                moved_horizontally = True
-        elif ctrl.hold_right and not ctrl.hold_left:
-            candidate_col = col + 1
-            if board.fits(row, candidate_col, orient):
-                col = candidate_col
-                moved_horizontally = True
-
-        if moved_horizontally:
-            grounded = False
-            lock_buffer = self.params.lock_buffer_frames
-
-        if ctrl.hold_down:
-            gravity = min(gravity, self.params.soft_drop_gravity)
-
-        # Gravity tick
-        if gravity <= 0:
-            if board.fits(row + 1, col, orient):
-                row += 1
-                gravity = gravity_period
-                grounded = False
-                lock_buffer = max(lock_buffer, 0)
-            else:
-                grounded = True
-                gravity = gravity_period
-                if lock_buffer <= 0:
-                    lock_buffer = self.params.lock_buffer_frames
-                elif rotation is Rotation.NONE and not moved_horizontally:
-                    lock_buffer = max(lock_buffer - 1, 0)
-        else:
-            gravity = gravity
-            if (
-                grounded
-                and lock_buffer == 0
-                and not moved_horizontally
-                and rotation is Rotation.NONE
-            ):
-                lock_buffer = 0
-
-        if grounded and lock_buffer == 0 and not board.fits(row + 1, col, orient):
-            locked = True
-
-        next_state = CapsuleState(
-            row=row,
-            col=col,
-            orient=orient,
-            gravity=max(gravity, 0),
-            gravity_period=gravity_period,
-            lock_buffer=max(lock_buffer, 0),
-            grounded=grounded,
-            locked=locked,
-            hold_left=ctrl.hold_left,
-            hold_right=ctrl.hold_right,
-            hold_down=ctrl.hold_down,
-            frames=state.frames + 1,
-        )
-        return next_state
-
-    def _reconstruct_plan(
-        self,
-        came_from: Dict[Tuple[int, ...], Tuple[Tuple[int, ...], ControllerStep]],
-        states: Dict[Tuple[int, ...], CapsuleState],
-        key: Tuple[int, ...],
-        action: int,
-        cost: int,
-    ) -> PlanResult:
-        controller: List[ControllerStep] = []
-        trace: List[CapsuleState] = []
-        cur_key = key
-        while True:
-            state = states[cur_key]
-            trace.append(state)
-            if cur_key not in came_from:
-                break
-            prev_key, ctrl = came_from[cur_key]
-            controller.append(ctrl)
-            cur_key = prev_key
-        trace.reverse()
-        controller.reverse()
-        return PlanResult(action=action, controller=controller, states=trace, cost=cost)
+# ---------------------------------------------------------------------------
+# Snapshot helper (public)
+# ---------------------------------------------------------------------------
 
 
 def snapshot_to_capsule_state(snapshot: PillSnapshot) -> CapsuleState:
@@ -743,15 +618,15 @@ def snapshot_to_capsule_state(snapshot: PillSnapshot) -> CapsuleState:
     return CapsuleState(
         row=snapshot.row,
         col=snapshot.col,
-        orient=snapshot.orient,
-        gravity=max(0, snapshot.gravity_counter),
-        gravity_period=max(1, snapshot.gravity_period),
-        lock_buffer=max(0, snapshot.lock_counter // 4),
-        grounded=False,
+        orient=int(snapshot.orient) & 3,
+        speed_counter=int(snapshot.gravity_counter),
+        speed_threshold=int(snapshot.gravity_period),
+        hor_velocity=int(snapshot.hor_velocity),
+        frame_parity=int(snapshot.frame_parity) & 0x01,
+        hold_left=bool(snapshot.hold_left),
+        hold_right=bool(snapshot.hold_right),
+        hold_down=bool(snapshot.hold_down),
         locked=False,
-        hold_left=False,
-        hold_right=False,
-        hold_down=False,
         frames=0,
     )
 
@@ -766,5 +641,6 @@ __all__ = [
     "PlannerParams",
     "PlanResult",
     "PlacementPlanner",
+    "iter_cells",
     "snapshot_to_capsule_state",
 ]
