@@ -893,10 +893,12 @@ class DrMarioPlacementEnv(gym.Wrapper):
         planner: Optional[PlacementPlanner] = None,
         debug_log: bool = False,
         path_log: bool = False,
+        execution_log: bool = False,
     ) -> None:
         super().__init__(env)
         self._debug = bool(debug_log)
         self._path_log = bool(path_log)
+        self._execution_log = bool(execution_log)
         self.action_space = gym.spaces.Discrete(action_count())
         self._translator = PlacementTranslator(env, planner, debug=debug_log, fast_options_only=True)
         # Micro-cache for single-target plans within a spawn
@@ -1720,7 +1722,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info = dict(last_info)
             last_info.setdefault("pill_changed", 0)
 
-        if plan is not None and self._path_log:
+        if plan is not None and (self._path_log or self._execution_log):
             if terminated:
                 status = "terminated"
             elif truncated:
@@ -1729,32 +1731,37 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 status = "replan"
             else:
                 status = "success"
-            actual_repr = _format_compact_path(actual_path_states)
-            trace_repr = _format_trace(trace_events)
-            extras: List[str] = []
-            if trace_repr != "-":
-                extras.append(f"trace={trace_repr}")
-            if failure_detail is not None:
-                fail_step, fail_frames, fail_expected, fail_actual, fail_status = failure_detail
-                extras.append(f"fail_step={fail_step}")
-                extras.append(f"attempt_frames={fail_frames}")
-                extras.append(f"fail_status={fail_status.value}")
-                extras.append(f"expected={_format_compact_state(fail_expected)}")
-                extras.append(f"actual={_format_compact_state(fail_actual)}")
-                if failure_ctrl is not None:
-                    extras.append(f"ctrl={_format_ctrl_token(failure_ctrl)}")
-            if planner_resynced:
-                extras.append("resync=1")
-            if internal_resyncs > 0:
-                extras.append(f"ireplan={internal_resyncs}")
-            extra_suffix = f" {' '.join(extras)}" if extras else ""
-            print(
-                (
-                    f"[placement_path] spawn={spawn_id_at_start} action={int(plan.action)} "
-                    f"status={status} observed={actual_repr}{extra_suffix}"
-                ),
-                flush=True,
-            )
+            
+            # Only log if: full path log enabled OR execution log enabled and this is a failure
+            should_log = self._path_log or (self._execution_log and status != "success")
+            
+            if should_log:
+                actual_repr = _format_compact_path(actual_path_states)
+                trace_repr = _format_trace(trace_events)
+                extras: List[str] = []
+                if trace_repr != "-":
+                    extras.append(f"trace={trace_repr}")
+                if failure_detail is not None:
+                    fail_step, fail_frames, fail_expected, fail_actual, fail_status = failure_detail
+                    extras.append(f"fail_step={fail_step}")
+                    extras.append(f"attempt_frames={fail_frames}")
+                    extras.append(f"fail_status={fail_status.value}")
+                    extras.append(f"expected={_format_compact_state(fail_expected)}")
+                    extras.append(f"actual={_format_compact_state(fail_actual)}")
+                    if failure_ctrl is not None:
+                        extras.append(f"ctrl={_format_ctrl_token(failure_ctrl)}")
+                if planner_resynced:
+                    extras.append("resync=1")
+                if internal_resyncs > 0:
+                    extras.append(f"ireplan={internal_resyncs}")
+                extra_suffix = f" {' '.join(extras)}" if extras else ""
+                print(
+                    (
+                        f"[placement_path] spawn={spawn_id_at_start} action={int(plan.action)} "
+                        f"status={status} observed={actual_repr}{extra_suffix}"
+                    ),
+                    flush=True,
+                )
 
         return _ExecutionOutcome(
             last_obs,

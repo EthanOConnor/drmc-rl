@@ -3417,6 +3417,16 @@ def main() -> None:
         help="Log compact placement planner execution traces (stdout).",
     )
     ap.add_argument(
+        "--placement-execution-log",
+        action="store_true",
+        help="Log only failed placement execution attempts (subset of --placement-path-log).",
+    )
+    ap.add_argument(
+        "--interactive-step",
+        action="store_true",
+        help="Enable interactive single-step mode (press Enter to advance one step).",
+    )
+    ap.add_argument(
         "--perf-mode",
         action="store_true",
         help="Enable performance preset (no viewer/monitor, zero throttling, max parallel envs).",
@@ -3688,6 +3698,7 @@ def main() -> None:
                 env_instance,
                 debug_log=bool(getattr(args, "placement_debug_log", False)),
                 path_log=bool(getattr(args, "placement_path_log", False)),
+                execution_log=bool(getattr(args, "placement_execution_log", False)),
             )
         return env_instance
 
@@ -4521,6 +4532,28 @@ def main() -> None:
 
     completed_runs = len(completed_rewards)
 
+    # Interactive stepping support
+    interactive_step_mode = bool(getattr(args, "interactive_step", False))
+    interactive_step_count = 0
+
+    def wait_for_step_input() -> None:
+        """Wait for user to press Enter before continuing to next step."""
+        nonlocal interactive_step_count
+        if not interactive_step_mode:
+            return
+        try:
+            interactive_step_count += 1
+            sys.stdout.write(f"\r[Step {interactive_step_count}] Press Enter to continue (or type 'c' + Enter to continue without pausing)...")
+            sys.stdout.flush()
+            user_input = input()
+            if user_input.strip().lower() == 'c':
+                # Disable interactive mode for rest of run
+                args.interactive_step = False
+                print("Interactive stepping disabled. Running continuously...")
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting interactive mode...")
+            raise
+
     try:
         while completed_runs < args.runs:
             process_monitor_commands()
@@ -4815,6 +4848,8 @@ def main() -> None:
                         )
                     except Exception:
                         pass
+                # Interactive step wait
+                wait_for_step_input()
                 estep_t0 = time.perf_counter()
                 next_obs, reward, term, trunc, step_info = slot.env.step(action)
                 estep_t1 = time.perf_counter()
