@@ -184,10 +184,16 @@ _ACTION_SPACE: Tuple[FrameAction, ...] = tuple(
 
 
 def _cell_blocked(cols_u16: np.ndarray, x: int, y: int) -> bool:
-    if x < 0 or x >= GRID_WIDTH or y < 0:
+    if x < 0 or x >= GRID_WIDTH:
+        return True
+    # Allow y=-1 for vertical pills spawning at top (top half at row 0, bottom half above screen)
+    if y < -1:
         return True
     if y >= GRID_HEIGHT:
         return True
+    # Cells above the grid (y < 0) are never blocked by the board
+    if y < 0:
+        return False
     col_bits = int(cols_u16[x])
     return bool(col_bits & (1 << y))
 
