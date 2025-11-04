@@ -1801,6 +1801,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 # For execution_log on failures, add context that would normally require --placement-debug-log
                 if self._execution_log and status != "success":
                     try:
+                        # Capture current pill state at failure time
                         pill = self._translator.current_pill()
                         if pill is not None:
                             print(
@@ -1814,8 +1815,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
                             )
                         if plan.states:
                             s0 = plan.states[0]
+                            # Check for state mismatch between plan start and current pill
+                            start_matches = (
+                                pill is not None
+                                and s0.row == pill.row
+                                and s0.col == pill.col
+                                and s0.orient == pill.orient
+                            )
+                            mismatch_flag = "" if start_matches else " MISMATCH!"
                             print(
-                                f"[exec_context] route: steps={len(plan.controller)} cost={int(plan.cost)} start=(r={s0.row},c={s0.col},o={s0.orient})",
+                                f"[exec_context] route: steps={len(plan.controller)} cost={int(plan.cost)} start=(r={s0.row},c={s0.col},o={s0.orient}){mismatch_flag}",
                                 flush=True,
                             )
                             # Show first few planned steps
