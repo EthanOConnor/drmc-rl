@@ -240,17 +240,18 @@ class PlacementTranslator:
         # Detect if pill moved/rotated since last refresh - invalidate cached plans if so
         spawn_changed = not self._spawn_matches_cache(pill)
         pill_moved = False
-        if not spawn_changed and self._options_prepared:
-            # Same spawn, but check if position/orientation changed
-            if len(self._paths) > 0 and self._paths[0].states:
-                # Compare current pill to the start state of any cached plan
-                cached_start = self._paths[0].states[0]
-                if (
-                    cached_start.row != int(pill.row)
-                    or cached_start.col != int(pill.col)
-                    or cached_start.orient != int(pill.orient)
-                ):
-                    pill_moved = True
+        if not spawn_changed and self._options_prepared and hasattr(self, '_last_pill_pos'):
+            # Same spawn, check if pill position/orientation changed since last planning
+            last_row, last_col, last_orient = self._last_pill_pos
+            if (
+                last_row != int(pill.row)
+                or last_col != int(pill.col)
+                or last_orient != int(pill.orient)
+            ):
+                pill_moved = True
+        
+        # Store current pill position for next comparison
+        self._last_pill_pos = (int(pill.row), int(pill.col), int(pill.orient))
         
         if spawn_changed:
             self._spawn_generation += 1
@@ -459,7 +460,15 @@ class PlacementTranslator:
                 except Exception:
                     idx = -1
                 if 0 <= idx < len(self._paths):
-                    return self._paths[idx]
+                    plan = self._paths[idx]
+                    # Diagnostic: log pill state at plan retrieval time
+                    if getattr(self, "_debug", False):
+                        pill_now = self._current_snapshot
+                        if pill_now and plan.states:
+                            s0 = plan.states[0]
+                            match = (s0.row == pill_now.row and s0.col == pill_now.col and s0.orient == pill_now.orient)
+                            print(f"[get_plan] action={action} pill=(r={pill_now.row},c={pill_now.col},o={pill_now.orient}) plan_start=(r={s0.row},c={s0.col},o={s0.orient}) match={match}", flush=True)
+                    return plan
             # Try on-demand single-target planning for the requested action.
             if self._board is not None and self._current_snapshot is not None:
                 # Micro-cache: reuse single-target plan for same spawn marker + board + action
