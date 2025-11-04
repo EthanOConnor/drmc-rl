@@ -1285,7 +1285,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         f"[planner] pill(row={pill.row}, col={pill.col}, orient={pill.orient}, colors={pill.colors}, "
                         f"speed={pill.gravity_counter}/{pill.gravity_period}, vel={pill.hor_velocity}, "
                         f"parity={pill.frame_parity}, holds(L,R,D)=({int(pill.hold_left)},{int(pill.hold_right)},{int(pill.hold_down)}), "
-                        f"lock={pill.lock_counter})"
+                        f"lock={pill.lock_counter}, speed_ups={pill.speed_ups}, speed_setting={pill.speed_setting})"
                     ),
                     flush=True,
                 )
