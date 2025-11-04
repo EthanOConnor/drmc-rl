@@ -4262,6 +4262,7 @@ def main() -> None:
         reward_val: float,
         step_idx: int,
         episode_reward: float,
+        is_intermediate: bool = False,
     ) -> None:
         viewer_local = slot.viewer
         stack_for_planner: Optional[np.ndarray] = None
@@ -4331,13 +4332,16 @@ def main() -> None:
         inference_time = float(slot.inference_time)
         compute_time = float(slot.step_compute_time)
         planner_time = float(slot.planner_latency_ms_total) / 1000.0  # Convert ms to seconds
-        # total_steps is already updated before publish_frame is called, so use it directly
+        # For intermediate frames (during env.step), total_steps hasn't been incremented yet
+        # For final frames (after env.step), total_steps has been incremented
+        # For episode start, use total_steps as-is
+        current_total_steps = total_steps + 1 if is_intermediate else total_steps
         perf_stats: Dict[str, Any] = {
             "inference_s": inference_time,
             "compute_s": compute_time,
             "wall_s": wall_elapsed,
             "total_wall_s": total_wall_elapsed,
-            "total_steps": total_steps,
+            "total_steps": current_total_steps,
             "planner_s": planner_time,
             "inference_pct_wall": (inference_time / wall_elapsed * 100.0)
             if wall_elapsed > 1e-9
@@ -4513,6 +4517,7 @@ def main() -> None:
                 float(reward_val),
                 frame_step,
                 cumulative,
+                is_intermediate=True,  # Callback during env.step
             )
             pf1 = time.perf_counter()
             if getattr(args, "placement_debug_log", False):
@@ -4574,7 +4579,7 @@ def main() -> None:
             policy_seed = current_seed_index + run_idx * max(1, num_envs) + slot.index
             seed_policy_rng(policy_seed)
         agent.begin_episode(context_id=slot.context_id)
-        publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0)
+        publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0, is_intermediate=False)
         if monitor is not None:
             try:
                 monitor.publish_status(
@@ -5034,6 +5039,7 @@ def main() -> None:
                     reward,
                     slot.viewer_step_base + slot.viewer_step_offset + 1,
                     slot.episode_reward,
+                    is_intermediate=False,  # Final frame after env.step
                 )
                 pf1 = time.perf_counter()
                 if getattr(args, "placement_debug_log", False):
