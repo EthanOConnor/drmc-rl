@@ -4668,13 +4668,13 @@ def main() -> None:
                                         except Exception:
                                             pass
                         # Ensure selected action has a non-empty plan; if not, try other feasible actions
+                        plan_ok = False
                         try:
                             tr = getattr(slot.env, "_translator", None)
                             if tr is not None:
                                 tr.refresh()
                                 tr.prepare_options(force=False)
                                 # First try the chosen action
-                                plan_ok = False
                                 force_new_request = False
                                 try:
                                     gp0 = time.perf_counter()

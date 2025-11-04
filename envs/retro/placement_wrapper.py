@@ -22,6 +22,7 @@ def _ts() -> str:
 
 import envs.specs.ram_to_state as ram_specs
 from envs.retro.drmario_env import Action
+from envs.state_core import DrMarioState
 from envs.retro.placement_actions import (
     GRID_HEIGHT,
     GRID_WIDTH,
@@ -186,7 +187,7 @@ class PlacementTranslator:
     # Snapshot helpers
     # ------------------------------------------------------------------
 
-    def refresh(self, *, force: bool = False) -> None:
+    def refresh(self, *, force: bool = False, state: DrMarioState) -> None:
         t0 = perf_counter()
         frame_id: Optional[int]
         try:
@@ -195,19 +196,18 @@ class PlacementTranslator:
             frame_id = None
         if not force and frame_id is not None and frame_id == self._last_refresh_frame:
             return
-        try:
-            state, ram_bytes = self._read_state()
-        except Exception:
-            return
+
+        ram_bytes = state.ram.bytes
+
         t1 = perf_counter()
         try:
-            board = BoardState.from_state(state)
+            board = BoardState.from_state(state.calc.planes)
         except Exception:
             board = None
         if board is not None:
             self._board = board
         t2 = perf_counter()
-        self._last_state = np.array(state, copy=True)
+        self._last_state = np.array(state.calc.planes, copy=True)
         pill = self._extract_pill(state, ram_bytes, require_mask=False)
         if pill is None:
             self._current_snapshot = None
@@ -217,7 +217,7 @@ class PlacementTranslator:
                 try:
                     print(
                         (
-                            f"{_ts()} [timing] translator.refresh read_state_ms={(t1-t0)*1000:.3f} board_ms={(t2-t1)*1000:.3f} pill_ms=0.000"
+                            f"{_ts()} [timing] translator.refresh read_state_ms={{(t1-t0)*1000:.3f}} board_ms={{(t2-t1)*1000:.3f}} pill_ms=0.000"
                         ),
                         flush=True,
                     )
@@ -855,34 +855,21 @@ class PlacementTranslator:
         self._identical_color_pairs = tuple(masked)
         self._last_plan_count = int(np.count_nonzero(self._path_indices >= 0))
 
-    def _read_ram_bytes(self) -> Optional[bytes]:
-        base = self.env.unwrapped
-        ram_arr = base._read_ram_array(refresh=True)
-        if ram_arr is None:
-            return None
-        return bytes(ram_arr)
 
-    def _read_state(self) -> Tuple[np.ndarray, bytes]:
-        ram_bytes = self._read_ram_bytes()
-        if ram_bytes is None:
-            ram_arr = np.zeros(0x800, dtype=np.uint8)
-            ram_bytes = bytes(ram_arr)
-        state = ram_specs.ram_to_state(ram_bytes, self._offsets)
-        return state, ram_bytes
 
     def _extract_pill(
         self,
-        state: Optional[np.ndarray],
+        state: DrMarioState,
         ram_bytes: bytes,
         *,
         require_mask: bool = True,
     ) -> Optional[PillSnapshot]:
         if require_mask and state is not None:
-            falling_mask = ram_specs.get_falling_mask(state)
+            falling_mask = ram_specs.get_falling_mask(state.calc.planes)
             if falling_mask.sum() == 0:
                 return None
         try:
-            return PillSnapshot.from_ram_state(state, ram_bytes, self._offsets)
+            return PillSnapshot.from_ram_state(state, self._offsets)
         except PlannerError:
             return None
 
@@ -960,7 +947,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if info is None:
             info = {}
         r0 = perf_counter()
-        self._translator.refresh()
+        self._translator.refresh(state=self.env.unwrapped._state_cache)
         r1 = perf_counter()
         self._active_plan = None
         self._latched_action = None
@@ -1085,7 +1072,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         print(f"{_ts()} [timing] pre_get_plan action={int(action)}", flush=True)
                     except Exception:
                         pass
-                plan = self._translator.replan_to_action(int(action))
+                plan = self._translator.get_plan(int(action))
                 if plan is None:
                     attempted_actions.add(int(action))
                     # Advance emulator by one NOOP frame while requesting a new decision,
@@ -1382,7 +1369,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info = dict(info or {})
             if not (terminated or truncated):
                 r0 = perf_counter()
-                self._translator.refresh()
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 r1 = perf_counter()
                 if record_refresh is not None:
                     record_refresh()
@@ -1503,9 +1490,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 except Exception:
                     pass
                 r0 = perf_counter()
-                self._translator.refresh()
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 r1 = perf_counter()
-                refreshed_after_frame = True
                 if record_refresh is not None:
                     record_refresh()
                 extra_info = self._translator.info() or {}
@@ -1671,7 +1657,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if not (terminated or truncated) and not replan_required:
             if not refreshed_after_frame:
                 r0 = perf_counter()
-                self._translator.refresh()
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 r1 = perf_counter()
                 if record_refresh is not None:
                     record_refresh()
@@ -1692,7 +1678,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 last_obs = obs
                 last_info = info or {}
                 r0 = perf_counter()
-                self._translator.refresh()
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 r1 = perf_counter()
                 if record_refresh is not None:
                     record_refresh()
@@ -1738,7 +1724,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info["placements/replan_triggered"] = 1
             if not (terminated or truncated):
                 # Resync and expose a fresh decision request so the runner reselects immediately.
-                self._translator.refresh()
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 # Rebuilding options with force=True ensures we fall back to the full planner
                 # after a failed fast-path execution.
                 self._translator.prepare_options(force=True)
@@ -1853,7 +1839,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 )
                 break
             r0 = perf_counter()
-            self._translator.refresh()
+            self._translator.refresh(state=self.env.unwrapped._state_cache)
             r1 = perf_counter()
             if record_refresh is not None:
                 record_refresh()

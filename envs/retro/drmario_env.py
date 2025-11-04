@@ -18,6 +18,7 @@ from envs.retro.state_viz import state_to_rgb
 from envs.reward_shaping import PotentialShaper
 from envs.backends import make_backend
 from envs.backends.base import NES_BUTTONS
+from envs.state_core import DrMarioState, build_state
 
 A_BUTTON_INDEX = NES_BUTTONS.index("A")
 B_BUTTON_INDEX = NES_BUTTONS.index("B")
@@ -187,6 +188,7 @@ class DrMarioRetroEnv(gym.Env):
             ram_specs.set_state_representation(state_repr)
         self.state_repr = ram_specs.get_state_representation()
         self._state_prev: Optional[np.ndarray] = None
+        self._state_cache: Optional[DrMarioState] = None
         # Load RAM offsets for state-mode mapping
         self._ram_offsets = self._load_ram_offsets()
 
@@ -269,11 +271,10 @@ class DrMarioRetroEnv(gym.Env):
 
         If RAM is unavailable or not in state mode, returns (None, None).
         """
-        if self.obs_mode != "state" or not self._using_backend:
+        if self.obs_mode != "state" or not self._using_backend or self._state_cache is None:
             return None, None
-        ram_arr = self._read_ram_array(refresh=False)
-        if ram_arr is None:
-            return None, None
+
+        ram_arr = self._state_cache.ram.arr
         try:
             p1_fail = int(ram_arr[0x0309]) if ram_arr.shape[0] > 0x0309 else None
         except Exception:
@@ -463,50 +464,34 @@ class DrMarioRetroEnv(gym.Env):
         return self._read_ram_value(addr)
 
     def _read_gameplay_flag(self) -> Tuple[Optional[int], Optional[bool]]:
-        mode_val = self._read_offset_value("mode")
-        gameplay_flag: Optional[bool] = None
-        offsets = self._ram_offsets.get("mode")
-        if offsets and mode_val is not None:
-            playing_val = self._parse_int(offsets.get("playing_value"))
-            if playing_val is not None:
-                gameplay_flag = mode_val == playing_val
-        return mode_val, gameplay_flag
+        if self._state_cache is None:
+            return None, None
+        return self._state_cache.ram_vals.mode, self._state_cache.ram_vals.gameplay_active
 
     def _read_stage_clear_flag(self) -> Optional[bool]:
-        offsets = self._ram_offsets.get("stage_clear")
-        if not offsets:
+        if self._state_cache is None:
             return None
-        val = self._read_offset_value("stage_clear", "flag_addr")
-        target = self._parse_int(offsets.get("cleared_value"))
-        if val is None or target is None:
-            return None
-        return bool(val == target)
+        return self._state_cache.ram_vals.stage_clear
 
     def _read_ending_flag(self) -> Optional[bool]:
-        offsets = self._ram_offsets.get("ending")
-        if not offsets:
+        if self._state_cache is None:
             return None
-        val = self._read_offset_value("ending")
-        if val is None:
-            return None
-        non_value = self._parse_int(offsets.get("non_ending_value"))
-        if non_value is None:
-            return None
-        return bool(val != non_value)
+        return self._state_cache.ram_vals.ending_active
 
     def _read_player_count(self) -> Optional[int]:
-        return self._read_offset_value("players")
+        if self._state_cache is None:
+            return None
+        return self._state_cache.ram_vals.player_count
 
     def _read_pill_counter(self) -> Optional[int]:
-        return self._read_offset_value("pill_counter")
+        if self._state_cache is None:
+            return None
+        return self._state_cache.ram_vals.pill_counter
 
     def _read_frames_until_drop(self) -> Optional[int]:
-        offsets = self._ram_offsets.get("gravity_lock", {})
-        addr_val = offsets.get("gravity_counter_addr") or offsets.get("frames_until_drop_addr")
-        addr = self._parse_int(addr_val)
-        if addr is None:
+        if self._state_cache is None:
             return None
-        return self._read_ram_value(addr)
+        return self._state_cache.ram_vals.gravity_counter
 
     def _randomize_rng_state(
         self, override: Optional[Sequence[int]] = None
@@ -575,7 +560,7 @@ class DrMarioRetroEnv(gym.Env):
         self._pending_rng_override = None
 
     def _update_active_pill_tracker(self, v_now: Optional[int]) -> None:
-        if not self._in_game:
+        if not self._in_game or self._state_cache is None:
             self._frames_without_active_pill = 0
             return
         if v_now is not None and v_now == 0:
@@ -590,23 +575,25 @@ class DrMarioRetroEnv(gym.Env):
         except (TypeError, ValueError):
             self._frames_without_active_pill = 0
             return
-        size_val = self._read_ram_value(size_addr)
+
+        ram_arr = self._state_cache.ram.arr
+        size_val = ram_arr[size_addr] if 0 <= size_addr < ram_arr.shape[0] else None
+
         if size_val is None or size_val >= 2:
             self._frames_without_active_pill = 0
             return
-        lock_hex = self._ram_offsets.get("gravity_lock", {}).get("lock_counter_addr")
-        lock_val = None
-        if lock_hex:
-            try:
-                lock_val = self._read_ram_value(int(lock_hex, 16))
-            except (TypeError, ValueError):
-                lock_val = None
+
+        lock_val = self._state_cache.ram_vals.lock_counter
         if lock_val is not None and lock_val > 0:
             self._frames_without_active_pill = 0
             return
         self._frames_without_active_pill += self.frame_skip
 
     def _explicit_topout_flag(self) -> Optional[bool]:
+        if self._state_cache is None:
+            return None
+        ram_arr = self._state_cache.ram.arr
+
         offsets = self._ram_offsets.get("topout")
         if not offsets:
             return None
@@ -617,7 +604,7 @@ class DrMarioRetroEnv(gym.Env):
             except (TypeError, ValueError):
                 flag_addr = None
             if flag_addr is not None:
-                flag_val = self._read_ram_value(flag_addr)
+                flag_val = ram_arr[flag_addr] if 0 <= flag_addr < ram_arr.shape[0] else None
                 if flag_val is not None:
                     return bool(flag_val)
         sentinel = offsets.get("sentinel_values")
@@ -628,7 +615,7 @@ class DrMarioRetroEnv(gym.Env):
             except (TypeError, ValueError):
                 val_addr = None
             if val_addr is not None:
-                val = self._read_ram_value(val_addr)
+                val = ram_arr[val_addr] if 0 <= val_addr < ram_arr.shape[0] else None
                 if val is not None:
                     values: list[int] = []
                     try:
@@ -652,13 +639,9 @@ class DrMarioRetroEnv(gym.Env):
         if self._frames_without_active_pill >= self._topout_inactive_threshold:
             return True
         if self.obs_mode == "state":
-            ram_arr = self._read_ram_array(refresh=False)
-            if ram_arr is not None:
-                try:
-                    planes = ram_specs.ram_to_state(ram_arr.tobytes(), self._ram_offsets)
-                except Exception:
-                    planes = None
-                if planes is not None and self._detect_state_game_over_pattern(planes):
+            if self._state_cache is not None:
+                planes = self._state_cache.calc.planes
+                if self._detect_state_game_over_pattern(planes):
                     self._frames_without_active_pill = 0
                     return True
         return False
@@ -806,44 +789,14 @@ class DrMarioRetroEnv(gym.Env):
         return total_bonus
 
     def _extract_virus_count(self) -> Optional[int]:
-        ram_arr = self._read_ram_array(refresh=False)
-        if ram_arr is None:
+        if self._state_cache is None:
             return None
-        addr_hex = self._ram_offsets.get("viruses", {}).get("remaining_addr") if "viruses" in self._ram_offsets else None
-        if not addr_hex:
-            return None
-        idx = int(addr_hex, 16)
-        if 0 <= idx < ram_arr.shape[0]:
-            return int(ram_arr[idx])
-        return None
+        return self._state_cache.calc.viruses_remaining
 
     def _decode_preview_pill(self) -> Optional[Dict[str, int]]:
-        offsets = self._ram_offsets.get("preview_pill")
-        if not offsets:
+        if self._state_cache is None:
             return None
-        ram_arr = self._read_ram_array(refresh=False)
-        if ram_arr is None:
-            return None
-
-        def read_addr(key: str) -> Optional[int]:
-            addr_hex = offsets.get(key)
-            if not addr_hex:
-                return None
-            idx = int(addr_hex, 16)
-            if 0 <= idx < ram_arr.shape[0]:
-                return int(ram_arr[idx])
-            return None
-
-        first = read_addr("left_color_addr")
-        second = read_addr("right_color_addr")
-        rotation = read_addr("rotation_addr")
-        if first is None or second is None or rotation is None:
-            return None
-        return {
-            "first_color": int(first & 0x03),
-            "second_color": int(second & 0x03),
-            "rotation": int(rotation & 0x03),
-        }
+        return self._state_cache.calc.preview
 
     def _augment_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
         augmented = dict(info)
@@ -1055,21 +1008,11 @@ class DrMarioRetroEnv(gym.Env):
         return self._mock_obs()
 
     def _state_obs(self) -> np.ndarray:
-        # RAM->state mapping (C=STATE_CHANNELS, H=16, W=8). If backend present, parse RAM; else zeros
-        planes = np.zeros((ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)
-        if self._using_backend:
-            ram_arr = self._read_ram_array()
-            if ram_arr is not None:
-                try:
-                    planes = ram_specs.ram_to_state(ram_arr.tobytes(), self._ram_offsets)
-                except Exception:
-                    planes = np.zeros((ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)
-        # Maintain a 4-frame stack along axis 0
-        if getattr(self, "_state_stack", None) is None:
-            self._state_stack = np.stack([planes for _ in range(4)], axis=0)
-        else:
-            self._state_stack = np.concatenate([self._state_stack[1:], planes[None, ...]], axis=0)
-        return self._state_stack
+        # Always return the per-step cached stack so we don't remap RAM
+        if self._state_cache is None:
+            # Fallback for very early calls; could also raise
+            return np.zeros((4, ram_specs.STATE_CHANNELS, 16, 8), dtype=np.float32)  # or your configured shape
+        return self._state_cache.stack4
 
     def _observe(self, risk_tau: Optional[float] = None) -> Any:
         if self.obs_mode == "pixel":
@@ -1096,6 +1039,7 @@ class DrMarioRetroEnv(gym.Env):
         self._state_viz_last_t = -1
         self._pix_stack = None
         self._state_stack = None
+        self._state_cache = None
         self._in_game = False
         self._prev_terminal = getattr(self, "_last_terminal", None)
         self._last_terminal = None
@@ -1122,6 +1066,22 @@ class DrMarioRetroEnv(gym.Env):
                 self._last_frame = self._backend.get_frame()
                 self._update_pixel_stack(self._last_frame)
                 self._read_ram_array(refresh=True)
+
+                ram_arr = self._read_ram_array(refresh=False)
+                ram_bytes = ram_arr.tobytes()
+
+                # Freeze/update canonical state
+                self._state_cache = build_state(
+                    ram_bytes=ram_bytes,
+                    ram_offsets=self._ram_offsets,
+                    prev_stack4=None,
+                    t=self._t,
+                    elapsed_frames=self._elapsed_frames,
+                    frame_skip=self.frame_skip,
+                    last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
+                )
+                self._state_stack = self._state_cache.stack4
+
             except Exception as exc:
                 warnings.warn(f"Backend reset failed: {exc}. Falling back to mock dynamics.")
                 try:
@@ -1267,18 +1227,37 @@ class DrMarioRetroEnv(gym.Env):
                         )
                     except Exception:
                         pass
-                mode_val, gameplay_flag = self._read_gameplay_flag()
-                self._game_mode_val = mode_val
-                self._gameplay_active = gameplay_flag
-                self._stage_clear_flag = self._read_stage_clear_flag()
-                self._ending_active = self._read_ending_flag()
-                self._player_count = self._read_player_count()
-                self._pill_spawn_counter = self._read_pill_counter()
-                self._frames_until_drop_val = self._read_frames_until_drop()
+
+                # Snapshot RAM exactly once per step
+                ram_arr = self._read_ram_array()  # existing helper; returns np.uint8 array
+                ram_bytes = ram_arr.tobytes()
+
+                # Freeze/update canonical state
+                self._state_cache = build_state(
+                    ram_bytes=ram_bytes,
+                    ram_offsets=self._ram_offsets,
+                    prev_stack4=None if self._state_cache is None else self._state_cache.stack4,
+                    t=self._t,
+                    elapsed_frames=self._elapsed_frames,
+                    frame_skip=self.frame_skip,
+                    last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
+                )
+                self._state_stack = self._state_cache.stack4
+
+                mode_val = self._state_cache.ram_vals.mode
+                gameplay_flag = self._state_cache.ram_vals.gameplay_active
+                self._game_mode_val = self._state_cache.ram_vals.mode
+                self._gameplay_active = self._state_cache.ram_vals.gameplay_active
+                self._stage_clear_flag = self._state_cache.ram_vals.stage_clear
+                self._ending_active = self._state_cache.ram_vals.ending_active
+                self._player_count = self._state_cache.ram_vals.player_count
+                self._pill_spawn_counter = self._state_cache.ram_vals.pill_counter
+                self._frames_until_drop_val = self._state_cache.ram_vals.gravity_counter
+
                 if gameplay_flag is False:
                     self._in_game = False
                     self._frames_without_active_pill = 0
-                v_now = self._extract_virus_count()
+                v_now = self._state_cache.calc.viruses_remaining
                 if v_now is not None:
                     if gameplay_flag is True and v_now > 0:
                         self._in_game = True

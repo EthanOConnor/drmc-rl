@@ -9,6 +9,7 @@ import numpy as np
 
 import envs.specs.ram_to_state as ram_specs
 from envs.retro.drmario_env import Action
+from envs.state_core import DrMarioState
 from envs.retro.fast_reach import (
     FrameState,
     HoldDir,
@@ -141,10 +142,11 @@ class PillSnapshot:
     @classmethod
     def from_ram_state(
         cls,
-        state: Optional[np.ndarray],
-        ram_bytes: bytes,
+        state: DrMarioState,
         offsets: Dict[str, Dict],
     ) -> "PillSnapshot":
+        ram_bytes = state.ram.bytes
+
         falling_offsets = offsets.get("falling_pill", {})
         if not falling_offsets:
             raise PlannerError("Falling pill offsets are unavailable")
@@ -161,32 +163,14 @@ class PillSnapshot:
             raise PlannerError(f"Failed to decode pill RAM: {exc}") from exc
 
         # Counters and lock buffer
-        gravity_offsets = offsets.get("gravity_lock", {})
-        lock_counter = 0
-        if gravity_offsets:
-            p_addr = gravity_offsets.get("lock_counter_addr")
-            if p_addr:
-                try:
-                    lock_counter = max(0, int(ram_bytes[int(p_addr, 16)]))
-                except (ValueError, IndexError, TypeError):
-                    lock_counter = 0
+        lock_counter = state.ram_vals.lock_counter or 0
 
-        speed_counter = _read_byte(ram_bytes, ZP_SPEED_COUNTER)
-        speed_setting = _read_byte(ram_bytes, ZP_SPEED_SETTING)
-        speed_setting_hi = _read_optional_hex(offsets, "gravity_lock", "speed_setting_addr")
-        if speed_setting_hi is not None:
-            hi_val = _read_byte(ram_bytes, speed_setting_hi)
-            if hi_val:
-                speed_setting = hi_val
-        speed_ups = _read_byte(ram_bytes, ZP_SPEED_UPS)
-        speed_index_hi = _read_optional_hex(offsets, "gravity_lock", "speed_index_addr")
-        if speed_index_hi is not None:
-            hi_val = _read_byte(ram_bytes, speed_index_hi)
-            if hi_val:
-                speed_ups = hi_val
+        speed_counter = state.ram_vals.gravity_counter or 0
+        speed_setting = state.ram_vals.speed_setting or 0
+        speed_ups = state.ram_vals.speed_ups or 0
         speed_threshold = compute_speed_threshold(speed_setting, speed_ups)
 
-        hor_velocity = _read_byte(ram_bytes, ZP_HOR_VELOCITY)
+        hor_velocity = state.ram_vals.hor_velocity or 0
         frame_counter_addr = _read_optional_hex(offsets, "timers", "frame_counter_addr", 0x0043) or 0x0043
         frame_parity = _read_byte(ram_bytes, frame_counter_addr) & 0x01
         btns_addr = _read_optional_hex(offsets, "inputs", "p1_buttons_held_addr", 0x00F7) or 0x00F7
@@ -210,13 +194,7 @@ class PillSnapshot:
             except (ValueError, IndexError, TypeError):
                 color_right = 0
 
-        spawn_addr = offsets.get("pill_counter", {}).get("addr")
-        spawn_id = None
-        if spawn_addr:
-            try:
-                spawn_id = int(ram_bytes[int(spawn_addr, 16)]) & 0xFF
-            except (ValueError, IndexError, TypeError):
-                spawn_id = None
+        spawn_id = state.ram_vals.pill_counter
 
         # Convert RAM coordinates: rows count from bottom, orientation labels swapped.
         row = (GRID_HEIGHT - 1) - raw_row
