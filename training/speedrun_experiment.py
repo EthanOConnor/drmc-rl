@@ -4331,14 +4331,13 @@ def main() -> None:
         inference_time = float(slot.inference_time)
         compute_time = float(slot.step_compute_time)
         planner_time = float(slot.planner_latency_ms_total) / 1000.0  # Convert ms to seconds
-        # Total steps = completed steps + current episode steps (step_idx is 0-based, so add 1)
-        total_steps_current = total_steps + (step_idx + 1)
+        # total_steps is already updated before publish_frame is called, so use it directly
         perf_stats: Dict[str, Any] = {
             "inference_s": inference_time,
             "compute_s": compute_time,
             "wall_s": wall_elapsed,
             "total_wall_s": total_wall_elapsed,
-            "total_steps": total_steps_current,
+            "total_steps": total_steps,
             "planner_s": planner_time,
             "inference_pct_wall": (inference_time / wall_elapsed * 100.0)
             if wall_elapsed > 1e-9
