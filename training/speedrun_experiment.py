@@ -36,10 +36,15 @@ from envs.retro.demo import _ProcessViewer
 from envs.retro.drmario_env import Action
 from envs.retro.intent_wrapper import DrMarioIntentEnv
 from envs.retro.placement_wrapper import DrMarioPlacementEnv, render_planner_debug_view
-from envs.retro.register_env import register_env_id, register_intent_env_id, register_placement_env_id
+from envs.retro.register_env import (
+    register_env_id,
+    register_intent_env_id,
+    register_placement_env_id,
+)
 from gymnasium import make
 from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
 from training.discounting import discounted_returns_mlx, discounted_returns_torch
+
 try:
     from models.policy.mlx_networks import DrMarioStatePolicyMLX
 except Exception:  # pragma: no cover - optional dependency
@@ -466,7 +471,9 @@ def _mlx_collect_devices() -> List[_MLXDeviceInfo]:
     return info_list
 
 
-def _mlx_resolve_device(spec: str, devices: Optional[Sequence[_MLXDeviceInfo]] = None) -> _MLXDeviceInfo:
+def _mlx_resolve_device(
+    spec: str, devices: Optional[Sequence[_MLXDeviceInfo]] = None
+) -> _MLXDeviceInfo:
     if mx is None:
         raise RuntimeError("MLX backend is unavailable.")
     normalized = spec.strip().lower()
@@ -583,9 +590,7 @@ def _monitor_worker(
             lines.append(f"{key}: {hparams[key]}")
         return "\n".join(lines)
 
-    hyper_label = tk.Label(
-        root, text=format_hyperparams(hyperparams), anchor="w", justify="left"
-    )
+    hyper_label = tk.Label(root, text=format_hyperparams(hyperparams), anchor="w", justify="left")
     hyper_label.pack(fill="x", padx=8, pady=4)
 
     rng_enabled = bool(hyperparams.get("randomize_rng", False))
@@ -630,17 +635,11 @@ def _monitor_worker(
     try:
         plot_window = tk.Toplevel(root)
         plot_window.title("Training Plots")
-        reward_canvas = tk.Canvas(
-            plot_window, width=canvas_width, height=canvas_height, bg="white"
-        )
+        reward_canvas = tk.Canvas(plot_window, width=canvas_width, height=canvas_height, bg="white")
         reward_canvas.pack(fill="both", expand=True, padx=8, pady=(8, 4))
-        policy_canvas = tk.Canvas(
-            plot_window, width=canvas_width, height=canvas_height, bg="white"
-        )
+        policy_canvas = tk.Canvas(plot_window, width=canvas_width, height=canvas_height, bg="white")
         policy_canvas.pack(fill="both", expand=True, padx=8, pady=4)
-        value_canvas = tk.Canvas(
-            plot_window, width=canvas_width, height=canvas_height, bg="white"
-        )
+        value_canvas = tk.Canvas(plot_window, width=canvas_width, height=canvas_height, bg="white")
         value_canvas.pack(fill="both", expand=True, padx=8, pady=(4, 8))
     except Exception:
         plot_window = None
@@ -796,7 +795,7 @@ def _monitor_worker(
             pass
 
     bind_shortcuts(root)
-    bind_shortcuts(ticker_window if 'ticker_window' in locals() else None)
+    bind_shortcuts(ticker_window if "ticker_window" in locals() else None)
     bind_shortcuts(plot_window)
 
     scores: list[Tuple[int, float]] = []
@@ -871,13 +870,13 @@ def _monitor_worker(
         title: str,
         color: str,
         subtitle: Optional[str] = None,
+        dash: Optional[Tuple[int, int]] = None,
+        clear: bool = True,
     ) -> None:
         if canvas_obj is None:
             return
-        try:
-            canvas_obj.delete("plot")
-        except Exception:
-            return
+        if clear:
+            canvas_obj.delete("all")
         try:
             width = max(int(canvas_obj.winfo_width()), 10)
             height = max(int(canvas_obj.winfo_height()), 10)
@@ -957,7 +956,7 @@ def _monitor_worker(
             y = axis_top + plot_h - y_norm * plot_h
             points.extend([x, y])
         if len(points) >= 4:
-            canvas_obj.create_line(*points, tags="plot", fill=color, width=2.0)
+            canvas_obj.create_line(*points, tags="plot", fill=color, width=2.0, dash=dash)
             last_x, last_y = points[-2], points[-1]
             canvas_obj.create_oval(
                 last_x - 3,
@@ -990,11 +989,48 @@ def _monitor_worker(
         runs = [float(run) for run, _ in scores]
         values = [float(val) for _, val in scores]
         subtitle = (
-            f"Batches {int(min(runs))}–{int(max(runs))} | Median {values[-1]:.1f}"
-            if runs
-            else None
+            f"Batches {int(min(runs))}–{int(max(runs))} | Median {values[-1]:.1f}" if runs else None
         )
-        render_line_plot(reward_canvas, [(float(r), float(v)) for r, v in scores], "Batch Median Reward", "#0077cc", subtitle)
+        render_line_plot(
+            reward_canvas,
+            [(float(r), float(v)) for r, v in scores],
+            "Batch Median Reward",
+            "#0077cc",
+            subtitle,
+            clear=True,
+        )
+
+        # replace the existing smoothing block in render_reward_plot() with this
+        if len(values) > 5:
+            N = len(values)
+            # ~1/15 of the series length (tweak FRACTION if you want)
+            FRACTION = 1.0 / 15.0
+            window_size = max(3, int(round(N * FRACTION)))
+
+            # force odd window (centered moving average) and clamp to data length
+            if window_size % 2 == 0:
+                window_size += 1
+            if window_size >= N:
+                window_size = N - 1 if (N % 2 == 0) else N - 2
+                window_size = max(3, window_size)
+
+            kernel = np.ones(window_size, dtype=np.float64) / window_size
+            vals = np.asarray(values, dtype=np.float64)
+            filtered_values = np.convolve(vals, kernel, mode="valid")
+
+            # align X to the center of each window
+            offset = (window_size - 1) // 2
+            filtered_runs = runs[offset : offset + len(filtered_values)]
+
+            render_line_plot(
+                reward_canvas,
+                list(zip(filtered_runs, filtered_values.tolist())),
+                "",
+                "#ff0000",
+                None,
+                dash=(3, 4),
+                clear=False,
+            )
 
     def render_policy_plot() -> None:
         subtitle = None
@@ -1063,7 +1099,7 @@ def _monitor_worker(
             if raw is None:
                 return "-"
             try:
-                return f"{float(raw):.0f}"
+                return f"{float(raw):.3g}"
             except Exception:
                 return "-"
 
@@ -1168,13 +1204,17 @@ def _monitor_worker(
                             pass
                         try:
                             parallel_envs_var = int(
-                                payload.get("parallel_envs", parallel_envs_var) or parallel_envs_var or 1
+                                payload.get("parallel_envs", parallel_envs_var)
+                                or parallel_envs_var
+                                or 1
                             )
                         except Exception:
                             pass
                         if "batch_runs" in payload:
                             try:
-                                batch_runs_candidate = int(payload.get("batch_runs", batch_runs_var))
+                                batch_runs_candidate = int(
+                                    payload.get("batch_runs", batch_runs_var)
+                                )
                                 batch_runs_var = max(0, batch_runs_candidate)
                             except Exception:
                                 pass
@@ -1186,7 +1226,9 @@ def _monitor_worker(
                                 pass
                         if "seed_index" in payload:
                             try:
-                                current_seed_index = int(payload.get("seed_index", current_seed_index))
+                                current_seed_index = int(
+                                    payload.get("seed_index", current_seed_index)
+                                )
                                 set_seed_label()
                             except Exception:
                                 pass
@@ -1336,14 +1378,22 @@ class NetworkDiagnosticsTracker:
                 value = getattr(agent, name)
             except Exception:
                 continue
-            if self._torch is not None and self._nn is not None and isinstance(value, self._nn.Module):
+            if (
+                self._torch is not None
+                and self._nn is not None
+                and isinstance(value, self._nn.Module)
+            ):
                 existing = self._modules.get(name)
                 if existing is not value:
                     self._modules[name] = value
                     flat = self._flatten_parameters(value)
                     if flat is not None:
                         self._prev_params[name] = flat
-            if self._optim is not None and self._torch is not None and isinstance(value, self._optim.Optimizer):
+            if (
+                self._optim is not None
+                and self._torch is not None
+                and isinstance(value, self._optim.Optimizer)
+            ):
                 self._optimizers[name] = value
             if self._nn_mlx is not None and isinstance(value, self._nn_mlx.Module):
                 existing = self._mlx_modules.get(name)
@@ -1483,7 +1533,9 @@ class NetworkDiagnosticsTracker:
             self._prev_params[name] = flat_params
 
         for name, optimizer in self._optimizers.items():
-            group_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups if "lr" in group]
+            group_lrs = [
+                float(group.get("lr", 0.0)) for group in optimizer.param_groups if "lr" in group
+            ]
             if group_lrs:
                 metrics[f"{name}/lr_mean"] = float(np.mean(group_lrs))
                 metrics[f"{name}/lr_min"] = float(np.min(group_lrs))
@@ -1664,7 +1716,9 @@ class SpeedrunAgent:
     ) -> None:
         pass
 
-    def select_action(self, _obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(
+        self, _obs: Any, info: Dict[str, Any], context_id: Optional[int] = None
+    ) -> int:
         mask = _extract_action_mask(info)
         available = None
         if mask is not None:
@@ -1766,7 +1820,6 @@ class _EnvSlot:
     last_inference_duration: float = 0.0
     last_step_duration: float = 0.0
     last_spawn_id: Optional[int] = None
-    cached_action: Optional[int] = None
     awaiting_decision: bool = False
     pending_spawn_id: Optional[int] = None
     planner_calls: int = 0
@@ -1810,6 +1863,7 @@ class PolicyGradientAgent:
         torch_amp: bool = False,
         torch_compile: bool = False,
         torch_matmul_precision: Optional[str] = None,
+        policy_state_repr: str = "extended",
     ) -> None:
         if torch is None or nn is None or optim is None or Categorical is None:
             raise RuntimeError("PyTorch is required for the policy gradient agent.")
@@ -1831,6 +1885,7 @@ class PolicyGradientAgent:
         self._lr_warmup_steps = max(0, int(lr_warmup_steps))
         self._lr_cosine_steps = max(1, int(lr_cosine_steps))
         self._lr_min_scale = max(0.0, float(lr_min_scale))
+        self._policy_state_repr = policy_state_repr
         self._current_learning_rate = self._base_learning_rate
         self._total_env_steps = 0
         self._pixel_memory_format = (
@@ -1846,7 +1901,9 @@ class PolicyGradientAgent:
         self._batch_accum_critic_ev = 0.0
         self._latest_critic_ev = 0.0
         self._contexts: Dict[int, _EpisodeContext] = {}
-        augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
+        augmented_stack = _apply_color_representation(
+            np.asarray(prototype_obs, dtype=np.float32), color_repr
+        )
         self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
         self._input_dim = int(np.prod(augmented_stack.shape))
         self._nan_rewards_seen = 0
@@ -1854,22 +1911,31 @@ class PolicyGradientAgent:
         self._total_reward_steps = 0
         self._last_episode_nan_repaired = False
         if policy_arch == "mlp":
-            self.model = SimpleStateActorCritic(self._input_dim, int(action_space.n)).to(self._device)
-        elif policy_arch == "drmario_cnn":
-            in_channels = (
-                augmented_stack.shape[1] if augmented_stack.ndim >= 3 else ram_specs.STATE_CHANNELS
+            self.model = SimpleStateActorCritic(self._input_dim, int(action_space.n)).to(
+                self._device
             )
-            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+        elif policy_arch == "drmario_cnn":
+            if self._policy_state_repr == "policy_v2":
+                in_channels = 8
+            else:
+                in_channels = (
+                    augmented_stack.shape[1]
+                    if augmented_stack.ndim >= 3
+                    else ram_specs.STATE_CHANNELS
+                )
+            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(
+                self._device
+            )
         elif policy_arch == "drmario_color_cnn":
             default_color_channels = ram_specs.STATE_CHANNELS + (
                 0 if ram_specs.STATE_USE_BITPLANES else 3
             )
             in_channels = (
-                augmented_stack.shape[1]
-                if augmented_stack.ndim >= 3
-                else default_color_channels
+                augmented_stack.shape[1] if augmented_stack.ndim >= 3 else default_color_channels
             )
-            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+            self.model = DrMarioStatePolicyNet(int(action_space.n), in_channels=in_channels).to(
+                self._device
+            )
         elif policy_arch == "drmario_unet_pixel":
             if obs_mode != "pixel":
                 raise ValueError("drmario_unet_pixel architecture requires pixel observations")
@@ -1877,7 +1943,9 @@ class PolicyGradientAgent:
             if pixel_stack.ndim != 4:
                 raise ValueError("Pixel observations must be 4D (stack, H, W, C)")
             in_channels = int(pixel_stack.shape[-1])
-            self.model = DrMarioPixelUNetPolicyNet(int(action_space.n), in_channels=in_channels).to(self._device)
+            self.model = DrMarioPixelUNetPolicyNet(int(action_space.n), in_channels=in_channels).to(
+                self._device
+            )
         else:
             raise ValueError(f"Unknown policy architecture '{policy_arch}'")
         if obs_mode == "pixel" and self._device.type == "cuda":
@@ -1952,6 +2020,13 @@ class PolicyGradientAgent:
     def _prepare_obs(self, obs: Any) -> torch.Tensor:
         stack = _extract_state_stack(obs)
         stack_np = stack.astype(np.float32, copy=False)
+
+        if self._policy_state_repr == "policy_v2":
+            policy_stack = []
+            for frame in stack_np:
+                policy_stack.append(ram_specs.extended_to_policy_v2(frame))
+            stack_np = np.stack(policy_stack, axis=0)
+
         if self._obs_mode == "state":
             stack_np = _apply_color_representation(stack_np, self._color_repr)
         if self._policy_arch == "mlp":
@@ -2026,7 +2101,9 @@ class PolicyGradientAgent:
         if self._policy_arch == "mlp":
             ctx.recurrent_state = None
 
-    def select_action(self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(
+        self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None
+    ) -> int:
         ctx = self._get_context(context_id)
         state_tensor = self._prepare_obs(obs)
         ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
@@ -2041,7 +2118,9 @@ class PolicyGradientAgent:
                 logits_vec = logits.squeeze(0)
                 mask_np = _extract_action_mask(info)
                 if mask_np is not None:
-                    mask_tensor = torch.as_tensor(mask_np, dtype=torch.bool, device=logits_vec.device)
+                    mask_tensor = torch.as_tensor(
+                        mask_np, dtype=torch.bool, device=logits_vec.device
+                    )
                     if mask_tensor.any():
                         logits_vec = logits_vec.masked_fill(~mask_tensor, float("-inf"))
                 dist = Categorical(logits=logits_vec)
@@ -2061,7 +2140,9 @@ class PolicyGradientAgent:
                 logits_vec = logits_slice.squeeze(0)
                 mask_np = _extract_action_mask(info)
                 if mask_np is not None:
-                    mask_tensor = torch.as_tensor(mask_np, dtype=torch.bool, device=logits_vec.device)
+                    mask_tensor = torch.as_tensor(
+                        mask_np, dtype=torch.bool, device=logits_vec.device
+                    )
                     if mask_tensor.any():
                         logits_vec = logits_vec.masked_fill(~mask_tensor, float("-inf"))
                 dist = Categorical(logits=logits_vec)
@@ -2127,14 +2208,14 @@ class PolicyGradientAgent:
             "batch_update_count": float(self._batch_update_count),
         }
         if self._episode_update_count > 0:
-            snapshot["episode_update_avg_s"] = (
-                self._episode_update_time_accum / float(self._episode_update_count)
+            snapshot["episode_update_avg_s"] = self._episode_update_time_accum / float(
+                self._episode_update_count
             )
         else:
             snapshot["episode_update_avg_s"] = 0.0
         if self._batch_update_count > 0:
-            snapshot["batch_update_avg_s"] = (
-                self._batch_update_time_accum / float(self._batch_update_count)
+            snapshot["batch_update_avg_s"] = self._batch_update_time_accum / float(
+                self._batch_update_count
             )
         else:
             snapshot["batch_update_avg_s"] = 0.0
@@ -2170,9 +2251,7 @@ class PolicyGradientAgent:
                 rewards_np = rewards_np.copy()
                 rewards_np[nan_mask] = 0.0
 
-            rewards_tensor = torch.as_tensor(
-                rewards_np, dtype=torch.float32, device=self._device
-            )
+            rewards_tensor = torch.as_tensor(rewards_np, dtype=torch.float32, device=self._device)
             if rewards_tensor.dim() == 0:
                 rewards_tensor = rewards_tensor.unsqueeze(0)
 
@@ -2188,9 +2267,7 @@ class PolicyGradientAgent:
 
             obs_batch = torch.stack(obs_sequence, dim=0)
             obs_batch = obs_batch.to(self._device, non_blocking=True)
-            actions_tensor = torch.as_tensor(
-                action_sequence, dtype=torch.long, device=self._device
-            )
+            actions_tensor = torch.as_tensor(action_sequence, dtype=torch.long, device=self._device)
 
             log_prob_list: list[torch.Tensor] = []
             value_list: list[torch.Tensor] = []
@@ -2313,9 +2390,8 @@ class PolicyGradientAgent:
             ctx.last_spawn_id = None
 
             should_update = (
-                (self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs)
-                or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
-            )
+                self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs
+            ) or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
             if should_update:
                 self._update_policy()
         finally:
@@ -2335,17 +2411,15 @@ class PolicyGradientAgent:
         metrics["perf/batch_update_count"] = float(self._batch_update_count)
         if self._episode_update_count > 0:
             metrics["perf/episode_update_ms_avg"] = (
-                (self._episode_update_time_accum / float(self._episode_update_count)) * 1000.0
-            )
+                self._episode_update_time_accum / float(self._episode_update_count)
+            ) * 1000.0
         if self._batch_update_count > 0:
             metrics["perf/batch_update_ms_avg"] = (
-                (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
-            )
+                self._batch_update_time_accum / float(self._batch_update_count)
+            ) * 1000.0
         metrics["rewards/nan_rewards_total"] = float(self._nan_rewards_seen)
         metrics["rewards/nan_reward_episodes"] = float(self._nan_reward_episodes)
-        metrics["rewards/nan_reward_last_episode"] = (
-            1.0 if self._last_episode_nan_repaired else 0.0
-        )
+        metrics["rewards/nan_reward_last_episode"] = 1.0 if self._last_episode_nan_repaired else 0.0
         if self._total_reward_steps > 0:
             nan_rate = float(self._nan_rewards_seen) / float(self._total_reward_steps)
         else:
@@ -2455,7 +2529,10 @@ class PolicyGradientAgent:
         try:
             model_state = state.get("model_state")
             if isinstance(model_state, dict):
-                mapped_state = {k: v.to(self._device) if isinstance(v, torch.Tensor) else v for k, v in model_state.items()}
+                mapped_state = {
+                    k: v.to(self._device) if isinstance(v, torch.Tensor) else v
+                    for k, v in model_state.items()
+                }
                 self.model.load_state_dict(mapped_state)
         except Exception:
             pass
@@ -2492,7 +2569,9 @@ class PolicyGradientAgent:
             )
             self._total_reward_steps = int(state.get("reward_step_total", self._total_reward_steps))
             self._total_env_steps = int(state.get("total_env_steps", self._total_env_steps))
-            self._base_learning_rate = float(state.get("base_learning_rate", self._base_learning_rate))
+            self._base_learning_rate = float(
+                state.get("base_learning_rate", self._base_learning_rate)
+            )
             self._lr_schedule = str(state.get("lr_schedule", self._lr_schedule))
             self._lr_warmup_steps = max(0, int(state.get("lr_warmup_steps", self._lr_warmup_steps)))
             self._lr_cosine_steps = max(1, int(state.get("lr_cosine_steps", self._lr_cosine_steps)))
@@ -2538,7 +2617,9 @@ class PolicyGradientAgentMLX:
         use_last_frame_inference: bool = True,
     ) -> None:
         if mx is None or nn_mlx is None or optim_mlx is None:
-            raise RuntimeError("MLX backend is not available. Please install mlx to use --policy-backend mlx.")
+            raise RuntimeError(
+                "MLX backend is not available. Please install mlx to use --policy-backend mlx."
+            )
         if DrMarioStatePolicyMLX is None:
             raise RuntimeError("DrMarioStatePolicyMLX is unavailable.")
         if obs_mode != "state":
@@ -2564,11 +2645,15 @@ class PolicyGradientAgentMLX:
         self._total_env_steps = 0
         self._use_last_frame_inference = bool(use_last_frame_inference)
         self._contexts: Dict[int, _MLXEpisodeContext] = {}
-        augmented_stack = _apply_color_representation(np.asarray(prototype_obs, dtype=np.float32), color_repr)
+        augmented_stack = _apply_color_representation(
+            np.asarray(prototype_obs, dtype=np.float32), color_repr
+        )
         if augmented_stack.ndim < 3:
             raise ValueError("Prototype observation must have at least 3 dimensions.")
         self._stack_depth = augmented_stack.shape[0] if augmented_stack.ndim >= 3 else 1
-        in_channels = augmented_stack.shape[1] if augmented_stack.ndim >= 3 else ram_specs.STATE_CHANNELS
+        in_channels = (
+            augmented_stack.shape[1] if augmented_stack.ndim >= 3 else ram_specs.STATE_CHANNELS
+        )
         self.model = DrMarioStatePolicyMLX(
             action_dim=self._action_dim,
             in_channels=int(in_channels),
@@ -2670,6 +2755,7 @@ class PolicyGradientAgentMLX:
         if hasattr(mx, "stop_gradient"):
             stop_grad = mx.stop_gradient
         else:  # pragma: no cover - fallback for older MLX builds
+
             def stop_grad(value: Any) -> Any:
                 array_value = np.array(value, copy=True)
                 dtype = getattr(value, "dtype", None)
@@ -2724,7 +2810,9 @@ class PolicyGradientAgentMLX:
             self._zero_recurrent_state(ctx)
             ctx.last_spawn_id = None
 
-    def select_action(self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None) -> int:
+    def select_action(
+        self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None
+    ) -> int:
         ctx = self._get_context(context_id)
         stack_tensor, stack_np = self._prepare_obs(obs)
         if stack_tensor.ndim == 3:
@@ -2786,14 +2874,14 @@ class PolicyGradientAgentMLX:
             "batch_update_count": float(self._batch_update_count),
         }
         if self._episode_update_count > 0:
-            snapshot["episode_update_avg_s"] = (
-                self._episode_update_time_accum / float(self._episode_update_count)
+            snapshot["episode_update_avg_s"] = self._episode_update_time_accum / float(
+                self._episode_update_count
             )
         else:
             snapshot["episode_update_avg_s"] = 0.0
         if self._batch_update_count > 0:
-            snapshot["batch_update_avg_s"] = (
-                self._batch_update_time_accum / float(self._batch_update_count)
+            snapshot["batch_update_avg_s"] = self._batch_update_time_accum / float(
+                self._batch_update_count
             )
         else:
             snapshot["batch_update_avg_s"] = 0.0
@@ -2832,9 +2920,7 @@ class PolicyGradientAgentMLX:
             obs_batch = mx.expand_dims(obs_batch, axis=0)  # (1, T, C, H, W)
 
             action_array = ctx.actions[:episode_len]
-            actions_batch = mx.expand_dims(
-                mx.array(action_array, dtype=mx.int32), axis=-1
-            )
+            actions_batch = mx.expand_dims(mx.array(action_array, dtype=mx.int32), axis=-1)
             rewards_tensor = mx.array(rewards_np, dtype=mx.float32)
             dones_tensor = mx.array(ctx.dones[:episode_len], dtype=mx.bool_)
             target_shape = rewards_tensor.shape
@@ -2864,7 +2950,9 @@ class PolicyGradientAgentMLX:
                 returns_tensor = discounted_returns_mlx(
                     rewards_tensor, self._gamma, dones=dones_tensor, bootstrap=bootstrap_arg
                 )
-                selected = mx.squeeze(mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1)
+                selected = mx.squeeze(
+                    mx.take_along_axis(log_probs, action_tensor, axis=-1), axis=-1
+                )
                 advantages_policy = returns_tensor - values_detached
                 adv_mean = mx.mean(advantages_policy)
                 advantages_policy = advantages_policy - adv_mean
@@ -2926,9 +3014,8 @@ class PolicyGradientAgentMLX:
             self._reset_context(context_id)
 
             should_update = (
-                (self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs)
-                or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
-            )
+                self._batch_runs > 0 and self._episodes_in_batch >= self._batch_runs
+            ) or (self._batch_steps > 0 and self._steps_in_batch >= self._batch_steps)
             if should_update:
                 self._apply_optimizer_step(adjust_for_partial=False)
         finally:
@@ -2948,17 +3035,15 @@ class PolicyGradientAgentMLX:
         metrics["perf/batch_update_count"] = float(self._batch_update_count)
         if self._episode_update_count > 0:
             metrics["perf/episode_update_ms_avg"] = (
-                (self._episode_update_time_accum / float(self._episode_update_count)) * 1000.0
-            )
+                self._episode_update_time_accum / float(self._episode_update_count)
+            ) * 1000.0
         if self._batch_update_count > 0:
             metrics["perf/batch_update_ms_avg"] = (
-                (self._batch_update_time_accum / float(self._batch_update_count)) * 1000.0
-            )
+                self._batch_update_time_accum / float(self._batch_update_count)
+            ) * 1000.0
         metrics["rewards/nan_rewards_total"] = float(self._nan_rewards_seen)
         metrics["rewards/nan_reward_episodes"] = float(self._nan_reward_episodes)
-        metrics["rewards/nan_reward_last_episode"] = (
-            1.0 if self._last_episode_nan_repaired else 0.0
-        )
+        metrics["rewards/nan_reward_last_episode"] = 1.0 if self._last_episode_nan_repaired else 0.0
         if self._total_reward_steps > 0:
             nan_rate = float(self._nan_rewards_seen) / float(self._total_reward_steps)
         else:
@@ -3084,8 +3169,12 @@ class PolicyGradientAgentMLX:
         }
         try:
             mx.eval(self.model.parameters(), self.optimizer.state)
-            state["model_parameters"] = self._tree_map(self.model.parameters(), lambda arr: np.asarray(arr))
-            state["optimizer_state"] = self._tree_map(self.optimizer.state, lambda arr: np.asarray(arr))
+            state["model_parameters"] = self._tree_map(
+                self.model.parameters(), lambda arr: np.asarray(arr)
+            )
+            state["optimizer_state"] = self._tree_map(
+                self.optimizer.state, lambda arr: np.asarray(arr)
+            )
         except Exception:
             state["supports_checkpoint"] = False
         return state
@@ -3108,7 +3197,9 @@ class PolicyGradientAgentMLX:
             self._batch_steps = max(0, int(state.get("batch_steps", self._batch_steps)))
             self._batch_runs = max(0, int(state.get("batch_runs", self._batch_runs)))
             self._total_env_steps = int(state.get("total_env_steps", self._total_env_steps))
-            self._base_learning_rate = float(state.get("base_learning_rate", self._base_learning_rate))
+            self._base_learning_rate = float(
+                state.get("base_learning_rate", self._base_learning_rate)
+            )
             self._lr_schedule = str(state.get("lr_schedule", self._lr_schedule))
             self._lr_warmup_steps = max(0, int(state.get("lr_warmup_steps", self._lr_warmup_steps)))
             self._lr_cosine_steps = max(1, int(state.get("lr_cosine_steps", self._lr_cosine_steps)))
@@ -3135,6 +3226,7 @@ class PolicyGradientAgentMLX:
                 pass
         self._apply_lr_schedule(force=True)
         self._grad_accum = None
+
 
 def _extract_state_stack(observation: Any) -> np.ndarray:
     core = observation["obs"] if isinstance(observation, dict) else observation
@@ -3265,15 +3357,19 @@ def main() -> None:
     ap.add_argument("--risk-tau", type=float, default=0.5)
     ap.add_argument("--frame-offset", type=int, default=0)
     ap.add_argument("--randomize-rng", action="store_true")
-    ap.add_argument("--seed-index", type=int, default=0, help="Seed index used when RNG randomization is disabled.")
+    ap.add_argument(
+        "--seed-index",
+        type=int,
+        default=0,
+        help="Seed index used when RNG randomization is disabled.",
+    )
     ap.add_argument("--backend", type=str, default=None)
     if core_choices:
         ap.add_argument(
             "--core",
             choices=core_choices,
             default=None,
-            help="Select a bundled libretro core (available: %s)."
-            % ", ".join(core_choices),
+            help="Select a bundled libretro core (available: %s)." % ", ".join(core_choices),
         )
     else:
         ap.add_argument(
@@ -3284,9 +3380,18 @@ def main() -> None:
         )
     ap.add_argument("--core-path", type=str, default=None)
     ap.add_argument("--rom-path", type=str, default=None)
-    ap.add_argument("--reward-config", type=str, default=None, help="Path to reward config override (JSON).")
-    ap.add_argument("--checkpoint-path", type=str, default=None, help="File to save checkpoints between runs.")
-    ap.add_argument("--checkpoint-interval", type=int, default=0, help="Save checkpoint every N completed runs (0 disables).")
+    ap.add_argument(
+        "--reward-config", type=str, default=None, help="Path to reward config override (JSON)."
+    )
+    ap.add_argument(
+        "--checkpoint-path", type=str, default=None, help="File to save checkpoints between runs."
+    )
+    ap.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=0,
+        help="Save checkpoint every N completed runs (0 disables).",
+    )
     ap.add_argument("--resume", action="store_true", help="Resume from checkpoint if available.")
     ap.add_argument("--no-auto-start", action="store_true")
     ap.add_argument("--start-presses", type=int, default=None)
@@ -3305,6 +3410,11 @@ def main() -> None:
         "--placement-debug-log",
         action="store_true",
         help="Enable verbose placement planner/translator logging (stdout).",
+    )
+    ap.add_argument(
+        "--placement-path-log",
+        action="store_true",
+        help="Log compact placement planner execution traces (stdout).",
     )
     ap.add_argument(
         "--perf-mode",
@@ -3351,7 +3461,20 @@ def main() -> None:
         help="List all available MLX devices and exit.",
     )
     ap.add_argument("--color-repr", choices=["none", "shared_color"], default="none")
-    ap.add_argument("--state-repr", choices=["extended", "bitplane"], default="extended")
+    ap.add_argument(
+        "--state-repr",
+        type=str,
+        default="extended",
+        choices=["extended", "bitplane", "policy_v1"],
+        help="State representation to use for the policy network.",
+    )
+    ap.add_argument(
+        "--policy-state-repr",
+        type=str,
+        default="policy_v2",
+        choices=["extended", "bitplane", "policy_v1", "policy_v2"],
+        help="State representation to use for the policy network input.",
+    )
     ap.add_argument(
         "--batch-runs",
         type=int,
@@ -3392,8 +3515,16 @@ def main() -> None:
     ap.add_argument("--value-coef", type=float, default=0.5)
     ap.add_argument("--max-grad-norm", type=float, default=0.5)
     ap.add_argument("--device", type=str, default=None)
-    ap.add_argument("--torch-amp", action="store_true", help="Enable torch autocast for policy forward (CUDA/MPS only).")
-    ap.add_argument("--torch-compile", action="store_true", help="Compile torch model where supported (not MPS).")
+    ap.add_argument(
+        "--torch-amp",
+        action="store_true",
+        help="Enable torch autocast for policy forward (CUDA/MPS only).",
+    )
+    ap.add_argument(
+        "--torch-compile",
+        action="store_true",
+        help="Compile torch model where supported (not MPS).",
+    )
     ap.add_argument(
         "--torch-matmul-high",
         action="store_true",
@@ -3434,7 +3565,9 @@ def main() -> None:
 
     args = ap.parse_args()
 
-    if getattr(args, "intent_action_space", False) and getattr(args, "placement_action_space", False):
+    if getattr(args, "intent_action_space", False) and getattr(
+        args, "placement_action_space", False
+    ):
         ap.error("--intent-action-space and --placement-action-space are mutually exclusive")
 
     if args.mlx_list_devices:
@@ -3444,7 +3577,10 @@ def main() -> None:
     selected_mlx_device: Optional[_MLXDeviceInfo] = None
     if args.policy_backend == "mlx":
         if mx is None:
-            print("MLX backend is unavailable; install mlx to use --policy-backend mlx.", file=sys.stderr)
+            print(
+                "MLX backend is unavailable; install mlx to use --policy-backend mlx.",
+                file=sys.stderr,
+            )
         else:
             try:
                 selected_mlx_device = _mlx_configure_device(args.mlx_device)
@@ -3551,6 +3687,7 @@ def main() -> None:
             env_instance = DrMarioPlacementEnv(
                 env_instance,
                 debug_log=bool(getattr(args, "placement_debug_log", False)),
+                path_log=bool(getattr(args, "placement_path_log", False)),
             )
         return env_instance
 
@@ -3610,7 +3747,9 @@ def main() -> None:
 
     if use_learning_agent:
         if args.mode == "pixel" and args.policy_arch not in {"mlp", "drmario_unet_pixel"}:
-            raise RuntimeError("Pixel observations require --policy-arch mlp or drmario_unet_pixel.")
+            raise RuntimeError(
+                "Pixel observations require --policy-arch mlp or drmario_unet_pixel."
+            )
         if prototype_stack is None:
             raise RuntimeError("Observation stack unavailable for learner initialisation.")
         if args.policy_backend == "mlx":
@@ -3657,7 +3796,10 @@ def main() -> None:
                 lr_min_scale=args.lr_min_scale,
                 torch_amp=bool(getattr(args, "torch_amp", False)),
                 torch_compile=bool(getattr(args, "torch_compile", False)),
-                torch_matmul_precision="high" if bool(getattr(args, "torch_matmul_high", False)) else None,
+                torch_matmul_precision="high"
+                if bool(getattr(args, "torch_matmul_high", False))
+                else None,
+                policy_state_repr=args.policy_state_repr,
             )
     else:
         agent = SpeedrunAgent(
@@ -3830,7 +3972,12 @@ def main() -> None:
 
     def apply_checkpoint_payload(payload: Dict[str, Any]) -> None:
         nonlocal completed_rewards, recent_rewards, total_steps
-        nonlocal randomize_rng_enabled, current_seed_index, completed_runs, next_run_idx, reset_options
+        nonlocal \
+            randomize_rng_enabled, \
+            current_seed_index, \
+            completed_runs, \
+            next_run_idx, \
+            reset_options
         if not isinstance(payload, dict):
             return
         try:
@@ -3933,7 +4080,9 @@ def main() -> None:
     viewer_paused = False
     viewer_step_requests = 0
 
-    def create_viewers(slot_index: int) -> Tuple[Optional[_ProcessViewer], Optional[_ProcessViewer]]:
+    def create_viewers(
+        slot_index: int,
+    ) -> Tuple[Optional[_ProcessViewer], Optional[_ProcessViewer]]:
         nonlocal show_window
         if not show_window:
             return None, None
@@ -3948,7 +4097,9 @@ def main() -> None:
                     raise RuntimeError("State viewer requires shape information")
                 viewer_kwargs["state_shape"] = state_shape
                 viewer_kwargs["state_dtype"] = state_dtype
-            base_title = "Dr. Mario Trainer" if num_envs == 1 else f"Dr. Mario Trainer #{slot_index + 1}"
+            base_title = (
+                "Dr. Mario Trainer" if num_envs == 1 else f"Dr. Mario Trainer #{slot_index + 1}"
+            )
             main_viewer = _ProcessViewer(
                 base_title,
                 float(args.display_scale),
@@ -4127,9 +4278,7 @@ def main() -> None:
             batch_avg = float(timing_info.get("batch_update_avg_s", 0.0))
             perf_stats["episode_update_avg_ms"] = episode_avg * 1000.0
             perf_stats["batch_update_avg_ms"] = batch_avg * 1000.0
-            perf_stats["episode_update_count"] = float(
-                timing_info.get("episode_update_count", 0.0)
-            )
+            perf_stats["episode_update_count"] = float(timing_info.get("episode_update_count", 0.0))
             perf_stats["batch_update_count"] = float(timing_info.get("batch_update_count", 0.0))
         stats["perf"] = perf_stats
         if args.placement_action_space:
@@ -4204,7 +4353,11 @@ def main() -> None:
                             )
                     image, planner_stats = render_planner_debug_view(snapshot)
                     # Overlay current execution/holds if present in step info
-                    pd = planner_stats.get("planner_debug", {}) if isinstance(planner_stats, dict) else {}
+                    pd = (
+                        planner_stats.get("planner_debug", {})
+                        if isinstance(planner_stats, dict)
+                        else {}
+                    )
                     try:
                         exec_step = info_payload.get("placements/exec_step")
                         exec_total = info_payload.get("placements/exec_total")
@@ -4271,7 +4424,7 @@ def main() -> None:
                 try:
                     if (pf1 - pf0) > 0.1:
                         print(
-                            f"{_ts()} [timing] slot={slot.index} step_cb_publish_ms={(pf1-pf0)*1000:.3f}",
+                            f"{_ts()} [timing] slot={slot.index} step_cb_publish_ms={(pf1 - pf0) * 1000:.3f}",
                             flush=True,
                         )
                 except Exception:
@@ -4301,7 +4454,6 @@ def main() -> None:
         slot.last_inference_duration = 0.0
         slot.last_step_duration = 0.0
         slot.last_spawn_id = None
-        slot.cached_action = None
         slot.awaiting_decision = False
         slot.pending_spawn_id = None
         slot.planner_calls = 0
@@ -4390,7 +4542,10 @@ def main() -> None:
                         if last_loop is not None:
                             dt = now_loop - last_loop
                             if dt > 1.0:
-                                print(f"{_ts()} [timing] slot={slot.index} loop_gap_ms={dt*1000:.3f}", flush=True)
+                                print(
+                                    f"{_ts()} [timing] slot={slot.index} loop_gap_ms={dt * 1000:.3f}",
+                                    flush=True,
+                                )
                         slot._last_loop_ts = now_loop
                         print(f"{_ts()} [timing] slot={slot.index} loop_iter_begin", flush=True)
                     except Exception:
@@ -4420,26 +4575,7 @@ def main() -> None:
                     pill_changed = bool(info_payload.get("pill_changed", 0))
 
                     if replan_fail:
-                        slot.cached_action = None
                         slot.pending_spawn_id = None
-                        previous_request_pending = False
-
-                    if (
-                        slot.cached_action is not None
-                        and not _placement_action_reachable(info_payload, slot.cached_action)
-                    ):
-                        if getattr(args, "placement_debug_log", False):
-                            try:
-                                print(
-                                    f"[reselect] slot={slot.index} unreachable action={slot.cached_action} "
-                                    f"spawn={spawn_id}; requesting new decision",
-                                    flush=True,
-                                )
-                            except Exception:
-                                pass
-                        slot.cached_action = None
-                        slot.pending_spawn_id = None
-                        # Force a fresh decision immediately
                         previous_request_pending = False
 
                     action = 0
@@ -4455,9 +4591,6 @@ def main() -> None:
                             or (pill_changed and not spawn_changed)
                         )
                         if new_request:
-                            # If this is a new spawn, drop cached action from prior spawn; otherwise keep
-                            if spawn_changed:
-                                slot.cached_action = None
                             # Refresh planner options/info so reachability/costs are up to date for selection
                             try:
                                 tr = getattr(slot.env, "_translator", None)
@@ -4473,8 +4606,8 @@ def main() -> None:
                                         try:
                                             print(
                                                 (
-                                                    f"{_ts()} [timing] slot={slot.index} decision refresh_ms={(t1-t0)*1000:.3f} "
-                                                    f"prepare_ms={(t2-t1)*1000:.3f} options={int(info_payload.get('placements/options',0))}"
+                                                    f"{_ts()} [timing] slot={slot.index} decision refresh_ms={(t1 - t0) * 1000:.3f} "
+                                                    f"prepare_ms={(t2 - t1) * 1000:.3f} options={int(info_payload.get('placements/options', 0))}"
                                                 ),
                                                 flush=True,
                                             )
@@ -4486,7 +4619,8 @@ def main() -> None:
                                 try:
                                     print(
                                         "[decision] slot=%d spawn=%s new_request=1 prev_pending=%s "
-                                        "replan=%d pill_changed=%d spawn_changed=%d options=%d" % (
+                                        "replan=%d pill_changed=%d spawn_changed=%d options=%d"
+                                        % (
                                             slot.index,
                                             str(spawn_id),
                                             str(previous_request_pending),
@@ -4502,133 +4636,152 @@ def main() -> None:
                         slot.awaiting_decision = True
                         slot.pending_spawn_id = spawn_id
                         slot.last_spawn_id = spawn_id
-                        if slot.cached_action is None or not _placement_action_reachable(info_payload, slot.cached_action):
-                            if option_count <= 0:
-                                action = 0
+                        if option_count <= 0:
+                            action = 0
+                        else:
+                            if slot.preselected_action is not None:
+                                action = int(slot.preselected_action)
+                                slot.preselected_action = None
                             else:
-                                if slot.preselected_action is not None:
-                                    action = int(slot.preselected_action)
-                                    slot.preselected_action = None
+                                # Try to reuse policy choice if feasible; otherwise pick best feasible
+                                inference_start = time.perf_counter()
+                                sampled = agent.select_action(
+                                    slot.obs, slot.info, context_id=slot.context_id
+                                )
+                                inference_duration = time.perf_counter() - inference_start
+                                candidate = int(sampled)
+                                if _placement_action_reachable(info_payload, candidate):
+                                    action = candidate
+                                    performed_inference = True
                                 else:
-                                    # Try to reuse policy choice if feasible; otherwise pick best feasible
-                                    inference_start = time.perf_counter()
-                                    sampled = agent.select_action(
-                                        slot.obs, slot.info, context_id=slot.context_id
-                                    )
-                                    inference_duration = time.perf_counter() - inference_start
-                                    candidate = int(sampled)
-                                    if _placement_action_reachable(info_payload, candidate):
-                                        action = candidate
-                                        performed_inference = True
+                                    fallback = _best_feasible_action(info_payload)
+                                    if fallback is not None:
+                                        action = int(fallback)
                                     else:
-                                        fallback = _best_feasible_action(info_payload)
-                                        if fallback is not None:
-                                            action = int(fallback)
-                                        else:
-                                            action = 0
-                                        if getattr(args, "placement_debug_log", False):
-                                            try:
-                                                print(
-                                                    f"[select_fallback] slot={slot.index} action={int(action)} (policy {candidate} unreachable)",
-                                                    flush=True,
-                                                )
-                                            except Exception:
-                                                pass
-                            # Ensure selected action has a non-empty plan; if not, try other feasible actions
-                            try:
-                                tr = getattr(slot.env, "_translator", None)
-                                if tr is not None:
-                                    tr.refresh(); tr.prepare_options(force=False)
-                                    # First try the chosen action
-                                    plan_ok = False
-                                    force_new_request = False
-                                    try:
-                                        gp0 = time.perf_counter()
-                                        plan = tr.get_plan(int(action))
-                                        gp1 = time.perf_counter()
-                                        plan_ok = plan is not None and bool(getattr(plan, "controller", []))
-                                        if getattr(args, "placement_debug_log", False):
-                                            try:
-                                                print(
-                                                    f"{_ts()} [timing] slot={slot.index} get_plan action={int(action)} ms={(gp1-gp0)*1000:.3f}",
-                                                    flush=True,
-                                                )
-                                            except Exception:
-                                                pass
-                                    except Exception:
-                                        plan_ok = False
-                                    # If not ok, sweep other feasible actions (sorted by cost ascending)
-                                    if not plan_ok:
-                                        info_now = tr.info() or {}
-                                        mask = _extract_action_mask(info_now)
-                                        costs_val = info_now.get("placements/costs") if isinstance(info_now, dict) else None
-                                        costs = None
-                                        if mask is not None and costs_val is not None:
-                                            try:
-                                                costs = np.asarray(costs_val, dtype=float).reshape(-1)
-                                            except Exception:
-                                                costs = None
-                                        candidates = np.flatnonzero(mask) if mask is not None else np.array([], dtype=int)
-                                        if candidates.size > 0:
-                                            order = candidates
-                                            if costs is not None and costs.shape[0] == (mask.shape[0] if mask is not None else costs.shape[0]):
-                                                try:
-                                                    order = candidates[np.argsort(costs[candidates])]
-                                                except Exception:
-                                                    order = candidates
-                                            for cand in order:
-                                                try:
-                                                    gp0 = time.perf_counter()
-                                                    p = tr.get_plan(int(cand))
-                                                    gp1 = time.perf_counter()
-                                                    if getattr(args, "placement_debug_log", False):
-                                                        try:
-                                                            print(
-                                                                f"{_ts()} [timing] slot={slot.index} get_plan cand={int(cand)} ms={(gp1-gp0)*1000:.3f}",
-                                                                flush=True,
-                                                            )
-                                                        except Exception:
-                                                            pass
-                                                    if p is not None and bool(getattr(p, "controller", [])):
-                                                        action = int(cand)
-                                                        plan_ok = True
-                                                        if getattr(args, "placement_debug_log", False):
-                                                            try:
-                                                                print(f"[select_plan_ok] slot={slot.index} action={int(action)}", flush=True)
-                                                            except Exception:
-                                                                pass
-                                                        break
-                                                except Exception:
-                                                    continue
-                                        # If still no executable plan, do not latch a cached action
-                                        if not plan_ok:
-                                            force_new_request = True
-                                    if not plan_ok and getattr(args, "placement_debug_log", False):
-                                        try:
-                                            print(f"[select_plan_fail] slot={slot.index} action={int(action)}", flush=True)
-                                        except Exception:
-                                            pass
-                            except Exception:
-                                pass
-                            # Latch cached action only if we have an executable plan
-                            if plan_ok:
-                                slot.cached_action = int(action)
-                                # Persist selected placement action for viewer until next spawn
-                                if option_count > 0:
-                                    slot.selected_action = int(action)
+                                        action = 0
                                     if getattr(args, "placement_debug_log", False):
                                         try:
                                             print(
-                                                f"[select] slot={slot.index} action={int(action)} at spawn {spawn_id}",
+                                                f"[select_fallback] slot={slot.index} action={int(action)} (policy {candidate} unreachable)",
                                                 flush=True,
                                             )
                                         except Exception:
                                             pass
-                            else:
-                                # No executable plan found; take a NOOP frame and force a new decision next loop
-                                action = 0
-                                previous_request_pending = False
-                                slot.awaiting_decision = False
+                        # Ensure selected action has a non-empty plan; if not, try other feasible actions
+                        try:
+                            tr = getattr(slot.env, "_translator", None)
+                            if tr is not None:
+                                tr.refresh()
+                                tr.prepare_options(force=False)
+                                # First try the chosen action
+                                plan_ok = False
+                                force_new_request = False
+                                try:
+                                    gp0 = time.perf_counter()
+                                    plan = tr.get_plan(int(action))
+                                    gp1 = time.perf_counter()
+                                    plan_ok = plan is not None and bool(
+                                        getattr(plan, "controller", [])
+                                    )
+                                    if getattr(args, "placement_debug_log", False):
+                                        try:
+                                            print(
+                                                f"{_ts()} [timing] slot={slot.index} get_plan action={int(action)} ms={(gp1 - gp0) * 1000:.3f}",
+                                                flush=True,
+                                            )
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    plan_ok = False
+                                # If not ok, sweep other feasible actions (sorted by cost ascending)
+                                if not plan_ok:
+                                    info_now = tr.info() or {}
+                                    mask = _extract_action_mask(info_now)
+                                    costs_val = (
+                                        info_now.get("placements/costs")
+                                        if isinstance(info_now, dict)
+                                        else None
+                                    )
+                                    costs = None
+                                    if mask is not None and costs_val is not None:
+                                        try:
+                                            costs = np.asarray(costs_val, dtype=float).reshape(-1)
+                                        except Exception:
+                                            costs = None
+                                    candidates = (
+                                        np.flatnonzero(mask)
+                                        if mask is not None
+                                        else np.array([], dtype=int)
+                                    )
+                                    if candidates.size > 0:
+                                        order = candidates
+                                        if costs is not None and costs.shape[0] == (
+                                            mask.shape[0] if mask is not None else costs.shape[0]
+                                        ):
+                                            try:
+                                                order = candidates[np.argsort(costs[candidates])]
+                                            except Exception:
+                                                order = candidates
+                                        for cand in order:
+                                            try:
+                                                gp0 = time.perf_counter()
+                                                p = tr.get_plan(int(cand))
+                                                gp1 = time.perf_counter()
+                                                if getattr(args, "placement_debug_log", False):
+                                                    try:
+                                                        print(
+                                                            f"{_ts()} [timing] slot={slot.index} get_plan cand={int(cand)} ms={(gp1 - gp0) * 1000:.3f}",
+                                                            flush=True,
+                                                        )
+                                                    except Exception:
+                                                        pass
+                                                if p is not None and bool(
+                                                    getattr(p, "controller", [])
+                                                ):
+                                                    action = int(cand)
+                                                    plan_ok = True
+                                                    if getattr(args, "placement_debug_log", False):
+                                                        try:
+                                                            print(
+                                                                f"[select_plan_ok] slot={slot.index} action={int(action)}",
+                                                                flush=True,
+                                                            )
+                                                        except Exception:
+                                                            pass
+                                                    break
+                                            except Exception:
+                                                continue
+                                    # If still no executable plan, do not latch a cached action
+                                    if not plan_ok:
+                                        force_new_request = True
+                                if not plan_ok and getattr(args, "placement_debug_log", False):
+                                    try:
+                                        print(
+                                            f"[select_plan_fail] slot={slot.index} action={int(action)}",
+                                            flush=True,
+                                        )
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                        # Latch cached action only if we have an executable plan
+                        if plan_ok:
+                            # Persist selected placement action for viewer until next spawn
+                            if option_count > 0:
+                                slot.selected_action = int(action)
+                                if getattr(args, "placement_debug_log", False):
+                                    try:
+                                        print(
+                                            f"[select] slot={slot.index} action={int(action)} at spawn {spawn_id}",
+                                            flush=True,
+                                        )
+                                    except Exception:
+                                        pass
+                        else:
+                            # No executable plan found; take a NOOP frame and force a new decision next loop
+                            action = 0
+                            previous_request_pending = False
+                            slot.awaiting_decision = False
                     else:
                         slot.awaiting_decision = False
                         slot.pending_spawn_id = None
@@ -4640,9 +4793,7 @@ def main() -> None:
                     slot.pending_spawn_id = None
                     slot.cached_action = None
                     inference_start = time.perf_counter()
-                    sampled = agent.select_action(
-                        slot.obs, slot.info, context_id=slot.context_id
-                    )
+                    sampled = agent.select_action(slot.obs, slot.info, context_id=slot.context_id)
                     inference_duration = time.perf_counter() - inference_start
                     action = int(sampled)
                     performed_inference = True
@@ -4659,7 +4810,9 @@ def main() -> None:
                 slot.intermediate_reward = 0.0
                 if getattr(args, "placement_debug_log", False):
                     try:
-                        print(f"{_ts()} [timing] pre_env_step main action={int(action)}", flush=True)
+                        print(
+                            f"{_ts()} [timing] pre_env_step main action={int(action)}", flush=True
+                        )
                     except Exception:
                         pass
                 estep_t0 = time.perf_counter()
@@ -4668,7 +4821,7 @@ def main() -> None:
                 if getattr(args, "placement_debug_log", False):
                     try:
                         print(
-                            f"{_ts()} [timing] slot={slot.index} env.step action={int(action)} ms={(estep_t1-estep_t0)*1000:.3f}",
+                            f"{_ts()} [timing] slot={slot.index} env.step action={int(action)} ms={(estep_t1 - estep_t0) * 1000:.3f}",
                             flush=True,
                         )
                     except Exception:
@@ -4676,12 +4829,6 @@ def main() -> None:
                 stepped_any = True
                 step_info = dict(step_info or {})
                 step_done = bool(term or trunc)
-
-                if responded_to_request:
-                    # If the wrapper surfaced another decision request and no plan was latched,
-                    # drop the pending flag so we can reselect immediately next loop.
-                    if bool(step_info.get("placements/needs_action", False)) and slot.cached_action is None:
-                        slot.awaiting_decision = False
 
                 slot.episode_reward += reward
                 slot.episode_steps += 1
@@ -4751,9 +4898,15 @@ def main() -> None:
                 if getattr(args, "placement_debug_log", False):
                     try:
                         if (t_pub1 - t_pub0) > 0.1:
-                            print(f"{_ts()} [timing] slot={slot.index} publish_diagnostics_ms={(t_pub1-t_pub0)*1000:.3f}", flush=True)
+                            print(
+                                f"{_ts()} [timing] slot={slot.index} publish_diagnostics_ms={(t_pub1 - t_pub0) * 1000:.3f}",
+                                flush=True,
+                            )
                         if (pf1 - pf0) > 0.1:
-                            print(f"{_ts()} [timing] slot={slot.index} publish_frame_ms={(pf1-pf0)*1000:.3f}", flush=True)
+                            print(
+                                f"{_ts()} [timing] slot={slot.index} publish_frame_ms={(pf1 - pf0) * 1000:.3f}",
+                                flush=True,
+                            )
                     except Exception:
                         pass
                 slot.intermediate_reward = 0.0
@@ -4785,7 +4938,9 @@ def main() -> None:
                         "episodes_completed": len(completed_rewards),
                         "episode_reward": run_reward,
                         "reward_mean_5": float(np.mean(recent_rewards)) if recent_rewards else 0.0,
-                        "reward_std_5": float(np.std(recent_rewards)) if len(recent_rewards) > 1 else 0.0,
+                        "reward_std_5": float(np.std(recent_rewards))
+                        if len(recent_rewards) > 1
+                        else 0.0,
                         "best_reward": float(np.max(completed_rewards)),
                         "episode_steps": slot.episode_steps,
                         "total_steps": total_steps,
@@ -4794,14 +4949,10 @@ def main() -> None:
                         "perf/run_wall_time_s": run_wall,
                         "perf/loop_compute_time_s": compute_s,
                         "perf/inference_wait_wall_pct": (
-                            inference_s / run_wall * 100.0
-                            if run_wall > 1e-9
-                            else 0.0
+                            inference_s / run_wall * 100.0 if run_wall > 1e-9 else 0.0
                         ),
                         "perf/inference_wait_compute_pct": (
-                            inference_s / compute_s * 100.0
-                            if compute_s > 1e-9
-                            else 0.0
+                            inference_s / compute_s * 100.0 if compute_s > 1e-9 else 0.0
                         ),
                         "perf/inference_calls": float(slot.inference_calls),
                     }
@@ -4836,18 +4987,10 @@ def main() -> None:
                                 episode_last * 1000.0
                             )
                             diagnostics_payload["perf/update_batch_ms_last"] = batch_last * 1000.0
-                            episode_avg = float(
-                                timing_snapshot.get("episode_update_avg_s", 0.0)
-                            )
-                            batch_avg = float(
-                                timing_snapshot.get("batch_update_avg_s", 0.0)
-                            )
-                            diagnostics_payload["perf/update_episode_ms_avg"] = (
-                                episode_avg * 1000.0
-                            )
-                            diagnostics_payload["perf/update_batch_ms_avg"] = (
-                                batch_avg * 1000.0
-                            )
+                            episode_avg = float(timing_snapshot.get("episode_update_avg_s", 0.0))
+                            batch_avg = float(timing_snapshot.get("batch_update_avg_s", 0.0))
+                            diagnostics_payload["perf/update_episode_ms_avg"] = episode_avg * 1000.0
+                            diagnostics_payload["perf/update_batch_ms_avg"] = batch_avg * 1000.0
                             diagnostics_payload["perf/update_episode_count"] = float(
                                 timing_snapshot.get("episode_update_count", 0.0)
                             )
@@ -4939,12 +5082,12 @@ def main() -> None:
             )
 
 
-
 if __name__ == "__main__":
     # Entry point: run the experiment harness. Any UI elements (monitor/viewer)
     # are created inside their respective processes; avoid referencing them here.
     main()
 _LOG_T0 = time.perf_counter()
+
 
 def _ts() -> str:
     try:

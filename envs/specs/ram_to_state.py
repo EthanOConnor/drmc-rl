@@ -42,7 +42,7 @@ def _normalize_mode(mode: Optional[str]) -> str:
     if not mode:
         return "extended"
     value = str(mode).strip().lower()
-    if value not in {"extended", "bitplane"}:
+    if value not in {"extended", "bitplane", "policy_v1"}:
         raise ValueError(f"Unknown state representation '{mode}'")
     return value
 
@@ -91,6 +91,23 @@ def _build_state_index_bitplane() -> SimpleNamespace:
     )
 
 
+def _build_state_index_policy_v1() -> SimpleNamespace:
+    return SimpleNamespace(
+        color_channels=None,
+        virus_color_channels=(0, 1, 2),
+        static_color_channels=(3, 4, 5),
+        falling_color_channels=(6, 7, 8),
+        level=9,
+        preview_first=10,
+        preview_second=11,
+        clearing_mask=None,
+        empty_mask=None,
+    )
+
+
+
+
+
 def _configure_state_representation(mode: str) -> None:
     global STATE_REPR, STATE_USE_BITPLANES, STATE_CHANNELS, STATE_IDX, STATE_FRAME_SHAPE
     mode_norm = _normalize_mode(mode)
@@ -101,6 +118,12 @@ def _configure_state_representation(mode: str) -> None:
         STATE_USE_BITPLANES = True
         STATE_CHANNELS = 12
         STATE_IDX = _build_state_index_bitplane()
+    elif mode_norm == "policy_v1":
+        STATE_REPR = "policy_v1"
+        STATE_USE_BITPLANES = False
+        STATE_CHANNELS = 13
+        STATE_IDX = _build_state_index_policy_v1()
+
     else:
         STATE_REPR = "extended"
         STATE_USE_BITPLANES = False
@@ -137,6 +160,9 @@ def _read_optional(ram: bytes, addr_hex: Optional[str]) -> Optional[int]:
     if idx < 0 or idx >= len(ram):
         return None
     return int(ram[idx])
+
+
+
 
 
 def _ram_to_state_extended(
@@ -486,6 +512,39 @@ def get_occupancy_mask(frame: np.ndarray) -> np.ndarray:
     return occ
 
 
+def extended_to_policy_v2(state: np.ndarray) -> np.ndarray:
+    """Converts a 16-channel extended state to an 8-channel policy_v2 state."""
+    C, H, W = state.shape
+    if C != 16:
+        # This is not an extended state, so we can't convert it.
+        # For now, we'll just return the state as is.
+        return state
+
+    policy_state = np.zeros((8, H, W), dtype=state.dtype)
+
+    # color_channels (3 channels)
+    virus_colors = state[0:3]
+    static_colors = state[3:6]
+    policy_state[0:3] = np.maximum(virus_colors, static_colors)
+
+    # virus_mask (1 channel)
+    policy_state[3] = (virus_colors > 0.1).any(axis=0)
+
+    # locked_mask (1 channel)
+    policy_state[4] = (static_colors > 0.1).any(axis=0)
+
+    # level (1 channel)
+    policy_state[5] = state[12]
+
+    # preview_first (1 channel)
+    policy_state[6] = state[13]
+
+    # preview_second (1 channel)
+    policy_state[7] = state[14]
+
+    return policy_state
+
+
 __all__ = [
     "ram_to_state",
     "set_state_representation",
@@ -511,4 +570,5 @@ __all__ = [
     "get_lock_value",
     "get_level_value",
     "decode_preview_from_state",
+    "extended_to_policy_v2",
 ]

@@ -29,6 +29,15 @@ from envs.retro.placement_actions import (
     action_from_cells,
     opposite_actions,
 )
+from envs.retro.reach512 import (
+    O_HNEG,
+    O_HPOS,
+    O_VNEG,
+    O_VPOS,
+    drm_idx,
+    reconstruct_actions_to,
+    run_reachability,
+)
 
 GridCoord = Tuple[int, int]
 
@@ -49,6 +58,22 @@ def iter_cells(row: int, col: int, orient: int) -> Iterator[GridCoord]:
     offsets = ORIENT_OFFSETS[int(orient) & 3]
     for dr, dc in offsets:
         yield row + dr, col + dc
+
+
+def _edge_orientation(edge) -> Optional[int]:
+    r0, c0 = edge.origin
+    r1, c1 = edge.dest
+    dr = r1 - r0
+    dc = c1 - c0
+    if dr == 0 and dc == 1:
+        return O_HPOS
+    if dr == 0 and dc == -1:
+        return O_HNEG
+    if dr == 1 and dc == 0:
+        return O_VPOS
+    if dr == -1 and dc == 0:
+        return O_VNEG
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +290,13 @@ class BoardState:
                 return False
         return True
 
+    def without_capsule(self, pill: PillSnapshot) -> "BoardState":
+        cols = self.columns.copy()
+        for rr, cc in iter_cells(int(pill.row), int(pill.col), int(pill.orient)):
+            if 0 <= cc < GRID_WIDTH and 0 <= rr < GRID_HEIGHT:
+                cols[cc] &= ~(1 << rr)
+        return BoardState(columns=cols)
+
 
 # ---------------------------------------------------------------------------
 # Planner API types
@@ -399,69 +431,174 @@ class PlacementPlanner:
         return plan
 
     def plan_action_fast(self, board: BoardState, capsule: PillSnapshot, action: int) -> Optional[PlanResult]:
-        from envs.retro.reach512 import feasibility_and_costs, reconstruct_actions_to, run_reachability
         if action < 0 or action >= action_count():
             return None
         cols = board.columns.astype(np.uint16)
         sx, sy, so = int(capsule.col), int(capsule.row), int(capsule.orient) & 3
-        legal, feasible, costs = feasibility_and_costs(cols, sx, sy, so)
-        if not (bool(legal[int(action)]) and bool(feasible[int(action)])):
-            return None
-        # Target anchor for this directed action
-        edge = PLACEMENT_EDGES[int(action)]
-        r0, c0 = edge.origin
-        r1, c1 = edge.dest
-        dr = r1 - r0
-        dc = c1 - c0
-        if dr == 0 and dc == 1:
-            to = 0
-        elif dr == 0 and dc == -1:
-            to = 2
-        elif dr == 1 and dc == 0:
-            to = 1
-        elif dr == -1 and dc == 0:
-            to = 3
-        else:
-            return None
-        tx, ty = int(c0), int(r0)
         reach = run_reachability(cols, sx, sy, so)
-        route = reconstruct_actions_to(reach, tx, ty, to)
+        orient = _edge_orientation(PLACEMENT_EDGES[int(action)])
+        if orient is None:
+            return None
+        r0, c0 = PLACEMENT_EDGES[int(action)].origin
+        target_idx = drm_idx(int(c0), int(r0), orient)
+        arrival_cost = int(reach.arrival[target_idx])
+        if arrival_cost == 0xFF:
+            return None
+        route = reconstruct_actions_to(reach, int(c0), int(r0), orient)
         if not route:
             return None
-        # Build minimal controller and state trace
-        states: List[CapsuleState] = []
+        return self._plan_from_route_fast(capsule, action, route, arrival_cost)
+
+    def _plan_from_route_fast(
+        self,
+        capsule: PillSnapshot,
+        action: int,
+        route: List[Tuple[int, int, int, int]],
+        arrival_cost: int,
+    ) -> Optional[PlanResult]:
+        if not route:
+            return None
         controller: List[ControllerStep] = []
-        for i, (x, y, o, code) in enumerate(route):
+        states: List[CapsuleState] = []
+
+        start_x, start_y, start_o, _ = route[0]
+        base = snapshot_to_capsule_state(capsule)
+        base.row = int(start_y)
+        base.col = int(start_x)
+        base.orient = int(start_o) & 3
+        base.hold_left = False
+        base.hold_right = False
+        base.hold_down = False
+        base.frames = 0
+        states.append(base)
+
+        frame_counter = 0
+        hold_left = False
+        hold_right = False
+        hold_down = False
+
+        def append_state(row: int, col: int, orient: int, *, locked: bool = False) -> None:
             states.append(
                 CapsuleState(
-                    row=int(y), col=int(x), orient=int(o),
-                    speed_counter=0, speed_threshold=int(capsule.gravity_period),
-                    hor_velocity=0, frame_parity=0,
-                    hold_left=False, hold_right=False, hold_down=False,
-                    locked=False, frames=i,
+                    row=int(row),
+                    col=int(col),
+                    orient=int(orient) & 3,
+                    speed_counter=0,
+                    speed_threshold=int(capsule.gravity_period),
+                    hor_velocity=0,
+                    frame_parity=0,
+                    hold_left=bool(hold_left),
+                    hold_right=bool(hold_right),
+                    hold_down=bool(hold_down),
+                    locked=bool(locked),
+                    frames=frame_counter,
                 )
             )
-            if i + 1 < len(route):
-                # Map reach512 transition code to controller step.
-                # Infer if a left kick happened by comparing x.
-                x_prev, y_prev, o_prev, _ = route[i]
-                x_next, y_next, o_next, code_next = route[i + 1]
-                if code_next == 1:  # DOWN
-                    controller.append(ControllerStep(action=Action.DOWN_HOLD, hold_down=True))
-                elif code_next == 2:  # LEFT
-                    controller.append(ControllerStep(action=Action.NOOP, hold_left=True))
-                elif code_next == 3:  # RIGHT
-                    controller.append(ControllerStep(action=Action.NOOP, hold_right=True))
-                elif code_next == 4:  # ROT CW
-                    controller.append(ControllerStep(action=Action.ROTATE_A, hold_left=(x_next < x_prev)))
-                elif code_next == 5:  # ROT CCW
-                    controller.append(ControllerStep(action=Action.ROTATE_B, hold_left=(x_next < x_prev)))
-                else:
-                    controller.append(ControllerStep(action=Action.NOOP))
-        if states:
-            states[-1].locked = True
-        cost_val = int(costs[int(action)]) if np.isfinite(costs[int(action)]) else len(controller)
-        return PlanResult(action=int(action), controller=controller, states=states, cost=cost_val, path_index=0, bfs_spawn=(sx, sy, so))
+
+        for idx in range(1, len(route)):
+            x_prev, y_prev, o_prev, _ = route[idx - 1]
+            x_next, y_next, o_next, code = route[idx]
+
+            if code == 1:  # DOWN
+                hold_down = True
+                hold_left = False
+                hold_right = False
+                controller.append(ControllerStep(action=Action.DOWN, hold_down=True))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+            elif code == 2:  # LEFT
+                hold_down = False
+                hold_left = True
+                hold_right = False
+                controller.append(ControllerStep(action=Action.LEFT, hold_left=True))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+                hold_left = False
+                controller.append(ControllerStep(action=Action.NOOP, hold_left=False))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+            elif code == 3:  # RIGHT
+                hold_down = False
+                hold_right = True
+                hold_left = False
+                controller.append(ControllerStep(action=Action.RIGHT, hold_right=True))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+                hold_right = False
+                controller.append(ControllerStep(action=Action.NOOP, hold_right=False))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+            else:  # Rotations
+                hold_down = False
+                delta_orient = (int(o_next) - int(o_prev)) & 3
+                action_code = Action.NOOP
+                if delta_orient == 1 or code == 4:
+                    action_code = Action.ROTATE_A
+                elif delta_orient == 3 or code == 5:
+                    action_code = Action.ROTATE_B
+                kick_left = x_next < x_prev
+                hold_left = kick_left
+                hold_right = False
+                controller.append(ControllerStep(action=action_code, hold_left=kick_left))
+                frame_counter += 1
+                append_state(y_next, x_next, o_next)
+                if kick_left:
+                    hold_left = False
+                    controller.append(ControllerStep(action=Action.NOOP, hold_left=False))
+                    frame_counter += 1
+                    append_state(y_next, x_next, o_next)
+
+        if not controller:
+            return None
+        states[-1].locked = True
+        cost_val = int(arrival_cost) if arrival_cost >= 0 else len(controller)
+        plan = PlanResult(action=int(action), controller=controller, states=states, cost=cost_val, path_index=0, bfs_spawn=None)
+        return plan
+
+    def enumerate_fast_options(
+        self,
+        board: BoardState,
+        capsule: PillSnapshot,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Tuple[PlanResult, ...], Dict[str, int]]:
+        cols = board.columns.astype(np.uint16)
+        reach = run_reachability(cols, int(capsule.col), int(capsule.row), int(capsule.orient) & 3)
+        arrival = reach.arrival
+        legal = np.zeros(action_count(), dtype=np.bool_)
+        feasible = np.zeros(action_count(), dtype=np.bool_)
+        costs = np.full(action_count(), np.inf, dtype=np.float32)
+        path_indices = np.full(action_count(), -1, dtype=np.int32)
+        plans: List[PlanResult] = []
+        for edge in PLACEMENT_EDGES:
+            idx = edge.index
+            orient = _edge_orientation(edge)
+            if orient is None:
+                continue
+            r0, c0 = edge.origin
+            if not board.fits(r0, c0, orient):
+                continue
+            if board.fits(r0 + 1, c0, orient):
+                continue
+            legal[idx] = True
+            target_idx = drm_idx(int(c0), int(r0), orient)
+            arrival_cost = int(arrival[target_idx])
+            if arrival_cost == 0xFF:
+                continue
+            route = reconstruct_actions_to(reach, int(c0), int(r0), orient)
+            if not route:
+                continue
+            plan = self._plan_from_route_fast(capsule, idx, route, arrival_cost)
+            if plan is None:
+                continue
+            plan.path_index = len(plans)
+            plans.append(plan)
+            feasible[idx] = True
+            path_indices[idx] = plan.path_index
+            costs[idx] = float(plan.cost)
+        stats = {
+            "expanded": int(np.count_nonzero(arrival != 0xFF)),
+            "terminals": int(feasible.sum()),
+        }
+        return legal, feasible, costs, path_indices, tuple(plans), stats
 
     # ------------------------------------------------------------------
     # Internal helpers

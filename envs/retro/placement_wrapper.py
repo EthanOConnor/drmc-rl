@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import gymnasium as gym
 import numpy as np
@@ -52,6 +53,13 @@ class _ExecutionOutcome:
     planner_resynced: bool = False
 
 
+class _ConsistencyStatus(Enum):
+    MATCH = "match"
+    STALLED = "stalled"
+    PROGRESS = "progress"
+    DIVERGED = "diverged"
+
+
 @dataclass
 class PlannerDebugSnapshot:
     board: BoardState
@@ -67,12 +75,12 @@ class PlannerDebugSnapshot:
 class _InputTimingCalibrator:
     """Adaptive retry budgets for input timing mismatches."""
 
-    def __init__(self, *, smoothing: float = 0.25, max_frames: int = 6) -> None:
+    def __init__(self, *, smoothing: float = 0.25, max_frames: int = 16) -> None:
         self._smoothing = float(np.clip(smoothing, 0.0, 1.0)) if smoothing > 0 else 0.0
         self._max_frames = max(1, int(max_frames))
-        # Start with conservative defaults matching the legacy retry budget of two
-        # additional frames (three total attempts per command).
-        self._horizontal_frames = 3.0
+        # Start with conservative defaults tuned for NES acceleration: allow several
+        # attempts for horizontal moves (longer acceleration) and three for soft drop.
+        self._horizontal_frames = min(float(self._max_frames), 5.0)
         self._down_frames = 3.0
 
     @staticmethod
@@ -113,6 +121,10 @@ class _InputTimingCalibrator:
         elif self._is_soft_drop(ctrl):
             self._down_frames = min(self._max_frames, self._down_frames + increment)
 
+    @property
+    def max_frames(self) -> int:
+        return self._max_frames
+
     def info(self) -> Dict[str, float]:
         return {
             "placements/timing/frames_horizontal": float(self._horizontal_frames),
@@ -143,6 +155,8 @@ class PlacementTranslator:
         self._costs = np.full(action_count(), np.inf, dtype=np.float32)
         self._path_indices = np.full(action_count(), -1, dtype=np.int32)
         self._paths: Tuple[PlanResult, ...] = tuple()
+        self._plan_valid_mask: np.ndarray = np.zeros(0, dtype=np.bool_)
+        self._functional_mask: np.ndarray = np.ones(action_count(), dtype=np.bool_)
         self._current_snapshot: Optional[PillSnapshot] = None
         self._board: Optional[BoardState] = None
         self._last_state: Optional[np.ndarray] = None
@@ -164,13 +178,23 @@ class PlacementTranslator:
         # Fast-path: avoid recomputing options if board hasn't changed for this spawn
         self._last_options_board_sig: Optional[bytes] = None
         self._planner_stats: Dict[str, int] = {}
+        self._last_refresh_frame: Optional[int] = None
+        self._last_forced_options_sig: Optional[Tuple[Optional[int], bytes]] = None
+        self._internal_resync_limit = 6
 
     # ------------------------------------------------------------------
     # Snapshot helpers
     # ------------------------------------------------------------------
 
-    def refresh(self) -> None:
+    def refresh(self, *, force: bool = False) -> None:
         t0 = perf_counter()
+        frame_id: Optional[int]
+        try:
+            frame_id = int(getattr(self.env.unwrapped, "_t", None))
+        except Exception:
+            frame_id = None
+        if not force and frame_id is not None and frame_id == self._last_refresh_frame:
+            return
         try:
             state, ram_bytes = self._read_state()
         except Exception:
@@ -199,9 +223,15 @@ class PlacementTranslator:
                     )
                 except Exception:
                     pass
+            self._last_refresh_frame = frame_id
             return
         t3 = perf_counter()
         self._current_snapshot = pill
+        if self._board is not None:
+            try:
+                self._board = self._board.without_capsule(pill)
+            except Exception:
+                pass
         try:
             self._last_spawn_id = int(pill.spawn_id) if pill.spawn_id is not None else None
         except Exception:
@@ -223,13 +253,14 @@ class PlacementTranslator:
                 )
             except Exception:
                 pass
+        self._last_refresh_frame = frame_id
 
     def refresh_state_only(self) -> None:
-        """Deprecated shim; :meth:`refresh` is already cheap."""
+        """Deprecated shim; :meth:`refresh` already caches duplicate calls."""
 
         self.refresh()
 
-    def prepare_options(self, *, force: bool = False) -> None:
+    def prepare_options(self, *, force: bool = False, force_full: Optional[bool] = None) -> None:
         """Ensure placement options are prepared for the current spawn."""
 
         pill = self._current_snapshot
@@ -244,28 +275,32 @@ class PlacementTranslator:
             board_sig = board.columns.tobytes()
         except Exception:
             board_sig = b""
+        if force_full is None:
+            force_full = not self._fast_options_only
+        force_sig = (spawn_marker, board_sig)
+        if force and not force_full:
+            if self._last_forced_options_sig == force_sig:
+                return
         if (
             self._options_prepared
             and self._cached_spawn_marker == spawn_marker
             and self._last_options_board_sig == board_sig
+            and not force
         ):
             return
         start = perf_counter()
         used_fast_path = False
-        if self._fast_options_only and not force:
-            # Fast-path: accurate feasibility and costs via 512-state bitboard BFS.
-            from envs.retro.reach512 import feasibility_and_costs
-            cols = board.columns.astype(np.uint16)
-            legal, feasible, costs = feasibility_and_costs(cols, int(pill.col), int(pill.row), int(pill.orient) & 3)
-            path_indices = np.full(action_count(), -1, dtype=np.int32)
+        use_fast_path = self._fast_options_only and not bool(force_full)
+        if use_fast_path:
+            legal, feasible, costs, path_indices, plans, stats = self._planner.enumerate_fast_options(board, pill)
             t_fast = perf_counter()
             self._last_plan_latency_ms = (t_fast - start) * 1000.0
             self._legal_mask = legal
             self._feasible_mask = feasible
-            self._paths = tuple()
+            self._paths = plans
             self._costs = costs
             self._path_indices = path_indices
-            self._planner_stats = {"expanded": 0, "enqueued": 0, "terminals": int(feasible.sum())}
+            self._planner_stats = stats
             self._last_plan_count = int(feasible.sum())
             t1 = t_fast
             used_fast_path = True
@@ -280,16 +315,34 @@ class PlacementTranslator:
             self._path_indices = planner_out.path_indices.copy()
             self._planner_stats = dict(planner_out.stats)
             self._last_plan_count = int(planner_out.plan_count)
+        self._plan_valid_mask = np.ones(len(self._paths), dtype=np.bool_) if len(self._paths) else np.zeros(0, dtype=np.bool_)
+        for plan_idx, plan in enumerate(self._paths):
+            if not self._plan_is_physical(plan, pill):
+                self._plan_valid_mask[plan_idx] = False
+        if len(self._plan_valid_mask) and not np.all(self._plan_valid_mask):
+            for action_idx, plan_idx in enumerate(self._path_indices):
+                if plan_idx >= 0 and not bool(self._plan_valid_mask[plan_idx]):
+                    self._path_indices[action_idx] = -1
+                    self._feasible_mask[action_idx] = False
+                    self._costs[action_idx] = np.inf
+            self._last_plan_count = int(self._feasible_mask.sum())
+        if self._functional_mask.shape[0] != self._feasible_mask.shape[0]:
+            self._functional_mask = self._feasible_mask.astype(bool).copy()
+        else:
+            self._functional_mask = np.logical_and(self._functional_mask, self._feasible_mask)
+
         self._cached_spawn_marker = spawn_marker
         self._options_prepared = True
         self._last_options_board_sig = board_sig
+        self._last_forced_options_sig = force_sig if force else None
         # Avoid duplicate masking work if no options found
         self._mask_identical_colors(pill)
         if self._debug:
             try:
                 print(
                     (
-                        f"{_ts()} [timing] translator.prepare_options force={int(bool(force))} pre_ms={(start-t0)*1000:.3f} "
+                        f"{_ts()} [timing] translator.prepare_options force={int(bool(force))} force_full={int(bool(force_full))} "
+                        f"pre_ms={(start-t0)*1000:.3f} "
                         f"plan_ms={(t1-start)*1000:.3f} options={int(self._last_plan_count)} expanded={int(self._planner_stats.get('expanded',0))}"
                     ),
                     flush=True,
@@ -355,6 +408,7 @@ class PlacementTranslator:
             "placements/options": int(self._feasible_mask.sum()),
             "placements/costs": self._costs.copy(),
             "placements/path_indices": self._path_indices.copy(),
+            "placements/functional_mask": self._functional_mask.copy(),
         }
         if self._last_spawn_id is not None:
             info["pill/spawn_id"] = int(self._last_spawn_id)
@@ -383,9 +437,9 @@ class PlacementTranslator:
         self.prepare_options()
         idx = int(self._path_indices[int(action)])
         if idx < 0 or idx >= len(self._paths):
-            # Try rebuilding options in case caches desynced (skip if fast options mode)
-            if not bool(getattr(self, "_translator", None)) or not bool(getattr(self._translator, "_fast_options_only", False)):
-                self.prepare_options(force=True)
+            # Try rebuilding options in case caches desynced (only meaningful in full-planner mode).
+            if not self._fast_options_only:
+                self.prepare_options(force=True, force_full=True)
                 try:
                     idx = int(self._path_indices[int(action)])
                 except Exception:
@@ -415,6 +469,9 @@ class PlacementTranslator:
                     single = self._planner.plan_action_fast(self._board, self._current_snapshot, int(action))
                 except Exception:
                     single = None
+                if single is not None:
+                    if not self._plan_is_physical(single, self._current_snapshot):
+                        single = None
                 if single is not None:
                     if getattr(self._planner, "_debug", False):
                         try:
@@ -450,9 +507,13 @@ class PlacementTranslator:
                     except Exception:
                         pass
                 # Do not synthesize an empty controller plan; instead force a new decision
+                self._functional_mask = getattr(self, "_functional_mask", np.zeros(action_count(), dtype=np.bool_))
+                self._functional_mask[int(action)] = False
                 return None
             return None
         plan = self._paths[idx]
+        if len(self._plan_valid_mask) and not bool(self._plan_valid_mask[idx]):
+            return None
         # Sync guard: if the cached plan's start state does not match the current pill,
         # rebuild options and/or compute a single-target plan for the current snapshot.
         try:
@@ -465,11 +526,12 @@ class PlacementTranslator:
                         self.prepare_options(force=True)
                         idx2 = int(self._path_indices[int(action)])
                         if 0 <= idx2 < len(self._paths):
-                            return self._paths[idx2]
+                            if not len(self._plan_valid_mask) or bool(self._plan_valid_mask[idx2]):
+                                return self._paths[idx2]
                     # Fall back to single-target fast planning only
                     try:
                         fresh = self._planner.plan_action_fast(self._board, pill_now, int(action))
-                        if fresh is not None:
+                        if fresh is not None and self._plan_is_physical(fresh, pill_now):
                             return fresh
                     except Exception:
                         pass
@@ -516,6 +578,89 @@ class PlacementTranslator:
     def record_timing_failure(self, ctrl: ControllerStep) -> None:
         self._timing.observe_failure(ctrl)
 
+    def max_step_frames(self) -> int:
+        return self._timing.max_frames
+
+    def replan_to_action(self, action: int) -> Optional[PlanResult]:
+        """Recompute a plan for the given placement action from the current snapshot.
+
+        Uses the fast reachability path when possible, falling back to full planning.
+        """
+        pill = self.current_pill()
+        board = self.current_board()
+        if pill is None or board is None:
+            return None
+        try:
+            plan = self._planner.plan_action_fast(board, pill, int(action))
+        except Exception:
+            plan = None
+        if plan is not None:
+            return plan
+        return None
+
+    def internal_resync_limit(self) -> int:
+        return self._internal_resync_limit
+
+    @staticmethod
+    def _states_close(a: Optional[CapsuleState], b: Optional[CapsuleState]) -> bool:
+        if a is None or b is None:
+            return False
+        if a.orient != b.orient:
+            return False
+        if abs(a.col - b.col) > 2:
+            return False
+        if abs(a.row - b.row) > 2:
+            return False
+        return True
+
+    def resume_index_for(self, plan: PlanResult, actual: Optional[CapsuleState]) -> int:
+        if actual is None or not plan.states:
+            return 0
+        for idx, candidate in enumerate(plan.states):
+            if self._states_close(candidate, actual):
+                return min(idx, len(plan.controller))
+        # If no close match, fall back to the start
+        return 0
+
+    @staticmethod
+    def _plan_is_physical(plan: PlanResult, pill: Optional[PillSnapshot]) -> bool:
+        if plan is None or not plan.states:
+            return False
+        start = plan.states[0]
+        final = plan.states[-1]
+        start_orient = start.orient & 3
+        final_orient = final.orient & 3
+        allowed_lift = 1 if (start_orient in (0, 2) and final_orient in (1, 3)) else 0
+        if final.row + allowed_lift < start.row:
+            return False
+        min_row = min(state.row for state in plan.states)
+        if min_row + allowed_lift < start.row:
+            return False
+        return True
+
+    def alternative_action(self, attempted: Set[int]) -> Optional[int]:
+        if not self._options_prepared:
+            self.prepare_options()
+        best_action: Optional[int] = None
+        best_cost: float = float("inf")
+        for action in range(action_count()):
+            if action in attempted:
+                continue
+            if action >= self._feasible_mask.size or not bool(self._feasible_mask[action]):
+                continue
+            if action < self._functional_mask.size and not bool(self._functional_mask[action]):
+                continue
+            plan_idx = int(self._path_indices[action])
+            if plan_idx < 0 or plan_idx >= len(self._paths):
+                continue
+            if plan_idx < len(self._plan_valid_mask) and not bool(self._plan_valid_mask[plan_idx]):
+                continue
+            cost_val = float(self._costs[action]) if action < self._costs.size else float("inf")
+            if cost_val < best_cost:
+                best_cost = cost_val
+                best_action = action
+        return best_action
+
     def debug_snapshot(
         self, selected_action: Optional[int] = None
     ) -> Optional[PlannerDebugSnapshot]:
@@ -544,48 +689,127 @@ class PlacementTranslator:
     # Internal utilities
     # ------------------------------------------------------------------
 
-    def states_consistent(self, actual: Optional[CapsuleState], expected: CapsuleState) -> bool:
+    def consistency_status(
+        self,
+        actual: Optional[CapsuleState],
+        expected: CapsuleState,
+        previous: Optional[CapsuleState],
+        ctrl: ControllerStep,
+    ) -> _ConsistencyStatus:
         if actual is None:
-            return expected.locked
-        row_ok = actual.row == expected.row
-        col_ok = actual.col == expected.col
-        orient_ok = actual.orient == expected.orient
-        if self._debug and row_ok and col_ok and orient_ok:
-            if (
-                actual.speed_counter != expected.speed_counter
-                or actual.hor_velocity != expected.hor_velocity
-                or actual.hold_left != expected.hold_left
-                or actual.hold_right != expected.hold_right
-                or actual.hold_down != expected.hold_down
-            ):
-                print(
-                    (
-                        "[translator] counter drift row={row} col={col} orient={orient} "
-                        "speed_expected={exp_speed} speed_actual={act_speed} "
-                        "vel_expected={exp_vel} vel_actual={act_vel} "
-                        "holds_expected=({eL},{eR},{eD}) holds_actual=({aL},{aR},{aD})"
-                    ).format(
-                        row=actual.row,
-                        col=actual.col,
-                        orient=actual.orient,
-                        exp_speed=expected.speed_counter,
-                        act_speed=actual.speed_counter,
-                        exp_vel=expected.hor_velocity,
-                        act_vel=actual.hor_velocity,
-                        eL=int(expected.hold_left),
-                        eR=int(expected.hold_right),
-                        eD=int(expected.hold_down),
-                        aL=int(actual.hold_left),
-                        aR=int(actual.hold_right),
-                        aD=int(actual.hold_down),
-                    ),
-                    flush=True,
-                )
-        return (
+            return _ConsistencyStatus.MATCH if expected.locked else _ConsistencyStatus.DIVERGED
+
+        if (
             actual.row == expected.row
             and actual.col == expected.col
             and actual.orient == expected.orient
-        )
+        ):
+            return _ConsistencyStatus.MATCH
+
+        if actual.locked and expected.locked:
+            if previous is None or (actual.col == expected.col and actual.orient == expected.orient):
+                return _ConsistencyStatus.MATCH
+
+        if previous is not None:
+            if self._ahead_of_expected(actual, expected, previous):
+                return _ConsistencyStatus.MATCH
+            if (
+                actual.row == previous.row
+                and actual.col == previous.col
+                and actual.orient == previous.orient
+            ):
+                if self._is_progressing(actual, previous, expected, ctrl):
+                    return _ConsistencyStatus.PROGRESS
+                return _ConsistencyStatus.STALLED
+
+            if self._is_progressing(actual, previous, expected, ctrl):
+                return _ConsistencyStatus.PROGRESS
+
+        return _ConsistencyStatus.DIVERGED
+
+    @staticmethod
+    def _ahead_of_expected(
+        actual: CapsuleState,
+        expected: CapsuleState,
+        previous: CapsuleState,
+    ) -> bool:
+        if actual.orient != expected.orient:
+            return False
+        row_delta = expected.row - previous.row
+        col_delta = expected.col - previous.col
+
+        if row_delta > 0:
+            if actual.col == expected.col and actual.row >= expected.row:
+                return True
+        elif row_delta < 0:
+            if actual.col == expected.col and actual.row <= expected.row:
+                return True
+
+        if col_delta > 0:
+            if actual.row == expected.row and actual.col >= expected.col:
+                return True
+        elif col_delta < 0:
+            if actual.row == expected.row and actual.col <= expected.col:
+                return True
+
+        return False
+
+    @staticmethod
+    def _is_progressing(
+        actual: CapsuleState,
+        previous: CapsuleState,
+        expected: CapsuleState,
+        ctrl: ControllerStep,
+    ) -> bool:
+        delta_row = expected.row - previous.row
+        delta_col = expected.col - previous.col
+        delta_orient = (expected.orient - previous.orient) & 0x03
+
+        # Vertical motion (gravity / soft drop)
+        if delta_row != 0 and previous.col == expected.col and previous.orient == expected.orient:
+            direction = 1 if delta_row > 0 else -1
+            if (
+                actual.col == previous.col
+                and actual.orient == previous.orient
+            ):
+                if (actual.row - previous.row) * direction >= 0:
+                    return True
+                if (
+                    ctrl.hold_down
+                    or actual.hold_down
+                    or actual.speed_counter != previous.speed_counter
+                    or actual.speed_counter != expected.speed_counter
+                ):
+                    return True
+
+        # Horizontal motion (hold acceleration)
+        if delta_col != 0 and previous.row == expected.row and previous.orient == expected.orient:
+            direction = 1 if delta_col > 0 else -1
+            if (
+                actual.row == previous.row
+                and actual.orient == previous.orient
+            ):
+                if (actual.col - previous.col) * direction >= 0:
+                    return True
+                if direction > 0:
+                    if ctrl.hold_right or actual.hold_right or actual.hor_velocity > previous.hor_velocity:
+                        return True
+                else:
+                    if ctrl.hold_left or actual.hold_left or actual.hor_velocity < previous.hor_velocity:
+                        return True
+
+        # Rotational motion
+        if delta_orient != 0 and actual.row == previous.row and actual.col == previous.col:
+            if actual.orient == expected.orient:
+                return True
+            if ctrl.action in (Action.ROTATE_A, Action.ROTATE_B):
+                if actual.frame_parity != previous.frame_parity or actual.speed_counter != previous.speed_counter:
+                    return True
+        if delta_orient != 0 and actual.orient == expected.orient and ctrl.action in (Action.ROTATE_A, Action.ROTATE_B):
+            if actual.col == expected.col and abs(actual.row - expected.row) <= 1:
+                return True
+
+        return False
 
     def _mask_identical_colors(self, pill: PillSnapshot) -> None:
         if pill.colors[0] != pill.colors[1]:
@@ -687,14 +911,25 @@ class PlacementTranslator:
         self._last_plan_latency_ms = 0.0
         self._last_plan_count = 0
         self._planner_stats = {}
+        self._last_forced_options_sig = None
+        if getattr(self, "_functional_mask", None) is not None:
+            self._functional_mask[:] = True
 
 
 class DrMarioPlacementEnv(gym.Wrapper):
     """Wrapper exposing the 464-way placement action space (spawn-latched)."""
 
-    def __init__(self, env: gym.Env, *, planner: Optional[PlacementPlanner] = None, debug_log: bool = False) -> None:
+    def __init__(
+        self,
+        env: gym.Env,
+        *,
+        planner: Optional[PlacementPlanner] = None,
+        debug_log: bool = False,
+        path_log: bool = False,
+    ) -> None:
         super().__init__(env)
         self._debug = bool(debug_log)
+        self._path_log = bool(path_log)
         self.action_space = gym.spaces.Discrete(action_count())
         self._translator = PlacementTranslator(env, planner, debug=debug_log, fast_options_only=True)
         # Micro-cache for single-target plans within a spawn
@@ -711,6 +946,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._step_callback: Optional[
             Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]
         ] = None
+        self._attempted_actions: Set[int] = set()
 
     # ------------------------------------------------------------------
     # Gym API
@@ -749,13 +985,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._last_obs = obs
         self._last_info = info
         self._capsule_present = bool(self._translator.current_pill() is not None)
+        self._attempted_actions.clear()
         # Our spawn_id is purely internal and monotonic; do not overwrite from info.
         return obs, info
 
     def step(self, action: int):
-        # --- Always resync snapshot at step start (fixes “one inference per run”) ---
-        self._translator.refresh()
-
         # Allow a deliberate override to clear the execution latch for the same spawn.
         if (
             self._active_plan is not None
@@ -839,26 +1073,33 @@ class DrMarioPlacementEnv(gym.Wrapper):
             info_payload.update(self._translator.info() or {})
             return info_payload
 
+        attempted_actions: Set[int] = self._attempted_actions
+
         while True:
+            self._log(
+                f"loop_start spawn={self._spawn_id} action={int(action)} attempted={sorted(attempted_actions)}"
+            )
             if self._active_plan is None or self._latched_spawn_id != self._spawn_id:
                 if self._debug:
                     try:
                         print(f"{_ts()} [timing] pre_get_plan action={int(action)}", flush=True)
                     except Exception:
                         pass
-                plan = self._translator.get_plan(int(action))
+                plan = self._translator.replan_to_action(int(action))
                 if plan is None:
+                    attempted_actions.add(int(action))
                     # Advance emulator by one NOOP frame while requesting a new decision,
                     # so the environment and viewers continue to progress.
-                    if self._debug:
-                        try:
-                            print(f"{_ts()} [timing] pre_env_step no-plan noop", flush=True)
-                        except Exception:
-                            pass
+                    self._log(
+                        f"no_plan spawn={self._spawn_id} action={int(action)} -> noop"
+                    )
                     outcome = self._execute_plan(None, record_refresh_metrics)
                     total_reward += outcome.reward
                     last_obs = outcome.last_obs
                     # Overlay a fresh request for options/decision on top of the latest info
+                    self._log(
+                        f"request_new_decision spawn={self._spawn_id} reason=no_plan"
+                    )
                     last_info = request_new_decision(outcome.info)
                     terminated = outcome.terminated
                     truncated = outcome.truncated
@@ -870,6 +1111,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._log_plan_details(int(action), plan)
             else:
                 plan = self._active_plan
+                self._log(
+                    f"reusing_plan spawn={self._spawn_id} action={int(action)} latched={self._latched_action}"
+                )
 
             outcome = self._execute_plan(plan, record_refresh_metrics)
             total_reward += outcome.reward
@@ -877,8 +1121,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             last_info = outcome.info
             terminated = outcome.terminated
             truncated = outcome.truncated
-            # After executing a (multi-frame) plan, RAM has advanced; resync translator snapshot.
-            self._translator.refresh()
+            # _execute_plan already refreshes the translator as it advances the emulator.
             record_refresh_metrics()
 
             pill_now = self._translator.current_pill() is not None
@@ -894,6 +1137,19 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 failed_idx = self._latched_action if self._latched_action is not None else action
                 last_info["placements/failed_action_idx"] = int(failed_idx)
                 replan_attempts += 1
+                failed_action = int(failed_idx)
+                attempted_actions.add(failed_action)
+                if failed_action < len(self._translator._functional_mask):
+                    self._translator._functional_mask[failed_action] = False
+                self._log(
+                    f"plan_failed spawn={self._spawn_id} action={failed_action} attempts={sorted(attempted_actions)}"
+                )
+                self._log(
+                    f"fallback_exhausted spawn={self._spawn_id} attempts={sorted(attempted_actions)}"
+                )
+                self._log(
+                    f"request_new_decision spawn={self._spawn_id} reason=replan_failed"
+                )
                 last_info = request_new_decision(last_info)
                 self._clear_latch()
                 break
@@ -911,6 +1167,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._spawn_marker = marker_now
                 self._spawn_id += 1
                 self._capsule_present = True
+                self._attempted_actions.clear()
+                self._log(f"new_spawn spawn={self._spawn_id} attempts_cleared=1")
                 # Fast path: compute options only if inputs changed
                 self._translator.prepare_options(force=False)
                 record_refresh_metrics()
@@ -924,6 +1182,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if pill_now and marker_now is not None and self._spawn_marker is None:
                 self._spawn_marker = marker_now
             self._capsule_present = pill_now
+            if not outcome.replan_required:
+                attempted_actions.clear()
+                self._log(f"plan_success spawn={self._spawn_id} attempts_cleared=1")
             break
 
         self._last_obs = last_obs
@@ -990,8 +1251,25 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._latched_action = None
         self._latched_spawn_id = -1
 
+    def _log(self, message: str) -> None:
+        if self._path_log or getattr(self._translator, "_debug", False):
+            try:
+                print(f"{_ts()} [placement_debug] {message}", flush=True)
+            except Exception:
+                pass
+
     def _log_plan_details(self, action: int, plan: PlanResult) -> None:
         try:
+            if self._path_log:
+                path_repr = _format_compact_path(plan.states)
+                ctrl_repr = _format_ctrl_sequence(plan.controller)
+                print(
+                    (
+                        f"[placement_path] spawn={self._spawn_id} action={int(action)} "
+                        f"steps={len(plan.controller)} ctrl={ctrl_repr} planned={path_repr}"
+                    ),
+                    flush=True,
+                )
             if not getattr(self._translator, "_debug", False):
                 return
             edge = PLACEMENT_EDGES[int(action)]
@@ -1080,6 +1358,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
         last_info: Dict[str, Any] = {}
         replan_required = False
         planner_resynced = False
+        spawn_id_at_start = int(self._spawn_id)
+        actual_path_states: List[Optional[CapsuleState]] = []
+        trace_events: List[Tuple[int, _ConsistencyStatus]] = []
+        failure_detail: Optional[
+            Tuple[int, int, Optional[CapsuleState], Optional[CapsuleState], _ConsistencyStatus]
+        ] = None
+        failure_ctrl: Optional[ControllerStep] = None
 
         if plan is None or not plan.controller:
             # No executable plan for the requested action. Advance by one NOOP frame
@@ -1101,10 +1386,19 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 r1 = perf_counter()
                 if record_refresh is not None:
                     record_refresh()
+                extra_info = self._translator.info() or {}
+                if extra_info:
+                    last_info.update(extra_info)
                 if self._step_callback is not None:
-                    rs0 = perf_counter()
-                    self._translator.refresh_state_only()
-                    rs1 = perf_counter()
+                    info_for_cb = dict(last_info)
+                    self._notify_step_callback(
+                        obs,
+                        info_for_cb,
+                        int(Action.NOOP),
+                        float(reward),
+                        terminated,
+                        truncated,
+                    )
                 if self._translator.current_pill() is None:
                     last_obs, last_info, extra_reward, terminated, truncated = (
                         self._await_next_pill(last_obs, last_info, record_refresh)
@@ -1118,9 +1412,6 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         p1 = perf_counter()
                     except Exception:
                         pass
-                    extra_info = self._translator.info() or {}
-                    if extra_info:
-                        last_info.update(extra_info)
                     last_info["placements/needs_action"] = True
                     last_info.setdefault("pill_changed", 0)
                 if self._debug:
@@ -1130,8 +1421,6 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         )
                         if 'p0' in locals():
                             msg += f" prepare_ms={(p1-p0)*1000:.3f}"
-                        if 'rs0' in locals():
-                            msg += f" refresh_state_ms={(rs1-rs0)*1000:.3f}"
                         print(msg, flush=True)
                     except Exception:
                         pass
@@ -1157,12 +1446,26 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 False,
             )
 
+        if self._path_log:
+            initial_snapshot = self._translator.current_pill()
+            initial_state = (
+                snapshot_to_capsule_state(initial_snapshot)
+                if initial_snapshot is not None
+                else None
+            )
+            actual_path_states.append(initial_state)
+
         states = plan.states
         idx = 0
+        refreshed_after_frame = False
+        internal_resyncs = 0
+        latched_action_val = int(self._latched_action) if self._latched_action is not None else int(plan.action)
+        match_complete = False
         while idx < len(plan.controller):
             ctrl = plan.controller[idx]
             retry_budget = self._translator.retry_budget(ctrl)
             frames_for_step = 0
+            restart_step = False
             previous_state = states[idx]
             expected_state = states[min(idx + 1, len(states) - 1)]
             while True:
@@ -1178,8 +1481,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         )
                     except Exception:
                         pass
+                commanded_action = int(ctrl.action)
+                if frames_for_step > 1 and ctrl.action in (Action.ROTATE_A, Action.ROTATE_B):
+                    commanded_action = int(Action.NOOP)
                 s0 = perf_counter()
-                obs, reward, terminated, truncated, info = self.env.step(int(ctrl.action))
+                obs, reward, terminated, truncated, info = self.env.step(commanded_action)
                 s1 = perf_counter()
                 total_reward += float(reward)
                 last_obs = obs
@@ -1190,32 +1496,60 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     info_for_cb["placements/exec_step"] = int(idx)
                     info_for_cb["placements/exec_total"] = int(len(plan.controller))
                     info_for_cb["placements/ctrl_action"] = int(ctrl.action)
+                    info_for_cb["placements/ctrl_action_effective"] = int(commanded_action)
                     info_for_cb["placements/ctrl_left"] = int(bool(ctrl.hold_left))
                     info_for_cb["placements/ctrl_right"] = int(bool(ctrl.hold_right))
                     info_for_cb["placements/ctrl_down"] = int(bool(ctrl.hold_down))
                 except Exception:
                     pass
+                r0 = perf_counter()
+                self._translator.refresh()
+                r1 = perf_counter()
+                refreshed_after_frame = True
+                if record_refresh is not None:
+                    record_refresh()
+                extra_info = self._translator.info() or {}
                 if self._step_callback is not None:
-                    rs0 = perf_counter()
-                    self._translator.refresh_state_only()
-                    rs1 = perf_counter()
-                    extra_info = self._translator.info() or {}
+                    cb_payload = dict(info_for_cb)
                     if extra_info:
-                        info_for_cb.update(extra_info)
+                        cb_payload.update(extra_info)
                     self._notify_step_callback(
                         obs,
-                        info_for_cb,
+                        cb_payload,
                         int(ctrl.action),
                         float(reward),
                         terminated,
                         truncated,
                     )
+                if extra_info:
+                    info_for_cb.update(extra_info)
                 if terminated or truncated:
                     break
-                c0 = perf_counter()
-                actual_state = self._translator.capture_capsule_state()
-                c1 = perf_counter()
-                if self._translator.states_consistent(actual_state, expected_state):
+                actual_snapshot = self._translator.current_pill()
+                actual_state = (
+                    snapshot_to_capsule_state(actual_snapshot)
+                    if actual_snapshot is not None
+                    else None
+                )
+                if self._path_log:
+                    actual_path_states.append(actual_state)
+                # Compare against the expected next frame but accept near-lock tolerance for rotations:
+                status = self._translator.consistency_status(actual_state, expected_state, previous_state, ctrl)
+                trace_events.append((idx, status))
+                if self._debug:
+                    try:
+                        print(
+                            (
+                                f"{_ts()} [exec_trace] step={idx} frame_attempt={frames_for_step} "
+                                f"ctrl={int(ctrl.action)} holds=({int(ctrl.hold_left)},{int(ctrl.hold_right)},{int(ctrl.hold_down)}) "
+                                f"expected={_format_capsule_state(expected_state)} actual={_format_capsule_state(actual_state)} "
+                                f"status={status.value}"
+                            ),
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
+                if status is _ConsistencyStatus.MATCH:
                     if frames_for_step > 0:
                         self._translator.record_timing_success(ctrl, frames_for_step)
                     if self._debug:
@@ -1223,25 +1557,111 @@ class DrMarioPlacementEnv(gym.Wrapper):
                             print(
                                 (
                                     f"{_ts()} [timing] exec step={idx} env_step_ms={(s1-s0)*1000:.3f} "
-                                    f"refresh_state_ms={((rs1-rs0)*1000 if 'rs0' in locals() else 0.0):.3f} "
-                                    f"capture_ms={(c1-c0)*1000:.3f}"
+                                    f"refresh_ms={(r1-r0)*1000:.3f}"
                                 ),
                                 flush=True,
                             )
                         except Exception:
                             pass
                     break
-                if (
-                    retry_budget > 0
-                    and self._translator.states_consistent(actual_state, previous_state)
-                ):
+                if status is _ConsistencyStatus.PROGRESS:
+                    if frames_for_step < self._translator.max_step_frames():
+                        if frames_for_step == 1:
+                            self._log(
+                                f"progress_wait spawn={self._spawn_id} step={idx} frames={frames_for_step} action={int(ctrl.action)} actual={_format_compact_state(actual_state)} expected={_format_compact_state(expected_state)}"
+                            )
+                        continue
+                    self._log(
+                        f"progress_timeout spawn={self._spawn_id} step={idx} frames={frames_for_step} action={int(ctrl.action)} actual={_format_compact_state(actual_state)} expected={_format_compact_state(expected_state)}"
+                    )
+                    if internal_resyncs >= self._translator.internal_resync_limit():
+                        if self._path_log and failure_detail is None:
+                            failure_detail = (
+                                idx,
+                                frames_for_step,
+                                expected_state,
+                                actual_state,
+                                status,
+                            )
+                            failure_ctrl = ctrl
+                        self._translator.record_timing_failure(ctrl)
+                        replan_required = True
+                        break
+                    new_plan = self._translator.replan_to_action(latched_action_val)
+                    if new_plan is not None and new_plan.controller:
+                        resume_idx = self._translator.resume_index_for(new_plan, actual_state)
+                        if resume_idx >= len(new_plan.controller):
+                            plan = new_plan
+                            states = plan.states
+                            idx = len(plan.controller)
+                            if frames_for_step > 0:
+                                self._translator.record_timing_success(ctrl, frames_for_step)
+                            match_complete = True
+                            break
+                        plan = new_plan
+                        states = plan.states
+                        idx = max(0, resume_idx)
+                        internal_resyncs += 1
+                        self._log(
+                            f"progress_resync spawn={self._spawn_id} step={idx} resume_idx={resume_idx} action={int(ctrl.action)} resyncs={internal_resyncs}"
+                        )
+                        restart_step = True
+                        break
+                    if self._path_log and failure_detail is None:
+                        failure_detail = (
+                            idx,
+                            frames_for_step,
+                            expected_state,
+                            actual_state,
+                            status,
+                        )
+                        failure_ctrl = ctrl
+                    self._translator.record_timing_failure(ctrl)
+                    replan_required = True
+                    break
+                if status is _ConsistencyStatus.STALLED and retry_budget > 0:
                     retry_budget -= 1
                     continue
+                # Diverged: attempt an immediate internal resync before giving up
+                new_plan = self._translator.replan_to_action(latched_action_val)
+                if new_plan is not None and new_plan.controller:
+                    if internal_resyncs >= self._translator.internal_resync_limit():
+                        new_plan = None
+                    else:
+                        resume_idx = self._translator.resume_index_for(new_plan, actual_state)
+                        if resume_idx >= len(new_plan.controller):
+                            plan = new_plan
+                            states = plan.states
+                            idx = len(plan.controller)
+                            if frames_for_step > 0:
+                                self._translator.record_timing_success(ctrl, frames_for_step)
+                            match_complete = True
+                            break
+                        plan = new_plan
+                        states = plan.states
+                        idx = max(0, resume_idx)
+                        internal_resyncs += 1
+                        restart_step = True
+                        self._log(
+                            f"diverge_resync spawn={self._spawn_id} step={idx} resume_idx={resume_idx} action={int(ctrl.action)} resyncs={internal_resyncs}"
+                        )
+                        break
+                if self._path_log and failure_detail is None:
+                    failure_detail = (
+                        idx,
+                        frames_for_step,
+                        expected_state,
+                        actual_state,
+                        status,
+                    )
+                    failure_ctrl = ctrl
                 self._translator.record_timing_failure(ctrl)
                 replan_required = True
                 break
-            if terminated or truncated or replan_required:
+            if terminated or truncated or replan_required or match_complete:
                 break
+            if restart_step:
+                continue
             idx += 1
 
         base._hold_left = False
@@ -1249,11 +1669,14 @@ class DrMarioPlacementEnv(gym.Wrapper):
         base._hold_down = False
 
         if not (terminated or truncated) and not replan_required:
-            r0 = perf_counter()
-            self._translator.refresh()
-            r1 = perf_counter()
-            if record_refresh is not None:
-                record_refresh()
+            if not refreshed_after_frame:
+                r0 = perf_counter()
+                self._translator.refresh()
+                r1 = perf_counter()
+                if record_refresh is not None:
+                    record_refresh()
+            else:
+                r0 = r1 = 0.0
             # Wait until the current capsule locks before surfacing the next spawn.
             stall_checks = 0
             while self._translator.current_pill() is not None:
@@ -1268,12 +1691,16 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 total_reward += float(reward)
                 last_obs = obs
                 last_info = info or {}
+                r0 = perf_counter()
+                self._translator.refresh()
+                r1 = perf_counter()
+                if record_refresh is not None:
+                    record_refresh()
                 if self._step_callback is not None:
-                    rs0 = perf_counter()
-                    self._translator.refresh_state_only()
-                    rs1 = perf_counter()
                     info_for_cb = dict(last_info)
-                    info_for_cb.update(self._translator.info() or {})
+                    extra = self._translator.info() or {}
+                    if extra:
+                        info_for_cb.update(extra)
                     self._notify_step_callback(
                         obs,
                         info_for_cb,
@@ -1284,22 +1711,17 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     )
                 if terminated or truncated:
                     break
-                r2 = perf_counter()
-                self._translator.refresh()
-                r3 = perf_counter()
                 if self._debug:
                     try:
                         print(
                             (
                                 f"{_ts()} [timing] exec:post-plan noop_ms={(n1-n0)*1000:.3f} "
-                                f"refresh_ms={(r1-r0)*1000:.3f}/{(r3-r2)*1000:.3f} refresh_state_ms={((rs1-rs0)*1000 if 'rs0' in locals() else 0.0):.3f}"
+                                f"refresh_ms={(r1-r0)*1000:.3f}"
                             ),
                             flush=True,
                         )
                     except Exception:
                         pass
-                if record_refresh is not None:
-                    record_refresh()
                 stall_checks += 1
                 if stall_checks > 180 and self._translator.current_pill() is not None:
                     replan_required = True
@@ -1317,10 +1739,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if not (terminated or truncated):
                 # Resync and expose a fresh decision request so the runner reselects immediately.
                 self._translator.refresh()
-                # In fast-options mode, avoid forcing full enumeration on replan.
-                self._translator.prepare_options(
-                    force=not bool(getattr(self._translator, "_fast_options_only", False))
-                )
+                # Rebuilding options with force=True ensures we fall back to the full planner
+                # after a failed fast-path execution.
+                self._translator.prepare_options(force=True)
                 planner_resynced = True
                 if record_refresh is not None:
                     record_refresh()
@@ -1332,6 +1753,42 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if "pill_changed" not in last_info:
             last_info = dict(last_info)
             last_info.setdefault("pill_changed", 0)
+
+        if plan is not None and self._path_log:
+            if terminated:
+                status = "terminated"
+            elif truncated:
+                status = "truncated"
+            elif replan_required:
+                status = "replan"
+            else:
+                status = "success"
+            actual_repr = _format_compact_path(actual_path_states)
+            trace_repr = _format_trace(trace_events)
+            extras: List[str] = []
+            if trace_repr != "-":
+                extras.append(f"trace={trace_repr}")
+            if failure_detail is not None:
+                fail_step, fail_frames, fail_expected, fail_actual, fail_status = failure_detail
+                extras.append(f"fail_step={fail_step}")
+                extras.append(f"attempt_frames={fail_frames}")
+                extras.append(f"fail_status={fail_status.value}")
+                extras.append(f"expected={_format_compact_state(fail_expected)}")
+                extras.append(f"actual={_format_compact_state(fail_actual)}")
+                if failure_ctrl is not None:
+                    extras.append(f"ctrl={_format_ctrl_token(failure_ctrl)}")
+            if planner_resynced:
+                extras.append("resync=1")
+            if internal_resyncs > 0:
+                extras.append(f"ireplan={internal_resyncs}")
+            extra_suffix = f" {' '.join(extras)}" if extras else ""
+            print(
+                (
+                    f"[placement_path] spawn={spawn_id_at_start} action={int(plan.action)} "
+                    f"status={status} observed={actual_repr}{extra_suffix}"
+                ),
+                flush=True,
+            )
 
         return _ExecutionOutcome(
             last_obs,
@@ -1403,9 +1860,6 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if self._step_callback is not None:
                 info = dict(info)
                 info.update(self._translator.info() or {})
-                rs0 = perf_counter()
-                self._translator.refresh_state_only()
-                rs1 = perf_counter()
                 self._notify_step_callback(
                     obs,
                     info,
@@ -1418,8 +1872,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 try:
                     print(
                         (
-                            f"{_ts()} [timing] await_next noop_ms={(n1-n0)*1000:.3f} refresh_ms={(r1-r0)*1000:.3f} "
-                            f"refresh_state_ms={((rs1-rs0)*1000 if 'rs0' in locals() else 0.0):.3f}"
+                            f"{_ts()} [timing] await_next noop_ms={(n1-n0)*1000:.3f} refresh_ms={(r1-r0)*1000:.3f}"
                         ),
                         flush=True,
                     )
@@ -1465,6 +1918,151 @@ def _board_occupancy(board: BoardState) -> np.ndarray:
 
 def _blend(base: np.ndarray, color: Tuple[float, float, float], alpha: float) -> np.ndarray:
     return (1.0 - alpha) * base + alpha * np.asarray(color, dtype=np.float32)
+
+
+def _format_capsule_state(state: Optional[CapsuleState]) -> str:
+    if state is None:
+        return "None"
+    return (
+        f"(row={int(state.row)}, col={int(state.col)}, orient={int(state.orient)}, "
+        f"speed={int(state.speed_counter)}/{int(state.speed_threshold)}, "
+        f"vel={int(state.hor_velocity)}, holds=({int(state.hold_left)},"
+        f"{int(state.hold_right)},{int(state.hold_down)}), locked={int(bool(state.locked))})"
+    )
+
+
+def _format_compact_state(state: Optional[CapsuleState]) -> str:
+    if state is None:
+        return "None"
+    holds = (int(bool(state.hold_left)) << 2) | (int(bool(state.hold_right)) << 1) | int(bool(state.hold_down))
+    suffix = "K" if bool(state.locked) else ""
+    return (
+        f"r{int(state.row):02d}c{int(state.col):02d}o{int(state.orient)}"
+        f"s{int(state.speed_counter):02d}v{int(state.hor_velocity):+d}h{holds}{suffix}"
+    )
+
+
+def _format_compact_path(states: Sequence[Optional[CapsuleState]], *, max_segments: int = 32) -> str:
+    if not states:
+        return "-"
+    tokens = [_format_compact_state(state) for state in states]
+    segments: List[Tuple[str, int]] = []
+    current_token: Optional[str] = None
+    run_length = 0
+    for token in tokens:
+        if token == current_token:
+            run_length += 1
+        else:
+            if current_token is not None:
+                segments.append((current_token, run_length))
+            current_token = token
+            run_length = 1
+    if current_token is not None:
+        segments.append((current_token, run_length))
+    shown = segments[:max_segments]
+    remainder = segments[max_segments:]
+    entries = [
+        f"{token}x{count}" if count > 1 else token
+        for token, count in shown
+    ]
+    if remainder:
+        leftover = sum(count for _, count in remainder)
+        entries.append(f"...(+{leftover})")
+    return ">".join(entries)
+
+
+def _format_ctrl_token(ctrl: ControllerStep) -> str:
+    base_map = {
+        int(Action.NOOP): "·",
+        int(Action.LEFT): "<",
+        int(Action.RIGHT): ">",
+        int(Action.DOWN): "v",
+        int(Action.ROTATE_A): "A",
+        int(Action.ROTATE_B): "B",
+        int(Action.LEFT_HOLD): "<",
+        int(Action.RIGHT_HOLD): ">",
+        int(Action.DOWN_HOLD): "v",
+        int(Action.BOTH_ROT): "*",
+    }
+    base = base_map.get(int(ctrl.action), str(int(ctrl.action)))
+    holds = []
+    if ctrl.hold_left:
+        holds.append("<")
+    if ctrl.hold_right:
+        holds.append(">")
+    if ctrl.hold_down:
+        holds.append("v")
+    if holds:
+        return f"{base}[{''.join(holds)}]"
+    return base
+
+
+def _format_ctrl_sequence(controller: Sequence[ControllerStep], *, max_segments: int = 24) -> str:
+    if not controller:
+        return "-"
+    tokens = [_format_ctrl_token(ctrl) for ctrl in controller]
+    segments: List[Tuple[str, int]] = []
+    current_token: Optional[str] = None
+    run_length = 0
+    for token in tokens:
+        if token == current_token:
+            run_length += 1
+        else:
+            if current_token is not None:
+                segments.append((current_token, run_length))
+            current_token = token
+            run_length = 1
+    if current_token is not None:
+        segments.append((current_token, run_length))
+    shown = segments[:max_segments]
+    remainder = segments[max_segments:]
+    entries = [
+        f"{token}x{count}" if count > 1 else token
+        for token, count in shown
+    ]
+    if remainder:
+        leftover = sum(count for _, count in remainder)
+        entries.append(f"...(+{leftover})")
+    return ",".join(entries)
+
+
+_TRACE_SYMBOLS = {
+    _ConsistencyStatus.MATCH: "M",
+    _ConsistencyStatus.STALLED: "S",
+    _ConsistencyStatus.PROGRESS: "P",
+    _ConsistencyStatus.DIVERGED: "X",
+}
+
+
+def _format_trace(events: Sequence[Tuple[int, _ConsistencyStatus]], *, max_segments: int = 32) -> str:
+    if not events:
+        return "-"
+    segments: List[Tuple[Tuple[int, _ConsistencyStatus], int]] = []
+    current: Optional[Tuple[int, _ConsistencyStatus]] = None
+    run_length = 0
+    for step_idx, status in events:
+        token = (step_idx, status)
+        if token == current:
+            run_length += 1
+        else:
+            if current is not None:
+                segments.append((current, run_length))
+            current = token
+            run_length = 1
+    if current is not None:
+        segments.append((current, run_length))
+    shown = segments[:max_segments]
+    remainder = segments[max_segments:]
+    def _format_segment(segment: Tuple[Tuple[int, _ConsistencyStatus], int]) -> str:
+        (step_idx, status), count = segment
+        symbol = _TRACE_SYMBOLS.get(status, "?")
+        return f"{step_idx}:{symbol}x{count}" if count > 1 else f"{step_idx}:{symbol}"
+
+    entries = [_format_segment(seg) for seg in shown]
+    if remainder:
+        leftover = sum(length for _, length in remainder)
+        entries.append(f"...(+{leftover})")
+    return ">".join(entries)
 
 
 def _cells_from_state(state: CapsuleState) -> List[Tuple[int, int]]:

@@ -437,7 +437,9 @@ def build_reachability(
     config: Optional[ReachabilityConfig] = None,
 ) -> ReachabilityResult:
     """Enumerate all frame-accurate placements reachable from the spawn state."""
-
+    import time
+    t0 = time.perf_counter()
+    
     cfg = config or ReachabilityConfig()
     nodes: List[FrameNode] = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
     q: deque[int] = deque([0])
@@ -445,6 +447,9 @@ def build_reachability(
     terminal_nodes: Dict[Tuple[int, int, int], int] = {}
     expanded = 0
     enqueued = 1
+    last_log_time = t0
+    
+    print(f"[{t0:.4f}] build_reachability started")
 
     while q:
         idx = q.popleft()
@@ -455,6 +460,12 @@ def build_reachability(
         if state.locked:
             continue
         expanded += 1
+
+        current_time = time.perf_counter()
+        if current_time - last_log_time > 0.5: # Log every 500ms
+            print(f"[{current_time:.4f}] build_reachability progress: expanded={expanded}, enqueued={enqueued}, qsize={len(q)}, depth={node.depth}")
+            last_log_time = current_time
+
         for action_index, action in enumerate(_ACTION_SPACE):
             next_state = _step_state(cols_u16, state, action, speed_threshold)
             child_depth = node.depth + 1
@@ -479,6 +490,9 @@ def build_reachability(
             visited[key] = child_depth
             q.append(child_idx)
             enqueued += 1
+    
+    t1 = time.perf_counter()
+    print(f"[{t1:.4f}] build_reachability finished in {t1-t0:.4f}s. expanded={expanded}, enqueued={enqueued}, terminals={len(terminal_nodes)}")
 
     stats = {
         "expanded": expanded,

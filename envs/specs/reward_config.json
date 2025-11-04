@@ -1,26 +1,26 @@
 {
   "pill_place_base": {
-    "value": 0.2,
+    "value": 0.0,
     "description": "Base reward applied to the first pill lock; later locks scale via the exponential curve."
   },
   "pill_place_growth": {
-    "value": 0.0008,
+    "value": 0.0,
     "description": "Per-placement growth rate (a) for the quadratic pill lock reward: reward = base * (1 + a*(n-1)^2)."
   },
   "virus_clear_bonus": {
-    "value": 0.0,
+    "value": 0.1,
     "description": "Reward applied per virus cleared in a single step."
   },
   "non_virus_clear_bonus": {
-    "value": 0.0,
+    "value": 0.05,
     "description": "Reward applied for clearing non-virus tiles alongside a placement."
   },
   "terminal_clear_bonus": {
-    "value": 10.0,
+    "value": 0.5,
     "description": "Bonus awarded when the stage is cleared."
   },
   "topout_penalty": {
-    "value": 0,
+    "value": -0.5,
     "description": "Penalty applied if the player tops out."
   },
   "time_bonus_topout_per_60_frames": {
@@ -32,11 +32,11 @@
     "description": "Penalty per in-game second elapsed on successful clears (encourages faster runs)."
   },
   "adjacency_pair_bonus": {
-    "value": 0,
+    "value": 0.01,
     "description": "Reward for creating a new adjacent pair alignment that could enable future clears."
   },
   "adjacency_triplet_bonus": {
-    "value": 0,
+    "value": 0.02,
     "description": "Reward for creating a longer adjacency (three aligned segments)."
   },
   "column_height_penalty": {
@@ -52,11 +52,11 @@
     "description": "Row gap above the highest remaining virus before a placement is considered too high."
   },
   "placement_height_penalty_multiplier": {
-    "value": -2.0,
+    "value": -0.3,
     "description": "Multiplier applied to the pill placement bonus when the high-placement penalty is triggered."
   },
   "punish_high_placements": {
-    "value": true,
+    "value": false,
     "description": "If false, disables the heuristic that penalizes pills locked well above the virus band."
   }
 }
