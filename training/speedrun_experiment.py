@@ -4596,7 +4596,7 @@ def main() -> None:
                                 tr = getattr(slot.env, "_translator", None)
                                 if tr is not None:
                                     t0 = time.perf_counter()
-                                    tr.refresh()
+                                    tr.refresh(state=slot.env.unwrapped._state_cache)
                                     t1 = time.perf_counter()
                                     tr.prepare_options(force=False)
                                     t2 = time.perf_counter()
@@ -4672,7 +4672,7 @@ def main() -> None:
                         try:
                             tr = getattr(slot.env, "_translator", None)
                             if tr is not None:
-                                tr.refresh()
+                                tr.refresh(state=slot.env.unwrapped._state_cache)
                                 tr.prepare_options(force=False)
                                 # First try the chosen action
                                 force_new_request = False

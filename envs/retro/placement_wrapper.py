@@ -255,11 +255,6 @@ class PlacementTranslator:
                 pass
         self._last_refresh_frame = frame_id
 
-    def refresh_state_only(self) -> None:
-        """Deprecated shim; :meth:`refresh` already caches duplicate calls."""
-
-        self.refresh()
-
     def prepare_options(self, *, force: bool = False, force_full: Optional[bool] = None) -> None:
         """Ensure placement options are prepared for the current spawn."""
 
@@ -538,21 +533,6 @@ class PlacementTranslator:
         except Exception:
             pass
         return plan
-
-    def capture_capsule_state(self) -> Optional[CapsuleState]:
-        ram_bytes = self._read_ram_bytes()
-        if ram_bytes is None:
-            return None
-        if self._falling_size_addr is not None:
-            if self._falling_size_addr >= len(ram_bytes):
-                return None
-            size_val = ram_bytes[self._falling_size_addr]
-            if size_val < 2:
-                return None
-        pill = self._extract_pill(None, ram_bytes, require_mask=False)
-        if pill is None:
-            return None
-        return snapshot_to_capsule_state(pill)
 
     def current_board(self) -> Optional[BoardState]:
         return self._board
