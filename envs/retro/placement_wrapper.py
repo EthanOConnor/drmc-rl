@@ -1797,6 +1797,45 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     ),
                     flush=True,
                 )
+                
+                # For execution_log on failures, add context that would normally require --placement-debug-log
+                if self._execution_log and status != "success":
+                    try:
+                        pill = self._translator.current_pill()
+                        if pill is not None:
+                            print(
+                                (
+                                    f"[exec_context] pill(r={pill.row},c={pill.col},o={pill.orient},colors={pill.colors},"
+                                    f"speed={pill.gravity_counter}/{pill.gravity_period},vel={pill.hor_velocity},"
+                                    f"parity={pill.frame_parity},holds(L/R/D)={int(pill.hold_left)}/{int(pill.hold_right)}/{int(pill.hold_down)},"
+                                    f"lock={pill.lock_counter})"
+                                ),
+                                flush=True,
+                            )
+                        if plan.states:
+                            s0 = plan.states[0]
+                            print(
+                                f"[exec_context] route: steps={len(plan.controller)} cost={int(plan.cost)} start=(r={s0.row},c={s0.col},o={s0.orient})",
+                                flush=True,
+                            )
+                            # Show first few planned steps
+                            max_steps = min(3, len(plan.controller))
+                            for i in range(max_steps):
+                                st = plan.states[min(i, len(plan.states) - 1)]
+                                nxt = plan.states[min(i + 1, len(plan.states) - 1)] if plan.states else st
+                                ctrl = plan.controller[i]
+                                print(
+                                    (
+                                        f"[exec_context] step[{i}] act={int(ctrl.action)} "
+                                        f"from(r={st.row},c={st.col},o={st.orient},speed={st.speed_counter}/{st.speed_threshold}) -> "
+                                        f"(r={nxt.row},c={nxt.col},o={nxt.orient},speed={nxt.speed_counter}/{nxt.speed_threshold},lock={int(nxt.locked)})"
+                                    ),
+                                    flush=True,
+                                )
+                            if len(plan.controller) > max_steps:
+                                print(f"[exec_context] ... (+{len(plan.controller)-max_steps} more steps)", flush=True)
+                    except Exception:
+                        pass
 
         return _ExecutionOutcome(
             last_obs,
