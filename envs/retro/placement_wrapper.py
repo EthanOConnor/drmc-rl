@@ -1823,8 +1823,6 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info = dict(last_info) if last_info is not None else {}
 
         if self._translator.current_pill() is not None:
-            if not self._capsule_present:
-                self._spawn_id += 1
             self._capsule_present = True
             self._spawn_marker = None
             # For fast options mode, avoid forcing full enumeration at spawn.
@@ -1837,6 +1835,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 ))
             except Exception:
                 pass
+            # Read spawn_id from canonical state (pill.spawn_id), not local increment
+            if self._spawn_marker is not None:
+                self._spawn_id = int(self._spawn_marker)
             info.update(self._translator.info() or {})
             info["placements/spawn_id"] = int(self._spawn_id)
             info["placements/needs_action"] = True
@@ -1892,8 +1893,6 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 if record_refresh is not None:
                     record_refresh()
                 info.update(self._translator.info() or {})
-                if not self._capsule_present:
-                    self._spawn_id += 1
                 self._capsule_present = True
                 # Capture translator marker at the moment of spawn detection.
                 self._spawn_marker = None
@@ -1903,6 +1902,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     ))
                 except Exception:
                     pass
+                # Read spawn_id from canonical state (pill.spawn_id), not local increment
+                if self._spawn_marker is not None:
+                    self._spawn_id = int(self._spawn_marker)
                 info["placements/spawn_id"] = int(self._spawn_id)
                 info["placements/needs_action"] = True
                 info.setdefault("pill_changed", 1)
