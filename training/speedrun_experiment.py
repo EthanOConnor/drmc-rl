@@ -5098,16 +5098,30 @@ def main() -> None:
             except Exception as exc:
                 print(f"Finalize updates failed: {exc}", file=sys.stderr)
         if monitor is not None:
-            monitor.close()
+            try:
+                monitor.close()
+            except Exception:
+                pass
         for slot in slots:
             if slot.viewer is not None:
-                slot.viewer.close()
+                try:
+                    slot.viewer.close()
+                except Exception:
+                    pass
+            if slot.planner_viewer is not None:
+                try:
+                    slot.planner_viewer.close()
+                except Exception:
+                    pass
             try:
                 slot.env.close()
             except Exception:
                 pass
         if checkpoint_path is not None:
-            save_checkpoint(completed_runs)
+            try:
+                save_checkpoint(completed_runs)
+            except Exception as exc:
+                print(f"Checkpoint save failed: {exc}", file=sys.stderr)
         if completed_rewards:
             mean_reward = float(np.mean(completed_rewards))
             best_reward = float(np.max(completed_rewards))
