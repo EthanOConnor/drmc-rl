@@ -4336,6 +4336,9 @@ def main() -> None:
         # For final frames (after env.step), total_steps has been incremented
         # For episode start, use total_steps as-is
         current_total_steps = total_steps + 1 if is_intermediate else total_steps
+        # Debug: log what we're sending to visualization
+        if slot.index == 0 and slot.frame_index % 60 == 0:
+            print(f"[PUBLISH DEBUG] total_steps={total_steps}, is_intermediate={is_intermediate}, current_total_steps={current_total_steps}, slot.episode_steps={slot.episode_steps}", flush=True)
         perf_stats: Dict[str, Any] = {
             "inference_s": inference_time,
             "compute_s": compute_time,

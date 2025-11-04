@@ -281,8 +281,9 @@ def _viewer_worker(
         if total_steps is not None and total_wall_s is not None and total_wall_s > 0:
             total_game_seconds = float(total_steps) / 60.0
             speedup_total = total_game_seconds / float(total_wall_s)
-            # Debug logging
-            print(f"[DEMO DEBUG] total_steps={total_steps}, total_wall_s={total_wall_s:.2f}, speedup_total={speedup_total:.2f}x", flush=True)
+            # Debug logging with episode step count from stats
+            episode_step_count = stats.get("step", "?")
+            print(f"[DEMO DEBUG] total_steps={total_steps}, episode_steps={episode_step_count}, total_wall_s={total_wall_s:.2f}, speedup_total={speedup_total:.2f}x", flush=True)
             lines.append(f"Speedup (total) {speedup_total:.2f}x ({total_steps} steps, {float(total_wall_s):.1f}s)")
         
         # Fallback to old emu_fps display if wall times not available
