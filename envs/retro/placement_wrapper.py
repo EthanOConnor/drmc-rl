@@ -236,8 +236,27 @@ class PlacementTranslator:
             self._last_spawn_id = int(pill.spawn_id) if pill.spawn_id is not None else None
         except Exception:
             self._last_spawn_id = None
-        if not self._spawn_matches_cache(pill):
+        
+        # Detect if pill moved/rotated since last refresh - invalidate cached plans if so
+        spawn_changed = not self._spawn_matches_cache(pill)
+        pill_moved = False
+        if not spawn_changed and self._options_prepared:
+            # Same spawn, but check if position/orientation changed
+            if len(self._paths) > 0 and self._paths[0].states:
+                # Compare current pill to the start state of any cached plan
+                cached_start = self._paths[0].states[0]
+                if (
+                    cached_start.row != int(pill.row)
+                    or cached_start.col != int(pill.col)
+                    or cached_start.orient != int(pill.orient)
+                ):
+                    pill_moved = True
+        
+        if spawn_changed:
             self._spawn_generation += 1
+            self._clear_cached_options()
+        elif pill_moved:
+            # Pill moved within same spawn - invalidate stale plans
             self._clear_cached_options()
         else:
             # Cheap refresh does not trigger planning; ensure diagnostics reflect that.
