@@ -265,15 +265,26 @@ def _viewer_worker(
                     spawn_line += " – re-decide"
             lines.append(spawn_line)
         
-        # Calculate actual speedup: game seconds simulated / wall time elapsed
+        # Calculate speedups: this run and total execution
         step_count = stats.get("step", 0)
         wall_s = perf_stats.get("wall_s") if isinstance(perf_stats, dict) else None
+        total_wall_s = perf_stats.get("total_wall_s") if isinstance(perf_stats, dict) else None
+        total_steps = perf_stats.get("total_steps") if isinstance(perf_stats, dict) else None
+        
+        # Speedup for this run
         if step_count is not None and wall_s is not None and wall_s > 0:
             game_seconds = float(step_count) / 60.0  # NES runs at 60 FPS
-            speedup = game_seconds / float(wall_s)
-            lines.append(f"Speedup {speedup:.2f}x (steps {step_count}, wall {float(wall_s):.1f}s)")
-        else:
-            # Fallback to old emu_fps display
+            speedup_run = game_seconds / float(wall_s)
+            lines.append(f"Speedup (run) {speedup_run:.2f}x ({step_count} steps, {float(wall_s):.1f}s)")
+        
+        # Speedup for total execution
+        if total_steps is not None and total_wall_s is not None and total_wall_s > 0:
+            total_game_seconds = float(total_steps) / 60.0
+            speedup_total = total_game_seconds / float(total_wall_s)
+            lines.append(f"Speedup (total) {speedup_total:.2f}x ({total_steps} steps, {float(total_wall_s):.1f}s)")
+        
+        # Fallback to old emu_fps display if wall times not available
+        if wall_s is None or (step_count is None or step_count == 0):
             emu_fps = stats.get("emu_fps")
             target_hz = stats.get("target_hz")
             if emu_fps is not None:
@@ -367,11 +378,27 @@ def _viewer_worker(
 
         perf_stats = stats.get("perf") if isinstance(stats, dict) else None
         if isinstance(perf_stats, dict) and perf_stats:
-            wall_pct = perf_stats.get("inference_pct_wall")
+            # Display wait time percentages
+            inference_pct = perf_stats.get("inference_pct_wall")
+            planner_pct = perf_stats.get("planner_pct_wall")
+            emu_pct = perf_stats.get("emu_pct_wall")
+            
+            wait_parts = []
+            if inference_pct is not None:
+                wait_parts.append(f"inference {float(inference_pct):.1f}%")
+            if planner_pct is not None:
+                wait_parts.append(f"planner {float(planner_pct):.1f}%")
+            if emu_pct is not None:
+                wait_parts.append(f"emu {float(emu_pct):.1f}%")
+            
+            if wait_parts:
+                lines.append("Wall time: " + "  ".join(wait_parts))
+            
+            # Keep old inference wait display for compute percentage
             compute_pct = perf_stats.get("inference_pct_compute")
-            if wall_pct is not None and compute_pct is not None:
+            if inference_pct is not None and compute_pct is not None:
                 lines.append(
-                    f"Inference wait {float(wall_pct):.1f}% wall ({float(compute_pct):.1f}% loop)"
+                    f"Inference wait {float(inference_pct):.1f}% wall ({float(compute_pct):.1f}% loop)"
                 )
             last_infer = perf_stats.get("last_inference_ms")
             last_step = perf_stats.get("last_step_ms")

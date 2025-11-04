@@ -4327,17 +4327,28 @@ def main() -> None:
         wall_elapsed = 0.0
         if slot.run_start_time > 0.0:
             wall_elapsed = max(0.0, now_time - slot.run_start_time)
+        total_wall_elapsed = max(0.0, now_time - experiment_start_time)
         inference_time = float(slot.inference_time)
         compute_time = float(slot.step_compute_time)
+        planner_time = float(slot.planner_latency_ms_total) / 1000.0  # Convert ms to seconds
         perf_stats: Dict[str, Any] = {
             "inference_s": inference_time,
             "compute_s": compute_time,
             "wall_s": wall_elapsed,
+            "total_wall_s": total_wall_elapsed,
+            "total_steps": total_steps,
+            "planner_s": planner_time,
             "inference_pct_wall": (inference_time / wall_elapsed * 100.0)
             if wall_elapsed > 1e-9
             else 0.0,
             "inference_pct_compute": (inference_time / compute_time * 100.0)
             if compute_time > 1e-9
+            else 0.0,
+            "planner_pct_wall": (planner_time / wall_elapsed * 100.0)
+            if wall_elapsed > 1e-9
+            else 0.0,
+            "emu_pct_wall": ((wall_elapsed - inference_time - planner_time) / wall_elapsed * 100.0)
+            if wall_elapsed > 1e-9
             else 0.0,
             "inference_calls": int(slot.inference_calls),
             "last_inference_ms": float(slot.last_inference_duration) * 1000.0,
