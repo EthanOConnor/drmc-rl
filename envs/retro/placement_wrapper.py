@@ -930,6 +930,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]
         ] = None
         self._attempted_actions: Set[int] = set()
+        # Per-spawn policy logits cache - policy only needs to run once per spawn!
+        self._cached_spawn_logits: Optional[int] = None  # spawn_id when logits were cached
+        self._cached_logits: Optional[np.ndarray] = None  # raw policy logits for this spawn
         # Divergence diagnostics
         self._divergence_stats: Dict[str, int] = {
             "start_mismatch": 0,
@@ -1162,6 +1165,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 self._spawn_id = int(marker_now)  # Use actual pill counter from RAM, not local increment
                 self._capsule_present = True
                 self._attempted_actions.clear()
+                # Clear cached logits on new spawn - policy needs to decide for new pill
+                self._cached_spawn_logits = None
+                self._cached_logits = None
                 self._log(f"new_spawn spawn={self._spawn_id} attempts_cleared=1")
                 # Fast path: compute options only if inputs changed
                 self._translator.prepare_options(force=False)
@@ -1200,6 +1206,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         enriched_info["placements/plan_count_avg"] = planner_plan_count_avg
         enriched_info["placements/plan_count_last"] = planner_plan_count_last
         enriched_info["placements/plan_latency_ms_last"] = planner_latency_ms_last
+        enriched_info["placements/has_cached_logits"] = bool(
+            self._cached_spawn_logits == self._spawn_id and self._cached_logits is not None
+        )
         self._last_info = enriched_info
         # Do NOT force a decision just because a pill exists; only on spawn/replan.
         if "placements/needs_action" not in enriched_info:
@@ -1229,6 +1238,17 @@ class DrMarioPlacementEnv(gym.Wrapper):
         callback: Optional[Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]],
     ) -> None:
         self._step_callback = callback
+    
+    def cache_spawn_logits(self, logits: np.ndarray) -> None:
+        """Cache policy logits for the current spawn - policy only needs to run once per spawn!"""
+        self._cached_spawn_logits = int(self._spawn_id)
+        self._cached_logits = np.array(logits, copy=True)
+    
+    def get_cached_logits(self) -> Optional[np.ndarray]:
+        """Get cached logits if they exist for current spawn, otherwise None."""
+        if self._cached_spawn_logits == self._spawn_id and self._cached_logits is not None:
+            return self._cached_logits
+        return None
 
     def _notify_step_callback(
         self,

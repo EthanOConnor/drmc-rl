@@ -2158,6 +2158,67 @@ class PolicyGradientAgent:
 
         return int(action.item())
 
+    def get_action_logits(
+        self, obs: Any, info: Dict[str, Any], context_id: Optional[int] = None
+    ) -> np.ndarray:
+        """Get raw policy logits for all actions (before masking). Used for logits caching."""
+        ctx = self._get_context(context_id)
+        state_tensor = self._prepare_obs(obs)
+        # Record observation for training - we're making a decision here
+        ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
+        autocast_ctx = (
+            torch.autocast(device_type=self._device.type, dtype=torch.float16)
+            if self._use_amp
+            else nullcontext()
+        )
+        with torch.no_grad(), autocast_ctx:
+            if self._policy_arch == "mlp":
+                logits, _ = self.model(state_tensor.unsqueeze(0))
+                logits_vec = logits.squeeze(0)
+            else:
+                if state_tensor.dim() == 3:
+                    input_tensor = state_tensor.unsqueeze(0).unsqueeze(0)
+                elif state_tensor.dim() == 4:
+                    input_tensor = state_tensor.unsqueeze(0)
+                else:
+                    raise RuntimeError("Unexpected observation tensor shape")
+                logits, _, _ = self.model(input_tensor, ctx.recurrent_state)
+                if logits.dim() == 3:
+                    logits_slice = logits[:, -1, :]
+                else:
+                    logits_slice = logits
+                logits_vec = logits_slice.squeeze(0)
+        return logits_vec.detach().cpu().numpy()
+
+    def select_action_from_logits(
+        self, logits: np.ndarray, info: Dict[str, Any], context_id: Optional[int] = None, obs: Any = None
+    ) -> int:
+        """Sample action from cached logits, applying current feasibility mask.
+        
+        Args:
+            logits: Cached policy logits from get_action_logits()
+            info: Current step info (for action mask)
+            context_id: Episode context ID
+            obs: Current observation (optional - if provided when reusing cached logits, records it for training)
+        """
+        ctx = self._get_context(context_id)
+        # If observation provided, record it (for replanning scenarios where we reuse logits)
+        if obs is not None:
+            state_tensor = self._prepare_obs(obs)
+            ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
+        logits_tensor = torch.as_tensor(logits, dtype=torch.float32, device=self._device)
+        mask_np = _extract_action_mask(info)
+        if mask_np is not None:
+            mask_tensor = torch.as_tensor(
+                mask_np, dtype=torch.bool, device=logits_tensor.device
+            )
+            if mask_tensor.any():
+                logits_tensor = logits_tensor.masked_fill(~mask_tensor, float("-inf"))
+        dist = Categorical(logits=logits_tensor)
+        action = dist.sample()
+        ctx.actions.append(int(action.item()))
+        return int(action.item())
+
     def observe_step(
         self,
         reward: float,
@@ -4214,7 +4275,18 @@ def main() -> None:
                 and slot.preselected_action is None
             ):
                 inf_start = time.perf_counter()
-                pre_sel = agent.select_action(observation, info_payload, context_id=slot.context_id)
+                # Get and cache logits for the next spawn
+                raw_logits = agent.get_action_logits(
+                    observation, info_payload, context_id=slot.context_id
+                )
+                try:
+                    slot.env.cache_spawn_logits(raw_logits)
+                except Exception:
+                    pass
+                # Sample action from logits
+                pre_sel = agent.select_action_from_logits(
+                    raw_logits, info_payload, context_id=slot.context_id
+                )
                 duration = time.perf_counter() - inf_start
                 slot.preselected_action = int(pre_sel)
                 slot.selected_action = int(pre_sel)
@@ -4676,16 +4748,38 @@ def main() -> None:
                                 action = int(slot.preselected_action)
                                 slot.preselected_action = None
                             else:
-                                # Try to reuse policy choice if feasible; otherwise pick best feasible
+                                # Check if we have cached logits for this spawn
+                                cached_logits = None
+                                try:
+                                    cached_logits = slot.env.get_cached_logits()
+                                except Exception:
+                                    cached_logits = None
+                                
                                 inference_start = time.perf_counter()
-                                sampled = agent.select_action(
-                                    slot.obs, slot.info, context_id=slot.context_id
-                                )
+                                if cached_logits is not None:
+                                    # Reuse cached logits with current feasibility mask
+                                    # Pass observation for training data collection
+                                    sampled = agent.select_action_from_logits(
+                                        cached_logits, slot.info, context_id=slot.context_id, obs=slot.obs
+                                    )
+                                else:
+                                    # First inference for this spawn - get and cache logits
+                                    raw_logits = agent.get_action_logits(
+                                        slot.obs, slot.info, context_id=slot.context_id
+                                    )
+                                    try:
+                                        slot.env.cache_spawn_logits(raw_logits)
+                                    except Exception:
+                                        pass
+                                    # Now sample from the logits with mask applied (no obs - already recorded)
+                                    sampled = agent.select_action_from_logits(
+                                        raw_logits, slot.info, context_id=slot.context_id
+                                    )
                                 inference_duration = time.perf_counter() - inference_start
                                 candidate = int(sampled)
                                 if _placement_action_reachable(info_payload, candidate):
                                     action = candidate
-                                    performed_inference = True
+                                    performed_inference = cached_logits is None  # Only count as inference if we ran the network
                                 else:
                                     fallback = _best_feasible_action(info_payload)
                                     if fallback is not None:

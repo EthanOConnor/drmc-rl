@@ -244,23 +244,46 @@ def _viewer_worker(
         action = stats.get("action")
         if action is not None:
             lines.append(f"Action: {action}")
+        
+        # Extract perf_stats early so we can use it in spawn line and speedup
+        perf_stats = stats.get("perf") if isinstance(stats, dict) else None
+        
         if spawn_id_int is not None:
             spawn_line = f"Spawn {spawn_id_int}"
+            # Display inference count inline with spawn
+            if isinstance(perf_stats, dict):
+                call_count_val = perf_stats.get("inference_calls")
+                if call_count_val is not None:
+                    inference_count = int(call_count_val)
+                    spawn_line += f"  Inference {inference_count}"
+                    # Flag if inference calls lagging behind spawns
+                    if inference_count < (spawn_id_int - 1):
+                        spawn_line += " (LOW!)"
             if needs_action:
                 spawn_line += " (needs action)"
                 if highlight_spawn:
                     spawn_line += " – re-decide"
             lines.append(spawn_line)
-        emu_fps = stats.get("emu_fps")
-        target_hz = stats.get("target_hz")
-        ratio = stats.get("emu_vis_ratio")
-        if emu_fps is not None:
-            target_text = "free" if not target_hz else f"target {target_hz:.1f}"
-            realtime_multiplier = emu_fps / 60.0
-            lines.append(
-                f"Emu FPS {emu_fps:.1f} ({target_text}, {realtime_multiplier:.2f}x)"
-            )
+        
+        # Calculate actual speedup: game seconds simulated / wall time elapsed
+        step_count = stats.get("step", 0)
+        wall_s = perf_stats.get("wall_s") if isinstance(perf_stats, dict) else None
+        if step_count is not None and wall_s is not None and wall_s > 0:
+            game_seconds = float(step_count) / 60.0  # NES runs at 60 FPS
+            speedup = game_seconds / float(wall_s)
+            lines.append(f"Speedup {speedup:.2f}x (steps {step_count}, wall {float(wall_s):.1f}s)")
+        else:
+            # Fallback to old emu_fps display
+            emu_fps = stats.get("emu_fps")
+            target_hz = stats.get("target_hz")
+            if emu_fps is not None:
+                target_text = "free" if not target_hz else f"target {target_hz:.1f}"
+                realtime_multiplier = emu_fps / 60.0
+                lines.append(
+                    f"Emu FPS {emu_fps:.1f} ({target_text}, {realtime_multiplier:.2f}x)"
+                )
         lines.append(f"Viz FPS {viz_fps:.1f}")
+        ratio = stats.get("emu_vis_ratio")
         if ratio:
             lines[-1] += f"  ratio×{ratio:.2f}"
         else:
@@ -384,9 +407,6 @@ def _viewer_worker(
                     else "?"
                 )
                 lines.append(f"Avg update ms episode {episode_avg_text}  batch {batch_avg_text}")
-            call_count = perf_stats.get("inference_calls")
-            if call_count is not None:
-                lines.append(f"Inference calls {int(call_count)}")
         lines.append("Controls: 0=emu=viz  +=faster  -=slower")
         text_var.set("\n".join(lines))
         if default_fg is not None and text_label is not None:
