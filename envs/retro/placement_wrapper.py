@@ -1081,6 +1081,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         print(f"{_ts()} [timing] pre_get_plan action={int(action)}", flush=True)
                     except Exception:
                         pass
+                # Refresh translator to ensure _current_snapshot is up-to-date before planning
+                self._translator.refresh(state=self.env.unwrapped._state_cache)
                 plan = self._translator.get_plan(int(action))
                 if plan is None:
                     attempted_actions.add(int(action))
