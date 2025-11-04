@@ -393,13 +393,6 @@ def _viewer_worker(
             
             if wait_parts:
                 lines.append("Wall time: " + "  ".join(wait_parts))
-            
-            # Keep old inference wait display for compute percentage
-            compute_pct = perf_stats.get("inference_pct_compute")
-            if inference_pct is not None and compute_pct is not None:
-                lines.append(
-                    f"Inference wait {float(inference_pct):.1f}% wall ({float(compute_pct):.1f}% loop)"
-                )
             last_infer = perf_stats.get("last_inference_ms")
             last_step = perf_stats.get("last_step_ms")
             if last_infer is not None or last_step is not None:
