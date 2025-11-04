@@ -1140,9 +1140,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 and marker_now != self._spawn_marker
             )
             if new_spawn:
-                # Bump OUR counter; keep translator marker only for detection.
+                # Update spawn marker and ID from pill state (not local increment)
+                assert marker_now is not None  # guaranteed by new_spawn condition
                 self._spawn_marker = marker_now
-                self._spawn_id += 1
+                self._spawn_id = int(marker_now)  # Use actual pill counter from RAM, not local increment
                 self._capsule_present = True
                 self._attempted_actions.clear()
                 self._log(f"new_spawn spawn={self._spawn_id} attempts_cleared=1")
@@ -1158,6 +1159,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             # Happy path: plan executed; we're done for this env.step().
             if pill_now and marker_now is not None and self._spawn_marker is None:
                 self._spawn_marker = marker_now
+                self._spawn_id = int(marker_now)  # Initialize spawn_id from first pill
             self._capsule_present = pill_now
             if not outcome.replan_required:
                 attempted_actions.clear()
