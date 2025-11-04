@@ -916,6 +916,14 @@ class DrMarioPlacementEnv(gym.Wrapper):
             Callable[[Any, Dict[str, Any], Optional[int], float, bool, bool], None]
         ] = None
         self._attempted_actions: Set[int] = set()
+        # Divergence diagnostics
+        self._divergence_stats: Dict[str, int] = {
+            "start_mismatch": 0,
+            "immediate_diverge": 0,
+            "stall_timeout": 0,
+            "progress_timeout": 0,
+            "mid_execution_diverge": 0,
+        }
 
     # ------------------------------------------------------------------
     # Gym API
@@ -1179,6 +1187,19 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if "placements/needs_action" not in enriched_info:
             enriched_info["placements/needs_action"] = False
         enriched_info.setdefault("placements/spawn_id", int(self._spawn_id))
+        # Periodically log divergence stats (every 10 spawns)
+        if self._spawn_id > 0 and self._spawn_id % 10 == 0 and self._execution_log:
+            total_diverg = sum(self._divergence_stats.values())
+            if total_diverg > 0:
+                print(
+                    f"[divergence_stats] spawn={self._spawn_id} total={total_diverg} "
+                    f"start_mismatch={self._divergence_stats['start_mismatch']} "
+                    f"immediate={self._divergence_stats['immediate_diverge']} "
+                    f"progress_timeout={self._divergence_stats['progress_timeout']} "
+                    f"mid_execution={self._divergence_stats['mid_execution_diverge']} "
+                    f"stall_timeout={self._divergence_stats['stall_timeout']}",
+                    flush=True,
+                )
         return last_obs, total_reward, terminated, truncated, enriched_info
 
     # ------------------------------------------------------------------
@@ -1279,6 +1300,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         f"[planner] WARN: route start != pill: start=(r={s0.row},c={s0.col},o={s0.orient}) vs pill=(r={pill.row},c={pill.col},o={pill.orient})",
                         flush=True,
                     )
+                    # Track start mismatch
+                    self._divergence_stats["start_mismatch"] += 1
                     try:
                         board = self._board
                         if board is not None:
@@ -1542,6 +1565,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     self._log(
                         f"progress_timeout spawn={self._spawn_id} step={idx} frames={frames_for_step} action={int(ctrl.action)} actual={_format_compact_state(actual_state)} expected={_format_compact_state(expected_state)}"
                     )
+                    # Track progress timeout
+                    if idx == 0:
+                        self._divergence_stats["immediate_diverge"] += 1
+                    else:
+                        self._divergence_stats["progress_timeout"] += 1
                     if internal_resyncs >= self._translator.internal_resync_limit():
                         if self._path_log and failure_detail is None:
                             failure_detail = (
@@ -1591,6 +1619,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     retry_budget -= 1
                     continue
                 # Diverged: attempt an immediate internal resync before giving up
+                # Track divergence type
+                if idx == 0:
+                    self._divergence_stats["immediate_diverge"] += 1
+                else:
+                    self._divergence_stats["mid_execution_diverge"] += 1
                 new_plan = self._translator.replan_to_action(latched_action_val)
                 if new_plan is not None and new_plan.controller:
                     if internal_resyncs >= self._translator.internal_resync_limit():
