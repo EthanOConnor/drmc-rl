@@ -320,6 +320,7 @@ def _step_state(
 
     if frame_flag != 0 and down_only:
         drop_triggered = True
+        # Note: speed_counter will be reset to 0 below if drop succeeds
     else:
         trial_counter = min(state.speed_counter + 1, speed_threshold + 1)
         if trial_counter > speed_threshold:
