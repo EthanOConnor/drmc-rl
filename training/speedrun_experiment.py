@@ -4979,6 +4979,9 @@ def main() -> None:
                 slot.episode_reward += reward
                 slot.episode_steps += 1
                 total_steps += 1
+                # Debug: log total_steps increment
+                if total_steps % 100 == 0:
+                    print(f"[STEPS DEBUG] total_steps={total_steps}, slot={slot.index}, episode_steps={slot.episode_steps}", flush=True)
 
                 agent.observe_step(reward, step_done, step_info, context_id=slot.context_id)
 
