@@ -269,22 +269,19 @@ def _viewer_worker(
         step_count = stats.get("step", 0)
         wall_s = perf_stats.get("wall_s") if isinstance(perf_stats, dict) else None
         total_wall_s = perf_stats.get("total_wall_s") if isinstance(perf_stats, dict) else None
-        total_steps = perf_stats.get("total_steps") if isinstance(perf_stats, dict) else None
+        total_frames = perf_stats.get("total_frames") if isinstance(perf_stats, dict) else None
         
-        # Speedup for this run
+        # Speedup for this run (emulator frames / 60fps / wall time)
         if step_count is not None and wall_s is not None and wall_s > 0:
             game_seconds = float(step_count) / 60.0  # NES runs at 60 FPS
             speedup_run = game_seconds / float(wall_s)
-            lines.append(f"Speedup (run) {speedup_run:.2f}x ({step_count} steps, {float(wall_s):.1f}s)")
+            lines.append(f"Speedup (run) {speedup_run:.2f}x ({step_count} frames, {float(wall_s):.1f}s)")
         
-        # Speedup for total execution
-        if total_steps is not None and total_wall_s is not None and total_wall_s > 0:
-            total_game_seconds = float(total_steps) / 60.0
+        # Speedup for total execution (total emulator frames / 60fps / total wall time)
+        if total_frames is not None and total_wall_s is not None and total_wall_s > 0:
+            total_game_seconds = float(total_frames) / 60.0
             speedup_total = total_game_seconds / float(total_wall_s)
-            # Debug logging with episode step count from stats
-            episode_step_count = stats.get("step", "?")
-            print(f"[DEMO DEBUG] total_steps={total_steps}, episode_steps={episode_step_count}, total_wall_s={total_wall_s:.2f}, speedup_total={speedup_total:.2f}x", flush=True)
-            lines.append(f"Speedup (total) {speedup_total:.2f}x ({total_steps} steps, {float(total_wall_s):.1f}s)")
+            lines.append(f"Speedup (total) {speedup_total:.2f}x ({total_frames} frames, {float(total_wall_s):.1f}s)")
         
         # Fallback to old emu_fps display if wall times not available
         if wall_s is None or (step_count is None or step_count == 0):

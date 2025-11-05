@@ -3781,6 +3781,7 @@ def main() -> None:
     completed_rewards: list[float] = []
     recent_rewards: deque[float] = deque(maxlen=5)
     total_steps = 0
+    total_frames = 0  # Total emulator frames pushed to viewer across all runs
     completed_runs = 0
     next_run_idx = 0
     if args.start_presses is not None:
@@ -3896,7 +3897,7 @@ def main() -> None:
     def process_monitor_commands() -> None:
         nonlocal randomize_rng_enabled, reset_options, current_seed_index
         nonlocal checkpoint_path, next_run_idx, completed_runs, completed_rewards, recent_rewards
-        nonlocal total_steps
+        nonlocal total_steps, total_frames
         if monitor is None:
             return
         commands = monitor.poll_commands()
@@ -4314,7 +4315,7 @@ def main() -> None:
             pass
         stats = {
             "info": info_payload,
-            "step": step_idx,
+            "step": slot.frame_index,  # Use frame_index for emulator frame count
             "reward": reward_val,
             "cumulative": episode_reward,
             "action": None if action_val is None else int(action_val),
@@ -4332,19 +4333,16 @@ def main() -> None:
         inference_time = float(slot.inference_time)
         compute_time = float(slot.step_compute_time)
         planner_time = float(slot.planner_latency_ms_total) / 1000.0  # Convert ms to seconds
-        # For intermediate frames (during env.step), total_steps hasn't been incremented yet
-        # For final frames (after env.step), total_steps has been incremented
-        # For episode start, use total_steps as-is
+        # For emulator frame speedup: use total_frames (cumulative emulator frames)
+        # total_steps remains for environment step tracking
         current_total_steps = total_steps + 1 if is_intermediate else total_steps
-        # Debug: log what we're sending to visualization
-        if slot.index == 0 and slot.frame_index % 60 == 0:
-            print(f"[PUBLISH DEBUG] total_steps={total_steps}, is_intermediate={is_intermediate}, current_total_steps={current_total_steps}, slot.episode_steps={slot.episode_steps}", flush=True)
         perf_stats: Dict[str, Any] = {
             "inference_s": inference_time,
             "compute_s": compute_time,
             "wall_s": wall_elapsed,
             "total_wall_s": total_wall_elapsed,
             "total_steps": current_total_steps,
+            "total_frames": total_frames,  # Total emulator frames for speedup calculation
             "planner_s": planner_time,
             "inference_pct_wall": (inference_time / wall_elapsed * 100.0)
             if wall_elapsed > 1e-9
@@ -4437,6 +4435,9 @@ def main() -> None:
             viewer_local = None
         if pushed_main or viewer_local is None:
             slot.frame_index += 1
+            # Increment global emulator frame counter when a frame is successfully pushed
+            nonlocal total_frames
+            total_frames += 1
 
         if slot.planner_viewer is not None and args.placement_action_space:
             translator = getattr(slot.env, "_translator", None)
@@ -4509,7 +4510,6 @@ def main() -> None:
             info_copy = dict(info_val or {})
             slot.intermediate_reward += float(reward_val)
             slot.viewer_step_offset += 1
-            frame_step = slot.viewer_step_base + slot.viewer_step_offset
             cumulative = slot.episode_reward + slot.intermediate_reward
             pf0 = time.perf_counter()
             publish_frame(
@@ -4518,7 +4518,7 @@ def main() -> None:
                 info_copy,
                 None if action_val is None else int(action_val),
                 float(reward_val),
-                frame_step,
+                0,  # step_idx unused now that we use slot.frame_index directly
                 cumulative,
                 is_intermediate=True,  # Callback during env.step
             )
@@ -4582,7 +4582,7 @@ def main() -> None:
             policy_seed = current_seed_index + run_idx * max(1, num_envs) + slot.index
             seed_policy_rng(policy_seed)
         agent.begin_episode(context_id=slot.context_id)
-        publish_frame(slot, slot.obs, slot.info, None, 0.0, total_steps, 0.0, is_intermediate=False)
+        publish_frame(slot, slot.obs, slot.info, None, 0.0, 0, 0.0, is_intermediate=False)
         if monitor is not None:
             try:
                 monitor.publish_status(
@@ -5043,7 +5043,7 @@ def main() -> None:
                     step_info,
                     int(action),
                     reward,
-                    slot.viewer_step_base + slot.viewer_step_offset + 1,
+                    0,  # step_idx unused now that we use slot.frame_index directly
                     slot.episode_reward,
                     is_intermediate=False,  # Final frame after env.step
                 )
