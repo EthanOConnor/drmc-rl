@@ -4265,6 +4265,7 @@ def main() -> None:
         episode_reward: float,
         is_intermediate: bool = False,
     ) -> None:
+        nonlocal total_frames
         viewer_local = slot.viewer
         stack_for_planner: Optional[np.ndarray] = None
         # Anticipatory planning at lock: when the current pill locks, select the
@@ -4436,7 +4437,6 @@ def main() -> None:
         if pushed_main or viewer_local is None:
             slot.frame_index += 1
             # Increment global emulator frame counter when a frame is successfully pushed
-            nonlocal total_frames
             total_frames += 1
 
         if slot.planner_viewer is not None and args.placement_action_space:
