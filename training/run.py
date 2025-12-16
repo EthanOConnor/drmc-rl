@@ -20,14 +20,37 @@ DEFAULT_BASE_CFG = Path("training/configs/base.yaml")
 
 
 def parse_args(argv: Any = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Unified Dr. Mario training entrypoint")
-    parser.add_argument("--algo", choices=["simple_pg", "ppo", "appo"], default="simple_pg")
+    parser = argparse.ArgumentParser(
+        description="Unified Dr. Mario RL training entrypoint",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m training.run --algo simple_pg --ui tui
+  python -m training.run --algo ppo --cfg training/configs/ppo.yaml
+  python -m training.run --algo simple_pg --wandb --total_steps 1e6
+""",
+    )
+    parser.add_argument("--algo", choices=["simple_pg", "ppo", "appo", "ppo_smdp"], default="simple_pg")
     parser.add_argument("--engine", choices=["builtin", "sf2"], default=None)
     parser.add_argument("--cfg", type=str, default=str(DEFAULT_BASE_CFG))
     parser.add_argument("--override", type=str, default=None, help="Comma separated key=value overrides")
+    
+    # UI options
+    parser.add_argument(
+        "--ui",
+        choices=["tui", "headless", "none"],
+        default="headless",
+        help="UI mode: tui (Rich terminal), headless (logging only), none",
+    )
+    
+    # Logging
+    parser.add_argument("--wandb", action="store_true", help="Enable Weights & Biases logging")
+    parser.add_argument("--wandb-project", type=str, default="drmc-rl", help="WandB project name")
     parser.add_argument("--viz", nargs="*", default=None, help="Override diagnostics backends")
     parser.add_argument("--video_interval", type=int, default=None)
     parser.add_argument("--logdir", type=str, default=None)
+    
+    # Training
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--obs_mode", type=str, default=None)
@@ -41,6 +64,7 @@ def parse_args(argv: Any = None) -> argparse.Namespace:
     parser.add_argument("--total_steps", type=float, default=None)
     parser.add_argument("--dry_run", type=str, default="false")
     parser.add_argument("--device", type=str, default=None)
+    
     # Compatibility knobs retained from historical scripts
     parser.add_argument("--timeout", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument("--state-viz-interval", type=int, default=None, help=argparse.SUPPRESS)

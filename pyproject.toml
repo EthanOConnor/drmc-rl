@@ -1,12 +1,13 @@
 [project]
 name = "drmc-rl"
-version = "0.0.1"
+version = "0.1.0"
 description = "Dr. Mario RL environment, training, and evaluation"
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "gymnasium",
     "numpy",
+    "rich>=13.0", # TUI and progress bars
 ]
 
 [tool.black]
@@ -23,8 +24,15 @@ ignore = []
 [tool.setuptools.packages.find]
 include = ["envs*", "models*", "eval*", "training*"]
 exclude = [
-  "re*", "retro*", "data*", "legal_ROMs*", "tools*", "streaming*", "docs*",
-  "sim-envpool*", "dr-mario-disassembly*"
+    "re*",
+    "retro*",
+    "data*",
+    "legal_ROMs*",
+    "tools*",
+    "streaming*",
+    "docs*",
+    "sim-envpool*",
+    "dr-mario-disassembly*",
 ]
 
 [project.optional-dependencies]
@@ -35,22 +43,11 @@ rl = [
     "torchrl",
     "sample-factory",
     "pettingzoo",
+    "wandb",          # Experiment tracking (free tier available)
 ]
-viz = [
-    "opencv-python-headless",
-    "pillow",
-]
-apple = [
-    "mlx",
-]
-dev = [
-    "black",
-    "ruff",
-    "pytest",
-    "pandas",
-    "pyarrow",
-    "matplotlib",
-]
+viz = ["opencv-python-headless", "pillow"]
+apple = ["mlx"]
+dev = ["black", "ruff", "pytest", "pandas", "pyarrow", "matplotlib"]
 
 [build-system]
 requires = ["setuptools>=80", "wheel>=0.45"]

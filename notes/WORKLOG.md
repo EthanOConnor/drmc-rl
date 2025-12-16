@@ -36,3 +36,17 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Identified critical gaps: no notes system, C++ engine missing DAS/wall kicks.
 - Found 64 tests all passing.
 - Implemented inter-session notes system (`notes/` directory).
+
+## 2025-12-16 – Decruftification & Runner Refactor
+
+- Deleted stub directories: io-bridge/, streaming/, sim-envpool/, retro/
+- Deleted orphan files: patches, package.json, Screenshot
+- Archived drmarioai/ Java bot to archive/ (reference only)
+- Updated .gitignore: added cores/, checkpoints/, .venv-*/
+- Updated docs/REFERENCES.md with drmarioai, Rich, Textual, WandB
+- Created training/ui/tui.py: Rich-based TUI with sparklines (replaces Tkinter)
+- Created training/utils/devices.py: unified MLX/PyTorch device resolution
+- Created training/utils/wandb_logger.py: WandB integration with graceful fallback
+- Enhanced training/run.py: added --ui tui|headless, --wandb, --wandb-project
+- Updated pyproject.toml: added rich>=13.0, wandb, bumped version to 0.1.0
+
