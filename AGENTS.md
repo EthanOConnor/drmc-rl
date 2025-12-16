@@ -10,6 +10,37 @@
 - `sim-envpool/` Rules‑exact C++ env (later).
 - `re/` Reverse‑engineering artifacts (no ROMs).
 - `docs/` DESIGN, RNG, CONTRIBUTING. Data lives in `data/` (git‑ignored).
+- `notes/` Inter-session, inter-agent coordination and memory (see below).
+
+## Notes System (`notes/`)
+
+`notes/` is for human + agent memory and coordination across sessions. Files:
+
+- **`notes/MEMORY.md`**
+  - Long-lived architectural memory, design decisions, and "why" behind choices.
+  - Think ADR-lite: short entries, timestamped, with rationale and trade-offs.
+
+- **`notes/WORKLOG.md`**
+  - Chronological log of work done.
+  - Use a simple bullet format with date, actor, and brief summary.
+
+- **`notes/BACKLOG.md`**
+  - Technical backlog / roadmap with prioritized sections (near-term, medium-term, longer-term).
+  - More detailed than top-level docs; use for technical work items.
+
+- **`notes/CHAT.md`**
+  - Scratchpad for ideas, hypotheses, sketches—things that might become real work later.
+  - Can be informal, but keep it readable and dated.
+
+- **`notes/SCRUTINY.md`**
+  - Critical review and risk tracking.
+  - Capture concerns about correctness, performance, API contracts, and UX, plus how we'll validate or mitigate them.
+
+**When editing code in this repo:**
+- Update `notes/WORKLOG.md` with a short entry for any meaningful change.
+- Update `notes/MEMORY.md` when you make or rely on a design decision.
+- Prefer adding items to `notes/BACKLOG.md` instead of TODO comments in code.
+- When you spot a risk or subtle behavior, add an entry in `notes/SCRUTINY.md`.
 
 ## Build, Test, and Development Commands
 - macOS deps: `brew install cmake pkg-config lua@5.1`
