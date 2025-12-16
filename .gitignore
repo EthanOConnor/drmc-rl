@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-*/
 venv/
 .env
 dist/
@@ -26,3 +27,5 @@ legal_ROMs/
 debug_dumps/
 out_frames/
 runs/
+cores/
+checkpoints/
