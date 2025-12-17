@@ -167,9 +167,39 @@ def main(argv: Any = None) -> None:
             env.close()
         return
 
+    # Create TUI if requested
+    tui = None
+    tui_handler = None
+    if args.ui == "tui":
+        try:
+            from training.ui.tui import TrainingTUI, RICH_AVAILABLE
+            from training.ui.event_handler import TUIEventHandler
+            
+            if RICH_AVAILABLE:
+                total_steps = int(getattr(cfg.train, "total_steps", 2000000))
+                tui = TrainingTUI(experiment_name=f"DrMC-RL: {cfg.algo}")
+                tui.set_hyperparams({
+                    "algo": cfg.algo,
+                    "seed": ctx.seed,
+                    "device": device,
+                    "total_steps": total_steps,
+                })
+                tui_handler = TUIEventHandler(event_bus, tui)
+            else:
+                print("Warning: Rich not available, falling back to headless mode")
+        except ImportError as e:
+            print(f"Warning: TUI import failed ({e}), falling back to headless mode")
+
     adapter = build_adapter(cfg, env, logger, event_bus, device)
+    
     try:
-        adapter.train_forever()
+        if tui is not None:
+            # Run training within TUI context
+            with tui:
+                adapter.train_forever()
+        else:
+            # Headless training
+            adapter.train_forever()
     finally:
         if hasattr(adapter, "close"):
             adapter.close()
