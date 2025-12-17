@@ -32,7 +32,7 @@ from tools.game_transcript import (
 )
 
 
-# NES RAM addresses (from ram_offsets.json and AGENTS.md)
+# NES RAM addresses (from ram_offsets.json and disassembly)
 ADDR_BOARD = 0x0400
 ADDR_PILL_COL = 0x0305
 ADDR_PILL_ROW = 0x0306
@@ -44,9 +44,11 @@ ADDR_STAGE_CLEAR = 0x0055
 ADDR_LEVEL = 0x0316
 ADDR_SPEED = 0x030B
 ADDR_FRAME_COUNTER = 0x0043
+ADDR_FLAG_DEMO = 0x0741  # 0x00=not demo, 0xFE=playing, 0xFF=record
 
 # Mode values
-MODE_DEMO = 0x04  # Demo and gameplay both use this when active
+MODE_PLAYING = 0x04
+FLAG_DEMO_PLAYING = 0xFE
 STAGE_CLEARED = 0x01
 
 
@@ -75,28 +77,54 @@ def record_nes_demo(
         print("Backend loaded, waiting for demo to start...")
     
     try:
-        # Wait for demo mode to activate
-        # On NES, demo starts after ~3 seconds on title screen
-        demo_started = False
+        # Wait for demo mode to activate naturally
+        # From disassembly: demoStart_delay = 0x08 * 256 = 2048 frames (~34 sec)
+        demo_wait_frames = 2200  # A bit more than 2048 to be safe
         
-        for _ in range(wait_demo_start):
-            backend.step([0] * 9)  # 9 buttons, all released
+        if verbose:
+            print(f"Waiting up to {demo_wait_frames} frames for demo to start...")
+        
+        demo_started = False
+        for frame in range(demo_wait_frames):
+            backend.step([0] * 8)  # 8 NES buttons, all released
             ram = backend.get_ram()
             if ram is None:
                 continue
             
-            # Check if we're in gameplay mode with viruses
-            mode = int(ram[ADDR_MODE])
+            # Check flag_demo for demo mode (0xFE = playing)
+            flag_demo = int(ram[ADDR_FLAG_DEMO])
             viruses = int(ram[ADDR_VIRUSES])
             
-            if mode == MODE_DEMO and viruses > 0:
+            if flag_demo == FLAG_DEMO_PLAYING and viruses > 0:
                 demo_started = True
                 if verbose:
-                    print(f"Demo started! Mode=0x{mode:02x}, Viruses={viruses}")
+                    print(f"Demo started at frame {frame}! flag_demo=0x{flag_demo:02x}, Viruses={viruses}")
                 break
+            
+            if verbose and frame % 500 == 0:
+                print(f"  Frame {frame}: flag_demo=0x{flag_demo:02x} viruses={viruses}")
         
         if not demo_started:
-            raise RuntimeError("Demo mode did not start within timeout")
+            raise RuntimeError("Demo mode did not start within expected frames")
+        
+        # Wait for board to be fully initialized (viruses placed)
+        # Demo board has 44 viruses, wait until we see some on the board
+        if verbose:
+            print("Waiting for board initialization...")
+        
+        for _ in range(120):  # Up to 2 seconds
+            backend.step([0] * 8)
+            ram = backend.get_ram()
+            if ram is None:
+                continue
+            
+            board = ram[ADDR_BOARD:ADDR_BOARD + BOARD_SIZE]
+            virus_count = sum(1 for b in board if b != TILE_EMPTY and (b & 0xF0) == 0xD0)
+            
+            if virus_count >= 40:  # Demo has 44 viruses
+                if verbose:
+                    print(f"Board initialized with {virus_count} viruses")
+                break
         
         # Create transcript
         ram = backend.get_ram()
@@ -118,18 +146,18 @@ def record_nes_demo(
         if verbose:
             print(f"Initial board captured: {viruses_initial} viruses")
         
-        # State tracking
+        # State tracking (cast to int for JSON serialization)
         prev_board = bytearray(initial_board)
-        prev_pill_row = ram[ADDR_PILL_ROW]
-        prev_pill_col = ram[ADDR_PILL_COL]
-        prev_pill_orient = ram[ADDR_PILL_ORIENT]
-        prev_viruses = ram[ADDR_VIRUSES]
+        prev_pill_row = int(ram[ADDR_PILL_ROW])
+        prev_pill_col = int(ram[ADDR_PILL_COL])
+        prev_pill_orient = int(ram[ADDR_PILL_ORIENT])
+        prev_viruses = int(ram[ADDR_VIRUSES])
         
         frame_num = 0
         
         while frame_num < max_frames:
             # Step emulator (no input - it's demo mode, CPU plays)
-            backend.step([0] * 9)
+            backend.step([0] * 8)
             frame_num += 1
             
             ram = backend.get_ram()
@@ -137,12 +165,12 @@ def record_nes_demo(
                 continue
             
             # Check for demo end
-            mode = int(ram[ADDR_MODE])
+            flag_demo = int(ram[ADDR_FLAG_DEMO])
             stage_clear = int(ram[ADDR_STAGE_CLEAR])
             
-            if mode != MODE_DEMO:
+            if flag_demo != FLAG_DEMO_PLAYING:
                 if verbose:
-                    print(f"Mode changed to 0x{mode:02x} at frame {frame_num}")
+                    print(f"Demo ended, flag_demo=0x{flag_demo:02x} at frame {frame_num}")
                 break
             
             if stage_clear == STAGE_CLEARED:
@@ -154,10 +182,10 @@ def record_nes_demo(
             # Build frame state
             fs = FrameState(frame=frame_num, buttons=0)
             
-            # Check pill position changes
-            curr_row = ram[ADDR_PILL_ROW]
-            curr_col = ram[ADDR_PILL_COL]
-            curr_orient = ram[ADDR_PILL_ORIENT]
+            # Check pill position changes (cast to int for JSON serialization)
+            curr_row = int(ram[ADDR_PILL_ROW])
+            curr_col = int(ram[ADDR_PILL_COL])
+            curr_orient = int(ram[ADDR_PILL_ORIENT])
             
             if curr_row != prev_pill_row:
                 fs.pill_row = curr_row
@@ -169,13 +197,13 @@ def record_nes_demo(
                 fs.pill_orient = curr_orient
                 prev_pill_orient = curr_orient
             
-            # Check board changes
+            # Check board changes (cast to int for JSON)
             current_board = ram[ADDR_BOARD:ADDR_BOARD + BOARD_SIZE]
             board_changes: List[Tuple[int, int, int]] = []
             
             for i in range(BOARD_SIZE):
                 if current_board[i] != prev_board[i]:
-                    board_changes.append((i, prev_board[i], current_board[i]))
+                    board_changes.append((i, int(prev_board[i]), int(current_board[i])))
                     prev_board[i] = current_board[i]
             
             if board_changes:

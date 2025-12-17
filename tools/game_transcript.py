@@ -176,9 +176,18 @@ class GameTranscript:
 
 def save_json(transcript: GameTranscript, path: Path) -> None:
     """Save transcript to human-readable JSON."""
+    import numpy as np
+    
+    class NumpyEncoder(json.JSONEncoder):
+        """JSON encoder that handles numpy types."""
+        def default(self, obj):
+            if isinstance(obj, (np.integer, np.floating)):
+                return int(obj) if isinstance(obj, np.integer) else float(obj)
+            return super().default(obj)
+    
     path = Path(path)
     with open(path, "w") as f:
-        json.dump(transcript.to_dict(), f, indent=2)
+        json.dump(transcript.to_dict(), f, indent=2, cls=NumpyEncoder)
 
 
 def load_json(path: Path) -> GameTranscript:

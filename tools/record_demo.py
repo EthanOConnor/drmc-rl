@@ -131,13 +131,14 @@ def record_cpp_demo(
         prev_pill_orient = state.falling_pill_orient
         prev_viruses = state.viruses_remaining
         
-        frame_num = 0
-        input_idx = 0
+        # Use frame_count as canonical frame number (engine starts at 1)
+        start_frame = state.frame_count
         
-        while frame_num < max_frames and not state.stage_clear and not state.level_fail:
-            # Get button input for this frame
+        while state.frame_count < start_frame + max_frames and not state.stage_clear and not state.level_fail:
+            # Get button input for this frame - use frame_count as index
+            # NES demo inputs are 0-indexed from game start
+            input_idx = state.frame_count - 1  # frame_count 1 = input[0]
             buttons = frame_inputs[input_idx] if input_idx < len(frame_inputs) else 0
-            input_idx += 1
             
             # Send input
             state.buttons = buttons
@@ -154,7 +155,7 @@ def record_cpp_demo(
             
             if timeout == 0:
                 if verbose:
-                    print(f"Warning: timeout at frame {frame_num}")
+                    print(f"Warning: timeout at frame {state.frame_count}")
                 break
             
             frame_num = state.frame_count
