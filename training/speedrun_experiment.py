@@ -352,6 +352,65 @@ def _best_feasible_action(info: Optional[Dict[str, Any]]) -> Optional[int]:
     return int(feasible_idx[0])
 
 
+def _generate_virus_board(virus_count: int, randomize: bool, rng: Optional[np.random.RandomState] = None) -> np.ndarray:
+    """Generate an 8x16 board with the specified number of viruses.
+    
+    Args:
+        virus_count: Number of viruses to place (clamped to 0-96)
+        randomize: If True, randomize virus positions and colors; otherwise use deterministic pattern
+        rng: Random number generator (required if randomize=True)
+    
+    Returns:
+        np.ndarray of shape (16, 8) with uint8 values representing board cells.
+        Each cell encodes type (upper nibble) and color (lower nibble):
+        - 0x00 = empty
+        - 0x4X = virus (X = color: 0=red, 1=yellow, 2=blue)
+        - 0x0X = pill half (X = color)
+    """
+    GRID_WIDTH = 8
+    GRID_HEIGHT = 16
+    # Dr. Mario bottle encoding: hi nibble = type, lo nibble = color
+    # Type: 0x4 = virus, 0x0 = pill/empty
+    # Color: 0 = red, 1 = yellow, 2 = blue
+    VIRUS_TYPE = 0x40
+    
+    virus_count = max(0, min(96, int(virus_count)))  # Clamp to valid range
+    board = np.zeros((GRID_HEIGHT, GRID_WIDTH), dtype=np.uint8)
+    
+    if virus_count == 0:
+        return board
+    
+    if randomize:
+        if rng is None:
+            rng = np.random.RandomState()
+        
+        # Generate all possible positions (avoid top 2 rows for spawn space)
+        positions = [(r, c) for r in range(2, GRID_HEIGHT) for c in range(GRID_WIDTH)]
+        
+        # Randomly select positions
+        selected_positions = rng.choice(len(positions), size=min(virus_count, len(positions)), replace=False)
+        
+        for idx in selected_positions:
+            r, c = positions[idx]
+            color = rng.randint(0, 3)  # 0=red, 1=yellow, 2=blue
+            board[r, c] = VIRUS_TYPE | color
+    else:
+        # Deterministic placement: fill from bottom-left in a snake pattern
+        placed = 0
+        for row in range(GRID_HEIGHT - 1, 1, -1):  # Start from bottom, avoid top 2 rows
+            for col in range(GRID_WIDTH):
+                if placed >= virus_count:
+                    break
+                # Alternate color in a pattern
+                color = placed % 3
+                board[row, col] = VIRUS_TYPE | color
+                placed += 1
+            if placed >= virus_count:
+                break
+    
+    return board
+
+
 def _mlx_device_tokens(device: Any) -> set[str]:
     tokens: set[str] = set()
     if device is None:
@@ -1791,6 +1850,7 @@ class _EpisodeContext:
     rewards: List[float] = field(default_factory=list)
     dones: List[bool] = field(default_factory=list)
     reset_flags: List[bool] = field(default_factory=list)
+    decision_steps: List[int] = field(default_factory=list)  # Frame indices where decisions were made
     recurrent_state: Optional[Any] = None
     last_spawn_id: Optional[int] = None
 
@@ -2062,6 +2122,7 @@ class PolicyGradientAgent:
         ctx.rewards.clear()
         ctx.dones.clear()
         ctx.reset_flags.clear()
+        ctx.decision_steps.clear()
         ctx.recurrent_state = None
         ctx.last_spawn_id = None
         return ctx
@@ -2166,6 +2227,9 @@ class PolicyGradientAgent:
         state_tensor = self._prepare_obs(obs)
         # Record observation for training - we're making a decision here
         ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
+        # Track decision step index (frame index at which decision was made)
+        current_step_idx = len(ctx.rewards)  # Current frame index (rewards = stepwise)
+        ctx.decision_steps.append(current_step_idx)
         autocast_ctx = (
             torch.autocast(device_type=self._device.type, dtype=torch.float16)
             if self._use_amp
@@ -2206,6 +2270,9 @@ class PolicyGradientAgent:
         if obs is not None:
             state_tensor = self._prepare_obs(obs)
             ctx.observations.append(state_tensor.detach().to("cpu").contiguous())
+            # Track decision step index when recording obs from cached logits
+            current_step_idx = len(ctx.rewards)  # Current frame index
+            ctx.decision_steps.append(current_step_idx)
         logits_tensor = torch.as_tensor(logits, dtype=torch.float32, device=self._device)
         mask_np = _extract_action_mask(info)
         if mask_np is not None:
@@ -2230,13 +2297,8 @@ class PolicyGradientAgent:
         ctx.rewards.append(float(reward))
         ctx.dones.append(bool(done))
 
-        spawn_id: Optional[int] = None
-        if info is not None:
-            raw_spawn = info.get("spawn_id")
-            if isinstance(raw_spawn, numbers.Integral):
-                spawn_id = int(raw_spawn)
-            elif isinstance(raw_spawn, numbers.Number):
-                spawn_id = int(raw_spawn)
+        # Use robust spawn ID extraction that checks all relevant keys
+        spawn_id = _extract_spawn_id(info)
         reset_required = False
         if spawn_id is not None:
             if ctx.last_spawn_id is None:
@@ -2290,21 +2352,26 @@ class PolicyGradientAgent:
             if not ctx.actions:
                 return
 
-            episode_len = min(
-                len(ctx.rewards),
-                len(ctx.actions),
-                len(ctx.observations),
-                len(ctx.reset_flags),
-                len(ctx.dones),
-            )
-            if episode_len <= 0:
+            # Observations, actions, and decision_steps are decision-wise (one per spawn)
+            # Rewards and dones are step-wise (one per frame)
+            num_decisions = len(ctx.actions)
+            num_frames = len(ctx.rewards)
+            
+            if num_decisions <= 0 or num_frames <= 0:
                 self._reset_context(context_id)
                 return
+            
+            # Validate decision_steps tracking
+            if len(ctx.decision_steps) != num_decisions:
+                # Fallback: if decision_steps wasn't tracked correctly, assume uniform spacing
+                # This shouldn't happen with the new tracking, but provides safety
+                ctx.decision_steps = list(range(num_decisions))
 
-            rewards_np = np.asarray(ctx.rewards[:episode_len], dtype=np.float32)
+            # Process full stepwise rewards
+            rewards_np = np.asarray(ctx.rewards, dtype=np.float32)
             nan_mask = np.isnan(rewards_np)
             nan_count = int(nan_mask.sum())
-            self._total_reward_steps += episode_len
+            self._total_reward_steps += num_frames
             if nan_count:
                 self._nan_rewards_seen += nan_count
                 self._nan_reward_episodes += 1
@@ -2317,14 +2384,15 @@ class PolicyGradientAgent:
                 rewards_tensor = rewards_tensor.unsqueeze(0)
 
             dones_tensor = torch.as_tensor(
-                ctx.dones[:episode_len], dtype=torch.bool, device=self._device
+                ctx.dones, dtype=torch.bool, device=self._device
             )
             if dones_tensor.dim() == 0:
                 dones_tensor = dones_tensor.unsqueeze(0)
 
-            obs_sequence = ctx.observations[:episode_len]
-            action_sequence = ctx.actions[:episode_len]
-            reset_flags = ctx.reset_flags[:episode_len]
+            obs_sequence = ctx.observations[:num_decisions]
+            action_sequence = ctx.actions[:num_decisions]
+            reset_flags = ctx.reset_flags[:num_decisions]
+            decision_indices = ctx.decision_steps[:num_decisions]
 
             obs_batch = torch.stack(obs_sequence, dim=0)
             obs_batch = obs_batch.to(self._device, non_blocking=True)
@@ -2386,11 +2454,17 @@ class PolicyGradientAgent:
 
             bootstrap_value = None
             if not bool(dones_tensor[-1].item()):
+                # Bootstrap from the last decision's value estimate
                 bootstrap_value = values[-1].detach()
 
-            returns_tensor = discounted_returns_torch(
+            # Compute returns over the FULL stepwise reward sequence
+            returns_full = discounted_returns_torch(
                 rewards_tensor, self._gamma, dones=dones_tensor, bootstrap=bootstrap_value
             )
+            
+            # Index returns at decision step boundaries to align with actions/observations
+            decision_indices_tensor = torch.as_tensor(decision_indices, dtype=torch.long, device=self._device)
+            returns_tensor = returns_full[decision_indices_tensor]
 
             if self._episodes_in_batch == 0:
                 self.optimizer.zero_grad(set_to_none=True)
@@ -2447,6 +2521,7 @@ class PolicyGradientAgent:
             ctx.rewards.clear()
             ctx.dones.clear()
             ctx.reset_flags.clear()
+            ctx.decision_steps.clear()
             ctx.recurrent_state = None
             ctx.last_spawn_id = None
 
@@ -3419,6 +3494,12 @@ def main() -> None:
     ap.add_argument("--frame-offset", type=int, default=0)
     ap.add_argument("--randomize-rng", action="store_true")
     ap.add_argument(
+        "--override-virus-count",
+        type=int,
+        default=None,
+        help="Override the starting board with N viruses (randomized if --randomize-rng is set).",
+    )
+    ap.add_argument(
         "--seed-index",
         type=int,
         default=0,
@@ -3800,8 +3881,78 @@ def main() -> None:
     def reset_environment(environment: Any) -> Tuple[Any, Dict[str, Any]]:
         opts = dict(reset_options)
         if randomize_rng_enabled:
-            return environment.reset(options=opts)
-        return environment.reset(seed=current_seed_index, options=opts)
+            obs, info = environment.reset(options=opts)
+        else:
+            obs, info = environment.reset(seed=current_seed_index, options=opts)
+        
+        # Override virus board if requested
+        if args.override_virus_count is not None:
+            try:
+                virus_count = int(args.override_virus_count)
+                # Generate virus board
+                virus_board = _generate_virus_board(
+                    virus_count,
+                    randomize=randomize_rng_enabled,
+                    rng=np.random.RandomState(current_seed_index) if not randomize_rng_enabled else None
+                )
+                
+                # Write to RAM (board is at 0x0400, stored row-major)
+                # Each cell is 1 byte: hi nibble = type, lo nibble = color
+                unwrapped = environment
+                while hasattr(unwrapped, 'env'):
+                    unwrapped = unwrapped.env
+                if hasattr(unwrapped, '_backend') and unwrapped._backend is not None:
+                    # Flatten board to match RAM layout (row-major, 8 bytes per row)
+                    board_bytes = virus_board.flatten().tolist()
+                    unwrapped._backend.write_ram(0x0400, board_bytes)
+                    
+                    # Update virus count at RAM address 0x0324
+                    unwrapped._backend.write_ram(0x0324, [virus_count])
+                    
+                    # Clear game-over/stage-clear flags to prevent immediate termination
+                    # These flags might be set from previous games
+                    unwrapped._backend.write_ram(0x0055, [0])  # stage_clear_flag (whoWon)
+                    unwrapped._backend.write_ram(0x0309, [0])  # p1_levelFailFlag (topout)
+                    
+                    # Debug: read back flags to verify they were written
+                    if hasattr(unwrapped, '_read_ram_array'):
+                        ram_arr = unwrapped._read_ram_array(refresh=True)
+                        if ram_arr is not None:
+                            stage_clear = int(ram_arr[0x0055]) if len(ram_arr) > 0x0055 else None
+                            fail_flag = int(ram_arr[0x0309]) if len(ram_arr) > 0x0309 else None
+                            virus_ram = int(ram_arr[0x0324]) if len(ram_arr) > 0x0324 else None
+                            print(f"[virus_override] After write: stage_clear=0x{stage_clear:02x if stage_clear is not None else 0}, "
+                                  f"fail_flag=0x{fail_flag:02x if fail_flag is not None else 0}, "
+                                  f"virus_count={virus_ram}", flush=True)
+                            
+                            # Rebuild state cache with new RAM data
+                            if hasattr(unwrapped, '_state_cache'):
+                                from envs.state_core import build_state
+                                ram_bytes = ram_arr.tobytes()
+                                unwrapped._state_cache = build_state(
+                                    ram_bytes=ram_bytes,
+                                    ram_offsets=unwrapped._ram_offsets,
+                                    prev_stack4=None,
+                                    t=unwrapped._t,
+                                    elapsed_frames=getattr(unwrapped, '_elapsed_frames', 0),
+                                    frame_skip=unwrapped.frame_skip,
+                                    last_terminal=None,
+                                )
+                                unwrapped._state_stack = unwrapped._state_cache.stack4
+                    
+                    # Update internal virus tracking variables
+                    if hasattr(unwrapped, '_viruses_remaining'):
+                        unwrapped._viruses_remaining = virus_count
+                        unwrapped._viruses_initial = max(1, virus_count)
+                        unwrapped._viruses_prev = virus_count
+                        print(f"[virus_override] Set internal virus count to {virus_count}", flush=True)
+            except Exception as e:
+                import warnings
+                import traceback
+                warnings.warn(f"Failed to override virus board: {e}")
+                traceback.print_exc()
+        
+        return obs, info
 
     env = build_training_env()
     obs, info = reset_environment(env)
@@ -4275,36 +4426,44 @@ def main() -> None:
             if (
                 args.placement_action_space
                 and bool(info_payload.get("is_locked", False))
-                and slot.preselected_action is None
             ):
-                inf_start = time.perf_counter()
-                # Get and cache logits for the next spawn
-                raw_logits = agent.get_action_logits(
-                    observation, info_payload, context_id=slot.context_id
-                )
-                try:
-                    slot.env.cache_spawn_logits(raw_logits)
-                except Exception:
-                    pass
-                # Sample action from logits
-                pre_sel = agent.select_action_from_logits(
-                    raw_logits, info_payload, context_id=slot.context_id
-                )
-                duration = time.perf_counter() - inf_start
-                slot.preselected_action = int(pre_sel)
-                slot.selected_action = int(pre_sel)
-                # Account inference timing
-                slot.inference_calls += 1
-                slot.inference_time += duration
-                slot.last_inference_duration = duration
-                if getattr(args, "placement_debug_log", False):
+                # Check for stale preselection: if spawn_id has advanced, clear it
+                current_spawn = info_payload.get("placements/spawn_id")
+                if current_spawn is not None and slot.preselected_action is not None:
+                    # If the spawn has advanced since preselection, it's stale
+                    if slot.last_spawn_id is not None and current_spawn != slot.last_spawn_id:
+                        slot.preselected_action = None
+                
+                # Only precompute if we don't have a valid preselection
+                if slot.preselected_action is None:
+                    inf_start = time.perf_counter()
+                    # Get and cache logits for the next spawn
+                    raw_logits = agent.get_action_logits(
+                        observation, info_payload, context_id=slot.context_id
+                    )
                     try:
-                        print(
-                            f"[preselect] slot={slot.index} action={int(pre_sel)} at lock frame={slot.frame_index}",
-                            flush=True,
-                        )
+                        slot.env.cache_spawn_logits(raw_logits)
                     except Exception:
                         pass
+                    # Sample action from logits
+                    pre_sel = agent.select_action_from_logits(
+                        raw_logits, info_payload, context_id=slot.context_id
+                    )
+                    duration = time.perf_counter() - inf_start
+                    slot.preselected_action = int(pre_sel)
+                    slot.selected_action = int(pre_sel)
+                    # Account inference timing
+                    slot.inference_calls += 1
+                    slot.inference_time += duration
+                    slot.last_inference_duration = duration
+                    if getattr(args, "placement_debug_log", False):
+                        try:
+                            print(
+                                f"[preselect] slot={slot.index} action={int(pre_sel)} at lock frame={slot.frame_index}",
+                                flush=True,
+                            )
+                        except Exception:
+                            pass
         except Exception:
             pass
         # Clear persisted selection on lock so the next decision will set a fresh
@@ -4761,6 +4920,19 @@ def main() -> None:
                         slot.awaiting_decision = True
                         slot.pending_spawn_id = spawn_id
                         slot.last_spawn_id = spawn_id
+                        
+                        # Force full option enumeration if options are zero before deciding NOOP
+                        if option_count <= 0:
+                            try:
+                                tr = getattr(slot.env, "_translator", None)
+                                if tr is not None:
+                                    tr.prepare_options(force=True)  # Full planner pass
+                                    info_payload = dict(tr.info() or {})
+                                    slot.info.update(info_payload)
+                                    option_count = _extract_placement_option_count(info_payload)
+                            except Exception:
+                                pass
+                        
                         if option_count <= 0:
                             action = 0
                         else:

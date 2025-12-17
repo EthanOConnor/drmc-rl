@@ -1,0 +1,53 @@
+# SMDP-PPO configuration for placement policy training
+
+# Algorithm selection
+algo: smdp_ppo
+
+# Training hyperparameters
+train:
+  total_steps: 5000000
+  checkpoint_interval: 100000
+  seed: 42
+
+# SMDP-PPO specific
+smdp_ppo:
+  # Learning
+  lr: 3.0e-4
+  gamma: 0.995
+  gae_lambda: 0.95
+  
+  # PPO parameters
+  clip_epsilon: 0.2
+  value_coef: 0.5
+  entropy_coef: 0.01
+  max_grad_norm: 0.5
+  
+  # Rollout
+  decisions_per_update: 512
+  num_epochs: 4
+  minibatch_size: 128
+  
+  # Policy head architecture
+  # Options: "dense" (recommended), "shift_score", "factorized"
+  head_type: "dense"
+  pill_embed_dim: 32
+  
+  # Exploration
+  entropy_schedule_end: 0.003
+  entropy_schedule_steps: 1000000
+  use_gumbel_topk: false
+  gumbel_k: 2
+  
+  # Loss
+  value_loss_type: "mse"  # "mse" or "huber"
+
+# Environment
+env:
+  env_id: "DrMario-Placement-v0"
+  num_envs: 16
+  frame_stack: 1
+  
+# Logging
+logdir: "runs/smdp_ppo"
+video_interval: 10000
+log_interval: 100

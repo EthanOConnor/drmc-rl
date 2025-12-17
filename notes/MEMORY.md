@@ -141,3 +141,37 @@ Created `training/ui/` with clear separation:
 - [ ] Remove legacy Tkinter code
 - [ ] Full integration testing
 
+---
+
+## 2025-12-17 – NES Demo Parity Testing
+
+### Recording Layer Architecture ✓
+
+**Verified rock-solid** - next agent can trust recordings:
+- `tools/record_nes_demo.py`: Reads NES RAM via libretro at 0x0400
+- `tools/record_demo.py`: C++ engine recorder with --manual-step
+- `tools/game_transcript.py`: JSON serialization, delta encoding, comparison utils
+- Pill positions/colors/board state all correctly captured
+
+### Key Constants
+- `spawn_delay = 35` frames (NES throw animation)
+- `INPUT_OFFSET = 124` (demo input indexing with spawn_delay)
+- `demo_pills` array: 45 bytes, matches NES ROM exactly
+
+### Parity Status
+- **Pills 1-3**: ✓ Full parity (positions, colors, board state)
+- **Pill 4+**: First divergence (cumulative timing drift)
+- **Root cause**: C++ engine behavioral difference, not recording
+
+### Files Modified for Parity
+| File | Change |
+|------|--------|
+| `GameState.h` | Added `spawn_delay` field |
+| `GameLogic.cpp` | spawn_delay init/decrement, second generateNextPill |
+| `engine_shm.py` | Python struct updated for spawn_delay |
+| `record_demo.py` | INPUT_OFFSET = 124 |
+
+### Next Investigation Areas
+1. Gravity counter comparison (`speedCounterTable` indexing)
+2. DAS timing differences (`hor_velocity` counter)
+3. spawn_delay interaction with input frame indexing

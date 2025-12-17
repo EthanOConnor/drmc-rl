@@ -135,9 +135,12 @@ def record_cpp_demo(
         start_frame = state.frame_count
         
         while state.frame_count < start_frame + max_frames and not state.stage_clear and not state.level_fail:
-            # Get button input for this frame - use frame_count as index
-            # NES demo inputs are 0-indexed from game start
-            input_idx = state.frame_count - 1  # frame_count 1 = input[0]
+            # Get button input for this frame
+            # NES demo has ~159 frames of intro before first button (RIGHT)
+            # C++ engine now has spawn_delay=35, so pill responds at frame 36
+            # Frame 36 should use demo_input[159]: 35 + OFFSET = 159 => OFFSET = 124
+            INPUT_OFFSET = 124
+            input_idx = state.frame_count - 1 + INPUT_OFFSET
             buttons = frame_inputs[input_idx] if input_idx < len(frame_inputs) else 0
             
             # Send input

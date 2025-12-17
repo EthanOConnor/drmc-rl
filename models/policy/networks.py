@@ -341,3 +341,25 @@ class DrMarioPixelUNetPolicyNet(nn.Module):
         logits = self.policy(outputs)
         values = self.value(outputs).squeeze(-1)
         return logits, values, hx
+
+
+# Import placement policy components
+try:
+    from .placement_heads import (
+        DrMarioBoardEncoder,
+        UnorderedPillEmbedding,
+        ShiftAndScoreHead,
+        DenseConvHead,
+        FactorizedHead,
+        PlacementPolicyNet,
+        CoordConv2d,
+    )
+except ImportError:
+    # Placement components may not be available in all environments
+    DrMarioBoardEncoder = None  # type: ignore
+    UnorderedPillEmbedding = None  # type: ignore
+    ShiftAndScoreHead = None  # type: ignore
+    DenseConvHead = None  # type: ignore
+    FactorizedHead = None  # type: ignore
+    PlacementPolicyNet = None  # type: ignore
+    CoordConv2d = None  # type: ignore

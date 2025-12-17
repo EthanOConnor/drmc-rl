@@ -427,6 +427,14 @@ class PlacementTranslator:
                     "pill/hold_down": int(pill.hold_down),
                 }
             )
+            # Add next pill colors for SMDP-PPO
+            if hasattr(pill, 'colors') and pill.colors is not None:
+                try:
+                    colors = pill.colors
+                    if len(colors) >= 2:
+                        info["next_pill_colors"] = np.array([int(colors[0]), int(colors[1])], dtype=np.int64)
+                except Exception:
+                    pass
         if self._planner_stats:
             for key, value in self._planner_stats.items():
                 info[f"placements/stats/{key}"] = int(value)
@@ -899,6 +907,8 @@ class PlacementTranslator:
 
 class DrMarioPlacementEnv(gym.Wrapper):
     """Wrapper exposing the 464-way placement action space (spawn-latched)."""
+    
+    metadata = {"render_modes": []}
 
     def __init__(
         self,
@@ -941,6 +951,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             "progress_timeout": 0,
             "mid_execution_diverge": 0,
         }
+        # Track frames consumed per placement (tau)
+        self._frames_this_placement: int = 0
+        self._placement_start_frame: int = 0
 
     # ------------------------------------------------------------------
     # Gym API
@@ -984,6 +997,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         return obs, info
 
     def step(self, action: int):
+        # Track frames consumed by this placement (tau for SMDP)
+        frames_start = getattr(self.env.unwrapped, "_t", 0) or 0
+        
         # Allow a deliberate override to clear the execution latch for the same spawn.
         if (
             self._active_plan is not None
@@ -1209,6 +1225,12 @@ class DrMarioPlacementEnv(gym.Wrapper):
         enriched_info["placements/has_cached_logits"] = bool(
             self._cached_spawn_logits == self._spawn_id and self._cached_logits is not None
         )
+        
+        # Add tau (frames consumed) for SMDP-PPO
+        frames_end = getattr(self.env.unwrapped, "_t", frames_start) or frames_start
+        tau = max(1, int(frames_end - frames_start))
+        enriched_info["placements/tau"] = tau
+        
         self._last_info = enriched_info
         # Do NOT force a decision just because a pill exists; only on spawn/replan.
         if "placements/needs_action" not in enriched_info:
@@ -1240,8 +1262,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._step_callback = callback
     
     def cache_spawn_logits(self, logits: np.ndarray) -> None:
-        """Cache policy logits for the current spawn - policy only needs to run once per spawn!"""
-        self._cached_spawn_logits = int(self._spawn_id)
+        """Cache policy logits for the NEXT spawn (called at lock for next decision)."""
+        # Cache for next spawn: at lock time, _spawn_id is current; next spawn will be +1
+        self._cached_spawn_logits = int(self._spawn_id) + 1
         self._cached_logits = np.array(logits, copy=True)
     
     def get_cached_logits(self) -> Optional[np.ndarray]:

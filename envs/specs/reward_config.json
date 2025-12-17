@@ -1,6 +1,6 @@
 {
   "pill_place_base": {
-    "value": 0.0,
+    "value": 0.01,
     "description": "Base reward applied to the first pill lock; later locks scale via the exponential curve."
   },
   "pill_place_growth": {
@@ -20,7 +20,7 @@
     "description": "Bonus awarded when the stage is cleared."
   },
   "topout_penalty": {
-    "value": -0.5,
+    "value": 0,
     "description": "Penalty applied if the player tops out."
   },
   "time_bonus_topout_per_60_frames": {
@@ -56,7 +56,7 @@
     "description": "Multiplier applied to the pill placement bonus when the high-placement penalty is triggered."
   },
   "punish_high_placements": {
-    "value": false,
+    "value": true,
     "description": "If false, disables the heuristic that penalizes pills locked well above the virus band."
   }
 }

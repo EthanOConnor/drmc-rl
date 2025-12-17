@@ -75,6 +75,34 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Found divergence: C++ engine tops out at frame 292 (8 pills) vs NES ~5461 frames
 - Root cause TBD: likely timing difference in input processing
 
+## 2025-12-17 – NES Demo Parity Deep Dive
 
+### Recording Layer Verification ✓
+- Verified `demo_pills` array in C++ matches NES ROM exactly (45 bytes)
+- Confirmed NES recorder captures board state correctly from RAM at `0x0400`
+- Validated pills 1-3: positions AND colors match NES exactly (Y-Y, B-R, Y-B)
+- Board state byte-for-byte identical after pill 3
+
+### Fixes Applied
+- **spawn_delay**: Added 35-frame delay matching NES throw animation
+  - Files: `GameState.h` (new field), `GameLogic.cpp` (init/decrement), `engine_shm.py`
+- **INPUT_OFFSET**: Changed from 158 to 124 (accounts for spawn_delay in input indexing)
+  - File: `tools/record_demo.py`
+- **pill_counter off-by-one**: Added second `generateNextPill()` in `init()`
+  - Matches NES `level_init.asm` lines 125-126
+  - File: `game_engine/GameLogic.cpp` lines 163-165
+
+### Current State
+- Pills 1-3: ✓ Full parity (positions, colors, board state)
+- Pill 4: First divergence point
+  - C++ lands at (4,6) as single tile; NES at (3,6-7) full pill
+  - Board identical at spawn → behavioral difference in C++ engine
+- Root cause: Cumulative timing drift (C++ 28 frames slower by pill 4)
+
+### Handoff Notes
+- Recording layer is rock-solid and trustworthy
+- Divergence stems from C++ engine behavior, not recording
+- See walkthrough.md for detailed analysis and next steps
+- Probable causes: gravity counter timing, DAS timing, spawn_delay interaction
 
 
