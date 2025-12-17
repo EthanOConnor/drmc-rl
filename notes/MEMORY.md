@@ -81,6 +81,63 @@ Format: short entries, timestamped, with rationale and trade-offs (ADR-lite).
 ## 2025-12-16 – Codebase Review Findings
 
 - **Test health**: 64 tests, all passing. Good coverage of placement policy, discounting, RAM decoding.
-- **Gap identified**: No inter-session notes system → now implementing.
-- **speedrun_experiment.py complexity**: 5436 lines, 170 functions. Needs refactoring into smaller modules.
+- **Gap identified**: No inter-session notes system → now implemented.
+- **speedrun_experiment.py complexity**: 5436 lines, 170 functions. Being replaced by modular approach.
 - **C++ engine gaps**: Missing DAS and wall kicks prevents accurate high-speed play testing.
+
+---
+
+## 2025-12-16 – Unified Runner Architecture
+
+### Decision: Rich-based TUI (Not Tkinter)
+
+**Context**: Original `speedrun_experiment.py` used Tkinter (784-line `_monitor_worker`).
+
+**Decision**: Replace with Rich library.
+
+**Rationale**:
+- Works in any terminal (no X11 needed on servers/containers)
+- Modern Python package with active maintenance
+- Better for headless logging integration
+- Sparklines and color support built-in
+
+### Decision: Modular UI Components
+
+Created `training/ui/` with clear separation:
+- `tui.py` (312 lines): Training metrics TUI with sparklines
+- `board_viewer.py` (290 lines): Dr. Mario board visualization
+- `debug_viewer.py` (210 lines): Interactive step-by-step debugger
+- Lazy imports in `__init__.py` to avoid runpy warnings
+
+### Decision: Graceful WandB Integration
+
+- `training/utils/wandb_logger.py`: Stubs WandB API
+- Falls back silently when WandB not installed
+- Free tier available for personal use
+
+### Decision: Unified Device Resolution
+
+- `training/utils/devices.py`: Single interface for PyTorch + MLX
+- `resolve_device("auto")` picks best available (CUDA → MPS → Metal → CPU)
+
+### Current Runner Status
+
+**Completed (Phase 1)**:
+- ✅ Rich TUI with sparklines (`training/ui/tui.py`)
+- ✅ Board state viewer (`training/ui/board_viewer.py`)
+- ✅ Debug viewer (`training/ui/debug_viewer.py`)
+- ✅ Device utils (`training/utils/devices.py`)
+- ✅ WandB stub (`training/utils/wandb_logger.py`)
+- ✅ Enhanced `run.py` with `--ui tui|headless`, `--wandb`
+- ✅ Cleanup: deleted stubs, archived drmarioai, updated gitignore
+
+**In Progress (Phase 2)**:
+- [ ] Wire TUI into training loop (currently standalone)
+- [ ] Extract diagnostics tracker from speedrun_experiment.py
+- [ ] Test run.py with --ui tui end-to-end
+
+**Future (Phase 3)**:
+- [ ] Mark speedrun_experiment.py as deprecated
+- [ ] Remove legacy Tkinter code
+- [ ] Full integration testing
+

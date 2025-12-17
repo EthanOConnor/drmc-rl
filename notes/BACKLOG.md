@@ -8,6 +8,11 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### Critical Priority
 
+- **Wire TUI into training loop**
+  - Connect `TrainingTUI` to `SimplePGAdapter` update callbacks.
+  - Pass metrics from adapter → TUI via update() method.
+  - Test with: `python -m training.run --algo simple_pg --ui tui`
+
 - **C++ engine: Implement DAS physics**
   - Reference: `fallingPill_checkXMove` in `dr-mario-disassembly/prg/drmario_prg_game_logic.asm`.
   - Current: pieces move instantly on input.
@@ -17,18 +22,15 @@ Technical backlog / roadmap. More detailed items than top-level docs.
   - Reference: `pillRotateValidation` ($8E70 in asm).
   - Push piece left/right if rotation is blocked by wall/pieces.
 
-- **C++ engine: Python interface**
-  - Expand `game_engine/engine_shm.py` to a full driver for input sequences and state assertions.
-
 ### High Priority
+
+- **Extract diagnostics tracker**
+  - Move `NetworkDiagnosticsTracker` from `speedrun_experiment.py` to `training/diagnostics/tracker.py`.
+  - Integrate with TUI for gradient/param stats display.
 
 - **C++ engine: Parity testing**
   - Use demo mode data (`dr-mario-disassembly/data/drmario_data_demo_*.asm`) to verify exact board/moves vs NES.
   - Create test fixtures for CI.
-
-- **Refactor speedrun_experiment.py**
-  - Current: 5436 lines, 170 functions in one file.
-  - Target: Split into modular components (trainer, viewer, metrics, device utils).
 
 - **Complete evaluator training**
   - Finish `models/evaluator/train_qr.py` skeleton for QR-DQN distributional head.
@@ -37,6 +39,17 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 - **Populate seed registry**
   - Capture savestates for 120 seeds per level in `envs/retro/seeds/`.
   - Store first 128 pills and virus grid hash per seed.
+
+### Recently Completed ✅
+
+- Rich TUI with sparklines (`training/ui/tui.py`)
+- Board state viewer (`training/ui/board_viewer.py`)
+- Debug viewer (`training/ui/debug_viewer.py`)
+- Device utils (`training/utils/devices.py`)
+- WandB logger stub (`training/utils/wandb_logger.py`)
+- Enhanced run.py with --ui, --wandb flags
+- Cleanup: deleted stubs, archived drmarioai, updated gitignore
+
 
 ---
 
