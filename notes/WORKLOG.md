@@ -61,5 +61,20 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Updated game_engine/AGENTS.md: corrected implementation status (was outdated from Nov 22)
 - Updated notes/BACKLOG.md: marked critical priorities complete
 
+## 2025-12-16 – C++ Engine Parity Testing
+
+- Created tools/game_transcript.py: frame-by-frame recording format
+  - JSON + MessagePack serialization
+  - Delta encoding for board changes
+  - Comparison utilities for divergence detection
+  - Demo input parser (RLE → per-frame)
+- Created tools/record_demo.py: C++ engine demo recorder
+  - Uses --manual-step for synchronized stepping
+  - Captures pill positions, board changes
+- Ran parity test: initial board matches demo_field exactly
+- Found divergence: C++ engine tops out at frame 292 (8 pills) vs NES ~5461 frames
+- Root cause TBD: likely timing difference in input processing
+
+
 
 
