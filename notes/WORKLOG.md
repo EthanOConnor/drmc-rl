@@ -49,4 +49,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Created training/utils/wandb_logger.py: WandB integration with graceful fallback
 - Enhanced training/run.py: added --ui tui|headless, --wandb, --wandb-project
 - Updated pyproject.toml: added rich>=13.0, wandb, bumped version to 0.1.0
+- Created training/ui/board_viewer.py: Rich-based board visualization with colored tiles
+- Created training/ui/debug_viewer.py: interactive debug viewer with step controls
+
 
