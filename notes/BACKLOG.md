@@ -8,29 +8,28 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### Critical Priority
 
-- **Wire TUI into training loop**
+- **Wire TUI into training loop** ✅
   - Connect `TrainingTUI` to `SimplePGAdapter` update callbacks.
   - Pass metrics from adapter → TUI via update() method.
   - Test with: `python -m training.run --algo simple_pg --ui tui`
 
-- **C++ engine: Implement DAS physics**
-  - Reference: `fallingPill_checkXMove` in `dr-mario-disassembly/prg/drmario_prg_game_logic.asm`.
-  - Current: pieces move instantly on input.
-  - Target: frame-accurate Delayed Auto Shift timing.
-
-- **C++ engine: Implement wall kicks**
-  - Reference: `pillRotateValidation` ($8E70 in asm).
-  - Push piece left/right if rotation is blocked by wall/pieces.
-
 ### High Priority
+
+- **C++ engine: Parity testing**
+  - Use demo mode data (`dr-mario-disassembly/data/drmario_data_demo_*.asm`) to verify exact board/moves vs NES.
+  - Create test fixtures for CI.
 
 - **Extract diagnostics tracker**
   - Move `NetworkDiagnosticsTracker` from `speedrun_experiment.py` to `training/diagnostics/tracker.py`.
   - Integrate with TUI for gradient/param stats display.
 
-- **C++ engine: Parity testing**
-  - Use demo mode data (`dr-mario-disassembly/data/drmario_data_demo_*.asm`) to verify exact board/moves vs NES.
-  - Create test fixtures for CI.
+- **Complete evaluator training**
+  - Finish `models/evaluator/train_qr.py` skeleton for QR-DQN distributional head.
+  - Train on RAM-labeled corpus.
+
+- **Populate seed registry**
+  - Capture savestates for 120 seeds per level in `envs/retro/seeds/`.
+  - Store first 128 pills and virus grid hash per seed.
 
 - **Complete evaluator training**
   - Finish `models/evaluator/train_qr.py` skeleton for QR-DQN distributional head.

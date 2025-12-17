@@ -52,4 +52,14 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Created training/ui/board_viewer.py: Rich-based board visualization with colored tiles
 - Created training/ui/debug_viewer.py: interactive debug viewer with step controls
 
+## 2025-12-16 – Critical Priority Tasks
+
+- Created training/ui/event_handler.py: TUIEventHandler bridges EventBus → TUI
+- Modified training/run.py: TUI integration with --ui tui flag
+- Verified DAS physics already implemented in GameLogic.cpp (16-frame initial, 6-frame repeat)
+- Verified wall kicks already implemented in GameLogic.cpp (kick-left on blocked rotation)
+- Updated game_engine/AGENTS.md: corrected implementation status (was outdated from Nov 22)
+- Updated notes/BACKLOG.md: marked critical priorities complete
+
+
 
