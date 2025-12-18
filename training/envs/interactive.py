@@ -180,6 +180,7 @@ class RateLimitedVecEnv:
         self._last_obs: Any = None
         self._last_tau_max: int = 1
         self._last_emu_fps: float = 0.0
+        self._last_step_fps: float = 0.0
 
     # ---------------------------- snapshot access (thread-safe)
     def latest_info(self, env_index: int = 0) -> Dict[str, Any]:
@@ -199,6 +200,7 @@ class RateLimitedVecEnv:
             return {
                 "tau_max": int(self._last_tau_max),
                 "emu_fps": float(self._last_emu_fps),
+                "step_fps": float(self._last_step_fps),
             }
 
     # ---------------------------- vector api
@@ -209,6 +211,7 @@ class RateLimitedVecEnv:
             self._last_infos = infos if isinstance(infos, (list, tuple)) else [infos]
             self._last_tau_max = 1
             self._last_emu_fps = 0.0
+            self._last_step_fps = 0.0
             self._frames_total = 0.0
             self._fps_times.clear()
         self._next_step_time = time.perf_counter()
@@ -263,6 +266,9 @@ class RateLimitedVecEnv:
             self._last_infos = infos_seq
             self._last_tau_max = int(tau_max)
             self._frames_total += float(tau_max)
+            dt = float(step_end - step_start)
+            if dt > 1e-9:
+                self._last_step_fps = float(tau_max) / dt
             self._fps_times.append((step_end, self._frames_total))
             if len(self._fps_times) >= 2:
                 t0, f0 = self._fps_times[0]

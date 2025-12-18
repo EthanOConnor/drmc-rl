@@ -108,15 +108,13 @@ class MaskedPlacementDist:
         self.masked_logits[~self.mask_flat] = -1e9
         
         # Handle edge case: no valid actions (shouldn't happen in practice)
-        # Fall back to first valid cell or uniform if truly none
-        for b in range(B):
-            if not self.mask_flat[b].any():
-                # Find first True in original mask or use action 0
-                first_valid = 0
-                if mask.any():
-                    first_valid = int(mask.reshape(-1).nonzero()[0].item())
-                self.mask_flat[b, first_valid] = True
-                self.masked_logits[b, first_valid] = 0.0
+        # Fall back to enabling action 0 for those batch entries.
+        # (We avoid scanning other batch entries; if a given sample truly has no
+        # feasible actions, any deterministic fallback is acceptable for stability.)
+        no_valid = ~self.mask_flat.any(dim=-1)
+        if bool(no_valid.any()):
+            self.mask_flat[no_valid, 0] = True
+            self.masked_logits[no_valid, 0] = 0.0
                 
         # Compute probabilities
         self.probs = F.softmax(self.masked_logits, dim=-1)

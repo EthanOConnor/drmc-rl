@@ -391,18 +391,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                 logits_map, values = self.net(mb_obs, mb_colors, mb_masks)
                 
                 # Compute log probs and entropy
-                log_probs_list = []
-                entropy_list = []
-                
-                for i in range(len(mb_actions)):
-                    dist = MaskedPlacementDist(logits_map[i], mb_masks[i])
-                    log_prob = dist.log_prob(mb_actions[i])
-                    entropy = dist.entropy()
-                    log_probs_list.append(log_prob)
-                    entropy_list.append(entropy)
-                    
-                log_probs = torch.stack(log_probs_list)
-                entropy = torch.stack(entropy_list).mean()
+                dist = MaskedPlacementDist(logits_map, mb_masks)
+                log_probs = dist.log_prob(mb_actions)
+                entropy = dist.entropy().mean()
                 
                 # PPO policy loss
                 ratio = torch.exp(log_probs - mb_log_probs_old)

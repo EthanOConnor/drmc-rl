@@ -185,3 +185,11 @@ Chronological log of work done. Format: date, actor, brief summary.
   - New env attribute `rng_randomize` (used as the default for `reset(options.randomize_rng)` so Gymnasium vector autoresets still honor it).
   - `training.run` CLI: `--randomize-rng/--no-randomize-rng`
   - Debug TUI hotkey: `r` (shows `rng: on/off` in stats).
+
+## 2025-12-18 – Codex CLI – Debug UI Responsiveness + Batched PPO Update
+
+- Vectorized `SMDP-PPO` policy update in `training/algo/ppo_smdp.py` by computing masked log-probs/entropy for the full minibatch at once (removes per-sample Python loops that could stall the debug UI and reduce throughput).
+- Fixed `MaskedPlacementDist` edge-case handling for batched masks (`models/policy/placement_dist.py`).
+- Enhanced debug UI performance telemetry:
+  - `emu_fps(step)` = frames/sec inside `env.step` only (planner + emu)
+  - `emu_fps(total)` = frames/sec including training compute between env steps

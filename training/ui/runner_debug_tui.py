@@ -172,7 +172,8 @@ class RunnerDebugTUI:
         table.add_row("speed", "MAX" if ctrl["max_speed"] else f"{ctrl['speed_x']:.2f}x")
         table.add_row("target_hz", "-" if ctrl["max_speed"] else f"{ctrl['target_hz']:.1f}")
         table.add_row("rng", "on" if ctrl.get("rng_randomize") else "off")
-        table.add_row("emu_fps", f"{perf.get('emu_fps', 0.0):.1f}")
+        table.add_row("emu_fps(step)", f"{perf.get('step_fps', 0.0):.1f}")
+        table.add_row("emu_fps(total)", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
 
         spawn_id = info0.get("placements/spawn_id")
