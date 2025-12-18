@@ -169,8 +169,8 @@ class RunnerDebugTUI:
 
         table.add_row("", "")
         table.add_row("paused", "yes" if ctrl["paused"] else "no")
-        table.add_row("speed", "MAX" if ctrl["max_speed"] else f'{ctrl[\"speed_x\"]:.2f}x')
-        table.add_row("target_hz", "-" if ctrl["max_speed"] else f'{ctrl[\"target_hz\"]:.1f}')
+        table.add_row("speed", "MAX" if ctrl["max_speed"] else f"{ctrl['speed_x']:.2f}x")
+        table.add_row("target_hz", "-" if ctrl["max_speed"] else f"{ctrl['target_hz']:.1f}")
         table.add_row("emu_fps", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
 
@@ -268,4 +268,3 @@ class RunnerDebugTUI:
                 finally:
                     # One last render with stop status.
                     live.update(self._render_layout(interactive))
-

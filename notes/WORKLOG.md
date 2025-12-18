@@ -159,3 +159,4 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Fixed a reset-time state mismatch in `envs/retro/drmario_env.py`:
   - Rebuild `_state_cache` after the auto-start sequence so `reset()` returns observations consistent with the post-start `raw_ram` snapshot.
   - `viruses_remaining` now prefers the raw RAM counter during startup (avoids stale `_state_cache` during reset/start sequences).
+- Fixed a `SyntaxError` in `training/ui/runner_debug_tui.py` (`f-string` quoting in the speed display).
