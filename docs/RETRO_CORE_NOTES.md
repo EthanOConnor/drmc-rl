@@ -12,6 +12,12 @@
   ```
 - Default backend is libretro (`DRMARIO_BACKEND=libretro`); switch with `DRMARIO_BACKEND=stable-retro` or `DRMARIO_BACKEND=mock`.
 - QuickNES (`quicknes_libretro.dylib`) and Mesen (`mesen_libretro.dylib`) cores are both supported. QuickNES is lightweight and ships cleanly on arm64; Mesen offers higher fidelity if available.
+- To fetch/update QuickNES (macOS arm64), use:
+  ```bash
+  python tools/update_quicknes_core.py --force
+  ```
+  This pulls the latest nightly from the Libretro buildbot and installs it into `cores/` (gitignored). The upstream URL is:
+  `https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/quicknes_libretro.dylib.zip`
 - The demo auto-presses START (default 3 taps on first boot, then 1 on subsequent resets). Override with `--start-presses`, `--start-level-taps`, `--start-settle-frames`, and `--start-wait-frames` as needed.
 - Use `--randomize-rng` in `envs/retro/demo.py` to reseed the ROM's two-byte RNG on every reset,
   providing varied virus layouts and pill sequences.

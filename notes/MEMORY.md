@@ -253,3 +253,119 @@ instead of thinking in seconds-per-frame delays.
 **Decision:** The demo TUI expresses playback rate as `speed_x` against a base
 framerate (NTSC/PAL), and schedules steps using a small accumulator to hit the
 target rate while keeping the UI responsive. `MAX` mode removes the cap.
+
+---
+
+## 2025-12-18 – Macro Placement Planner: NES-Accurate Spawn-Latched SMDP
+
+### Decision: Canonical 512-way macro action space
+
+**Decision:** Standardize macro actions as a dense `(o,row,col)` grid with shape
+`(4, 16, 8)` and a flat index in `[0, 512)`, implemented in
+`envs/retro/placement_space.py`.
+
+**Why:** A dense 4×16×8 logit map is the natural interface for CNN policy heads.
+We keep the full grid (including boundary actions) and handle legality via masks.
+
+### Decision: Use the NES base-cell coordinate model (not “first-half anchor”)
+
+**Decision:** Treat the ROM’s falling pill position as the **bottom-left cell of
+the pill’s 2×2 bounding box** (NES `fallingPillX`/`fallingPillY` convention), and
+convert to top-origin `(row,col)` only for planner/policy convenience.
+
+**Why:** This is the actual coordinate system used by the ROM routines. Using a
+“first-half anchor” model produces systematic off-by-one geometry errors in
+rotation and wall/stack interactions, which makes feasibility masking unreliable.
+
+### Decision: Frame-accurate reachability as the reference planner
+
+**Decision:** Implement reachability by mirroring the ROM’s per-frame update
+order (Y move → X move/DAS → rotate), including the relevant counters
+(`speedCounter`, `horVelocity`, frame parity, held direction), in
+`envs/retro/fast_reach.py`.
+
+**Trade-off:** This is slower than earlier “512-state geometry BFS” approaches,
+but it is correctness-first and forms a reliable reference for later native
+optimizations (C++/SIMD/bitboard acceleration) without changing behaviour.
+
+### Decision: Spawn-latched macro environment wrapper
+
+**Decision:** Provide `DrMarioPlacementEnv` (`envs/retro/placement_env.py`) as the
+macro (SMDP) environment that:
+- Waits for a ROM decision point (`currentP_nextAction == pillFalling`)
+- Emits `placements/*` masks + `placements/tau` in `info`
+- Executes a minimal-time controller script for the selected macro action
+
+**Why:** “One decision per spawn” keeps learning stable and makes SMDP discounting
+(Γ=γ^τ) well-defined. It also cleanly supports “one inference per spawn” caching
+via `placements/spawn_id`.
+
+---
+
+## 2025-12-18 – Unified Runner: Debug TUI + Real Retro Env
+
+### Decision: Keep `training.run` as the canonical entrypoint
+
+**Decision:** Prefer `python -m training.run` for day-to-day training/debugging,
+and treat `training/speedrun_experiment.py` as legacy.
+
+**Why:** The unified runner centralizes config, diagnostics, and UI plumbing so we
+can iterate on training setups without duplicating bespoke harness logic.
+
+### Decision: Real env factory with a dummy fallback
+
+**Decision:** `training.envs.make_vec_env` builds a real Gymnasium VectorEnv when
+`env.id` is a registered Dr. Mario env (`DrMarioRetroEnv-v0`, `DrMarioIntentEnv-v0`,
+`DrMarioPlacementEnv-v0`), otherwise it returns the lightweight `DummyVecEnv`.
+
+**Why:** This keeps unit tests fast (no emulator dependency) while enabling “real
+training” runs from the same codepath.
+
+### Decision: Normalize Gymnasium vector `infos` to list-of-dicts
+
+**Decision:** Wrap Gymnasium VectorEnvs so `reset/step` return `infos` as a
+`List[Dict]` (one dict per env), matching the historical `DummyVecEnv` interface.
+
+**Why:** Most of the existing training code and tooling assumes list-of-dicts.
+Normalizing at the env boundary avoids pervasive adapter changes and keeps
+debugging code straightforward.
+
+### Decision: Playback control as an env wrapper (algorithm-agnostic)
+
+**Decision:** Implement pause/single-step and target FPS throttling as a wrapper
+around the vector env (`training/envs/interactive.RateLimitedVecEnv`) controlled
+by a thread-safe `PlaybackControl`.
+
+**Why:** This keeps training algorithms (SimplePG/PPO/SMDP-PPO) focused on RL and
+makes interactive debugging available uniformly across algorithms.
+
+### Decision: Target FPS is based on emulator frames via `placements/tau`
+
+**Decision:** When available, use `info["placements/tau"]` as the number of
+emulated frames consumed by a macro step, and schedule wall-clock playback using
+`target_hz = base_fps * speed_x`.
+
+**Why:** This provides a consistent “x realtime” control across both per-frame
+controller envs and macro placement envs.
+
+### Decision: `DrMarioRetroEnv.reset()` rebuilds state after auto-start
+
+**Decision:** After running the auto-start/start-press sequence in
+`envs/retro/drmario_env.py`, rebuild `_state_cache` from the latest RAM before
+returning `obs`/`info`.
+
+**Why:** Auto-start advances emulator frames via `_backend_step_buttons`, which
+updates the RAM cache but (by design) does not rebuild `_state_cache` every
+frame. Rebuilding once at the end ensures `reset()` returns a consistent snapshot
+(state tensor, derived masks, and `raw_ram` all agree), avoids out-of-range
+observations, and prevents placement decision-point logic from seeing stale RAM.
+
+### Decision: Prefer raw RAM virus counter during startup
+
+**Decision:** Prefer the raw `p1_virusLeft` RAM byte (via the offsets table) for
+`viruses_remaining` when available, falling back to derived counts from the state
+tensor only when RAM is unavailable.
+
+**Why:** During reset/startup sequences, `_state_cache` may be temporarily stale.
+The raw counter is cheap to read and provides a reliable “game has loaded” signal
+for auto-start wait loops.

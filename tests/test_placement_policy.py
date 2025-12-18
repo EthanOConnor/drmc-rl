@@ -221,8 +221,11 @@ class TestSMDPMath:
             returns_std[t] = rewards[t] + gamma * (values[t + 1] if t < 1 else 0.0)
             
         # SMDP version with τ=1
+        # Note: our SMDP helper takes V(s_t) for t in [0..T-1] and an explicit
+        # bootstrap value V(s_T). For this non-terminal synthetic example,
+        # bootstrap with values[-1] to match "standard" GAE that uses V(s_{t+1}).
         advantages_smdp, returns_smdp = compute_gae_smdp(
-            values[:2], rewards, gammas, lam=lam, bootstrap=0.0
+            values[:2], rewards, gammas, lam=lam, bootstrap=float(values[-1])
         )
         
         # Should match closely

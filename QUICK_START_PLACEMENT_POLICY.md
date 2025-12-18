@@ -6,14 +6,17 @@
 # Activate environment
 source .venv-py313/bin/activate
 
-# Train placement policy
-python training/launches/train_placement_smdp_ppo.py \
-  --num-envs 16 \
-  --total-steps 5000000 \
-  --head dense
+# Install/update QuickNES core (macOS arm64)
+python tools/update_quicknes_core.py --force
+
+# Train placement policy (unified runner + interactive board/debug UI)
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
+  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
+  --env-id DrMarioPlacementEnv-v0 --num_envs 1
 
 # Monitor training
-# (Logs will show episode rewards, viruses cleared, steps/sec)
+# - Stats-only TUI: add `--ui tui`
+# - Headless: use `--ui headless` (default)
 ```
 
 ## 30-Second Setup
@@ -39,7 +42,7 @@ print(f'✓ Logits shape: {logits.shape}, Value: {value.item():.2f}')
 
 3. **Start training**:
 ```bash
-python training/launches/train_placement_smdp_ppo.py --num-envs 4 --total-steps 100000
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless --num_envs 4 --total_steps 100000
 ```
 
 ## Key Files
@@ -49,7 +52,7 @@ python training/launches/train_placement_smdp_ppo.py --num-envs 4 --total-steps 
 | Policy architectures | `models/policy/placement_heads.py` |
 | Masked distribution | `models/policy/placement_dist.py` |
 | SMDP-PPO trainer | `training/algo/ppo_smdp.py` |
-| Training launcher | `training/launches/train_placement_smdp_ppo.py` |
+| Training runner | `training/run.py` |
 | Config | `training/configs/smdp_ppo.yaml` |
 | Tests | `tests/test_placement_policy.py` |
 | Documentation | `docs/PLACEMENT_POLICY.md` |
@@ -58,21 +61,19 @@ python training/launches/train_placement_smdp_ppo.py --num-envs 4 --total-steps 
 
 ```bash
 # Train with different heads
-python training/launches/train_placement_smdp_ppo.py --head dense        # Recommended
-python training/launches/train_placement_smdp_ppo.py --head shift_score  # Alternative
-python training/launches/train_placement_smdp_ppo.py --head factorized   # Compact
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.head_type=dense
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.head_type=shift_score
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.head_type=factorized
 
 # Adjust hyperparameters
-python training/launches/train_placement_smdp_ppo.py \
-  --lr 5e-4 \
-  --gamma 0.99 \
-  --entropy-coef 0.02
+python -m training.run --cfg training/configs/smdp_ppo.yaml \
+  --override smdp_ppo.lr=5e-4,smdp_ppo.gamma=0.99,smdp_ppo.entropy_coef=0.02
 
 # More environments for faster training
-python training/launches/train_placement_smdp_ppo.py --num-envs 32
+python -m training.run --cfg training/configs/smdp_ppo.yaml --num_envs 32
 
 # Select device
-python training/launches/train_placement_smdp_ppo.py --device cuda  # or mps, cpu
+python -m training.run --cfg training/configs/smdp_ppo.yaml --device cuda  # or mps, cpu
 ```
 
 ## Quick Test

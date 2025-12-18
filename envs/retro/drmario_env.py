@@ -789,6 +789,11 @@ class DrMarioRetroEnv(gym.Env):
         return total_bonus
 
     def _extract_virus_count(self) -> Optional[int]:
+        # Prefer the raw RAM counter when available (works during reset/startup
+        # sequences where `_state_cache` may be stale).
+        raw = self._read_offset_value("viruses", "remaining_addr")
+        if raw is not None:
+            return int(raw)
         if self._state_cache is None:
             return None
         return self._state_cache.calc.viruses_remaining
@@ -1126,6 +1131,33 @@ class DrMarioRetroEnv(gym.Env):
                 self._maybe_auto_start(opts)
             except Exception as exc:
                 warnings.warn(f"Auto-start sequence failed: {exc}")
+            # Auto-start advances emulator frames but `_backend_step_buttons`
+            # intentionally does not rebuild `_state_cache` (to keep step() fast).
+            # Rebuild canonical state once here so reset() returns a consistent
+            # observation/info snapshot.
+            try:
+                ram_arr = self._read_ram_array(refresh=True)
+                if ram_arr is not None:
+                    ram_bytes = ram_arr.tobytes()
+                    self._state_cache = build_state(
+                        ram_bytes=ram_bytes,
+                        ram_offsets=self._ram_offsets,
+                        prev_stack4=None,
+                        t=self._t,
+                        elapsed_frames=self._elapsed_frames,
+                        frame_skip=self.frame_skip,
+                        last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
+                    )
+                    self._state_stack = self._state_cache.stack4
+                    self._game_mode_val = self._state_cache.ram_vals.mode
+                    self._gameplay_active = self._state_cache.ram_vals.gameplay_active
+                    self._stage_clear_flag = self._state_cache.ram_vals.stage_clear
+                    self._ending_active = self._state_cache.ram_vals.ending_active
+                    self._player_count = self._state_cache.ram_vals.player_count
+                    self._pill_spawn_counter = self._state_cache.ram_vals.pill_counter
+                    self._frames_until_drop_val = self._state_cache.ram_vals.gravity_counter
+            except Exception as exc:
+                warnings.warn(f"Failed to rebuild state cache after auto-start: {exc}")
         # Initialize viruses remaining from RAM if available
         vcount = self._extract_virus_count()
         if vcount is not None:

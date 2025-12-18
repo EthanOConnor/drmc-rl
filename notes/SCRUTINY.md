@@ -138,3 +138,51 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 - **Current**: 64 tests, all passing.
 - **Coverage gaps**: C++ engine, integration tests, slow evaluator training.
+
+---
+
+## 2025-12-18 – Macro Placement Planner: New Risks
+
+**R5. Decision-point detection depends on a single ZP state (`currentP_nextAction`)**
+- **Concern**: `DrMarioPlacementEnv` gates decisions on `currentP_nextAction == pillFalling` and a non-empty falling mask.
+- **Risk**: ROM revision differences, menu/ending edge cases, or 2P modes could violate this heuristic and cause timeouts or planning during non-controllable frames.
+- **Mitigation**: Add a small battery of emulator-driven regression traces (spawn/settle/ending) and consider additional guards (e.g., gameplay mode `$0046`, player count `$0727`).
+
+**R6. Snapshot vs state-tensor address mismatch (ZP vs P1 RAM mirror)**
+- **Concern**: The planner reads falling pill state from zero-page current-player addresses, while `ram_to_state` renders the falling mask from P1 RAM buffers.
+- **Risk**: Synthetic tests or alternate backends that don’t keep both views consistent could produce contradictory observations vs masks.
+- **Mitigation**: Document the invariant and add a helper to mirror ZP → P1 fields in test fixtures/backends when needed.
+
+**R7. Planner performance is Python-bound**
+- **Concern**: Frame-accurate reachability uses a bounded BFS over counter-augmented states per spawn.
+- **Risk**: With large `num_envs`, planning latency could dominate wall-clock training throughput.
+- **Mitigation**: Benchmark regularly and plan a native (C++/Numba) port once behaviour is fully locked down; keep the Python version as the reference oracle.
+
+**R8. Symmetry reduction for identical colors changes the effective action space**
+- **Concern**: The macro env masks out H-/V- when the capsule colors match (orientation duplicates).
+- **Risk**: Downstream code that assumes “always 4 orientations” could log misleading action stats if it doesn’t account for mask structure.
+- **Mitigation**: Keep masking entirely within `placements/feasible_mask`/`legal_mask` (policy is already mask-aware) and surface option counts via `placements/options`.
+
+---
+
+## 2025-12-18 – Unified Runner + Debug TUI: New Risks
+
+**R9. Interactive debug UI uses raw terminal mode**
+- **Concern**: `training/ui/runner_debug_tui.py` uses `termios`/cbreak mode and assumes stdin is a real TTY.
+- **Risk**: In some environments (CI, IDE consoles, pipes) controls won’t work; a naive implementation can appear “hung”.
+- **Mitigation**: The UI detects non-TTY stdin and disables controls; training remains stoppable via normal process interrupts.
+
+**R10. Training runs in a background thread in debug mode**
+- **Concern**: `training/run.py --ui debug` runs the training loop in a worker thread so the UI can remain responsive.
+- **Risk**: Some libraries (certain GUI backends, GPU drivers, or non-thread-safe env backends) may behave unexpectedly in threads.
+- **Mitigation**: Keep the default (`--ui headless` / `--ui tui`) in the main thread; treat `--ui debug` as a debugging-only mode. If needed, add a “main-thread training + step-gate polling” mode later.
+
+**R11. `placements/tau` is only available for macro envs**
+- **Concern**: Frame-accurate throttling depends on `placements/tau`.
+- **Risk**: Controller envs will be throttled as “1 frame per step”, which is correct only when `frame_skip==1`.
+- **Mitigation**: Document/assume `frame_skip==1` for debug playback; if we add configurable frame-skip, extend the wrapper to read that from info.
+
+**R12. Libretro backend performance is dominated by per-frame video copies**
+- **Concern**: `envs/backends/libretro_backend.py` copies the full 240×256 frame buffer in the libretro video callback on every `retro_run()` (even for state-mode runs that only need RAM).
+- **Risk**: Reset/start sequences and training throughput can become effectively near-realtime (seconds per reset), which makes RL experiments impractically slow and can hide logic issues behind “it’s just slow”.
+- **Mitigation**: Add an option for “RAM-only” stepping (skip video copies unless explicitly requested), and ensure reset/start sequences don’t pay video costs when `obs_mode=state` and rendering/video logging are disabled.

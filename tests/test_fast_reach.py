@@ -30,11 +30,10 @@ def test_soft_drop_honours_frame_parity():
     state = FrameState(
         x=3,
         y=0,
-        orient=0,
+        rot=0,
         speed_counter=0,
         hor_velocity=0,
         hold_dir=HoldDir.NEUTRAL,
-        hold_down=False,
         frame_parity=0,
         locked=False,
     )
@@ -58,11 +57,10 @@ def test_horizontal_repeat_follows_nes_velocity():
     state = FrameState(
         x=2,
         y=5,
-        orient=0,
+        rot=0,
         speed_counter=0,
         hor_velocity=0,
         hold_dir=HoldDir.NEUTRAL,
-        hold_down=False,
         frame_parity=0,
         locked=False,
     )
@@ -94,11 +92,10 @@ def test_rotation_with_left_kick_available():
     spawn = FrameState(
         x=4,
         y=4,
-        orient=1,  # vertical (down)
+        rot=1,  # vertical (geometry depends on rot&1)
         speed_counter=0,
         hor_velocity=0,
         hold_dir=HoldDir.NEUTRAL,
-        hold_down=False,
         frame_parity=0,
         locked=False,
     )
@@ -110,7 +107,7 @@ def test_rotation_with_left_kick_available():
     )
     # Expect a reachable state with (x=3,y=4,orient=0) provided by the left kick.
     found = any(
-        node.state.x == 3 and node.state.y == 4 and node.state.orient == 0
+        node.state.x == 3 and node.state.y == 4 and (node.state.rot & 1) == 0
         for node in reach.nodes
     )
     assert found, "Expected rotation with left kick to reach x-1"
@@ -122,11 +119,10 @@ def test_landing_locks_final_state():
     state = FrameState(
         x=1,
         y=0,
-        orient=0,
+        rot=0,
         speed_counter=0,
         hor_velocity=0,
         hold_dir=HoldDir.NEUTRAL,
-        hold_down=False,
         frame_parity=0,
         locked=False,
     )

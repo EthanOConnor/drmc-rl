@@ -131,12 +131,18 @@ action_idx, log_prob = dist.sample()
 ### Training
 
 ```bash
-# Using the SMDP-PPO configuration
-python training/run.py \
-  --config training/configs/smdp_ppo.yaml \
-  --env-id DrMario-Placement-v0 \
-  --num-envs 16 \
-  --total-steps 5000000
+# Unified runner (recommended)
+# Note: requires `--core` (QuickNES/Mesen) and a local ROM path for libretro.
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes
+```
+
+Interactive board visualization + speed control:
+
+```bash
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
+  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
+  --env-id DrMarioPlacementEnv-v0 --num_envs 1
 ```
 
 ### Configuration
@@ -208,10 +214,13 @@ Track these during training:
 
 ### Placement Wrapper
 
-The environment wrapper (`envs/retro/placement_wrapper.py`) must provide:
+The placement macro-environment (`envs/retro/placement_env.py`) provides:
 - `info["placements/feasible_mask"]`: Boolean mask [4, 16, 8]
+- `info["placements/legal_mask"]`: Boolean mask [4, 16, 8] (in-bounds-only)
+- `info["placements/costs"]`: Float costs [4, 16, 8] (frames to lock; `inf` if unreachable)
 - `info["next_pill_colors"]`: Color indices [2]
-- `info["spawn_id"]`: Pill spawn counter for cache invalidation
+- `info["placements/spawn_id"]`: Pill spawn counter for cache invalidation
+- `info["placements/tau"]`: Frames consumed by the macro step (SMDP duration)
 
 ### Single Inference per Spawn
 
@@ -223,7 +232,7 @@ The runner/agent must:
 Example pattern:
 ```python
 # Decision time
-spawn_id = info.get("spawn_id")
+spawn_id = info.get("placements/spawn_id")
 if spawn_id != last_spawn_id:
     # New spawn: run inference
     logits, value = policy(obs, colors, mask)

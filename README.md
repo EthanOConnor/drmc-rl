@@ -86,6 +86,9 @@ If you need me to fetch docs or install packages, I can request elevated network
 
 - Dump state tensors: `python tools/dump_ram_and_state.py --frames 120 --mode state`
 - Visualize planes: `from tools.ram_visualizer import grid_show` (see docs/RAM_TO_STATE.md)
+- Unified runner (board + playback controls in terminal):
+  - `python -m training.run --algo ppo_smdp --ui debug --env-id DrMarioPlacementEnv-v0 --backend libretro --core quicknes --rom-path /path/to/DrMario.nes --num_envs 1`
+  - Controls: Space pause/run, `n` step, `f` +60 steps, `+/-` speed, `0` max, `q` quit
 - C++ engine demo TUI (frame-accurate demo playback + step controls):
   - Build: `make -C game_engine`
   - Run: `python tools/engine_demo_tui.py` (Space pause/run, `n` step, `+/-` speed, `0` max, `b` benchmark)

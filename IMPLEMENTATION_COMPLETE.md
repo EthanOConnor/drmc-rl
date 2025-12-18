@@ -187,16 +187,13 @@ Features:
 source .venv-py313/bin/activate
 
 # Train with dense head (recommended)
-python training/launches/train_placement_smdp_ppo.py \
-  --num-envs 16 \
-  --total-steps 5000000 \
-  --head dense \
-  --lr 3e-4 \
-  --gamma 0.995
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --num_envs 16 --total_steps 5000000 \
+  --override smdp_ppo.lr=3e-4,smdp_ppo.gamma=0.995
 
 # Try other heads
-python training/launches/train_placement_smdp_ppo.py --head shift_score
-python training/launches/train_placement_smdp_ppo.py --head factorized
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.head_type=shift_score
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.head_type=factorized
 ```
 
 ### Configuration

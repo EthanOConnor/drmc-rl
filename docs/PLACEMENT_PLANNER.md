@@ -1,111 +1,107 @@
-# Placement Planner: Fast Reachability + Controller Synthesis
+# Placement Planner: NES-Accurate Reachability + Macro-Action Execution (512-way)
 
-This document describes the current placement planning stack used by the Dr. Mario
-placement action space. It summarizes the fast path (spawn-time feasibility and
-costs), the single-target controller synthesis, and the available timing/diagnostic
-instrumentation.
+This document describes the current placement planning stack for Dr. Mario.
+The goal is *one decision per pill spawn*: the agent selects a macro placement,
+and the environment executes the minimal-time per-frame controller script to
+realise that landing under the retail NES rules.
 
 ## Overview
 
-We separate two concerns:
+The macro action space is a dense 4×16×8 grid (512 actions):
 
-- Spawn-time options (microseconds): compute where the current pill can land and
-  the earliest frame cost to each landing. We do this via a compact 512-state BFS
-  over (x, y, orient) – no time-expansion, no button-combo branching.
+- `action := (o, row, col)` where `(row, col)` is the landing cell of the **first**
+  capsule half (the “1st color” in NES RAM), and `o` selects which adjacent cell
+  contains the second half after the pill locks.
+- The environment exposes **masks** and **costs** at each spawn:
+  - `placements/legal_mask`: in-bounds actions (boundary actions masked out)
+  - `placements/feasible_mask`: actions reachable under current board + counters
+  - `placements/costs`: minimal frames-to-lock for each feasible action (`inf` otherwise)
+- Each `env.step(action)` advances the emulator until the **next decision point**,
+  returning an SMDP duration `placements/tau` (frames elapsed).
 
-- Final controller synthesis (milliseconds): for the selected action (one of the
-  464 grid-directed edges), reconstruct the optimal route via parent pointers and
-  synthesize a frame-by-frame controller script. We do this only for the chosen
-  action to avoid Python overhead across all actions.
+## Action Space (Canonical)
 
-## Fast Reachability (reach512)
+Module: `envs/retro/placement_space.py`
 
-Module: `envs/retro/reach512.py`
+Orientation convention (matches `models/policy/placement_heads.py`):
 
-- State space: 8×16×4 = 512 states (x∈[0..7], y∈[0..15], orient∈{H+,V+,H−,V−}).
-- Transitions (unit cost): down/left/right if fits; rotate CW/CCW with a left
-  kick for horizontal targets.
-- Data:
-  - `arrival[512]` (uint8) earliest frame to each state (0xFF for unreachable).
-  - `parent[512]` and `code[512]` for optimal route reconstruction.
-- APIs:
-  - `feasibility_and_costs(cols, sx, sy, so)` → (legal_mask, feasible_mask, costs)
-  - `run_reachability(cols, sx, sy, so)` → `Reach512`
-  - `reconstruct_actions_to(reach, tx, ty, to)` → [(x, y, o, code)] forward route
+- `o = 0 (H+)`: partner at `(row,   col+1)`
+- `o = 1 (V+)`: partner at `(row+1, col)`
+- `o = 2 (H-)`: partner at `(row,   col-1)`
+- `o = 3 (V-)`: partner at `(row-1, col)`
 
-This pass is microsecond‑class on modern CPUs and is used in `prepare_options()`.
+The 4×16×8 grid intentionally includes boundary actions that point outside the
+bottle; those are always invalid and must be masked (see `invalid_boundary_mask()`).
 
-## Controller Synthesis (fast single-target)
+## Coordinate Model (NES Base-Cell Convention)
 
-Module: `envs/retro/placement_planner.py`
+The NES stores the falling pill position as **the bottom-left cell of the pill’s
+2×2 bounding box**, not “the first half’s cell”.
 
-- `plan_action_fast(board, capsule, action)`:
-  1) Calls `reach512.run_reachability()` from the pill spawn.
-  2) Reconstructs the route to the target anchor (x, y, orient) using parents.
-  3) Synthesizes a controller sequence:
-     - DOWN → `Action.DOWN_HOLD` (hold_down=True)
-     - LEFT/RIGHT → `Action.NOOP` (hold_left/right=True)
-     - ROT CW/CCW → `Action.ROTATE_A/B` (+hold_left=True if a left kick happened)
+In planning code we work in top-origin rows (0=top, 15=bottom), but the ROM stores
+`fallingPillY` as “row from bottom” (0=bottom). The planner converts between them.
 
-We only synthesize for the selected action. The exact counter-aware planner is
-kept for diagnostics; the fast path never falls back to the heavy planner.
+Rotation codes are the ROM’s native values (0..3). Geometry depends on `rot & 1`,
+but **color order depends on the full rotation code** (see ROM tables).
 
-## Counter-Aware Planner (strict single-target)
+## Reachability Core (Frame-Accurate)
 
 Module: `envs/retro/fast_reach.py`
 
-- Per-frame step order Y → X → Rotate, including lock buffer via
-  `(grounded, lock_timer)` so slides/tucks are supported.
-- Used only when explicitly invoked for diagnostics; not used in the fast path.
+This is the correctness-first reference implementation. It mirrors the ROM’s
+per-frame falling-pill update order:
 
-## Translator + Wrapper Behavior
+1) `fallingPill_checkYMove` (gravity / down-only soft drop; may lock immediately)
+2) `fallingPill_checkXMove` (DAS timing via `hor_velocity`)
+3) `fallingPill_checkRotate` (A/B rotation and `pillRotateValidation` quirks)
 
-Module: `envs/retro/placement_wrapper.py`
+`build_reachability()` performs a bounded BFS over frame states that include the
+relevant counters (`speed_counter`, `hor_velocity`, held direction, frame parity).
+It records the earliest locked “terminal” nodes for each reachable `(x, y, rot)`
+and parent pointers so we can reconstruct a minimal-time controller script.
 
-- The translator is constructed with `fast_options_only=True` by default.
-  - `prepare_options(force=False)` uses `reach512.feasibility_and_costs`.
-  - `get_plan(action)` uses `plan_action_fast` only; no fallback to the heavy
-    planner for re-plans or mismatches.
-- The wrapper only requests a new decision (NOOP step + needs_action flag) if
-  no plan exists for the selected action.
+## Planner (Spawn-Latched Masks + Plans)
 
-## Instrumentation (zero overhead when off)
+Module: `envs/retro/placement_planner.py`
 
-- CLI flag: `--placement-debug-log`
-  - Enables `[timing] …` logs throughout the wrapper and launcher.
-  - Pre-step markers: `pre_env_step main|exec|stall|no-plan` are printed right
-    before calling `env.step`, so stalls inside `env.step` are bracketed.
+Key responsibilities:
 
-- Environment variables (strict booleans: 1/true/yes/on):
-  - `DRMARIO_TIMING`: backend boundary timing in `drmario_env`:
-    `[backend] pre_step …` and `[backend] post_step dt_ms=…`.
-  - `DRMARIO_DEBUG_INPUT`: per-frame input lines `[input] t=… action=… buttons=…`.
+- Decode a `PillSnapshot` from RAM (base cell, rotation, counters, held buttons).
+- Build a `BoardState` occupancy bitboard from the state planes (static + viruses).
+- Compute `SpawnReachability` for the spawn:
+  - `legal_mask`, `feasible_mask`, `costs` all shaped `(4, 16, 8)`
+  - `action_to_terminal_node` for reconstructing a plan to a specific action
+- `plan_action(reach, action)` reconstructs the per-frame controller script:
+  an array of holds (`left/right/down`) plus button taps (`NOOP`, `ROTATE_A/B`).
 
-When logging is off, checks are gated and return immediately.
+Note: `placements/costs` is **frames-to-lock** from spawn; the SMDP step duration
+`placements/tau` additionally includes any post-lock wait until the next pill is
+controllable.
 
-## Pitfalls Avoided
+## Macro Environment Wrapper (SMDP)
 
-- Forced full re-plan mid-execution: previously, some re-plan paths called the
-  heavy, counter-aware `plan_all`. These have been removed/guarded; re-plans run
-  the fast reach512 path only.
-- Per-action controller reconstruction at spawn: removed; only the selected
-  action gets a controller sequence.
+Module: `envs/retro/placement_env.py`
 
-## Troubleshooting Long Gaps
+`DrMarioPlacementEnv` wraps `DrMarioRetroEnv` (state observations only) and:
 
-- Use `--placement-debug-log` and `DRMARIO_TIMING=1`.
-  - If there’s a long delay after `pre_get_plan action=X`, the slow path is inside
-    `translator.get_plan`. The heavy fallback is disabled by default; a gap now
-    indicates external issues.
-  - If there’s a long delay between `[backend] pre_step` and `post_step`, the
-    backend/emulator is stalling.
-  - If neither `pre_env_step …` nor backend markers appear for a long time, the
-    stall is above the main loop (e.g., UI/monitor). The loop gap logs in the
-    launcher will print when the loop resumes.
+- Detects decision points using `currentP_nextAction == nextAction_pillFalling`
+  and a present falling pill mask.
+- On reset and after each macro step, advances with `Action.NOOP` until a decision
+  point, then emits masks/costs in `info`.
+- On `step(action)`, executes the plan’s per-frame script, then advances until the
+  next decision point and returns aggregated reward plus `placements/tau`.
 
-## Status
+Important `info` keys:
 
-- Fast reachability + spawn options: microsecond‑class (reach512).
-- Single-target controller synthesis: milliseconds via reach512 parents.
-- Strict counter-aware path retained for diagnostics; not used in fast path.
+- `placements/legal_mask`, `placements/feasible_mask`, `placements/costs`
+- `placements/options` (count of feasible actions)
+- `placements/spawn_id` (for caching logits “one inference per spawn”)
+- `placements/tau` (SMDP duration in frames)
+- `next_pill_colors` / `pill/colors` (color indices `[2]`)
 
+## Legacy Components
+
+- `envs/retro/placement_wrapper.py` is a small compatibility shim kept as a stable
+  import target for older scripts.
+- `envs/retro/reach512.py` and `envs/retro/placement_actions.py` reflect earlier,
+  simplified reachability models and are no longer used by the macro environment.

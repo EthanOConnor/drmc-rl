@@ -107,7 +107,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         )
         
         # Environment info
-        obs_shape = env.observation_space.shape  # [C, 16, 8]
+        obs_space = getattr(env, "single_observation_space", env.observation_space)
+        obs_shape = obs_space.shape  # expected [C, 16, 8] when frame_stack == 1
         in_channels = obs_shape[0] if len(obs_shape) == 3 else 12
         
         # Create policy network

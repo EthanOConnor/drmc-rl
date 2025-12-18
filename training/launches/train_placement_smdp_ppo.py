@@ -22,9 +22,21 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train Dr. Mario placement policy with SMDP-PPO")
     
     # Environment
-    parser.add_argument("--env-id", type=str, default="DrMario-Placement-v0")
+    parser.add_argument("--env-id", type=str, default="DrMarioPlacementEnv-v0")
     parser.add_argument("--num-envs", type=int, default=16, help="Number of parallel environments")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--core",
+        type=str,
+        default=None,
+        help="Libretro core name or path (e.g. 'quicknes' or cores/quicknes_libretro.dylib).",
+    )
+    parser.add_argument(
+        "--rom-path",
+        type=str,
+        default=None,
+        help="Path to Dr. Mario NES ROM (e.g. legal_ROMs/DrMario.nes).",
+    )
     
     # Training
     parser.add_argument("--total-steps", type=int, default=5000000, help="Total environment steps")
@@ -93,6 +105,12 @@ def main():
     # Register environment
     from envs.retro.register_env import register_placement_env_id
     register_placement_env_id()
+
+    core_path: str | None = None
+    if args.core:
+        from envs.retro.core_utils import resolve_libretro_core
+
+        core_path = str(resolve_libretro_core(args.core))
     
     # Create vectorized environment
     import gymnasium as gym
@@ -100,7 +118,7 @@ def main():
     
     def make_env(rank: int):
         def _init():
-            env = gym.make(args.env_id)
+            env = gym.make(args.env_id, core_path=core_path, rom_path=args.rom_path)
             env.reset(seed=args.seed + rank)
             return env
         return _init

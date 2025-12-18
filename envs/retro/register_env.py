@@ -16,7 +16,8 @@ _INTENT_ENV_ID = "DrMarioIntentEnv-v0"
 _INTENT_ENTRY_POINT = "envs.retro.intent_wrapper:DrMarioIntentEnv"
 
 _PLACEMENT_ENV_ID = "DrMarioPlacementEnv-v0"
-_PLACEMENT_ENTRY_POINT = "envs.retro.placement_wrapper:DrMarioPlacementEnv"
+_PLACEMENT_ENV_ID_LEGACY = "DrMario-Placement-v0"
+_PLACEMENT_ENTRY_POINT = "envs.retro.placement_env:make_placement_env"
 
 
 def register_env_id(env_id: str = _ENV_ID):
@@ -45,15 +46,17 @@ def register_intent_env_id(env_id: str = _INTENT_ENV_ID):
 
 
 def register_placement_env_id(env_id: str = _PLACEMENT_ENV_ID):
-    try:
-        register(
-            id=env_id,
-            entry_point=_PLACEMENT_ENTRY_POINT,
-            kwargs={},
-            max_episode_steps=None,
-        )
-    except Exception:
-        pass
+    # Keep a legacy env id for older scripts/configs.
+    for candidate_id in (env_id, _PLACEMENT_ENV_ID_LEGACY):
+        try:
+            register(
+                id=candidate_id,
+                entry_point=_PLACEMENT_ENTRY_POINT,
+                kwargs={},
+                max_episode_steps=None,
+            )
+        except Exception:
+            pass
 
 
 __all__ = [
@@ -63,4 +66,5 @@ __all__ = [
     "_ENV_ID",
     "_INTENT_ENV_ID",
     "_PLACEMENT_ENV_ID",
+    "_PLACEMENT_ENV_ID_LEGACY",
 ]

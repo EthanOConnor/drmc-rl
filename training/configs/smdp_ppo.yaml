@@ -1,13 +1,12 @@
 # SMDP-PPO configuration for placement policy training
 
 # Algorithm selection
-algo: smdp_ppo
+algo: ppo_smdp
 
 # Training hyperparameters
 train:
   total_steps: 5000000
   checkpoint_interval: 100000
-  seed: 42
 
 # SMDP-PPO specific
 smdp_ppo:
@@ -43,7 +42,8 @@ smdp_ppo:
 
 # Environment
 env:
-  env_id: "DrMario-Placement-v0"
+  id: "DrMarioPlacementEnv-v0"
+  obs_mode: state
   num_envs: 16
   frame_stack: 1
   

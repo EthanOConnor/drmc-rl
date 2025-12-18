@@ -2383,9 +2383,22 @@ class PolicyGradientAgent:
             if rewards_tensor.dim() == 0:
                 rewards_tensor = rewards_tensor.unsqueeze(0)
 
-            dones_tensor = torch.as_tensor(
-                ctx.dones, dtype=torch.bool, device=self._device
-            )
+            # `dones` is expected to be step-wise (one per reward/frame). Some tests and
+            # legacy call-sites populate rewards without explicitly tracking dones; in
+            # that case, assume the episode ended at the final reward to avoid a crash.
+            dones_list = ctx.dones
+            if len(dones_list) != num_frames:
+                if not dones_list:
+                    dones_list = [False] * num_frames
+                    dones_list[-1] = True
+                else:
+                    aligned = list(dones_list[:num_frames])
+                    if len(aligned) < num_frames:
+                        pad_val = bool(dones_list[-1])
+                        aligned.extend([pad_val] * (num_frames - len(aligned)))
+                    dones_list = aligned
+
+            dones_tensor = torch.as_tensor(dones_list, dtype=torch.bool, device=self._device)
             if dones_tensor.dim() == 0:
                 dones_tensor = dones_tensor.unsqueeze(0)
 
@@ -2603,7 +2616,6 @@ class PolicyGradientAgent:
             "learner/updates": float(self._updates),
             "critic/explained_variance": self._batch_accum_critic_ev / denom,
         }
-        self.optimizer.zero_grad(set_to_none=True)
         self._episodes_in_batch = 0
         self._steps_in_batch = 0
         self._batch_accum_policy_loss = 0.0

@@ -96,7 +96,8 @@ class SampleFactoryAdapter(AlgoAdapter):
             max_grad_norm=float(ppo_cfg.get("max_grad_norm", 0.5)),
         )
 
-        obs_shape = env.observation_space.shape
+        obs_space = getattr(env, "single_observation_space", env.observation_space)
+        obs_shape = obs_space.shape
         self.obs_dim = int(np.prod(obs_shape))
         self.action_dim = int(env.single_action_space.n)
         hidden_size = int(getattr(cfg.model, "hidden_size", 256)) if hasattr(cfg, "model") else 256

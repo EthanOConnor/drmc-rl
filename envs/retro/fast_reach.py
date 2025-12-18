@@ -1,32 +1,48 @@
-"""NES-accurate falling pill reachability with frame-level counters.
+"""NES-accurate falling-pill reachability (frame-level, counter-aware).
 
-This module implements a counter-aware breadth-first search that mirrors the
-per-frame update order used by the retail NES Dr. Mario engine.  Each node in
-the search corresponds to the full capsule state for a single frame:
+This module is the *reference* implementation for planning capsule movement
+using the same per-frame update order as the retail NTSC Dr. Mario ROM:
 
-    * anchor position (x, y) expressed in planner coordinates (y downward)
-    * orientation (0=horizontal right, 1=vertical down, 2=horizontal left, 3=vertical up)
-    * gravity counter (`currentP_speedCounter`)
-    * horizontal velocity (`currentP_horVelocity`)
-    * latched d-pad holds (left/right/down)
-    * frame counter parity (`frameCounter & fast_drop_speed`)
+    action_pillFalling:
+        fallingPill_checkYMove   (gravity / soft drop)
+        fallingPill_checkXMove   (DAS horizontal movement)
+        fallingPill_checkRotate  (A/B rotation + kick-left quirks)
 
-Actions enumerate the button state for a single frame:
+We model only the falling-pill sub-system (no clearing, no garbage, etc.). It is
+used to build spawn-latched macro actions: one decision per pill spawn.
 
-    HoldLeft / HoldRight / Neutral
-      × HoldDown or not
-      × RotateCW / RotateCCW / None
+Coordinate system
+-----------------
+The NES stores the falling pill position as the *bottom-left cell* of the pill's
+2×2 bounding box:
 
-Transitions reproduce the in-game order:
+  - `fallingPillX` is the leftmost column of the capsule.
+  - `fallingPillY` is the bottom cell's row, counted from the bottom (0=bottom).
 
-    1. Update button registers (held + pressed bits)
-    2. Y stage (`fallingPill_checkYMove`)
-    3. X stage (`fallingPill_checkXMove`)
-    4. Rotation (`fallingPill_checkRotate`)
+Internally, we convert Y to a top-origin row index (0=top, 15=bottom):
 
-The search terminates once a drop fails (piece locks).  The resulting plans
-contain the exact per-frame controller sequence required for the emulator to
-replay the move without drift.
+    y_top = (GRID_H - 1) - y_from_bottom
+
+Rotation codes (size=2 pill) are exactly the NES values (0..3). Geometry depends
+only on parity (`rot & 1`), while color order depends on the full value.
+See `halfPill_posOffset_rotationAndSizeBased` in `drmario_data_game.asm`.
+
+Important behavioural details mirrored here
+-------------------------------------------
+* Gravity triggers when `speedCounter > speedCounterTable[idx]` (cmp + bcs exit).
+* Soft drop ("down") is only checked every other frame (frameCounter & 1 != 0),
+  and only when DOWN is the *only* d-pad direction held.
+* Lock is *immediate* when a drop attempt is blocked: the ROM calls
+  `confirmPlacement` inside `fallingPill_checkYMove`.
+* DAS timing:
+    - first repeat after 16 frames held (`hor_accel_speed = 0x10`)
+    - repeats every 6 frames thereafter (`hor_max_speed = 0x06`)
+    - blocked lateral movement sets velocity to 0x0F (move ASAP when free)
+* Rotation quirks (`pillRotateValidation`):
+    - collision checks depend on `rot & 1` (horizontal vs vertical)
+    - when rotating *to horizontal* and LEFT is held, an extra "double-left"
+      validation is attempted
+    - when rotating to horizontal and blocked, a kick-left is attempted
 """
 
 from __future__ import annotations
@@ -38,27 +54,22 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
 
-from envs.retro.placement_actions import GRID_HEIGHT, GRID_WIDTH
+from envs.retro.placement_space import GRID_HEIGHT, GRID_WIDTH
 
 # ---------------------------------------------------------------------------
-# NES tables and constants (sourced from drmario_data_game.asm /
-# drmario_constants.asm for the NTSC retail build).
+# NES constants and lookup tables (NTSC retail build)
 # ---------------------------------------------------------------------------
 
 
-FAST_DROP_MASK = 0x01  # frameCounter & FAST_DROP_MASK → down polling cadence
+FAST_DROP_MASK = 0x01  # frameCounter & 1 gates down-only soft drop
 
-HOR_ACCEL_SPEED = 0x10  # frames until first lateral move when holding
-HOR_MAX_SPEED = 0x06    # frames between repeats after the first move
-HOR_RELOAD = HOR_ACCEL_SPEED - HOR_MAX_SPEED  # post-move reload (0x0A)
-HOR_BLOCKED = HOR_ACCEL_SPEED - 1             # value loaded on block (0x0F)
+HOR_ACCEL_SPEED = 0x10  # 16 frames until first repeat
+HOR_MAX_SPEED = 0x06    # 6 frames between repeats
+HOR_RELOAD = HOR_ACCEL_SPEED - HOR_MAX_SPEED  # 0x0A
+HOR_BLOCKED = HOR_ACCEL_SPEED - 1             # 0x0F
 
-# Lock buffer frames (approximate). If a drop is blocked this frame, allow X/Rot
-# to adjust for a few frames before locking. Can be initialized from RAM $0307.
-LOCK_BUFFER_FRAMES = 2
-
-# baseSpeedSettingValue (low/medium/high) and speedCounterTable pulled directly
-# from drmario_data_game.asm ($A3A7 / $A7AF).  These values control gravity.
+# baseSpeedSettingValue and speedCounterTable are pulled from
+# `dr-mario-disassembly/data/drmario_data_game.asm`.
 BASE_SPEED_SETTING_VALUE: Tuple[int, ...] = (0x0F, 0x19, 0x1F)
 
 SPEED_COUNTER_TABLE: Tuple[int, ...] = (
@@ -72,29 +83,20 @@ SPEED_COUNTER_TABLE: Tuple[int, ...] = (
     0x04, 0x04, 0x04, 0x03, 0x03, 0x03, 0x03, 0x03,
     0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
 )
 
 SPEED_COUNTER_MAX = len(SPEED_COUNTER_TABLE) - 1
 
-# ---------------------------------------------------------------------------
-# Orientation helpers (mirrors envs.retro.placement_planner.ORIENT_OFFSETS)
-# ---------------------------------------------------------------------------
 
+def compute_speed_threshold(speed_setting: int, speed_ups: int) -> int:
+    """Return the ROM table value used in `fallingPill_checkYMove` (gravity)."""
 
-class Orientation(IntEnum):
-    H_POS = 0  # horizontal, partner at x+1
-    V_POS = 1  # vertical, partner at y+1
-    H_NEG = 2  # horizontal, partner at x-1
-    V_NEG = 3  # vertical, partner at y-1
-
-
-ORIENT_OFFSETS: Tuple[Tuple[Tuple[int, int], Tuple[int, int]], ...] = (
-    ((0, 0), (0, 1)),   # H_POS
-    ((0, 0), (1, 0)),   # V_POS
-    ((0, 0), (0, -1)),  # H_NEG
-    ((0, 0), (-1, 0)),  # V_NEG
-)
+    setting_idx = max(0, min(int(speed_setting), len(BASE_SPEED_SETTING_VALUE) - 1))
+    base_index = int(BASE_SPEED_SETTING_VALUE[setting_idx])
+    raw_index = base_index + max(0, int(speed_ups))
+    table_index = max(0, min(raw_index, SPEED_COUNTER_MAX))
+    return int(SPEED_COUNTER_TABLE[table_index])
 
 
 # ---------------------------------------------------------------------------
@@ -110,66 +112,58 @@ class HoldDir(Enum):
 
 class Rotation(Enum):
     NONE = 0
-    CW = 1   # A button (clockwise in-game because rotation index decrements)
-    CCW = 2  # B button (counter-clockwise)
+    CW = 1   # NES "A" button: rotation index decrements
+    CCW = 2  # NES "B" button: rotation index increments
 
 
 @dataclass(frozen=True)
 class FrameAction:
-    """Button state for one frame."""
+    """Buttons held/pressed for one frame of planning."""
 
     hold_dir: HoldDir
     hold_down: bool
     rotation: Rotation
 
 
-@dataclass
+@dataclass(frozen=True)
 class FrameState:
-    """Full capsule state after a frame step."""
+    """Falling pill state at the start of a frame (planner coordinates)."""
 
-    x: int
-    y: int
-    orient: int
-    speed_counter: int
-    hor_velocity: int
-    hold_dir: HoldDir
-    hold_down: bool
-    frame_parity: int
-    grounded: bool = False
-    lock_timer: int = 0
+    x: int  # base column (bottom-left of 2×2 bounding box)
+    y: int  # base row, 0=top, 15=bottom (bottom cell of vertical pills)
+    rot: int  # NES rotation code (0..3)
+
+    speed_counter: int  # currentP_speedCounter ($0092)
+    hor_velocity: int  # currentP_horVelocity ($0093)
+
+    hold_dir: HoldDir  # held L/R from previous frame (for edge detection)
+    frame_parity: int  # frameCounter & 1 at start of this frame
     locked: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
 class FrameNode:
-    """Search node storing the resulting state and backpointer metadata."""
-
     state: FrameState
-    parent: int  # index into `nodes`; -1 for the root
-    action_index: int  # index into ACTIONS applied to reach this node; -1 for root
+    parent: int  # node index; -1 for root
+    action_index: int  # index into _ACTION_SPACE; -1 for root
     depth: int  # frames elapsed from spawn (root depth = 0)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReachabilityConfig:
-    """Planner configuration parameters relevant to the fast reach search."""
-
-    max_frames: int = GRID_HEIGHT * 6  # generous bound for pathological slides
+    max_frames: int = 2048
 
 
 @dataclass
 class ReachabilityResult:
-    """Result of the counter-aware BFS."""
-
     nodes: List[FrameNode]
-    terminal_nodes: Dict[Tuple[int, int, int], int]
-    stats: Dict[str, int]
+    terminal_nodes: Dict[Tuple[int, int, int], int]  # (x,y,rot) -> node index (locked state)
 
-    def best_node_for(self, anchor: Tuple[int, int, int]) -> Optional[int]:
-        return self.terminal_nodes.get(anchor)
+    def best_terminal(self, x: int, y: int, rot: int) -> Optional[int]:
+        return self.terminal_nodes.get((int(x), int(y), int(rot) & 3))
 
 
-# Enumerate frame actions: HoldDir × HoldDown × Rotation.
+# Enumerate per-frame action space in a stable order (important for tie-breaking).
 _ACTION_SPACE: Tuple[FrameAction, ...] = tuple(
     FrameAction(hold_dir=hold_dir, hold_down=hold_down, rotation=rotation)
     for hold_dir in (HoldDir.NEUTRAL, HoldDir.LEFT, HoldDir.RIGHT)
@@ -178,51 +172,106 @@ _ACTION_SPACE: Tuple[FrameAction, ...] = tuple(
 )
 
 
+def frame_action_from_index(index: int) -> FrameAction:
+    if index < 0 or index >= len(_ACTION_SPACE):
+        raise IndexError(f"Frame action index {index} is out of range")
+    return _ACTION_SPACE[int(index)]
+
+
 # ---------------------------------------------------------------------------
-# Board helpers
+# Geometry / collision helpers (bitboard columns)
 # ---------------------------------------------------------------------------
 
 
-def _cell_blocked(cols_u16: np.ndarray, x: int, y: int) -> bool:
-    if x < 0 or x >= GRID_WIDTH:
+def _cell_occupied(cols_u16: np.ndarray, x: int, y: int) -> bool:
+    if x < 0 or x >= GRID_WIDTH or y < 0 or y >= GRID_HEIGHT:
         return True
-    # Allow y=-1 for vertical pills spawning at top (top half at row 0, bottom half above screen)
-    if y < -1:
-        return True
-    if y >= GRID_HEIGHT:
-        return True
-    # Cells above the grid (y < 0) are never blocked by the board
-    if y < 0:
+    return bool(int(cols_u16[x]) & (1 << int(y)))
+
+
+def _fits(cols_u16: np.ndarray, x: int, y: int, rot: int) -> bool:
+    """Return True iff the capsule fits at base cell (x,y) with NES rotation code rot."""
+
+    x_i = int(x)
+    y_i = int(y)
+    rot_i = int(rot) & 3
+
+    # Base cell must be in bounds.
+    if x_i < 0 or x_i >= GRID_WIDTH or y_i < 0 or y_i >= GRID_HEIGHT:
         return False
-    col_bits = int(cols_u16[x])
-    return bool(col_bits & (1 << y))
 
+    if _cell_occupied(cols_u16, x_i, y_i):
+        return False
 
-def _fits(cols_u16: np.ndarray, x: int, y: int, orient: int) -> bool:
-    offsets = ORIENT_OFFSETS[int(orient) & 3]
-    for dr, dc in offsets:
-        if _cell_blocked(cols_u16, x + dc, y + dr):
+    if (rot_i & 1) == 0:
+        # Horizontal geometry: occupies base and base+(0,+1)
+        if x_i + 1 >= GRID_WIDTH:
             return False
+        if _cell_occupied(cols_u16, x_i + 1, y_i):
+            return False
+    else:
+        # Vertical geometry: occupies base and base+(-1,0) (above). Allow y=-1 as offscreen.
+        if y_i - 1 >= 0 and _cell_occupied(cols_u16, x_i, y_i - 1):
+            return False
+
     return True
 
 
 # ---------------------------------------------------------------------------
-# Gravity helpers
+# Rotation validation (pillRotateValidation)
 # ---------------------------------------------------------------------------
 
 
-def compute_speed_threshold(speed_setting: int, speed_ups: int) -> int:
-    """Return gravity threshold (frames between drops) for the current spawn."""
+def _apply_rotation(
+    cols_u16: np.ndarray,
+    *,
+    x: int,
+    y: int,
+    rot: int,
+    rotation: Rotation,
+    hold_left: bool,
+) -> Tuple[int, int]:
+    """Apply rotation and return (new_x, new_rot).
 
-    setting_idx = max(0, min(speed_setting, len(BASE_SPEED_SETTING_VALUE) - 1))
-    base_index = BASE_SPEED_SETTING_VALUE[setting_idx]
-    raw_index = base_index + max(0, speed_ups)
-    table_index = max(0, min(raw_index, SPEED_COUNTER_MAX))
-    return SPEED_COUNTER_TABLE[table_index]
+    Mirrors `fallingPill_checkRotate` + `pillRotateValidation`:
+      - A press: rot = (rot - 1) & 3 (CW)
+      - B press: rot = (rot + 1) & 3 (CCW)
+      - If rotating to horizontal and LEFT is held, attempt an extra x-1 shift.
+      - If blocked rotating to horizontal, attempt a kick-left (x-1).
+    """
+
+    if rotation is Rotation.NONE:
+        return int(x), int(rot) & 3
+
+    x0 = int(x)
+    rot0 = int(rot) & 3
+
+    if rotation is Rotation.CW:
+        rot1 = (rot0 - 1) & 3
+    else:
+        rot1 = (rot0 + 1) & 3
+
+    if (rot1 & 1) == 0:
+        # Target is horizontal.
+        if _fits(cols_u16, x0, int(y), rot1):
+            # Rotation accepted in-place.
+            if hold_left and _fits(cols_u16, x0 - 1, int(y), rot1):
+                return x0 - 1, rot1
+            return x0, rot1
+        # Kick-left attempt.
+        if _fits(cols_u16, x0 - 1, int(y), rot1):
+            return x0 - 1, rot1
+        # Reject.
+        return x0, rot0
+
+    # Target is vertical: only in-place validation.
+    if _fits(cols_u16, x0, int(y), rot1):
+        return x0, rot1
+    return x0, rot0
 
 
 # ---------------------------------------------------------------------------
-# Core simulation
+# Frame stepping (Y -> X -> Rotate)
 # ---------------------------------------------------------------------------
 
 
@@ -234,75 +283,32 @@ def _dir_flags(direction: HoldDir) -> Tuple[bool, bool]:
     return False, False
 
 
-def _state_key(state: FrameState) -> Tuple[int, ...]:
-    """Key used for visited pruning (excludes immutable spawn data)."""
+def _pack_state(state: FrameState) -> int:
+    """Pack a FrameState into a small int key for visited pruning."""
 
-    return (
-        int(state.x),
-        int(state.y),
-        int(state.orient) & 3,
-        int(state.speed_counter),
-        int(state.hor_velocity),
-        int(state.hold_dir.value),
-        int(state.hold_down),
-        int(state.frame_parity & FAST_DROP_MASK),
-        1 if state.grounded else 0,
-        int(min(max(state.lock_timer, 0), LOCK_BUFFER_FRAMES)),
-    )
-
-
-def _apply_rotation(
-    cols_u16: np.ndarray,
-    y: int,
-    x: int,
-    orient: int,
-    rotation: Rotation,
-    hold_left: bool,
-) -> Tuple[int, int, bool]:
-    """Apply the rotation stage. Returns (new_x, new_orient, rotated)."""
-
-    if rotation is Rotation.NONE:
-        return x, orient, False
-
-    if rotation is Rotation.CW:
-        new_orient = (orient - 1) & 3
-    else:  # CCW
-        new_orient = (orient + 1) & 3
-
-    orig_x = x
-    rotated = False
-
-    if new_orient & 1 == 0:
-        # Horizontal target: try in-place first.
-        if _fits(cols_u16, x, y, new_orient):
-            rotated = True
-            if hold_left:
-                kicked_x = x - 1
-                if _fits(cols_u16, kicked_x, y, new_orient):
-                    x = kicked_x
-        else:
-            # Wall kick: shift left once, then validate.
-            kicked_x = x - 1
-            if _fits(cols_u16, kicked_x, y, new_orient):
-                rotated = True
-                x = kicked_x
-    else:
-        # Vertical target: single validation.
-        if _fits(cols_u16, x, y, new_orient):
-            rotated = True
-
-    if not rotated:
-        return orig_x, orient, False
-    return x, new_orient, True
+    # Layout (low bits first):
+    #   x:3, y:4, rot:2, speed_counter:7, hor_velocity:4, hold_dir:2, parity:1
+    x = int(state.x) & 0x7
+    y = int(state.y) & 0xF
+    rot = int(state.rot) & 0x3
+    sc = int(state.speed_counter) & 0x7F
+    hv = int(state.hor_velocity) & 0xF
+    hd = int(state.hold_dir.value) & 0x3
+    p = int(state.frame_parity) & 0x1
+    return x | (y << 3) | (rot << 7) | (sc << 9) | (hv << 16) | (hd << 20) | (p << 22)
 
 
 def _step_state(
     cols_u16: np.ndarray,
     state: FrameState,
     action: FrameAction,
+    *,
     speed_threshold: int,
 ) -> FrameState:
-    """Simulate one frame given the current state and action."""
+    """Simulate one full frame (Y then X then Rotate)."""
+
+    if state.locked:
+        return state
 
     prev_left, prev_right = _dir_flags(state.hold_dir)
     hold_left, hold_right = _dir_flags(action.hold_dir)
@@ -310,111 +316,92 @@ def _step_state(
 
     press_left = hold_left and not prev_left
     press_right = hold_right and not prev_right
-    press_any_lr = press_left or press_right
+    press_lr = press_left or press_right
 
-    frame_flag = state.frame_parity & FAST_DROP_MASK
+    x = int(state.x)
+    y = int(state.y)
+    rot = int(state.rot) & 3
+    speed_counter = int(state.speed_counter) & 0xFF
+    hor_velocity = int(state.hor_velocity) & 0xFF
+    parity = int(state.frame_parity) & FAST_DROP_MASK
 
-    # --- Y stage (gravity / soft drop) ---
-    down_only = hold_down and not hold_left and not hold_right
-    y = state.y
-    x = state.x
-    orient = state.orient & 3
-    speed_counter = state.speed_counter
-    grounded = bool(state.grounded)
-    lock_timer = int(state.lock_timer)
-    locked = False
+    # ---------------- Y stage (gravity / soft drop) ----------------
+    down_only = hold_down and (action.hold_dir is HoldDir.NEUTRAL)
+    drop_triggered = False
 
-    if frame_flag != 0 and down_only:
+    if (parity != 0) and down_only:
+        # Down-only soft drop (checked every other frame).
         drop_triggered = True
-        # Note: speed_counter will be reset to 0 below if drop succeeds
+        speed_counter = 0
     else:
-        trial_counter = min(state.speed_counter + 1, speed_threshold + 1)
-        if trial_counter > speed_threshold:
+        # Gravity: speedCounter++ and drop when speedCounter > tableValue.
+        speed_counter = min(speed_counter + 1, 0xFF)
+        if speed_counter > int(speed_threshold):
             drop_triggered = True
             speed_counter = 0
-        else:
-            drop_triggered = False
-            speed_counter = min(trial_counter, speed_threshold)
 
     if drop_triggered:
-        if _fits(cols_u16, x, y + 1, orient):
+        if _fits(cols_u16, x, y + 1, rot):
             y += 1
-            speed_counter = 0
-            grounded = False
         else:
-            # Grounded this frame; defer locking to allow slide/tuck via lock buffer.
-            grounded = True
-            speed_counter = 0
+            # Immediate lock: confirmPlacement happens inside checkYMove.
+            next_parity = (parity + 1) & FAST_DROP_MASK
+            return FrameState(
+                x=x,
+                y=y,
+                rot=rot,
+                speed_counter=0,
+                hor_velocity=hor_velocity,
+                hold_dir=action.hold_dir,
+                frame_parity=next_parity,
+                locked=True,
+            )
 
-    # --- X stage (horizontal movement) ---
-    hor_velocity = state.hor_velocity
-    if not locked:
-        allow_move = False
-        if press_any_lr:
-            hor_velocity = 0
-            allow_move = True
-        elif hold_left or hold_right:
-            trial_velocity = state.hor_velocity + 1
-            if trial_velocity >= HOR_ACCEL_SPEED:
+    # ---------------- X stage (DAS movement) ----------------
+    allow_move = False
+    if press_lr:
+        hor_velocity = 0
+        allow_move = True
+    else:
+        if action.hold_dir is not HoldDir.NEUTRAL:
+            hor_velocity = min(hor_velocity + 1, 0xFF)
+            if hor_velocity >= HOR_ACCEL_SPEED:
                 hor_velocity = HOR_RELOAD
                 allow_move = True
+
+    if allow_move:
+        # ROM order: right check then left check.
+        if hold_right:
+            if _fits(cols_u16, x + 1, y, rot):
+                x += 1
             else:
-                hor_velocity = min(trial_velocity, HOR_BLOCKED)
-        # Attempt moves in NES order: right first, then left.
-        if allow_move:
-            if hold_right:
-                candidate = x + 1
-                if _fits(cols_u16, candidate, y, orient):
-                    x = candidate
-                    grounded = False
-                    lock_timer = LOCK_BUFFER_FRAMES
-                else:
-                    hor_velocity = HOR_BLOCKED
-            if hold_left:
-                candidate = x - 1
-                if _fits(cols_u16, candidate, y, orient):
-                    x = candidate
-                    grounded = False
-                    lock_timer = LOCK_BUFFER_FRAMES
-                else:
-                    hor_velocity = HOR_BLOCKED
+                hor_velocity = HOR_BLOCKED
+        if hold_left:
+            if _fits(cols_u16, x - 1, y, rot):
+                x -= 1
+            else:
+                hor_velocity = HOR_BLOCKED
 
-    # --- Rotation stage ---
-    if not locked:
-        x, orient, _ = _apply_rotation(
-            cols_u16=cols_u16,
-            y=y,
-            x=x,
-            orient=orient,
-            rotation=action.rotation,
-            hold_left=hold_left,
-        )
-        # If rotation changed orientation successfully, treat as adjustment.
-        if orient != (state.orient & 3):
-            grounded = False
-            lock_timer = LOCK_BUFFER_FRAMES
+    # ---------------- Rotate stage ----------------
+    x, rot = _apply_rotation(
+        cols_u16,
+        x=x,
+        y=y,
+        rot=rot,
+        rotation=action.rotation,
+        hold_left=hold_left,
+    )
 
-    next_parity = (state.frame_parity + 1) & FAST_DROP_MASK
-
-    # Post-frame lock resolution
-    if grounded and not locked:
-        if lock_timer <= 0:
-            locked = True
-        else:
-            lock_timer = max(0, lock_timer - 1)
-
+    next_parity = (parity + 1) & FAST_DROP_MASK
     return FrameState(
-        x=int(x),
-        y=int(y),
-        orient=int(orient),
-        speed_counter=int(speed_counter),
-        hor_velocity=int(hor_velocity),
+        x=x,
+        y=y,
+        rot=rot,
+        speed_counter=speed_counter,
+        hor_velocity=hor_velocity,
         hold_dir=action.hold_dir,
-        hold_down=hold_down,
-        frame_parity=int(next_parity),
-        grounded=bool(grounded),
-        lock_timer=int(lock_timer),
-        locked=locked,
+        frame_parity=next_parity,
+        locked=False,
     )
 
 
@@ -427,8 +414,7 @@ def simulate_frame(
 ) -> FrameState:
     """Advance ``state`` by one frame using the indexed action."""
 
-    action = frame_action_from_index(action_index)
-    return _step_state(cols_u16, state, action, speed_threshold)
+    return _step_state(cols_u16, state, frame_action_from_index(action_index), speed_threshold=speed_threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -443,38 +429,32 @@ def build_reachability(
     speed_threshold: int,
     config: Optional[ReachabilityConfig] = None,
 ) -> ReachabilityResult:
-    """Enumerate all frame-accurate placements reachable from the spawn state."""
-    import time
-    t0 = time.perf_counter()
-    
+    """Enumerate all locked (x,y,rot) placements reachable from the spawn state."""
+
     cfg = config or ReachabilityConfig()
+
+    if spawn_state.locked:
+        raise ValueError("Spawn state cannot be locked")
+    if not _fits(cols_u16, spawn_state.x, spawn_state.y, spawn_state.rot):
+        # Unspawnable: no reachable placements.
+        nodes = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
+        return ReachabilityResult(nodes=nodes, terminal_nodes={})
+
     nodes: List[FrameNode] = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
     q: deque[int] = deque([0])
-    visited: Dict[Tuple[int, ...], int] = {_state_key(spawn_state): 0}
+    visited: Dict[int, int] = {_pack_state(spawn_state): 0}
     terminal_nodes: Dict[Tuple[int, int, int], int] = {}
-    expanded = 0
-    enqueued = 1
-    last_log_time = t0
-    
-    print(f"[{t0:.4f}] build_reachability started")
 
     while q:
         idx = q.popleft()
         node = nodes[idx]
-        state = node.state
-        if node.depth >= cfg.max_frames:
+        if node.depth >= int(cfg.max_frames):
             continue
-        if state.locked:
+        if node.state.locked:
             continue
-        expanded += 1
 
-        current_time = time.perf_counter()
-        if current_time - last_log_time > 0.5: # Log every 500ms
-            print(f"[{current_time:.4f}] build_reachability progress: expanded={expanded}, enqueued={enqueued}, qsize={len(q)}, depth={node.depth}")
-            last_log_time = current_time
-
-        for action_index, action in enumerate(_ACTION_SPACE):
-            next_state = _step_state(cols_u16, state, action, speed_threshold)
+        for action_index in range(len(_ACTION_SPACE)):
+            next_state = _step_state(cols_u16, node.state, _ACTION_SPACE[action_index], speed_threshold=speed_threshold)
             child_depth = node.depth + 1
             child = FrameNode(
                 state=next_state,
@@ -483,30 +463,23 @@ def build_reachability(
                 depth=child_depth,
             )
             child_idx = len(nodes)
-            nodes.append(child)
-            if next_state.locked:
-                anchor = (next_state.x, next_state.y, next_state.orient & 3)
-                prev_idx = terminal_nodes.get(anchor)
-                if prev_idx is None or nodes[prev_idx].depth > child_depth:
-                    terminal_nodes[anchor] = child_idx
-                continue
-            key = _state_key(next_state)
-            prev_depth = visited.get(key)
-            if prev_depth is not None and prev_depth <= child_depth:
-                continue
-            visited[key] = child_depth
-            q.append(child_idx)
-            enqueued += 1
-    
-    t1 = time.perf_counter()
-    print(f"[{t1:.4f}] build_reachability finished in {t1-t0:.4f}s. expanded={expanded}, enqueued={enqueued}, terminals={len(terminal_nodes)}")
 
-    stats = {
-        "expanded": expanded,
-        "enqueued": enqueued,
-        "terminals": len(terminal_nodes),
-    }
-    return ReachabilityResult(nodes=nodes, terminal_nodes=terminal_nodes, stats=stats)
+            if next_state.locked:
+                key = (int(next_state.x), int(next_state.y), int(next_state.rot) & 3)
+                # BFS order guarantees first hit is minimal depth; keep first.
+                if key not in terminal_nodes:
+                    nodes.append(child)
+                    terminal_nodes[key] = child_idx
+                continue
+
+            packed = _pack_state(next_state)
+            if packed in visited:
+                continue
+            visited[packed] = child_idx
+            nodes.append(child)
+            q.append(child_idx)
+
+    return ReachabilityResult(nodes=nodes, terminal_nodes=terminal_nodes)
 
 
 # ---------------------------------------------------------------------------
@@ -514,40 +487,32 @@ def build_reachability(
 # ---------------------------------------------------------------------------
 
 
-def reconstruct_actions(result: ReachabilityResult, terminal_index: int) -> List[int]:
-    """Return action indices for the path ending at `terminal_index` (root→leaf)."""
+def reconstruct_actions(result: ReachabilityResult, node_index: int) -> List[int]:
+    """Return action indices (root→node) for `node_index` in the reachability tree."""
 
     actions: List[int] = []
-    idx = terminal_index
+    idx = int(node_index)
     while idx >= 0:
         node = result.nodes[idx]
         if node.parent < 0:
             break
-        actions.append(node.action_index)
-        idx = node.parent
+        actions.append(int(node.action_index))
+        idx = int(node.parent)
     actions.reverse()
     return actions
 
 
-def iter_frame_states(result: ReachabilityResult, terminal_index: int) -> Iterator[FrameState]:
-    """Yield the FrameState sequence from spawn to the terminal node (inclusive)."""
+def iter_frame_states(result: ReachabilityResult, node_index: int) -> Iterator[FrameState]:
+    """Yield FrameState sequence from root to `node_index` inclusive."""
 
-    sequence: List[FrameState] = []
-    idx = terminal_index
+    seq: List[FrameState] = []
+    idx = int(node_index)
     while idx >= 0:
         node = result.nodes[idx]
-        sequence.append(node.state)
-        idx = node.parent
-    for state in reversed(sequence):
-        yield state
-
-
-def frame_action_from_index(index: int) -> FrameAction:
-    """Return the :class:`FrameAction` encoded at ``index`` in the action space."""
-
-    if index < 0 or index >= len(_ACTION_SPACE):
-        raise IndexError(f"Frame action index {index} is out of range")
-    return _ACTION_SPACE[index]
+        seq.append(node.state)
+        idx = int(node.parent)
+    for st in reversed(seq):
+        yield st
 
 
 __all__ = [
@@ -555,7 +520,6 @@ __all__ = [
     "FrameNode",
     "FrameState",
     "HoldDir",
-    "Orientation",
     "ReachabilityConfig",
     "ReachabilityResult",
     "Rotation",
@@ -566,3 +530,4 @@ __all__ = [
     "reconstruct_actions",
     "frame_action_from_index",
 ]
+

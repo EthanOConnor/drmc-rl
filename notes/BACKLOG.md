@@ -15,6 +15,20 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### High Priority
 
+- **Placement planner: native acceleration + parity oracle**
+  - Keep `envs/retro/fast_reach.py` as the reference implementation.
+  - Port reachability + plan reconstruction to `reach_native/` (C++/pybind) once behaviour is locked.
+  - Add a micro-benchmark per spawn (empty board + a few typical clutter cases).
+
+- **Placement env: decision-point regression traces**
+  - Record short emulator traces covering: spawn → lock → settle → next spawn, stage clear, top-out, ending.
+  - Assert `DrMarioPlacementEnv` never times out waiting for a decision point.
+
+- **Libretro backend: RAM-only fast path**
+  - Add a mode that avoids per-frame 240×256 frame-buffer copies when running `obs_mode=state` without rendering/video.
+  - Keep `render_mode=rgb_array` working (either lazy capture or “capture-on-demand”).
+  - Benchmark before/after in terms of FPS and reset latency.
+
 - **C++ engine: Parity beyond demo**
   - Add golden traces for non-demo gameplay (seeded levels, edge-case rotations/DAS).
   - Validate 2P / attack logic once implemented.
@@ -41,6 +55,10 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### Recently Completed ✅
 
+- Unified runner debug mode (`training/run.py --ui debug`) with board viz + playback controls
+- Real retro vector env factory in `training/envs/dr_mario_vec.py` (Gymnasium VectorEnv + info normalization)
+- Placement macro-action rewrite (NES-accurate reachability + `DrMarioPlacementEnv`)
+- QuickNES updater script (`tools/update_quicknes_core.py`) + docs in `docs/RETRO_CORE_NOTES.md`
 - C++ engine demo parity suite (frame-perfect vs `data/nes_demo.json`)
   - Tooling: `tools/record_demo.py`, `tools/game_transcript.py`
   - Regression test: `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth`

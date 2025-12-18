@@ -106,20 +106,16 @@ Integration smoke tests:
 
 ```bash
 # Train with default dense head (recommended)
-python training/launches/train_placement_smdp_ppo.py \
-  --num-envs 16 \
-  --total-steps 5000000 \
-  --head dense
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --num_envs 16 --total_steps 5000000
 
 # Try shift-and-score head
-python training/launches/train_placement_smdp_ppo.py \
-  --num-envs 16 \
-  --head shift_score
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --num_envs 16 --override smdp_ppo.head_type=shift_score
 
 # Factorized head (smallest params)
-python training/launches/train_placement_smdp_ppo.py \
-  --num-envs 16 \
-  --head factorized
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --num_envs 16 --override smdp_ppo.head_type=factorized
 ```
 
 ### Programmatic API

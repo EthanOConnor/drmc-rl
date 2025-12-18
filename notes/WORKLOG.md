@@ -122,3 +122,40 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Fixed a pill-render “seam” artifact by filling pill tiles using background color in `training/ui/board_viewer.py`.
 - Switched playback speed control from “seconds per frame” to an `x` multiplier target (e.g. `2.4x` NTSC), with region/base-FPS selection in `tools/engine_demo_tui.py`.
 - Refreshed the tracked prebuilt engine artifacts (`game_engine/drmario_engine`, `game_engine/*.o`) to match the parity-correct C++ sources (fixes demo playback stalling/timeouts when running the shipped binary).
+
+## 2025-12-18 – Coding Agent (Codex CLI) – Macro Placement Planner Rewrite
+
+- Re-implemented the placement macro-action stack as a NES-accurate, spawn-latched SMDP wrapper:
+  - Canonical 512-way `(o,row,col)` action space in `envs/retro/placement_space.py`.
+  - Frame-accurate reachability in `envs/retro/fast_reach.py` (gravity + DAS + rotation quirks).
+  - Spawn snapshot decoding + feasibility/cost masks + minimal-time controller reconstruction in `envs/retro/placement_planner.py`.
+  - Gym wrapper `envs/retro/placement_env.py` returning `placements/*` masks and `placements/tau`.
+- Kept `envs/retro/placement_wrapper.py` as a small compatibility shim for older scripts.
+- Restored training/docs ergonomics:
+  - `envs/retro/register_env.py` registers both `DrMarioPlacementEnv-v0` and legacy `DrMario-Placement-v0`.
+  - Updated `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, and `QUICK_START_PLACEMENT_POLICY.md` to match the new wrapper.
+- Added QuickNES update utility (`tools/update_quicknes_core.py`) and documented it in `docs/RETRO_CORE_NOTES.md`.
+- Fixed regressions uncovered by unit tests:
+  - Corrected τ=1 bootstrap semantics in `tests/test_placement_policy.py`.
+  - Hardened `training/speedrun_experiment.py` episode finalization for missing/legacy `dones` tracking.
+
+## 2025-12-18 – Coding Agent (Codex CLI) – New Runner: Real Env + Debug TUI
+
+- Upgraded the unified runner (`training/run.py`) to support:
+  - `--algo ppo_smdp` (uses `training/algo/ppo_smdp.py`).
+  - `--ui debug` (Rich board visualization + pause/step + speed controls).
+  - Convenience flags for real retro training: `--env-id`, `--core`, `--core-path`, `--rom-path`, `--backend`, `--level`, `--vectorization`.
+- Implemented a real vector env factory in `training/envs/dr_mario_vec.py`:
+  - Returns a Gymnasium VectorEnv for `DrMario*` env ids (with a wrapper that converts vector `infos` to a list-of-dicts).
+  - Keeps `DummyVecEnv` for tests and non-retro configs.
+- Added interactive playback control wrappers:
+  - `training/envs/interactive.py` provides `PlaybackControl` + `RateLimitedVecEnv` (pause/single-step and target FPS using `placements/tau` when available).
+  - `training/ui/runner_debug_tui.py` provides a terminal-based debug UI with board rendering from `raw_ram`.
+- Added a unit test for the real env factory running on the mock backend: `tests/test_runner_real_env_factory.py`.
+- Runner/config polish:
+  - `training/run.py` now defaults `--algo/--engine` from the config file when not provided on the CLI (with `smdp_ppo` → `ppo_smdp` aliasing).
+  - `training/configs/smdp_ppo.yaml` updated to `algo: ppo_smdp` and `env.id` (matches the unified runner + env factory).
+  - Placement docs (`docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`, `IMPLEMENTATION_COMPLETE.md`, `PLACEMENT_POLICY_IMPLEMENTATION.md`) now recommend `python -m training.run` over bespoke launch scripts.
+- Fixed a reset-time state mismatch in `envs/retro/drmario_env.py`:
+  - Rebuild `_state_cache` after the auto-start sequence so `reset()` returns observations consistent with the post-start `raw_ram` snapshot.
+  - `viruses_remaining` now prefers the raw RAM counter during startup (avoids stale `_state_cache` during reset/start sequences).
