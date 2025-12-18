@@ -307,6 +307,16 @@ class RunnerDebugTUI:
         if backend is not None:
             table.add_row("planner", str(backend))
 
+        pose_ok = info0.get("placements/pose_ok")
+        if pose_ok is not None:
+            table.add_row("pose_ok", "yes" if bool(pose_ok) else "no")
+            if not bool(pose_ok):
+                dx = info0.get("placements/pose_dx")
+                dy = info0.get("placements/pose_dy")
+                drot = info0.get("placements/pose_drot")
+                if dx is not None or dy is not None or drot is not None:
+                    table.add_row("pose_err", f"dx={dx} dy={dy} rot={drot}")
+
         if last_update:
             table.add_row("", "")
             for k, v in sorted(last_update.items()):

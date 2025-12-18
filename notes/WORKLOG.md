@@ -253,4 +253,5 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Added placement verification metadata to macro steps by capturing the observed falling-pill pose at lock time and comparing it to the planner’s target pose (`placements/pose_ok`, `placements/target_pose`, `placements/lock_pose`) (`envs/retro/placement_env.py`).
 - Expanded synthetic curriculum stages to include match-count levels `-10..-4` (1..7 matches) before the 1/2/3-virus stages (`-3..-1`) and updated configs to start at `-10` (`envs/retro/drmario_env.py`, `training/envs/curriculum.py`, `training/configs/smdp_ppo.yaml`).
 - Made RNG randomization default-on in the standard training configs, and added spawn-level perf ratios (`infer/spawn`, `planner/spawn`) plus last terminal reason tracking to the debug UI (`training/configs/base.yaml`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
+- Surfaced placement verification status in the debug UI (`pose_ok`, `pose_err`) so mismatches are visible without digging through raw infos (`training/ui/runner_debug_tui.py`).
 - Added coverage for the new negative-level mapping (`tests/test_synthetic_level_mapping.py`).
