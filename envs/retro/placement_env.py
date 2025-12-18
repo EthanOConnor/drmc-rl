@@ -53,6 +53,94 @@ class _DecisionContext:
     planner_build_sec: float = 0.0
 
 
+@dataclass
+class _RewardBreakdown:
+    """Accumulate reward components across multiple underlying per-frame steps.
+
+    The placement macro environment executes a per-frame controller script for a
+    chosen macro action. For debugging and curriculum/metrics purposes, it's
+    useful to also aggregate the underlying environment's *reward components*
+    (counts + per-term contributions) across the entire macro step.
+    """
+
+    r_total: float = 0.0
+    r_env: float = 0.0
+    r_shape: float = 0.0
+
+    # Counts
+    delta_v: int = 0
+    tiles_cleared_total: int = 0
+    tiles_cleared_non_virus: int = 0
+    tiles_clearing_max: int = 0
+    action_events: int = 0
+    pill_locks: int = 0
+
+    # Reward terms (already scaled)
+    virus_clear_reward: float = 0.0
+    non_virus_bonus: float = 0.0
+    adjacency_bonus: float = 0.0
+    pill_bonus_adjusted: float = 0.0
+    height_penalty_delta: float = 0.0
+    action_penalty: float = 0.0
+    terminal_bonus: float = 0.0
+    topout_penalty: float = 0.0
+    time_reward: float = 0.0
+
+    @staticmethod
+    def _as_int(value: Any) -> int:
+        if value is None:
+            return 0
+        try:
+            if isinstance(value, np.ndarray):
+                value = value.item()
+        except Exception:
+            return 0
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _as_float(value: Any) -> float:
+        if value is None:
+            return 0.0
+        try:
+            if isinstance(value, np.ndarray):
+                value = value.item()
+        except Exception:
+            return 0.0
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    def add_frame(self, *, reward: float, info: Dict[str, Any]) -> None:
+        self.r_total += float(reward)
+        self.r_env += self._as_float(info.get("r_env"))
+        self.r_shape += self._as_float(info.get("r_shape"))
+
+        dv = self._as_int(info.get("delta_v"))
+        self.delta_v += int(max(0, dv))
+        self.tiles_cleared_total += int(max(0, self._as_int(info.get("tiles_cleared_total"))))
+        self.tiles_cleared_non_virus += int(max(0, self._as_int(info.get("tiles_cleared_non_virus"))))
+        self.tiles_clearing_max = max(self.tiles_clearing_max, self._as_int(info.get("tiles_clearing")))
+        self.action_events += int(max(0, self._as_int(info.get("action_events"))))
+
+        pill_bonus = self._as_float(info.get("pill_bonus_adjusted"))
+        self.pill_bonus_adjusted += pill_bonus
+        if pill_bonus > 0.0:
+            self.pill_locks += 1
+
+        self.virus_clear_reward += self._as_float(info.get("virus_clear_reward"))
+        self.non_virus_bonus += self._as_float(info.get("non_virus_bonus"))
+        self.adjacency_bonus += self._as_float(info.get("adjacency_bonus"))
+        self.height_penalty_delta += self._as_float(info.get("height_penalty_delta"))
+        self.action_penalty += self._as_float(info.get("action_penalty"))
+        self.terminal_bonus += self._as_float(info.get("terminal_bonus_reward"))
+        self.topout_penalty += self._as_float(info.get("topout_penalty_reward"))
+        self.time_reward += self._as_float(info.get("time_reward"))
+
+
 class DrMarioPlacementEnv(gym.Wrapper):
     """Spawn-latched placement environment (512-way macro actions)."""
 
@@ -172,6 +260,31 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info["next_pill_colors"] = np.asarray(snap.colors, dtype=np.int64)
         return info
 
+    @staticmethod
+    def _reward_breakdown_info(breakdown: _RewardBreakdown, *, r_total: float) -> Dict[str, Any]:
+        """Format aggregated reward components for the wrapper `info` dict."""
+
+        return {
+            "reward/r_total": float(r_total),
+            "reward/r_env": float(breakdown.r_env),
+            "reward/r_shape": float(breakdown.r_shape),
+            "reward/delta_v": int(breakdown.delta_v),
+            "reward/tiles_cleared_total": int(breakdown.tiles_cleared_total),
+            "reward/tiles_cleared_non_virus": int(breakdown.tiles_cleared_non_virus),
+            "reward/tiles_clearing_max": int(breakdown.tiles_clearing_max),
+            "reward/action_events": int(breakdown.action_events),
+            "reward/pill_locks": int(breakdown.pill_locks),
+            "reward/virus_clear_reward": float(breakdown.virus_clear_reward),
+            "reward/non_virus_bonus": float(breakdown.non_virus_bonus),
+            "reward/adjacency_bonus": float(breakdown.adjacency_bonus),
+            "reward/pill_bonus_adjusted": float(breakdown.pill_bonus_adjusted),
+            "reward/height_penalty_delta": float(breakdown.height_penalty_delta),
+            "reward/action_penalty": float(breakdown.action_penalty),
+            "reward/terminal_bonus": float(breakdown.terminal_bonus),
+            "reward/topout_penalty": float(breakdown.topout_penalty),
+            "reward/time_reward": float(breakdown.time_reward),
+        }
+
     def _build_decision_context(self) -> _DecisionContext:
         state = self._state_cache()
         offsets = getattr(self.env.unwrapped, "_ram_offsets", {})
@@ -209,7 +322,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     reach.action_to_terminal_node.pop(a, None)
         return _DecisionContext(snapshot=snap, board=board, reach=reach, planner_build_sec=planner_build_sec)
 
-    def _advance_until_decision(self, obs: Any, info: Dict[str, Any]) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
+    def _advance_until_decision(
+        self,
+        obs: Any,
+        info: Dict[str, Any],
+        *,
+        breakdown: Optional[_RewardBreakdown] = None,
+    ) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
         """Advance the underlying env until the next macro decision point."""
 
         total_reward = 0.0
@@ -249,6 +368,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
             obs, r, terminated, truncated, info = self.env.step(int(Action.NOOP))
             total_reward += float(r)
+            if breakdown is not None and isinstance(info, dict):
+                breakdown.add_frame(reward=float(r), info=info)
             if terminated or truncated:
                 break
 
@@ -280,6 +401,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         frames_start_any = int(getattr(self.env.unwrapped, "_t", 0) or 0)
 
         total_reward = 0.0
+        breakdown = _RewardBreakdown()
         terminated = False
         truncated = False
         plan_calls = 0
@@ -291,7 +413,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         state = self._state_cache()
         if not self._at_decision_point(state):
             obs, info, r_wait, terminated, truncated = self._advance_until_decision(
-                self._last_obs, self._last_info
+                self._last_obs, self._last_info, breakdown=breakdown
             )
             total_reward += float(r_wait)
             self._last_obs, self._last_info = obs, dict(info or {})
@@ -299,6 +421,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 frames_end = int(getattr(self.env.unwrapped, "_t", frames_start_any) or frames_start_any)
                 out_info = dict(self._last_info)
                 out_info["placements/tau"] = max(1, frames_end - frames_start_any)
+                out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
                 return obs, float(total_reward), terminated, truncated, out_info
 
         # Start τ after we have reached a decision for this spawn.
@@ -317,7 +440,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             # repeated "decisions" while the offscreen pill locks/top-outs.
             if ctx.snapshot.spawn_id is not None:
                 self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
-            obs, info, r_wait, terminated, truncated = self._advance_until_decision(self._last_obs, self._last_info)
+            obs, info, r_wait, terminated, truncated = self._advance_until_decision(
+                self._last_obs, self._last_info, breakdown=breakdown
+            )
             total_reward += float(r_wait)
             self._last_obs, self._last_info = obs, dict(info or {})
             frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
@@ -326,6 +451,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info["placements/plan_count_last"] = float(plan_options)
             out_info["placements/tau"] = max(1, frames_end - frames_start)
             out_info["placements/needs_action"] = bool(out_info.get("placements/needs_action", False))
+            out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
             return obs, float(total_reward), terminated, truncated, out_info
         # Refresh decision context if spawn id changed.
         try:
@@ -354,7 +480,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info["placements/plan_count_last"] = float(plan_options)
             frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
             out_info["placements/tau"] = max(1, frames_end - frames_start)
-            return self._last_obs, 0.0, False, False, out_info
+            out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+            return self._last_obs, float(total_reward), False, False, out_info
 
         # We are committing to a macro action for this spawn; mark it as
         # consumed so `_advance_until_decision` ignores subsequent falling frames
@@ -371,13 +498,15 @@ class DrMarioPlacementEnv(gym.Wrapper):
             self._set_holds(left=step.hold_left, right=step.hold_right, down=step.hold_down)
             obs, r, terminated, truncated, info = self.env.step(int(step.action))
             total_reward += float(r)
+            if isinstance(info, dict):
+                breakdown.add_frame(reward=float(r), info=info)
             if terminated or truncated:
                 break
 
         # After locking, clear holds and advance until the next decision.
         self._clear_holds()
         if not (terminated or truncated):
-            obs, info, r_wait, terminated, truncated = self._advance_until_decision(obs, info)
+            obs, info, r_wait, terminated, truncated = self._advance_until_decision(obs, info, breakdown=breakdown)
             total_reward += float(r_wait)
 
         self._last_obs = obs
@@ -393,6 +522,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
         out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
         out_info["placements/plan_count_last"] = float(plan_options)
+        out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
         return obs, float(total_reward), terminated, truncated, out_info
 
 

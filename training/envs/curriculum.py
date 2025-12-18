@@ -123,10 +123,15 @@ class ScriptedCurriculum:
 
     def snapshot(self) -> Dict[str, Any]:
         cur = int(self.current_level)
+        hist = self._histories.get(cur)
+        window_n = int(len(hist)) if hist is not None else 0
+        window_size = int(max(1, int(self.cfg.window_episodes)))
         return {
             "current_level": cur,
             "rate_current": float(self.success_rate(cur)),
-            "episodes_current": int(self.episodes_seen(cur)),
+            "window_n": window_n,
+            "window_size": window_size,
+            "episodes_current_total": int(self.episodes_seen(cur)),
             "start_level": int(self.cfg.start_level),
             "max_level": int(self.cfg.max_level),
         }
@@ -161,6 +166,8 @@ class CurriculumVecEnv:
         term = np.asarray(terminated, dtype=bool).reshape(self.num_envs)
         trunc = np.asarray(truncated, dtype=bool).reshape(self.num_envs)
 
+        levels_this_step = list(self._env_levels)
+        next_levels = list(self._env_levels)
         updated = False
         for i in range(self.num_envs):
             if not bool(term[i] or trunc[i]):
@@ -171,26 +178,41 @@ class CurriculumVecEnv:
                 if "goal_achieved" in info
                 else info.get("cleared", info.get("drm", {}).get("cleared", False))
             )
-            self._curriculum.note_episode(level=int(self._env_levels[i]), success=success)
-            self._env_levels[i] = int(self._curriculum.sample_level(self._rng))
+            self._curriculum.note_episode(level=int(levels_this_step[i]), success=success)
+            next_levels[i] = int(self._curriculum.sample_level(self._rng))
             updated = True
 
         if updated:
+            self._env_levels = list(next_levels)
             self.env.set_attr("level", list(self._env_levels))
 
-        self._inject_curriculum_info(infos_list)
+        self._inject_curriculum_info(infos_list, levels=levels_this_step, next_levels=next_levels)
         return obs, rewards, terminated, truncated, infos_list
 
-    def _inject_curriculum_info(self, infos: List[Dict[str, Any]]) -> None:
+    def _inject_curriculum_info(
+        self,
+        infos: List[Dict[str, Any]],
+        *,
+        levels: Optional[List[int]] = None,
+        next_levels: Optional[List[int]] = None,
+    ) -> None:
         snap = self._curriculum.snapshot()
+        window_n = int(snap.get("window_n", 0) or 0)
+        window_size = int(snap.get("window_size", 1) or 1)
+        episodes_total = int(snap.get("episodes_current_total", 0) or 0)
         for i in range(min(len(infos), self.num_envs)):
             info = infos[i]
             if not isinstance(info, dict):
                 continue
-            info["curriculum/env_level"] = int(self._env_levels[i])
+            level_i = int(levels[i]) if levels is not None and i < len(levels) else int(self._env_levels[i])
+            info["curriculum/env_level"] = int(level_i)
+            if next_levels is not None and i < len(next_levels):
+                info["curriculum/next_env_level"] = int(next_levels[i])
             info["curriculum/current_level"] = int(snap["current_level"])
             info["curriculum/rate_current"] = float(snap["rate_current"])
-            info["curriculum/episodes_current"] = int(snap["episodes_current"])
+            info["curriculum/window_n"] = int(window_n)
+            info["curriculum/window_size"] = int(window_size)
+            info["curriculum/episodes_current_total"] = int(episodes_total)
 
     def _ensure_info_list(self, infos: Any) -> List[Dict[str, Any]]:
         if infos is None:
@@ -206,4 +228,3 @@ class CurriculumVecEnv:
 
     def __getattr__(self, name: str) -> Any:  # pragma: no cover - passthrough
         return getattr(self.env, name)
-

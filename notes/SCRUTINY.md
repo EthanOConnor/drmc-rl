@@ -228,7 +228,7 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: If autoreset semantics change (or a custom vector env resets immediately), the next episode may start with the wrong curriculum level.
 - **Mitigation**: Keep using Gymnasium’s default vector envs (which default to `NextStep`), and if this becomes configurable, explicitly set/validate the autoreset mode in the env factory.
 
-**R20. “Any 4-match” success detection uses occupancy deltas**
-- **Concern**: The curriculum level `-4` terminates on the first clear event, detected as a drop in occupancy between consecutive state frames.
-- **Risk**: If the occupancy definition changes (e.g., counting clearing tiles as occupied), or if a non-clear event reduces occupancy, the terminal condition could misfire.
-- **Mitigation**: Keep occupancy semantics stable (`static|virus|falling`), gate success on `tiles_cleared_total >= 4`, and validate on a small suite of scripted placements.
+**R20. “Any 4-match” success detection relies on ROM clear-animation tile codes**
+- **Concern**: The curriculum level `-4` terminates on the first clear event by scanning the bottle RAM for the ROM’s explicit clear-animation type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`).
+- **Risk**: If a different ROM revision/core uses different marker codes or delays updating the bottle buffer, the terminal condition could misfire or lag.
+- **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`) and keep this logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.

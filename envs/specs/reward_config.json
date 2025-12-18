@@ -20,7 +20,7 @@
     "description": "Bonus awarded when the stage is cleared."
   },
   "topout_penalty": {
-    "value": 2,
+    "value": -2,
     "description": "Penalty applied if the player tops out."
   },
   "time_bonus_topout_per_60_frames": {

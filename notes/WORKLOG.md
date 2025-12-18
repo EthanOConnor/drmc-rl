@@ -233,3 +233,10 @@ Chronological log of work done. Format: date, actor, brief summary.
   - Added `training/envs/curriculum.py` (`CurriculumVecEnv`) to schedule levels based on rolling clear rate and optional rehearsal of lower levels.
   - Enabled the curriculum in `training/configs/smdp_ppo.yaml` and surfaced curriculum stats in `RunnerDebugTUI`.
 - Updated docs to reflect implemented curriculum (`docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`, `PLACEMENT_POLICY_IMPLEMENTATION.md`).
+
+## 2025-12-18 – Codex CLI – Curriculum Clear Detection + Reward Breakdown Debugging
+
+- Fixed curriculum `-4` clear detection by using the ROM’s clearing-tile markers (`CLEARED_TILE`/`FIELD_JUST_EMPTIED`) from bottle RAM (`envs/retro/drmario_env.py`) instead of relying on occupancy deltas (which can miss clears).
+- Made curriculum stats explicitly “recent window” in the debug UI by surfacing `window_n/window_size` and ensuring terminal-step info reports the episode’s level (plus `next_env_level`) (`training/envs/curriculum.py`, `training/ui/runner_debug_tui.py`).
+- Added reward breakdown aggregation for macro steps (`reward/*` totals and counts) and a new Reward column in the debug TUI to audit scoring live (`envs/retro/placement_env.py`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
+- Fixed the default reward config to apply a negative top-out penalty (`envs/specs/reward_config.json`).

@@ -254,8 +254,17 @@ class RunnerDebugTUI:
         if curr_stage is not None:
             try:
                 rate = float(info0.get("curriculum/rate_current", 0.0) or 0.0)
-                eps = int(info0.get("curriculum/episodes_current", 0) or 0)
-                table.add_row("curr_stage", f"{int(curr_stage)} ({rate*100:.1f}%/{eps})")
+                window_n = int(info0.get("curriculum/window_n", 0) or 0)
+                window_size = int(info0.get("curriculum/window_size", 0) or 0)
+                total_eps = int(info0.get("curriculum/episodes_current_total", 0) or 0)
+                suffix = (
+                    f"{rate*100:.1f}% last{window_n}/{window_size}"
+                    if window_n > 0 and window_size > 0
+                    else f"{rate*100:.1f}%"
+                )
+                if total_eps > 0:
+                    suffix = f"{suffix} (tot {total_eps})"
+                table.add_row("curr_stage", f"{int(curr_stage)} ({suffix})")
             except Exception:
                 pass
         task_mode = info0.get("task_mode")
@@ -293,6 +302,62 @@ class RunnerDebugTUI:
 
         return Panel(table, title="[bold]Stats[/bold]", border_style="green")
 
+    def _render_reward_panel(self) -> Panel:
+        perf = self.env.perf_snapshot()
+        show_last = bool(
+            int(perf.get("ep_decisions_curr", 0) or 0) == 0 and int(perf.get("ep_decisions_last", 0) or 0) > 0
+        )
+        reward = (
+            perf.get("ep_reward_breakdown_last", {}) if show_last else perf.get("ep_reward_breakdown_curr", {})
+        ) or {}
+        counts = (
+            perf.get("ep_reward_counts_last", {}) if show_last else perf.get("ep_reward_counts_curr", {})
+        ) or {}
+        r_total = float(perf.get("ep_return_last" if show_last else "ep_return_curr", 0.0) or 0.0)
+
+        def _f(x: Any) -> float:
+            try:
+                return float(x)
+            except Exception:
+                return 0.0
+
+        def _i(x: Any) -> int:
+            try:
+                return int(x)
+            except Exception:
+                return 0
+
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        table.add_column("Term", style="dim")
+        table.add_column("Count", justify="right")
+        table.add_column("Reward", justify="right")
+
+        pill_locks = _i(counts.get("pill_locks"))
+        delta_v = _i(counts.get("delta_v"))
+        tiles_nv = _i(counts.get("tiles_cleared_non_virus"))
+        action_events = _i(counts.get("action_events"))
+        clear_events = _i(counts.get("clear_events"))
+        clearing_max = _i(counts.get("tiles_clearing_max"))
+
+        table.add_row("pill_lock", f"{pill_locks}", f"{_f(reward.get('pill_bonus_adjusted')):+.4f}")
+        table.add_row("virus_clear", f"{delta_v}", f"{_f(reward.get('virus_clear_reward')):+.4f}")
+        table.add_row("nonvirus_clear", f"{tiles_nv}", f"{_f(reward.get('non_virus_bonus')):+.4f}")
+        table.add_row("adjacency", "-", f"{_f(reward.get('adjacency_bonus')):+.4f}")
+        table.add_row("height", "-", f"{_f(reward.get('height_penalty_delta')):+.4f}")
+        table.add_row("action_pen", f"{action_events}", f"{-_f(reward.get('action_penalty')):+.4f}")
+        table.add_row("terminal", "-", f"{_f(reward.get('terminal_bonus')):+.4f}")
+        table.add_row("topout", "-", f"{_f(reward.get('topout_penalty')):+.4f}")
+        table.add_row("time", "-", f"{_f(reward.get('time_reward')):+.4f}")
+
+        table.add_row("", "", "")
+        table.add_row("clear_ev", f"{clear_events}", f"max {clearing_max}")
+        table.add_row("r_env", "-", f"{_f(reward.get('r_env')):+.4f}")
+        table.add_row("r_shape", "-", f"{_f(reward.get('r_shape')):+.4f}")
+        table.add_row("r_total", "-", f"{r_total:+.4f}")
+
+        title = "[bold]Reward (last)[/bold]" if show_last else "[bold]Reward (curr)[/bold]"
+        return Panel(table, title=title, border_style="magenta")
+
     def _render_footer(self, interactive: bool) -> Panel:
         lines = []
         if self._status:
@@ -306,12 +371,17 @@ class RunnerDebugTUI:
     def _render_layout(self, interactive: bool) -> Layout:
         layout = Layout()
         layout.split_column(Layout(name="main", ratio=1), Layout(name="footer", size=3))
-        layout["main"].split_row(Layout(name="board", ratio=2), Layout(name="stats", ratio=1))
+        layout["main"].split_row(
+            Layout(name="board", ratio=3),
+            Layout(name="stats", ratio=1),
+            Layout(name="reward", ratio=1),
+        )
 
         info0 = self.env.latest_info(0)
         board_state = board_from_env_info(info0)
         layout["board"].update(render_board_panel(board_state, title=self._title))
         layout["stats"].update(self._render_stats_panel())
+        layout["reward"].update(self._render_reward_panel())
         layout["footer"].update(self._render_footer(interactive))
         return layout
 

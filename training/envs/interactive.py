@@ -180,6 +180,20 @@ def _extract_float(value: Any) -> Optional[float]:
         return None
 
 
+def _extract_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        try:
+            value = value.item()
+        except Exception:
+            return None
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
 class RateLimitedVecEnv:
     """Vector env wrapper that implements pause/step and frame-rate limiting."""
 
@@ -209,6 +223,34 @@ class RateLimitedVecEnv:
         self._ep_return_last = np.zeros(self.num_envs, dtype=np.float64)
         self._ep_frames_last = np.zeros(self.num_envs, dtype=np.int64)
         self._ep_decisions_last = np.zeros(self.num_envs, dtype=np.int64)
+
+        # Per-episode reward breakdown (env0 displayed in the debug UI).
+        self._reward_keys = (
+            "r_env",
+            "r_shape",
+            "virus_clear_reward",
+            "non_virus_bonus",
+            "adjacency_bonus",
+            "pill_bonus_adjusted",
+            "height_penalty_delta",
+            "action_penalty",
+            "terminal_bonus",
+            "topout_penalty",
+            "time_reward",
+        )
+        self._count_keys = (
+            "delta_v",
+            "tiles_cleared_total",
+            "tiles_cleared_non_virus",
+            "pill_locks",
+            "action_events",
+            "clear_events",
+            "tiles_clearing_max",
+        )
+        self._ep_reward = {k: np.zeros(self.num_envs, dtype=np.float64) for k in self._reward_keys}
+        self._ep_reward_last = {k: np.zeros(self.num_envs, dtype=np.float64) for k in self._reward_keys}
+        self._ep_counts = {k: np.zeros(self.num_envs, dtype=np.int64) for k in self._count_keys}
+        self._ep_counts_last = {k: np.zeros(self.num_envs, dtype=np.int64) for k in self._count_keys}
 
         self._planner_build_calls_total: int = 0
         self._planner_build_sec_total: float = 0.0
@@ -263,6 +305,11 @@ class RateLimitedVecEnv:
                     return 0.0
                 return float(sec_total) * 1000.0 / frames_total
 
+            reward_breakdown_curr = {k: float(self._ep_reward[k][0]) for k in self._reward_keys}
+            reward_breakdown_last = {k: float(self._ep_reward_last[k][0]) for k in self._reward_keys}
+            counts_curr = {k: int(self._ep_counts[k][0]) for k in self._count_keys}
+            counts_last = {k: int(self._ep_counts_last[k][0]) for k in self._count_keys}
+
             return {
                 "frames_total": frames_total,
                 "tau_max": int(self._last_tau_max),
@@ -277,6 +324,10 @@ class RateLimitedVecEnv:
                 "ep_return_last": float(self._ep_return_last[0]) if self._ep_return_last.size else 0.0,
                 "ep_frames_last": int(self._ep_frames_last[0]) if self._ep_frames_last.size else 0,
                 "ep_decisions_last": int(self._ep_decisions_last[0]) if self._ep_decisions_last.size else 0,
+                "ep_reward_breakdown_curr": reward_breakdown_curr,
+                "ep_reward_breakdown_last": reward_breakdown_last,
+                "ep_reward_counts_curr": counts_curr,
+                "ep_reward_counts_last": counts_last,
 
                 "inference_calls": inference_calls,
                 "inference_ms_per_call": _ms_per_call(inference_sec, inference_calls),
@@ -348,6 +399,12 @@ class RateLimitedVecEnv:
             self._ep_return_last.fill(0.0)
             self._ep_frames_last.fill(0)
             self._ep_decisions_last.fill(0)
+            for k in self._reward_keys:
+                self._ep_reward[k].fill(0.0)
+                self._ep_reward_last[k].fill(0.0)
+            for k in self._count_keys:
+                self._ep_counts[k].fill(0)
+                self._ep_counts_last[k].fill(0)
 
             self._planner_build_calls_total = 0
             self._planner_build_sec_total = 0.0
@@ -468,10 +525,77 @@ class RateLimitedVecEnv:
                 self._ep_return[i] += float(rewards_arr[i])
                 self._ep_frames[i] += int(tau_i)
                 self._ep_decisions[i] += 1
+
+                # Reward breakdown (prefer macro-step aggregated keys when present).
+                r_env = _extract_float(info_i.get("reward/r_env"))
+                if r_env is None:
+                    r_env = _extract_float(info_i.get("r_env"))
+                self._ep_reward["r_env"][i] += float(r_env or 0.0)
+
+                r_shape = _extract_float(info_i.get("reward/r_shape"))
+                if r_shape is None:
+                    r_shape = _extract_float(info_i.get("r_shape"))
+                self._ep_reward["r_shape"][i] += float(r_shape or 0.0)
+
+                for key, fallback in (
+                    ("virus_clear_reward", "virus_clear_reward"),
+                    ("non_virus_bonus", "non_virus_bonus"),
+                    ("adjacency_bonus", "adjacency_bonus"),
+                    ("pill_bonus_adjusted", "pill_bonus_adjusted"),
+                    ("height_penalty_delta", "height_penalty_delta"),
+                    ("action_penalty", "action_penalty"),
+                    ("terminal_bonus", "terminal_bonus_reward"),
+                    ("topout_penalty", "topout_penalty_reward"),
+                    ("time_reward", "time_reward"),
+                ):
+                    v = _extract_float(info_i.get(f"reward/{key}"))
+                    if v is None:
+                        v = _extract_float(info_i.get(fallback))
+                    self._ep_reward[key][i] += float(v or 0.0)
+
+                dv = _extract_int(info_i.get("reward/delta_v"))
+                if dv is None:
+                    dv = _extract_int(info_i.get("delta_v"))
+                self._ep_counts["delta_v"][i] += int(max(0, int(dv or 0)))
+
+                tct = _extract_int(info_i.get("reward/tiles_cleared_total"))
+                if tct is None:
+                    tct = _extract_int(info_i.get("tiles_cleared_total"))
+                self._ep_counts["tiles_cleared_total"][i] += int(max(0, int(tct or 0)))
+
+                tcnv = _extract_int(info_i.get("reward/tiles_cleared_non_virus"))
+                if tcnv is None:
+                    tcnv = _extract_int(info_i.get("tiles_cleared_non_virus"))
+                self._ep_counts["tiles_cleared_non_virus"][i] += int(max(0, int(tcnv or 0)))
+
+                locks = _extract_int(info_i.get("reward/pill_locks"))
+                if locks is None:
+                    pb = _extract_float(info_i.get("pill_bonus_adjusted"))
+                    locks = 1 if float(pb or 0.0) > 0.0 else 0
+                self._ep_counts["pill_locks"][i] += int(max(0, int(locks or 0)))
+
+                ae = _extract_int(info_i.get("reward/action_events"))
+                if ae is None:
+                    ae = _extract_int(info_i.get("action_events"))
+                self._ep_counts["action_events"][i] += int(max(0, int(ae or 0)))
+
+                clearing_max = _extract_int(info_i.get("reward/tiles_clearing_max"))
+                if clearing_max is None:
+                    clearing_max = _extract_int(info_i.get("tiles_clearing"))
+                clearing_val = int(max(0, int(clearing_max or 0)))
+                self._ep_counts["tiles_clearing_max"][i] = max(int(self._ep_counts["tiles_clearing_max"][i]), clearing_val)
+                self._ep_counts["clear_events"][i] += 1 if clearing_val >= 4 else 0
+
                 if bool(terminated_arr[i] or truncated_arr[i]):
                     self._ep_return_last[i] = float(self._ep_return[i])
                     self._ep_frames_last[i] = int(self._ep_frames[i])
                     self._ep_decisions_last[i] = int(self._ep_decisions[i])
+                    for k in self._reward_keys:
+                        self._ep_reward_last[k][i] = float(self._ep_reward[k][i])
+                        self._ep_reward[k][i] = 0.0
+                    for k in self._count_keys:
+                        self._ep_counts_last[k][i] = int(self._ep_counts[k][i])
+                        self._ep_counts[k][i] = 0
                     self._ep_return[i] = 0.0
                     self._ep_frames[i] = 0
                     self._ep_decisions[i] = 0

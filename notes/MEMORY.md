@@ -492,3 +492,28 @@ curriculum without introducing bespoke env ids or synthetic dynamics.
 
 **Why:** Training algorithms assume vector autoresets; keeping curriculum logic
 outside the env avoids coupling and makes it easy to disable/adjust via config.
+
+### Decision: Detect “any 4-match” via bottle clearing tile codes (not occupancy deltas)
+
+**Context:** The synthetic curriculum level `-4` (“0 viruses, terminate on first
+clear event”) initially used an occupancy-delta heuristic (`tiles_cleared_total`)
+to detect clears. This can miss clears when other occupancy changes happen in
+the same macro step or when representation details change.
+
+**Decision:** Detect clear events by scanning the bottle RAM for the ROM’s
+explicit clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`)
+and terminate when at least 4 tiles are marked as clearing.
+
+**Why:** This is a direct, rules-exact signal from the game engine and is far
+less brittle than occupancy-based heuristics.
+
+### Decision: Aggregate reward components for macro steps and surface in the debug UI
+
+**Decision:** `DrMarioPlacementEnv` now aggregates per-frame reward components
+across each macro step and emits them as `reward/*` totals + counts. The debug
+UI (`RunnerDebugTUI`) displays these in a dedicated Reward column, with current
+episode totals (or last episode totals when between episodes).
+
+**Why:** This makes reward shaping auditable and helps catch subtle mistakes in
+curriculum success detection, reward config signs, and per-term scaling without
+digging through logs post-hoc.

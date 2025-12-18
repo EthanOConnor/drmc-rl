@@ -293,6 +293,50 @@ class DrMarioRetroEnv(gym.Env):
             if target == 0:
                 self._task_goal_mode = "any_clear"
 
+    def _count_clearing_tiles(self) -> int:
+        """Count the number of bottle tiles currently marked as 'clearing'.
+
+        Dr. Mario marks matched tiles using special type codes during the clear
+        animation. These are distinct from normal pill/virus tiles and are a
+        reliable signal that *a 4-match has occurred*.
+
+        This is used by the curriculum's synthetic level `-4` ("any_clear"),
+        where the episode terminates on the first clear event.
+        """
+
+        if self._state_cache is None:
+            return 0
+        ram_arr = self._state_cache.ram.arr
+        ram_len = int(ram_arr.shape[0])
+
+        bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
+        base_hex = bottle.get("base_addr") if isinstance(bottle, dict) else None
+        stride_val = bottle.get("stride") if isinstance(bottle, dict) else None
+        try:
+            base_addr = int(base_hex, 16) if base_hex else 0x0400
+        except Exception:
+            base_addr = 0x0400
+        try:
+            stride = int(stride_val) if stride_val is not None else 8
+        except Exception:
+            stride = 8
+
+        H = int(getattr(ram_specs, "STATE_HEIGHT", 16))
+        W = int(getattr(ram_specs, "STATE_WIDTH", 8))
+        cleared_hi = int(getattr(ram_specs, "CLEARED_TILE", 0xB0))
+        just_emptied_hi = int(getattr(ram_specs, "FIELD_JUST_EMPTIED", 0xF0))
+
+        count = 0
+        for r in range(H):
+            row_base = int(base_addr + r * stride)
+            if row_base < 0 or (row_base + W) > ram_len:
+                continue
+            row = ram_arr[row_base : row_base + W]
+            type_hi = (row.astype(np.uint8) & np.uint8(0xF0)).astype(np.uint8, copy=False)
+            mask = (type_hi == np.uint8(cleared_hi)) | (type_hi == np.uint8(just_emptied_hi))
+            count += int(mask.sum())
+        return int(count)
+
     @staticmethod
     def _to_bcd(value: int) -> int:
         v = max(0, int(value))
@@ -1652,11 +1696,17 @@ class DrMarioRetroEnv(gym.Env):
         if adjacency_bonus > 0.0:
             r_env += adjacency_bonus
 
-        r_env += self.reward_cfg.virus_clear_bonus * float(delta_v)
+        virus_clear_reward = self.reward_cfg.virus_clear_bonus * float(delta_v)
+        r_env += virus_clear_reward
+
+        # Clear animation tiles in the bottle (4-match detection).
+        tiles_clearing = int(self._count_clearing_tiles())
 
         task_mode = str(getattr(self, "_task_goal_mode", "viruses") or "viruses")
         goal_achieved = False
         goal_reason: Optional[str] = None
+        terminal_bonus_reward = 0.0
+        topout_penalty_reward = 0.0
 
         # Canonical termination from RAM (state mode): overrides any heuristic earlier.
         can_fail, can_clear = self._canonical_ram_outcome()
@@ -1676,7 +1726,7 @@ class DrMarioRetroEnv(gym.Env):
             if task_mode == "any_clear":
                 # Curriculum level -4: treat the first clear event (a 4-match)
                 # as the terminal success condition.
-                if tiles_cleared_total >= 4:
+                if tiles_clearing >= 4:
                     goal_achieved = True
                     goal_reason = "match"
             else:
@@ -1686,12 +1736,14 @@ class DrMarioRetroEnv(gym.Env):
                     goal_reason = "clear"
 
         if goal_achieved and not topout:
-            r_env += self.reward_cfg.terminal_clear_bonus
+            terminal_bonus_reward = float(self.reward_cfg.terminal_clear_bonus)
+            r_env += terminal_bonus_reward
             done = True
             self._in_game = False
             self._prev_terminal = self._last_terminal = str(goal_reason or "clear")
         if topout:
-            r_env += self.reward_cfg.topout_penalty
+            topout_penalty_reward = float(self.reward_cfg.topout_penalty)
+            r_env += topout_penalty_reward
             self._prev_terminal = self._last_terminal = "topout"
             self._prev_height_penalty = 0.0
 
@@ -1732,6 +1784,7 @@ class DrMarioRetroEnv(gym.Env):
             "t": self._t,
             "viruses_remaining": self._viruses_remaining,
             "delta_v": delta_v,
+            "virus_clear_reward": float(virus_clear_reward),
             "r_env": float(r_env),
             "r_shape": float(r_shape),
             "r_total": float(r_total),
@@ -1747,6 +1800,9 @@ class DrMarioRetroEnv(gym.Env):
             "action_events": int(action_events),
             "tiles_cleared_total": int(tiles_cleared_total),
             "tiles_cleared_non_virus": int(tiles_cleared_non_virus),
+            "tiles_clearing": int(tiles_clearing),
+            "terminal_bonus_reward": float(terminal_bonus_reward),
+            "topout_penalty_reward": float(topout_penalty_reward),
             "task_mode": str(task_mode),
             "curriculum_level": int(getattr(self, "_curriculum_level", self.level)),
             "synthetic_virus_target": None
