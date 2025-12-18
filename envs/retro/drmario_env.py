@@ -306,6 +306,11 @@ class DrMarioRetroEnv(gym.Env):
 
         if self._state_cache is None:
             return 0
+        # Guard against false positives during menus/reset/auto-start.
+        # The bottle buffer can contain stale values outside gameplay; we only
+        # want to detect clears during active bottle play.
+        if self._gameplay_active is not True:
+            return 0
         ram_arr = self._state_cache.ram.arr
         ram_len = int(ram_arr.shape[0])
 
@@ -325,6 +330,7 @@ class DrMarioRetroEnv(gym.Env):
         W = int(getattr(ram_specs, "STATE_WIDTH", 8))
         cleared_hi = int(getattr(ram_specs, "CLEARED_TILE", 0xB0))
         just_emptied_hi = int(getattr(ram_specs, "FIELD_JUST_EMPTIED", 0xF0))
+        empty_val = int(getattr(ram_specs, "FIELD_EMPTY", 0xFF))
 
         count = 0
         for r in range(H):
@@ -332,8 +338,14 @@ class DrMarioRetroEnv(gym.Env):
             if row_base < 0 or (row_base + W) > ram_len:
                 continue
             row = ram_arr[row_base : row_base + W]
-            type_hi = (row.astype(np.uint8) & np.uint8(0xF0)).astype(np.uint8, copy=False)
-            mask = (type_hi == np.uint8(cleared_hi)) | (type_hi == np.uint8(just_emptied_hi))
+            # Note: FIELD_EMPTY is 0xFF, so its high nibble is also 0xF0. We
+            # must NOT treat empty tiles as "just emptied" when masking by
+            # high nibble.
+            row_u8 = row.astype(np.uint8, copy=False)
+            type_hi = (row_u8 & np.uint8(0xF0)).astype(np.uint8, copy=False)
+            mask = (type_hi == np.uint8(cleared_hi)) | (
+                (type_hi == np.uint8(just_emptied_hi)) & (row_u8 != np.uint8(empty_val))
+            )
             count += int(mask.sum())
         return int(count)
 

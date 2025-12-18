@@ -240,3 +240,9 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Made curriculum stats explicitly “recent window” in the debug UI by surfacing `window_n/window_size` and ensuring terminal-step info reports the episode’s level (plus `next_env_level`) (`training/envs/curriculum.py`, `training/ui/runner_debug_tui.py`).
 - Added reward breakdown aggregation for macro steps (`reward/*` totals and counts) and a new Reward column in the debug TUI to audit scoring live (`envs/retro/placement_env.py`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
 - Fixed the default reward config to apply a negative top-out penalty (`envs/specs/reward_config.json`).
+
+## 2025-12-18 – Codex CLI – Fix `-4` False Clears + Debug UI Columns
+
+- Fixed a false-positive in the curriculum level `-4` “any_clear” success detection: empty tiles are `0xFF` (high nibble `0xF0`) and must not be counted as `FIELD_JUST_EMPTIED` (`0xF0..0xF2`). Added a gameplay-mode guard and a regression test (`envs/retro/drmario_env.py`, `tests/test_clearing_tile_counter.py`).
+- Corrected bitplane `clearing_mask` / `empty_mask` construction to distinguish `0xFF` empty from `0xF*` just-emptied tiles (`envs/specs/ram_to_state.py`).
+- Restructured `RunnerDebugTUI` into 4 columns: board + perf + learning + reward, with wider side panels (`training/ui/runner_debug_tui.py`).

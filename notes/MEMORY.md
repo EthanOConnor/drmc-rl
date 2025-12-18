@@ -504,6 +504,12 @@ the same macro step or when representation details change.
 explicit clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`)
 and terminate when at least 4 tiles are marked as clearing.
 
+**Implementation note:** `FIELD_EMPTY` is encoded as `0xFF`, which shares the
+same high nibble (`0xF0`) as `FIELD_JUST_EMPTIED` (`0xF0..0xF2`). When masking
+tile *types* via the high nibble, we must explicitly exclude `0xFF` (full-byte
+check) or we will falsely treat an empty bottle as “clearing”. We also gate the
+scan on `gameplay_active` to avoid stale bottle bytes during menu/reset frames.
+
 **Why:** This is a direct, rules-exact signal from the game engine and is far
 less brittle than occupancy-based heuristics.
 

@@ -231,4 +231,4 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 **R20. “Any 4-match” success detection relies on ROM clear-animation tile codes**
 - **Concern**: The curriculum level `-4` terminates on the first clear event by scanning the bottle RAM for the ROM’s explicit clear-animation type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`).
 - **Risk**: If a different ROM revision/core uses different marker codes or delays updating the bottle buffer, the terminal condition could misfire or lag.
-- **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`) and keep this logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.
+- **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`), explicitly exclude `FIELD_EMPTY == 0xFF` when matching `FIELD_JUST_EMPTIED` (empty tiles share the same high nibble `0xF0`), and gate the scan on `gameplay_active` to avoid menu/reset stale RAM. Keep the logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.

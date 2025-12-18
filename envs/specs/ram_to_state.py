@@ -276,9 +276,14 @@ def _ram_to_state_bitplanes(
     type_hi = (grid & 0xF0).astype(np.uint8)
     color_lo = (grid & 0x03).astype(np.uint8)
 
-    color_valid = (
-        (type_hi != FIELD_EMPTY) & (type_hi != FIELD_JUST_EMPTIED) & (type_hi != 0x00)
-    )
+    # Empty tiles are encoded as 0xFF. This shares the same high nibble (0xF0)
+    # as the clear-animation marker FIELD_JUST_EMPTIED (0xF0..0xF2), so we must
+    # distinguish them using the full byte value.
+    is_empty = (grid == FIELD_EMPTY)
+    is_just_emptied = (type_hi == FIELD_JUST_EMPTIED) & (~is_empty)
+    is_zero = (grid == 0x00)
+
+    color_valid = ~(is_empty | is_just_emptied | is_zero)
     for color_value, plane_idx in zip((1, 0, 2), STATE_IDX.color_channels):
         mask = (color_lo == color_value) & color_valid
         state[plane_idx] = mask.astype(np.float32)
@@ -289,10 +294,10 @@ def _ram_to_state_bitplanes(
     locked_mask = np.isin(type_hi, PILL_TYPES)
     state[STATE_IDX.locked_mask] = locked_mask.astype(np.float32)
 
-    clearing_mask = np.isin(type_hi, (CLEARED_TILE, FIELD_JUST_EMPTIED))
+    clearing_mask = (type_hi == CLEARED_TILE) | is_just_emptied
     state[STATE_IDX.clearing_mask] = clearing_mask.astype(np.float32)
 
-    empty_mask = np.isin(type_hi, (FIELD_EMPTY, FIELD_JUST_EMPTIED, 0x00))
+    empty_mask = is_empty | is_just_emptied | is_zero
     state[STATE_IDX.empty_mask] = empty_mask.astype(np.float32)
 
     gravity = (

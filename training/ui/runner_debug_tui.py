@@ -159,37 +159,19 @@ class RunnerDebugTUI:
             }
 
     # ---------------------------- rendering
-    def _render_stats_panel(self) -> Panel:
+    def _render_perf_panel(self) -> Panel:
         ctrl = self.control.snapshot()
         perf = self.env.perf_snapshot()
-        info0 = self.env.latest_info(0)
-
-        with self._metrics_lock:
-            metrics = self._metrics
-            last_update = dict(metrics.last_update)
 
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("Key", style="dim")
         table.add_column("Value")
 
-        table.add_row("steps", f"{metrics.steps:,}")
-        table.add_row("episodes", f"{metrics.episodes:,}")
-        table.add_row("ret(curr)", f"{perf.get('ep_return_curr', 0.0):.3f}")
-        table.add_row("ret(last)", f"{metrics.last_return:.3f}")
-        table.add_row("ret(med16)", f"{metrics.median_return_16():.3f}")
-        table.add_row("ret(mean100)", f"{metrics.mean_return_100():.3f}")
-        table.add_row(
-            "len(curr)",
-            f"{int(perf.get('ep_decisions_curr', 0) or 0)} dec / {int(perf.get('ep_frames_curr', 0) or 0)} f",
-        )
-        table.add_row("len(last)", f"{metrics.last_length} f")
-        table.add_row("sps", f"{metrics.sps:.0f}")
-
-        table.add_row("", "")
         table.add_row("paused", "yes" if ctrl["paused"] else "no")
         table.add_row("speed", "MAX" if ctrl["max_speed"] else f"{ctrl['speed_x']:.2f}x")
         table.add_row("target_hz", "-" if ctrl["max_speed"] else f"{ctrl['target_hz']:.1f}")
         table.add_row("rng", "on" if ctrl.get("rng_randomize") else "off")
+        table.add_row("ui_hz", f"{self._refresh_hz:.1f}")
         table.add_row("emu_fps(step)", f"{perf.get('step_fps', 0.0):.1f}")
         table.add_row("emu_fps(total)", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
@@ -235,6 +217,32 @@ class RunnerDebugTUI:
                 f"({perf.get('update_ms_per_frame', 0.0):.4f} ms/frame)",
             )
             table.add_row("update_ms/frame", f"{perf.get('update_ms_per_frame_avg', 0.0):.4f} (avg)")
+        return Panel(table, title="[bold]Perf[/bold]", border_style="green")
+
+    def _render_learning_panel(self) -> Panel:
+        perf = self.env.perf_snapshot()
+        info0 = self.env.latest_info(0)
+
+        with self._metrics_lock:
+            metrics = self._metrics
+            last_update = dict(metrics.last_update)
+
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("Key", style="dim")
+        table.add_column("Value")
+
+        table.add_row("steps", f"{metrics.steps:,}")
+        table.add_row("episodes", f"{metrics.episodes:,}")
+        table.add_row("ret(curr)", f"{perf.get('ep_return_curr', 0.0):.3f}")
+        table.add_row("ret(last)", f"{metrics.last_return:.3f}")
+        table.add_row("ret(med16)", f"{metrics.median_return_16():.3f}")
+        table.add_row("ret(mean100)", f"{metrics.mean_return_100():.3f}")
+        table.add_row(
+            "len(curr)",
+            f"{int(perf.get('ep_decisions_curr', 0) or 0)} dec / {int(perf.get('ep_frames_curr', 0) or 0)} f",
+        )
+        table.add_row("len(last)", f"{metrics.last_length} f")
+        table.add_row("sps", f"{metrics.sps:.0f}")
 
         spawn_id = info0.get("placements/spawn_id")
         if spawn_id is not None:
@@ -300,7 +308,7 @@ class RunnerDebugTUI:
                     continue
                 table.add_row(k, f"{v:.4f}")
 
-        return Panel(table, title="[bold]Stats[/bold]", border_style="green")
+        return Panel(table, title="[bold]Learning[/bold]", border_style="yellow")
 
     def _render_reward_panel(self) -> Panel:
         perf = self.env.perf_snapshot()
@@ -372,15 +380,17 @@ class RunnerDebugTUI:
         layout = Layout()
         layout.split_column(Layout(name="main", ratio=1), Layout(name="footer", size=3))
         layout["main"].split_row(
-            Layout(name="board", ratio=3),
-            Layout(name="stats", ratio=1),
+            Layout(name="board", ratio=2),
+            Layout(name="perf", ratio=1),
+            Layout(name="learning", ratio=1),
             Layout(name="reward", ratio=1),
         )
 
         info0 = self.env.latest_info(0)
         board_state = board_from_env_info(info0)
         layout["board"].update(render_board_panel(board_state, title=self._title))
-        layout["stats"].update(self._render_stats_panel())
+        layout["perf"].update(self._render_perf_panel())
+        layout["learning"].update(self._render_learning_panel())
         layout["reward"].update(self._render_reward_panel())
         layout["footer"].update(self._render_footer(interactive))
         return layout
