@@ -119,6 +119,16 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Downstream tooling might treat this as a gameplay mode transition rather than “demo ended”.
 - **Mitigation**: Keep recorder semantics aligned (stop before appending the final frame) and consider adding an explicit `demo_active`/`demo_ended` flag in shared memory if needed by training/eval code.
 
+**R3. Engine demo TUI relies on terminal raw mode**
+- **Concern**: `tools/engine_demo_tui.py` uses `termios`/cbreak input to read single-key presses, which depends on running in a real TTY.
+- **Risk**: In non-interactive environments (pipes, CI, some IDE consoles), the UI would otherwise appear “hung”.
+- **Mitigation**: The TUI detects non-TTY stdin and runs in a non-interactive autoplay mode (exits on demo end / `--max-frames`).
+
+**R4. Tracked engine binaries can drift from sources**
+- **Concern**: The repo currently tracks `game_engine/drmario_engine` and `game_engine/*.o` alongside the C++ sources.
+- **Risk**: If sources change without rebuilding (or rebuild artifacts aren’t updated in git), tools/tests that execute the shipped binary can appear to “hang” (e.g., manual-step timeouts / demo stalls) in ways that look like a logic regression.
+- **Mitigation**: Keep build artifacts updated when changing engine sources (or, longer-term, stop tracking build outputs and build in CI / on demand). When debugging “engine step timed out”, first run `make -C game_engine clean && make -C game_engine`.
+
 ### Placement Policy Correctness
 
 - Already covered by 12 unit tests in `tests/test_placement_policy.py`.

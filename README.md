@@ -86,6 +86,11 @@ If you need me to fetch docs or install packages, I can request elevated network
 
 - Dump state tensors: `python tools/dump_ram_and_state.py --frames 120 --mode state`
 - Visualize planes: `from tools.ram_visualizer import grid_show` (see docs/RAM_TO_STATE.md)
+- C++ engine demo TUI (frame-accurate demo playback + step controls):
+  - Build: `make -C game_engine`
+  - Run: `python tools/engine_demo_tui.py` (Space pause/run, `n` step, `+/-` speed, `0` max, `b` benchmark)
+  - Start at 2.4× NTSC: `python tools/engine_demo_tui.py --speed-x 2.4` (use `--region pal` for PAL)
+  - Benchmark suite: `python tools/engine_demo_tui.py --benchmark`
 
 ## References
 

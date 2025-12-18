@@ -44,6 +44,7 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 - C++ engine demo parity suite (frame-perfect vs `data/nes_demo.json`)
   - Tooling: `tools/record_demo.py`, `tools/game_transcript.py`
   - Regression test: `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth`
+- Interactive C++ engine demo TUI (`tools/engine_demo_tui.py`)
 - Rich TUI with sparklines (`training/ui/tui.py`)
 - Board state viewer (`training/ui/board_viewer.py`)
 - Debug viewer (`training/ui/debug_viewer.py`)

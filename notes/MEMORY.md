@@ -223,3 +223,33 @@ and it eliminates cumulative drift.
 - **Recorder semantics:** `tools/record_demo.py` stops recording when demo ends
   *before* appending that final frame, matching the NES recorder (frames end at
   5700 while `total_frames = 5701` in the ground truth).
+
+---
+
+## 2025-12-18 – Engine Demo Playback TUI
+
+### Decision: Use manual-step shared-memory driving (no new debug struct)
+
+**Context:** We wanted an interactive “demo player” for the C++ engine that can
+pause, single-step, and vary playback speed while showing the board and
+important internal counters.
+
+**Decision:** Implement the viewer as a Python Rich TUI that:
+- Starts `drmario_engine` in `--demo --manual-step` mode.
+- Steps by toggling `control_flags & 0x04` and reads state from shared memory.
+- Visualizes “internal state” using the existing shared-memory fields (inputs,
+  counters, flags) rather than extending the shared struct with debug-only data.
+
+**Why:** Keeping the shared-memory ABI stable avoids ripple changes in the
+training stack. If deeper engine-private variables (`nextAction`, status-row
+gate, etc.) are needed later, add them via an explicit, versioned debug channel
+rather than silently changing the core IPC struct.
+
+### Decision: Playback rate as an `x` multiplier
+
+**Context:** Human debugging often wants “2.4× realtime NTSC” style controls
+instead of thinking in seconds-per-frame delays.
+
+**Decision:** The demo TUI expresses playback rate as `speed_x` against a base
+framerate (NTSC/PAL), and schedules steps using a small accumulator to hit the
+target rate while keeping the UI responsive. `MAX` mode removes the cap.

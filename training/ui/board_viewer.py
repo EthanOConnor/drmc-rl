@@ -93,9 +93,17 @@ class BoardState:
     level: int = 0
 
 
-def parse_board_bytes(board_bytes: Union[bytes, np.ndarray, List[int]]) -> np.ndarray:
-    """Parse 128-byte board data into 16x8 array."""
-    arr = np.asarray(board_bytes, dtype=np.uint8)
+def parse_board_bytes(board_bytes: Union[bytes, bytearray, memoryview, np.ndarray, List[int]]) -> np.ndarray:
+    """Parse 128-byte board data into a 16x8 array.
+
+    Accepts:
+      - `bytes`/`bytearray`/`memoryview` (raw NES/RAM bytes)
+      - `np.ndarray` or `List[int]` (already decoded)
+    """
+    if isinstance(board_bytes, (bytes, bytearray, memoryview)):
+        arr = np.frombuffer(board_bytes, dtype=np.uint8)
+    else:
+        arr = np.asarray(board_bytes, dtype=np.uint8)
     if arr.size != 128:
         raise ValueError(f"Board must be 128 bytes, got {arr.size}")
     return arr.reshape((BOARD_HEIGHT, BOARD_WIDTH))
@@ -208,9 +216,14 @@ def render_board_text(
                 if tile_type == "virus":
                     style = Style(color=color, bold=True, bgcolor=BG_VIRUS)
                 elif is_falling:
-                    style = Style(color=color, blink=True)
+                    # Use background fill to avoid glyph “seams” when adjacent
+                    # pill halves have different colors.
+                    style = Style(color=color, bgcolor=color, bold=True)
                 else:
-                    style = Style(color=color)
+                    # Fill the full cell with background color. This avoids a
+                    # common terminal/font artifact where half-block glyphs
+                    # (▌▐▀▄) leave “gaps” that show the terminal background.
+                    style = Style(color=color, bgcolor=color)
             else:
                 style = Style(color="grey30", bgcolor=BG_EMPTY)
             
