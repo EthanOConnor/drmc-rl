@@ -117,6 +117,7 @@ class DrMarioRetroEnv(gym.Env):
         render_mode: Optional[str] = None,
         level: int = 0,
         auto_start: bool = True,
+        rng_randomize: bool = False,
         # Evaluator-based shaping controls
         use_potential_shaping: bool = False,
         evaluator: Optional[Any] = None,
@@ -154,6 +155,10 @@ class DrMarioRetroEnv(gym.Env):
         if self.rom_path is not None and "rom_path" not in self._backend_kwargs:
             self._backend_kwargs["rom_path"] = str(self.rom_path)
         self.auto_start = auto_start
+        # Default RNG randomization policy for `reset()` when options do not specify.
+        # Stored on the env so Gymnasium vector autoresets (which call `reset()`
+        # without options) can still apply this setting consistently.
+        self.rng_randomize = bool(rng_randomize)
         self._first_boot = True
 
         self._t = 0  # frames elapsed
@@ -880,6 +885,7 @@ class DrMarioRetroEnv(gym.Env):
         noop = self._button_vector(None)
         start_vec = self._button_vector(["START"])
         left_vec = self._button_vector(["LEFT"])
+        right_vec = self._button_vector(["RIGHT"])
 
         def press_start() -> None:
             self._backend_step_buttons(start_vec, repeat=hold_frames)
@@ -898,10 +904,35 @@ class DrMarioRetroEnv(gym.Env):
             return
 
         def align_level() -> None:
-            if level_taps > 0:
-                for _ in range(level_taps):
+            if level_taps <= 0:
+                return
+
+            desired = int(self.level)
+            desired = int(min(max(desired, 0), 20))
+            cur_raw = self._read_offset_value("level", "addr")
+            if cur_raw is None:
+                # Fallback to legacy behavior (best-effort).
+                for _ in range(int(level_taps)):
                     self._backend_step_buttons(left_vec, repeat=1)
                     self._backend_step_buttons(noop, repeat=1)
+                return
+
+            cur = int(cur_raw) % 21
+            if cur == desired:
+                return
+
+            diff_right = (desired - cur) % 21
+            diff_left = (cur - desired) % 21
+            if diff_right <= diff_left:
+                taps = int(diff_right)
+                vec = right_vec
+            else:
+                taps = int(diff_left)
+                vec = left_vec
+            taps = max(0, min(taps, int(level_taps)))
+            for _ in range(taps):
+                self._backend_step_buttons(vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
 
         if from_topout:
             presses = max(2, presses)
@@ -945,18 +976,15 @@ class DrMarioRetroEnv(gym.Env):
         if presses_opt is not None:
             presses = int(presses_opt)
         else:
-            if self._first_boot:
-                presses = 3
-            elif prev_terminal == "topout":
-                presses = 2
-            else:
-                presses = 1
+            # Libretro backend reset returns to a cold menu state that requires the
+            # full 3-press start sequence every time.
+            presses = 3
         apply_rng = bool(self._pending_rng_randomize)
         if presses > 0:
             self._run_start_sequence(
                 presses,
                 options,
-                from_topout=(prev_terminal == "topout"),
+                from_topout=False,
                 apply_rng=apply_rng,
             )
         if self._pending_rng_randomize:
@@ -1100,6 +1128,8 @@ class DrMarioRetroEnv(gym.Env):
         else:
             self._backend_reset_done = False
         opts = dict(options or {})
+        if "randomize_rng" not in opts:
+            opts["randomize_rng"] = bool(getattr(self, "rng_randomize", False))
         if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
             try:
                 seed_bytes = opts.get("rng_seed_bytes")
@@ -1174,7 +1204,11 @@ class DrMarioRetroEnv(gym.Env):
             self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
         else:
             self._state_prev = None
-        info: Dict[str, Any] = {"viruses_remaining": self._viruses_remaining, "level": self.level}
+        info: Dict[str, Any] = {
+            "viruses_remaining": self._viruses_remaining,
+            "level": self.level,
+            "rng_randomize": bool(getattr(self, "rng_randomize", False)),
+        }
         info["raw_ram"] = self._raw_ram_bytes()
         if self._last_rng_seed_bytes is not None:
             info["rng_seed"] = self._last_rng_seed_bytes
@@ -1539,6 +1573,7 @@ class DrMarioRetroEnv(gym.Env):
             "backend_active": bool(self._using_backend),
             "terminal_reason": self._last_terminal,
             "level": self.level,
+            "rng_randomize": bool(getattr(self, "rng_randomize", False)),
             "raw_ram": self._raw_ram_bytes(),
         }
         if self._game_mode_val is not None:

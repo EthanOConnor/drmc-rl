@@ -85,6 +85,12 @@ Examples:
     parser.add_argument("--rom-path", type=str, default=None, help="Path to Dr. Mario ROM")
     parser.add_argument("--level", type=int, default=None, help="Starting level (0..20)")
     parser.add_argument("--vectorization", type=str, default=None, help="Vector env mode: auto|sync|async")
+    parser.add_argument(
+        "--randomize-rng",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Randomize the ROM RNG state on each env reset (episode).",
+    )
 
     # Compatibility knobs retained from historical scripts
     parser.add_argument("--timeout", type=int, default=None, help=argparse.SUPPRESS)
@@ -130,6 +136,8 @@ def load_config(args: argparse.Namespace) -> Any:
         cfg_dict.setdefault("env", {})["level"] = int(args.level)
     if args.vectorization is not None:
         cfg_dict.setdefault("env", {})["vectorization"] = str(args.vectorization)
+    if args.randomize_rng is not None:
+        cfg_dict.setdefault("env", {})["randomize_rng"] = bool(args.randomize_rng)
     if args.rom_path is not None:
         cfg_dict.setdefault("env", {})["rom_path"] = str(args.rom_path)
     if args.core is not None:
@@ -224,6 +232,10 @@ def main(argv: Any = None) -> None:
             from training.ui.runner_debug_tui import RunnerDebugTUI
 
             control = PlaybackControl()
+            try:
+                control.set_rng_randomize(bool(getattr(getattr(cfg, "env", object()), "randomize_rng", False)))
+            except Exception:
+                pass
             env = RateLimitedVecEnv(env, control)
             adapter = build_adapter(cfg, env, logger, event_bus, device)
 

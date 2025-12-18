@@ -38,10 +38,12 @@ class PlaybackControl:
     paused: bool = False
     pending_steps: int = 0
     stop_requested: bool = False
+    rng_randomize: bool = False
 
     def __post_init__(self) -> None:
         self._cond = threading.Condition()
         self._timing_reset = False
+        self._rng_dirty = True
 
     # ---------------------------- UI actions (thread-safe)
     def request_stop(self) -> None:
@@ -88,6 +90,18 @@ class PlaybackControl:
             self._timing_reset = True
             self._cond.notify_all()
 
+    def toggle_rng_randomize(self) -> None:
+        with self._cond:
+            self.rng_randomize = not bool(self.rng_randomize)
+            self._rng_dirty = True
+            self._cond.notify_all()
+
+    def set_rng_randomize(self, enabled: bool) -> None:
+        with self._cond:
+            self.rng_randomize = bool(enabled)
+            self._rng_dirty = True
+            self._cond.notify_all()
+
     # ---------------------------- env-side helpers (thread-safe)
     def target_hz(self) -> float:
         with self._cond:
@@ -100,6 +114,13 @@ class PlaybackControl:
             val = bool(self._timing_reset)
             self._timing_reset = False
             return val
+
+    def consume_rng_update(self) -> Optional[bool]:
+        with self._cond:
+            if not self._rng_dirty:
+                return None
+            self._rng_dirty = False
+            return bool(self.rng_randomize)
 
     def wait_until_step_allowed(self) -> None:
         with self._cond:
@@ -126,6 +147,7 @@ class PlaybackControl:
                 "paused": bool(self.paused),
                 "pending_steps": int(self.pending_steps),
                 "target_hz": 0.0 if self.max_speed else float(self.base_fps * self.speed_x),
+                "rng_randomize": bool(self.rng_randomize),
             }
 
 
@@ -195,6 +217,16 @@ class RateLimitedVecEnv:
     def step(self, actions: Any):
         self.control.wait_until_step_allowed()
 
+        rng_update = self.control.consume_rng_update()
+        if rng_update is not None:
+            try:
+                if hasattr(self.env, "set_attr"):
+                    self.env.set_attr("rng_randomize", bool(rng_update))
+                else:
+                    setattr(self.env, "rng_randomize", bool(rng_update))
+            except Exception:
+                pass
+
         if self.control.consume_timing_reset():
             self._next_step_time = time.perf_counter()
 
@@ -258,4 +290,3 @@ class RateLimitedVecEnv:
     # ---------------------------- attribute forwarding
     def __getattr__(self, name: str) -> Any:  # pragma: no cover - passthrough
         return getattr(self.env, name)
-

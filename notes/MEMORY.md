@@ -364,6 +364,17 @@ emulated frames consumed by a macro step, and schedule wall-clock playback using
 **Why:** This provides a consistent “x realtime” control across both per-frame
 controller envs and macro placement envs.
 
+### Decision: RNG randomization is an env attribute (works with vector autoresets)
+
+**Decision:** Store the “randomize ROM RNG on reset” toggle as an env attribute
+(`DrMarioRetroEnv.rng_randomize`) and treat it as the default for
+`reset(options={"randomize_rng": ...})` when options don’t specify.
+
+**Why:** Gymnasium vector environments perform autoresets by calling `reset()`
+without passing options. Keeping the toggle on the env ensures episode-to-episode
+RNG randomization can be enabled/disabled reliably in both headless training and
+interactive debug runs (including runtime hotkey toggles).
+
 ### Decision: `DrMarioRetroEnv.reset()` rebuilds state after auto-start
 
 **Decision:** After running the auto-start/start-press sequence in

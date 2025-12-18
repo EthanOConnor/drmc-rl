@@ -19,6 +19,7 @@ class VecEnvConfig:
     frame_stack: int = 1
     render: bool = False
     episode_length: int = 200
+    randomize_rng: bool = False
     core: Optional[str] = None
     core_path: Optional[str] = None
     rom_path: Optional[str] = None
@@ -266,6 +267,7 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
         "risk_tau": float(env_cfg.risk_tau),
         "include_risk_tau": bool(env_cfg.include_risk_tau),
         "backend": backend,
+        "rng_randomize": bool(env_cfg.randomize_rng),
         # Always enable rgb_array rendering so debug UIs and video handlers can
         # call `env.render()` without needing a separate env instance.
         "render_mode": "rgb_array",

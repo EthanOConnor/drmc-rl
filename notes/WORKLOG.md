@@ -176,3 +176,12 @@ Chronological log of work done. Format: date, actor, brief summary.
 ## 2025-12-18 – Coding Agent (Codex CLI) – SMDP-PPO Minibatch KL Bugfix
 
 - Fixed a crash in `training/algo/ppo_smdp.py` where KL divergence was computed against the full-batch `log_probs_old` instead of the mini-batch slice (`mb_log_probs_old`), causing a 512-vs-128 tensor shape mismatch when `minibatch_size < decisions_per_update`.
+
+## 2025-12-18 – Codex CLI – Auto-start Fix + RNG Randomization Toggle
+
+- Fixed libretro auto-start after terminal episodes by using the correct default `start_presses=3` for backend resets (previous 1/2-press logic left the game in menus with viruses=0 after topout/clear).
+- Made level alignment robust by reading the current level from RAM and tapping LEFT/RIGHT to reach the configured level (avoids wrap-around to level 20).
+- Added per-env RNG randomization toggle:
+  - New env attribute `rng_randomize` (used as the default for `reset(options.randomize_rng)` so Gymnasium vector autoresets still honor it).
+  - `training.run` CLI: `--randomize-rng/--no-randomize-rng`
+  - Debug TUI hotkey: `r` (shows `rng: on/off` in stats).

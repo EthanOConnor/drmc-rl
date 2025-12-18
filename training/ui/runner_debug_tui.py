@@ -171,6 +171,7 @@ class RunnerDebugTUI:
         table.add_row("paused", "yes" if ctrl["paused"] else "no")
         table.add_row("speed", "MAX" if ctrl["max_speed"] else f"{ctrl['speed_x']:.2f}x")
         table.add_row("target_hz", "-" if ctrl["max_speed"] else f"{ctrl['target_hz']:.1f}")
+        table.add_row("rng", "on" if ctrl.get("rng_randomize") else "off")
         table.add_row("emu_fps", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
 
@@ -206,7 +207,7 @@ class RunnerDebugTUI:
         if not interactive:
             lines.append("stdin is not a TTY: controls disabled (rendering only)")
         if self._show_help:
-            lines.append("Controls: Space pause  n step  f+60  +/- speed  0 max  1/2/4 presets  h help  q quit")
+            lines.append("Controls: Space pause  n step  f+60  +/- speed  0 max  1/2/4 presets  r rng  h help  q quit")
         return Panel(Text("\n".join(lines) if lines else ""), border_style="blue")
 
     def _render_layout(self, interactive: bool) -> Layout:
@@ -262,6 +263,8 @@ class RunnerDebugTUI:
                                 self.control.set_speed_x(2.0)
                             elif key == "4":
                                 self.control.set_speed_x(4.0)
+                            elif key in {"r", "R"}:
+                                self.control.toggle_rng_randomize()
                             elif key in {"h", "H", "?"}:
                                 self._show_help = not self._show_help
                         live.update(self._render_layout(interactive))
