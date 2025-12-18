@@ -439,7 +439,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                 # Track metrics
                 with torch.no_grad():
                     clip_frac = ((ratio - 1.0).abs() > self.hparams.clip_epsilon).float().mean()
-                    kl = (log_probs_old - log_probs).mean()
+                    # Approximate KL(old || new) under the sampled actions.
+                    # Use the mini-batch's old log-probs to match `ratio` and avoid shape mismatch.
+                    kl = (mb_log_probs_old - log_probs).mean()
                     
                 metrics_accum["loss/policy"] += policy_loss.item()
                 metrics_accum["loss/value"] += value_loss.item()

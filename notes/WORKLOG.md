@@ -172,3 +172,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Integrated native backend into `envs/retro/placement_planner.py` (`reach_backend=auto|native|python`) while keeping `envs/retro/fast_reach.py` as the oracle.
 - Surfaced the active planner backend in env `info` as `placements/reach_backend` and displayed it in the debug TUI stats panel.
 - Updated docs: `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`.
+
+## 2025-12-18 – Coding Agent (Codex CLI) – SMDP-PPO Minibatch KL Bugfix
+
+- Fixed a crash in `training/algo/ppo_smdp.py` where KL divergence was computed against the full-batch `log_probs_old` instead of the mini-batch slice (`mb_log_probs_old`), causing a 512-vs-128 tensor shape mismatch when `minibatch_size < decisions_per_update`.
