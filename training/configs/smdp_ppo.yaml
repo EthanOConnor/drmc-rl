@@ -46,11 +46,12 @@ env:
   obs_mode: state
   num_envs: 16
   frame_stack: 1
+  randomize_rng: true
 
 # Scripted curriculum (synthetic negative levels: fewer viruses)
 curriculum:
   enabled: true
-  start_level: -4
+  start_level: -10
   max_level: 0
   success_threshold: 0.9
   window_episodes: 100

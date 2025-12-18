@@ -277,9 +277,13 @@ else:
 The unified runner supports a simple scripted curriculum (enabled in
 `training/configs/smdp_ppo.yaml` by default):
 
-- **Synthetic levels**: `-4..0` are represented by setting `env.level` negative.
+- **Synthetic levels**: `-10..0` are represented by setting `env.level` negative.
+- **Match-count staging** (0 viruses; applied by patching the bottle RAM at reset time):
+  - `-10`: 1 match (“any match”)
+  - `-9`: 2 matches
+  - …
+  - `-4`: 7 matches
 - **Virus-count staging** (applied by patching the bottle RAM at reset time):
-  - `-4`: 0 viruses; **success** = first clear event (any 4-match)
   - `-3`: 1 virus
   - `-2`: 2 viruses
   - `-1`: 3 viruses

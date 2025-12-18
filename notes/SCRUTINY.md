@@ -228,7 +228,12 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: If autoreset semantics change (or a custom vector env resets immediately), the next episode may start with the wrong curriculum level.
 - **Mitigation**: Keep using Gymnasium’s default vector envs (which default to `NextStep`), and if this becomes configurable, explicitly set/validate the autoreset mode in the env factory.
 
-**R20. “Any 4-match” success detection relies on ROM clear-animation tile codes**
-- **Concern**: The curriculum level `-4` terminates on the first clear event by scanning the bottle RAM for the ROM’s explicit clear-animation type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`).
+**R20. Curriculum match-count success detection relies on ROM clear-animation tile codes**
+- **Concern**: The synthetic curriculum stages `-10..-4` (0 viruses; terminate after N match events) detect matches by scanning the bottle RAM for the ROM’s clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`) and counting *rising edges* where `tiles_clearing` crosses the ≥4 threshold.
 - **Risk**: If a different ROM revision/core uses different marker codes or delays updating the bottle buffer, the terminal condition could misfire or lag.
 - **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`), explicitly exclude `FIELD_EMPTY == 0xFF` when matching `FIELD_JUST_EMPTIED` (empty tiles share the same high nibble `0xF0`), and gate the scan on `gameplay_active` to avoid menu/reset stale RAM. Keep the logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.
+
+**R21. Placement verification can miss the lock frame**
+- **Concern**: The macro env records `placements/lock_pose` by detecting the lock frame via `pill_bonus_adjusted > 0` and capturing the falling-pill pose from RAM.
+- **Risk**: If reward coefficients disable pill-lock reward (or if a core/ROM variant doesn’t present the lock pose in the expected registers on that exact frame), verification may show `placements/lock_pose` missing even when execution is correct.
+- **Mitigation**: Treat verification as diagnostic-only (don’t crash training). If this becomes common, extend detection to use `lock_counter` transitions and/or bottle-buffer diffs for the two target cells.

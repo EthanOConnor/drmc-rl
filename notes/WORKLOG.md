@@ -246,3 +246,11 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Fixed a false-positive in the curriculum level `-4` “any_clear” success detection: empty tiles are `0xFF` (high nibble `0xF0`) and must not be counted as `FIELD_JUST_EMPTIED` (`0xF0..0xF2`). Added a gameplay-mode guard and a regression test (`envs/retro/drmario_env.py`, `tests/test_clearing_tile_counter.py`).
 - Corrected bitplane `clearing_mask` / `empty_mask` construction to distinguish `0xFF` empty from `0xF*` just-emptied tiles (`envs/specs/ram_to_state.py`).
 - Restructured `RunnerDebugTUI` into 4 columns: board + perf + learning + reward, with wider side panels (`training/ui/runner_debug_tui.py`).
+
+## 2025-12-18 – Codex CLI – Preview + Placement Verification + Curriculum Stages
+
+- Made `preview_pill` consistently structured as a dict (`first_color`, `second_color`, `rotation`) and updated the Rich board renderer to show the next pill above the bottle with correct orientation (`envs/retro/drmario_env.py`, `training/ui/board_viewer.py`).
+- Added placement verification metadata to macro steps by capturing the observed falling-pill pose at lock time and comparing it to the planner’s target pose (`placements/pose_ok`, `placements/target_pose`, `placements/lock_pose`) (`envs/retro/placement_env.py`).
+- Expanded synthetic curriculum stages to include match-count levels `-10..-4` (1..7 matches) before the 1/2/3-virus stages (`-3..-1`) and updated configs to start at `-10` (`envs/retro/drmario_env.py`, `training/envs/curriculum.py`, `training/configs/smdp_ppo.yaml`).
+- Made RNG randomization default-on in the standard training configs, and added spawn-level perf ratios (`infer/spawn`, `planner/spawn`) plus last terminal reason tracking to the debug UI (`training/configs/base.yaml`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
+- Added coverage for the new negative-level mapping (`tests/test_synthetic_level_mapping.py`).

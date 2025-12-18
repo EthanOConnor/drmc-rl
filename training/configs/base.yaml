@@ -11,6 +11,7 @@ env:
   frame_stack: 4
   render: false
   episode_length: 200
+  randomize_rng: true
 train:
   total_steps: 2000000
   eval_interval: 50000

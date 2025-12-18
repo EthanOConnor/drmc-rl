@@ -466,12 +466,15 @@ measured in emulator frames.
 
 ### Decision: Encode early curriculum stages as negative `env.level`
 
-**Decision:** Represent virus-count curriculum stages as negative `env.level`
-values (`-4..-1`) and implement them by patching the bottle RAM at reset time,
-while still selecting ROM level 0 (the only valid menu level for these stages).
+**Decision:** Represent early curriculum stages as negative `env.level` values
+and implement them by patching the bottle RAM at reset time, while still
+selecting ROM level 0 (the only valid menu level for these stages).
 
 Mapping:
-- `level=-4`: 0 viruses; **success** = first clear event (“any 4-match”)
+- `level=-10`: 0 viruses; **success** = 1 match (“any match”)
+- `level=-9`: 0 viruses; **success** = 2 matches
+- …
+- `level=-4`: 0 viruses; **success** = 7 matches
 - `level=-3`: 1 virus
 - `level=-2`: 2 viruses
 - `level=-1`: 3 viruses
@@ -493,12 +496,13 @@ curriculum without introducing bespoke env ids or synthetic dynamics.
 **Why:** Training algorithms assume vector autoresets; keeping curriculum logic
 outside the env avoids coupling and makes it easy to disable/adjust via config.
 
-### Decision: Detect “any 4-match” via bottle clearing tile codes (not occupancy deltas)
+### Decision: Detect match events via bottle clearing tile codes (not occupancy deltas)
 
-**Context:** The synthetic curriculum level `-4` (“0 viruses, terminate on first
-clear event”) initially used an occupancy-delta heuristic (`tiles_cleared_total`)
-to detect clears. This can miss clears when other occupancy changes happen in
-the same macro step or when representation details change.
+**Context:** The synthetic curriculum match stages (levels `-10..-4`, “0
+viruses, terminate after N match events”) initially used an occupancy-delta
+heuristic (`tiles_cleared_total`) to detect clears. This can miss clears when
+other occupancy changes happen in the same macro step or when representation
+details change.
 
 **Decision:** Detect clear events by scanning the bottle RAM for the ROM’s
 explicit clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`)

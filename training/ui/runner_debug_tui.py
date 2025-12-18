@@ -175,12 +175,14 @@ class RunnerDebugTUI:
         table.add_row("emu_fps(step)", f"{perf.get('step_fps', 0.0):.1f}")
         table.add_row("emu_fps(total)", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
+        table.add_row("spawns_total", f"{int(perf.get('spawns_total', 0) or 0):,}")
         table.add_row("step_ms/frame", f"{perf.get('step_ms_per_frame', 0.0):.4f}")
 
         infer_calls = int(perf.get("inference_calls", 0) or 0)
         if infer_calls > 0:
             table.add_row("", "")
             table.add_row("infer_calls", f"{infer_calls:,}")
+            table.add_row("infer/spawn", f"{float(perf.get('inference_per_spawn', 0.0) or 0.0):.3f}")
             table.add_row(
                 "infer_ms/frame",
                 f"{perf.get('inference_ms_per_frame', 0.0):.4f} "
@@ -191,6 +193,7 @@ class RunnerDebugTUI:
         if planner_calls > 0:
             table.add_row("", "")
             table.add_row("planner_calls", f"{planner_calls:,}")
+            table.add_row("planner/spawn", f"{float(perf.get('planner_per_spawn', 0.0) or 0.0):.3f}")
             table.add_row(
                 "planner_ms/frame",
                 f"{perf.get('planner_ms_per_frame', 0.0):.4f} (avg {perf.get('planner_ms_per_call', 0.0):.3f})",
@@ -243,6 +246,9 @@ class RunnerDebugTUI:
         )
         table.add_row("len(last)", f"{metrics.last_length} f")
         table.add_row("sps", f"{metrics.sps:.0f}")
+        terminal_last = str(perf.get("terminal_reason_last", "") or "")
+        if terminal_last:
+            table.add_row("terminal(last)", terminal_last)
 
         spawn_id = info0.get("placements/spawn_id")
         if spawn_id is not None:
@@ -322,6 +328,8 @@ class RunnerDebugTUI:
             perf.get("ep_reward_counts_last", {}) if show_last else perf.get("ep_reward_counts_curr", {})
         ) or {}
         r_total = float(perf.get("ep_return_last" if show_last else "ep_return_curr", 0.0) or 0.0)
+        reward_last = perf.get("ep_reward_breakdown_last", {}) or {}
+        r_total_last = float(perf.get("ep_return_last", 0.0) or 0.0)
 
         def _f(x: Any) -> float:
             try:
@@ -362,6 +370,12 @@ class RunnerDebugTUI:
         table.add_row("r_env", "-", f"{_f(reward.get('r_env')):+.4f}")
         table.add_row("r_shape", "-", f"{_f(reward.get('r_shape')):+.4f}")
         table.add_row("r_total", "-", f"{r_total:+.4f}")
+
+        # Always include last-episode summary lines so top-out penalties are
+        # visible even when a new episode has already started.
+        table.add_row("", "", "")
+        table.add_row("r_total(last)", "-", f"{r_total_last:+.4f}")
+        table.add_row("topout(last)", "-", f"{_f(reward_last.get('topout_penalty')):+.4f}")
 
         title = "[bold]Reward (last)[/bold]" if show_last else "[bold]Reward (curr)[/bold]"
         return Panel(table, title=title, border_style="magenta")

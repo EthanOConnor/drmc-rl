@@ -269,6 +269,10 @@ class RateLimitedVecEnv:
         self._last_update_sec: float = 0.0
         self._last_update_frames: int = 0
 
+        # Spawn/decision counters (macro env: one decision per pill spawn).
+        self._spawns_total: int = 0
+        self._terminal_reason_last: Optional[str] = None
+
     # ---------------------------- snapshot access (thread-safe)
     def latest_info(self, env_index: int = 0) -> Dict[str, Any]:
         with self._lock:
@@ -285,6 +289,7 @@ class RateLimitedVecEnv:
     def perf_snapshot(self) -> Dict[str, Any]:
         with self._lock:
             frames_total = float(self._frames_total)
+            spawns_total = int(self._spawns_total)
 
             inference_calls = int(self._inference_calls_total)
             inference_sec = float(self._inference_sec_total)
@@ -304,6 +309,11 @@ class RateLimitedVecEnv:
                 if frames_total <= 0.0:
                     return 0.0
                 return float(sec_total) * 1000.0 / frames_total
+            
+            def _per_spawn(calls: int) -> float:
+                if spawns_total <= 0:
+                    return 0.0
+                return float(calls) / float(spawns_total)
 
             reward_breakdown_curr = {k: float(self._ep_reward[k][0]) for k in self._reward_keys}
             reward_breakdown_last = {k: float(self._ep_reward_last[k][0]) for k in self._reward_keys}
@@ -312,6 +322,7 @@ class RateLimitedVecEnv:
 
             return {
                 "frames_total": frames_total,
+                "spawns_total": int(spawns_total),
                 "tau_max": int(self._last_tau_max),
                 "emu_fps": float(self._last_emu_fps),
                 "step_fps": float(self._last_step_fps),
@@ -328,13 +339,16 @@ class RateLimitedVecEnv:
                 "ep_reward_breakdown_last": reward_breakdown_last,
                 "ep_reward_counts_curr": counts_curr,
                 "ep_reward_counts_last": counts_last,
+                "terminal_reason_last": self._terminal_reason_last or "",
 
                 "inference_calls": inference_calls,
+                "inference_per_spawn": _per_spawn(inference_calls),
                 "inference_ms_per_call": _ms_per_call(inference_sec, inference_calls),
                 "inference_ms_per_frame": _ms_per_frame(inference_sec),
                 "last_inference_ms": float(self._last_inference_sec) * 1000.0,
 
                 "planner_calls": planner_calls,
+                "planner_per_spawn": _per_spawn(planner_calls),
                 "planner_ms_per_call": _ms_per_call(planner_sec, planner_calls),
                 "planner_ms_per_frame": _ms_per_frame(planner_sec),
                 "planner_build_calls": planner_build_calls,
@@ -422,6 +436,8 @@ class RateLimitedVecEnv:
             self._update_frames_total = 0.0
             self._last_update_sec = 0.0
             self._last_update_frames = 0
+            self._spawns_total = 0
+            self._terminal_reason_last = None
         self._next_step_time = time.perf_counter()
         return obs, infos
 
@@ -525,6 +541,7 @@ class RateLimitedVecEnv:
                 self._ep_return[i] += float(rewards_arr[i])
                 self._ep_frames[i] += int(tau_i)
                 self._ep_decisions[i] += 1
+                self._spawns_total += 1
 
                 # Reward breakdown (prefer macro-step aggregated keys when present).
                 r_env = _extract_float(info_i.get("reward/r_env"))
@@ -587,6 +604,11 @@ class RateLimitedVecEnv:
                 self._ep_counts["clear_events"][i] += 1 if clearing_val >= 4 else 0
 
                 if bool(terminated_arr[i] or truncated_arr[i]):
+                    if i == 0 and isinstance(info_i, dict):
+                        try:
+                            self._terminal_reason_last = str(info_i.get("terminal_reason") or "")
+                        except Exception:
+                            self._terminal_reason_last = ""
                     self._ep_return_last[i] = float(self._ep_return[i])
                     self._ep_frames_last[i] = int(self._ep_frames[i])
                     self._ep_decisions_last[i] = int(self._ep_decisions[i])

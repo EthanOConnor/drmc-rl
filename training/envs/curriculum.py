@@ -9,7 +9,11 @@ negative levels as a convenience encoding:
   - level -1: 3 viruses
   - level -2: 2 viruses
   - level -3: 1 virus
-  - level -4: 0 viruses, goal = make any 4-match (first clear event)
+  - level -10..-4: 0 viruses, goal = clear N matches (4-match events)
+      - level -10: 1 match ("any match")
+      - level  -9: 2 matches
+      ...
+      - level  -4: 7 matches
 
 The environment implements the negative-level semantics by patching the bottle
 RAM at reset time (see `envs/retro/drmario_env.py`).
@@ -25,7 +29,7 @@ import numpy as np
 @dataclass(slots=True)
 class CurriculumConfig:
     enabled: bool = False
-    start_level: int = -4
+    start_level: int = -10
     max_level: int = 0
     success_threshold: float = 0.9
     window_episodes: int = 100
@@ -50,7 +54,7 @@ class CurriculumConfig:
 
         return cls(
             enabled=bool(_get("enabled", False)),
-            start_level=int(_get("start_level", -4)),
+            start_level=int(_get("start_level", -10)),
             max_level=int(_get("max_level", 0)),
             success_threshold=float(_get("success_threshold", 0.9)),
             window_episodes=int(_get("window_episodes", 100)),

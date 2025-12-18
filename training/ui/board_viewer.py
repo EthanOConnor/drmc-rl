@@ -85,6 +85,7 @@ class BoardState:
     # Preview pill (optional)
     preview_color_l: Optional[int] = None
     preview_color_r: Optional[int] = None
+    preview_rotation: Optional[int] = None
     
     # Game state
     viruses_remaining: int = 0
@@ -163,20 +164,36 @@ def render_board_text(
     
     # Preview area (2 rows above board)
     if show_preview and state.preview_color_l is not None:
-        text.append("║", style=border_style)
-        for col in range(BOARD_WIDTH):
-            if col in (3, 4):  # Preview in center columns
-                if col == 3 and state.preview_color_l is not None:
-                    color = COLORS.get(state.preview_color_l, "white")
-                    text.append("██", style=Style(color=color))
-                elif col == 4 and state.preview_color_r is not None:
-                    color = COLORS.get(state.preview_color_r, "white")
-                    text.append("██", style=Style(color=color))
-                else:
+        preview_rows = 2
+        center_col = BOARD_WIDTH // 2
+        center_row = preview_rows - 1
+        rot = int(state.preview_rotation or 0) & 0x03
+        placements = {
+            0: ((center_row, center_col - 1), (center_row, center_col)),
+            1: ((center_row, center_col), (center_row - 1, center_col)),
+            2: ((center_row, center_col), (center_row, center_col - 1)),
+            3: ((center_row - 1, center_col), (center_row, center_col)),
+        }
+        c1 = None if state.preview_color_l is None else int(state.preview_color_l) & 0x03
+        c2 = None if state.preview_color_r is None else int(state.preview_color_r) & 0x03
+        coords = placements.get(rot, placements[0])
+        preview_cells: Dict[Tuple[int, int], int] = {}
+        if c1 is not None:
+            preview_cells[coords[0]] = c1
+        if c2 is not None:
+            preview_cells[coords[1]] = c2
+
+        for rr in range(preview_rows):
+            text.append("║", style=border_style)
+            for cc in range(BOARD_WIDTH):
+                color_idx = preview_cells.get((rr, cc))
+                if color_idx is None:
                     text.append("  ", style=Style(bgcolor=BG_EMPTY))
-            else:
-                text.append("  ", style=Style(bgcolor=BG_EMPTY))
-        text.append("║\n", style=border_style)
+                    continue
+                color = COLORS.get(int(color_idx), "white")
+                # Fill the cell to avoid gaps from terminal glyph rendering.
+                text.append("██", style=Style(color=color, bgcolor=color))
+            text.append("║\n", style=border_style)
         text.append("╠" + "══" * BOARD_WIDTH + "╣\n", style=border_style)
     
     # Board rows
@@ -294,6 +311,37 @@ def board_from_env_info(info: Dict[str, Any]) -> BoardState:
         if len(raw_ram) >= 0x480:
             board = parse_board_bytes(raw_ram[0x400:0x480])
     
+    preview_color_l = info.get("preview_color_l")
+    preview_color_r = info.get("preview_color_r")
+    preview_rotation = info.get("preview_rotation")
+    preview = info.get("preview_pill")
+    if (preview_color_l is None or preview_color_r is None) and preview is not None:
+        if isinstance(preview, dict):
+            preview_color_l = preview.get("first_color", preview_color_l)
+            preview_color_r = preview.get("second_color", preview_color_r)
+            preview_rotation = preview.get("rotation", preview_rotation)
+        elif isinstance(preview, (list, tuple)) and len(preview) >= 2:
+            try:
+                preview_color_l = preview[0] if preview_color_l is None else preview_color_l
+                preview_color_r = preview[1] if preview_color_r is None else preview_color_r
+                if len(preview) >= 3 and preview_rotation is None:
+                    preview_rotation = preview[2]
+            except Exception:
+                pass
+    if (preview_color_l is None or preview_color_r is None) and "raw_ram" in info:
+        raw_ram = info.get("raw_ram")
+        try:
+            if isinstance(raw_ram, (bytes, bytearray, memoryview)):
+                preview_color_l = raw_ram[0x031A] if preview_color_l is None else preview_color_l
+                preview_color_r = raw_ram[0x031B] if preview_color_r is None else preview_color_r
+                preview_rotation = raw_ram[0x0322] if preview_rotation is None else preview_rotation
+            elif isinstance(raw_ram, (list, tuple)) and len(raw_ram) > 0x0322:
+                preview_color_l = raw_ram[0x031A] if preview_color_l is None else preview_color_l
+                preview_color_r = raw_ram[0x031B] if preview_color_r is None else preview_color_r
+                preview_rotation = raw_ram[0x0322] if preview_rotation is None else preview_rotation
+        except Exception:
+            pass
+
     return BoardState(
         board=board,
         falling_row=info.get("falling_pill_row"),
@@ -301,8 +349,9 @@ def board_from_env_info(info: Dict[str, Any]) -> BoardState:
         falling_orient=info.get("falling_pill_orient"),
         falling_color_l=info.get("falling_color_l"),
         falling_color_r=info.get("falling_color_r"),
-        preview_color_l=info.get("preview_color_l"),
-        preview_color_r=info.get("preview_color_r"),
+        preview_color_l=None if preview_color_l is None else int(preview_color_l) & 0x03,
+        preview_color_r=None if preview_color_r is None else int(preview_color_r) & 0x03,
+        preview_rotation=None if preview_rotation is None else int(preview_rotation) & 0x03,
         viruses_remaining=info.get("viruses_remaining", 0),
         frame_count=info.get("frame_count", 0),
         pill_count=info.get("pill_count", 0),

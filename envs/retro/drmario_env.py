@@ -153,8 +153,11 @@ class DrMarioRetroEnv(gym.Env):
         # levels, we interpret it as a synthetic difficulty stage (e.g., fewer
         # viruses) while still selecting level 0 in the ROM.
         self._curriculum_level = int(level)
-        self._task_goal_mode: str = "viruses"  # viruses|any_clear
+        self._task_goal_mode: str = "viruses"  # viruses|matches
         self._synthetic_virus_target: Optional[int] = None
+        self._match_target: Optional[int] = None
+        self._matches_completed: int = 0
+        self._prev_clearing_active: bool = False
         self.backend_name = (backend or os.environ.get("DRMARIO_BACKEND", "libretro")).lower()
         self._backend_kwargs = dict(backend_kwargs or {})
         if self.core_path is not None and "core_path" not in self._backend_kwargs:
@@ -278,20 +281,30 @@ class DrMarioRetroEnv(gym.Env):
           - level -1: 3 viruses
           - level -2: 2 viruses
           - level -3: 1 virus
-          - level -4: 0 viruses, goal = "any 4-match" (first clear event)
+          - level -4..-10: 0 viruses; goal = clear N matches (4-match events)
+              - level -10: 1 match ("any match")
+              - level  -9: 2 matches
+              ...
+              - level  -4: 7 matches
         """
 
         lvl = int(getattr(self, "level", 0) or 0)
         self._curriculum_level = lvl
         self._synthetic_virus_target = None
         self._task_goal_mode = "viruses"
+        self._match_target = None
 
         if lvl < 0:
-            # For now we only support the first few synthetic levels.
-            target = max(0, 4 + lvl)
-            self._synthetic_virus_target = int(target)
-            if target == 0:
-                self._task_goal_mode = "any_clear"
+            if lvl <= -4:
+                # "Match-count" stages: clear N matches with 0 viruses.
+                self._synthetic_virus_target = 0
+                self._task_goal_mode = "matches"
+                # lvl=-10 -> 1 match, lvl=-9 -> 2, ..., lvl=-4 -> 7.
+                self._match_target = int(max(1, 11 + lvl))
+            else:
+                # Virus-count stages: clear all remaining viruses.
+                target = max(0, 4 + lvl)
+                self._synthetic_virus_target = int(target)
 
     def _count_clearing_tiles(self) -> int:
         """Count the number of bottle tiles currently marked as 'clearing'.
@@ -300,8 +313,8 @@ class DrMarioRetroEnv(gym.Env):
         animation. These are distinct from normal pill/virus tiles and are a
         reliable signal that *a 4-match has occurred*.
 
-        This is used by the curriculum's synthetic level `-4` ("any_clear"),
-        where the episode terminates on the first clear event.
+        This is used by the curriculum's synthetic match-count stages
+        (levels `-10..-4`), where episodes terminate after N clear events.
         """
 
         if self._state_cache is None:
@@ -1002,7 +1015,26 @@ class DrMarioRetroEnv(gym.Env):
     def _decode_preview_pill(self) -> Optional[Dict[str, int]]:
         if self._state_cache is None:
             return None
-        return self._state_cache.calc.preview
+        preview = self._state_cache.calc.preview
+        if preview is None:
+            return None
+        if isinstance(preview, dict):
+            try:
+                first = int(preview.get("first_color")) & 0x03
+                second = int(preview.get("second_color")) & 0x03
+                rotation = int(preview.get("rotation", 0)) & 0x03
+                return {"first_color": first, "second_color": second, "rotation": rotation}
+            except Exception:
+                return None
+        if isinstance(preview, (list, tuple)) and len(preview) >= 2:
+            try:
+                first = int(preview[0]) & 0x03
+                second = int(preview[1]) & 0x03
+                rotation = int(preview[2]) & 0x03 if len(preview) >= 3 else 0
+                return {"first_color": first, "second_color": second, "rotation": rotation}
+            except Exception:
+                return None
+        return None
 
     def _augment_info(self, info: Dict[str, Any]) -> Dict[str, Any]:
         augmented = dict(info)
@@ -1265,6 +1297,8 @@ class DrMarioRetroEnv(gym.Env):
         self._configure_task_from_level()
         self._t = 0
         self._viruses_remaining = 8
+        self._matches_completed = 0
+        self._prev_clearing_active = False
         # Negative "curriculum levels" still run the ROM at level 0; timeouts
         # should follow the closest real level.
         self._t_max = get_level_timeout(max(0, int(getattr(self, "level", 0) or 0)))
@@ -1362,7 +1396,7 @@ class DrMarioRetroEnv(gym.Env):
                 warnings.warn(f"Auto-start sequence failed: {exc}")
             try:
                 if self._synthetic_virus_target is not None:
-                    patch_counter = bool(self._synthetic_virus_target > 0 and self._task_goal_mode != "any_clear")
+                    patch_counter = bool(self._synthetic_virus_target is not None and self._synthetic_virus_target > 0)
                     self._apply_synthetic_virus_target(self._synthetic_virus_target, patch_counter=patch_counter)
                 ram_arr = self._read_ram_array(refresh=True)
                 if ram_arr is not None:
@@ -1419,6 +1453,9 @@ class DrMarioRetroEnv(gym.Env):
         }
         if self._synthetic_virus_target is not None:
             info["synthetic_virus_target"] = int(self._synthetic_virus_target)
+        if getattr(self, "_match_target", None) is not None:
+            info["match_target"] = int(self._match_target or 0)
+        info["matches_completed"] = int(getattr(self, "_matches_completed", 0))
         info["raw_ram"] = self._raw_ram_bytes()
         if self._last_rng_seed_bytes is not None:
             info["rng_seed"] = self._last_rng_seed_bytes
@@ -1713,6 +1750,15 @@ class DrMarioRetroEnv(gym.Env):
 
         # Clear animation tiles in the bottle (4-match detection).
         tiles_clearing = int(self._count_clearing_tiles())
+        clearing_active = bool(tiles_clearing >= 4)
+        match_event = False
+        try:
+            if clearing_active and not bool(getattr(self, "_prev_clearing_active", False)):
+                self._matches_completed = int(getattr(self, "_matches_completed", 0)) + 1
+                match_event = True
+            self._prev_clearing_active = bool(clearing_active)
+        except Exception:
+            match_event = False
 
         task_mode = str(getattr(self, "_task_goal_mode", "viruses") or "viruses")
         goal_achieved = False
@@ -1735,12 +1781,14 @@ class DrMarioRetroEnv(gym.Env):
 
         # Task-specific terminal conditions.
         if not topout:
-            if task_mode == "any_clear":
-                # Curriculum level -4: treat the first clear event (a 4-match)
-                # as the terminal success condition.
-                if tiles_clearing >= 4:
+            if task_mode in {"matches", "any_clear"}:
+                # Curriculum (synthetic 0-virus stages): terminate after N match events.
+                # A match event is counted on the rising edge of the clear-animation
+                # markers (`tiles_clearing >= 4`).
+                target = int(getattr(self, "_match_target", None) or 1)
+                if int(getattr(self, "_matches_completed", 0)) >= target:
                     goal_achieved = True
-                    goal_reason = "match"
+                    goal_reason = f"match_{int(getattr(self, '_matches_completed', 0))}"
             else:
                 # Default Dr. Mario objective: eliminate all viruses.
                 if self._viruses_remaining == 0:
@@ -1813,6 +1861,10 @@ class DrMarioRetroEnv(gym.Env):
             "tiles_cleared_total": int(tiles_cleared_total),
             "tiles_cleared_non_virus": int(tiles_cleared_non_virus),
             "tiles_clearing": int(tiles_clearing),
+            "clearing_active": bool(clearing_active),
+            "match_event": bool(match_event),
+            "match_target": None if getattr(self, "_match_target", None) is None else int(self._match_target or 0),
+            "matches_completed": int(getattr(self, "_matches_completed", 0)),
             "terminal_bonus_reward": float(terminal_bonus_reward),
             "topout_penalty_reward": float(topout_penalty_reward),
             "task_mode": str(task_mode),

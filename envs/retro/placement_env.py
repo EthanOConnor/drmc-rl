@@ -328,6 +328,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info: Dict[str, Any],
         *,
         breakdown: Optional[_RewardBreakdown] = None,
+        lock_capture: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
         """Advance the underlying env until the next macro decision point."""
 
@@ -370,6 +371,27 @@ class DrMarioPlacementEnv(gym.Wrapper):
             total_reward += float(r)
             if breakdown is not None and isinstance(info, dict):
                 breakdown.add_frame(reward=float(r), info=info)
+            if lock_capture is not None and isinstance(info, dict):
+                if lock_capture.get("lock_pose") is None:
+                    try:
+                        pb = float(info.get("pill_bonus_adjusted", 0.0) or 0.0)
+                    except Exception:
+                        pb = 0.0
+                    if pb > 0.0:
+                        offsets = getattr(self.env.unwrapped, "_ram_offsets", {})
+                        try:
+                            snap_lock = PillSnapshot.from_state(self._state_cache(), offsets)
+                            lock_capture["lock_pose"] = (
+                                int(snap_lock.base_col),
+                                int(snap_lock.base_row),
+                                int(snap_lock.rot) & 0x03,
+                            )
+                        except Exception:
+                            lock_capture["lock_pose"] = None
+                        try:
+                            lock_capture["lock_t"] = int(info.get("t", getattr(self.env.unwrapped, "_t", 0) or 0))
+                        except Exception:
+                            lock_capture["lock_t"] = None
             if terminated or truncated:
                 break
 
@@ -404,6 +426,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
         breakdown = _RewardBreakdown()
         terminated = False
         truncated = False
+        # Debug/validation: capture the observed pose when the pill locks so we
+        # can confirm the controller script achieved the intended placement.
+        target_pose: Optional[Tuple[int, int, int]] = None  # (x,y,rot)
+        lock_capture: Dict[str, Any] = {"lock_pose": None, "lock_t": None}
         plan_calls = 0
         plan_latency_sec_total = 0.0
         plan_latency_sec_max = 0.0
@@ -483,6 +509,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
             return self._last_obs, float(total_reward), False, False, out_info
 
+        try:
+            if plan.terminal_pose is not None:
+                bx, by, rot = plan.terminal_pose
+                target_pose = (int(bx), int(by), int(rot) & 0x03)
+        except Exception:
+            target_pose = None
+
         # We are committing to a macro action for this spawn; mark it as
         # consumed so `_advance_until_decision` ignores subsequent falling frames
         # until the next pill spawns.
@@ -494,19 +527,41 @@ class DrMarioPlacementEnv(gym.Wrapper):
         # Execute the per-frame script.
         obs = self._last_obs
         info: Dict[str, Any] = dict(self._last_info)
+        offsets = getattr(self.env.unwrapped, "_ram_offsets", {})
         for step in plan.controller:
             self._set_holds(left=step.hold_left, right=step.hold_right, down=step.hold_down)
             obs, r, terminated, truncated, info = self.env.step(int(step.action))
             total_reward += float(r)
             if isinstance(info, dict):
                 breakdown.add_frame(reward=float(r), info=info)
+                if lock_capture.get("lock_pose") is None:
+                    try:
+                        pb = float(info.get("pill_bonus_adjusted", 0.0) or 0.0)
+                    except Exception:
+                        pb = 0.0
+                    if pb > 0.0:
+                        try:
+                            snap_lock = PillSnapshot.from_state(self._state_cache(), offsets)
+                            lock_capture["lock_pose"] = (
+                                int(snap_lock.base_col),
+                                int(snap_lock.base_row),
+                                int(snap_lock.rot) & 0x03,
+                            )
+                        except Exception:
+                            lock_capture["lock_pose"] = None
+                        try:
+                            lock_capture["lock_t"] = int(info.get("t", getattr(self.env.unwrapped, "_t", 0) or 0))
+                        except Exception:
+                            lock_capture["lock_t"] = None
             if terminated or truncated:
                 break
 
         # After locking, clear holds and advance until the next decision.
         self._clear_holds()
         if not (terminated or truncated):
-            obs, info, r_wait, terminated, truncated = self._advance_until_decision(obs, info, breakdown=breakdown)
+            obs, info, r_wait, terminated, truncated = self._advance_until_decision(
+                obs, info, breakdown=breakdown, lock_capture=lock_capture
+            )
             total_reward += float(r_wait)
 
         self._last_obs = obs
@@ -522,6 +577,25 @@ class DrMarioPlacementEnv(gym.Wrapper):
         out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
         out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
         out_info["placements/plan_count_last"] = float(plan_options)
+        out_info["placements/last_action"] = int(action)
+        if target_pose is not None:
+            out_info["placements/target_pose"] = tuple(int(v) for v in target_pose)
+        lock_pose = lock_capture.get("lock_pose")
+        lock_t = lock_capture.get("lock_t")
+        if isinstance(lock_pose, (list, tuple)) and len(lock_pose) == 3:
+            out_info["placements/lock_pose"] = tuple(int(v) for v in lock_pose)
+        if lock_t is not None:
+            try:
+                out_info["placements/lock_t"] = int(lock_t)
+            except Exception:
+                pass
+        if target_pose is not None and isinstance(lock_pose, (list, tuple)) and len(lock_pose) == 3:
+            lock_pose_t = tuple(int(v) for v in lock_pose)
+            out_info["placements/pose_ok"] = bool(lock_pose_t == target_pose)
+            if lock_pose_t != target_pose:
+                out_info["placements/pose_dx"] = int(lock_pose_t[0] - target_pose[0])
+                out_info["placements/pose_dy"] = int(lock_pose_t[1] - target_pose[1])
+                out_info["placements/pose_drot"] = int(((lock_pose_t[2] - target_pose[2]) + 4) % 4)
         out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
         return obs, float(total_reward), terminated, truncated, out_info
 
