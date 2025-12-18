@@ -76,7 +76,7 @@ All heads:
 - PPO with SMDP discounting
 - GAE with Γ_t = γ^τ_t
 - Entropy annealing
-- Curriculum support (planned)
+- Scripted curriculum support (optional; configured via `curriculum.*` in the runner config)
 
 ## Mathematical Formulation
 
@@ -272,12 +272,28 @@ else:
 - Larger → fewer updates, more stable
 - Balance with GPU memory
 
-## Curriculum Learning (Planned)
+## Curriculum Learning
 
-Future enhancements:
-1. **Virus count curriculum**: Start low → increase gradually
-2. **Feasibility-aware sampling**: Oversample sparse-mask scenarios
-3. **Level progression**: 0 → 5 → 10 → 15 → 20
+The unified runner supports a simple scripted curriculum (enabled in
+`training/configs/smdp_ppo.yaml` by default):
+
+- **Synthetic levels**: `-4..0` are represented by setting `env.level` negative.
+- **Virus-count staging** (applied by patching the bottle RAM at reset time):
+  - `-4`: 0 viruses; **success** = first clear event (any 4-match)
+  - `-3`: 1 virus
+  - `-2`: 2 viruses
+  - `-1`: 3 viruses
+  - `0`: 4 viruses (vanilla level 0)
+- **Advancement**: stay on the current curriculum level until the rolling clear
+  rate over `window_episodes` reaches `success_threshold`, then advance by +1.
+- **Rehearsal**: after advancing, sample a lower level with probability
+  `rehearsal_prob` to maintain performance.
+
+Disable the curriculum with:
+
+```bash
+python -m training.run --cfg training/configs/smdp_ppo.yaml --override curriculum.enabled=false
+```
 
 ## Troubleshooting
 

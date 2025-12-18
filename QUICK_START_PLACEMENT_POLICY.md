@@ -17,6 +17,10 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
   --backend libretro --core quicknes --rom-path "legal_ROMs/Dr. Mario (Japan, USA) (rev0).nes" \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 
+# Note: `training/configs/smdp_ppo.yaml` enables a scripted curriculum by default
+# (starts at synthetic level -4 with 0 viruses, then ramps to level 0).
+# Disable with: `--override curriculum.enabled=false`
+
 # Monitor training
 # - Stats-only TUI: add `--ui tui`
 # - Headless: use `--ui headless` (default)
@@ -77,6 +81,9 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --num_envs 32
 
 # Select device
 python -m training.run --cfg training/configs/smdp_ppo.yaml --device cuda  # or mps, cpu
+
+# Enable Weights & Biases logging (requires `wandb` installed and configured)
+python -m training.run --cfg training/configs/smdp_ppo.yaml --wandb --wandb-project drmc-rl
 ```
 
 ## Quick Test

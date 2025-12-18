@@ -180,9 +180,28 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
         "DrMario-Placement-v0",  # legacy alias
     }
     if env_id not in real_ids:
-        return DummyVecEnv(env_cfg)
+        env: Any = DummyVecEnv(env_cfg)
+    else:
+        env = _make_real_vec_env(env_cfg, seed=getattr(cfg, "seed", None))
 
-    return _make_real_vec_env(env_cfg, seed=getattr(cfg, "seed", None))
+    curriculum_cfg = None
+    try:
+        curriculum_cfg = getattr(cfg, "curriculum", None)
+    except Exception:
+        curriculum_cfg = None
+    if curriculum_cfg is None and isinstance(cfg, dict):
+        curriculum_cfg = cfg.get("curriculum")
+    if curriculum_cfg is not None:
+        try:
+            enabled = bool(getattr(curriculum_cfg, "enabled", False))
+        except Exception:
+            enabled = bool(curriculum_cfg.get("enabled", False)) if isinstance(curriculum_cfg, dict) else False
+        if enabled and hasattr(env, "set_attr"):
+            from training.envs.curriculum import CurriculumConfig, CurriculumVecEnv
+
+            env = CurriculumVecEnv(env, CurriculumConfig.from_cfg(curriculum_cfg))
+
+    return env
 
 
 # --------------------------------------------------------------------------- real env
@@ -296,53 +315,143 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
     else:
         raise ValueError(f"Unknown vectorization mode: {env_cfg.vectorization}")
 
-    # Gymnasium vector envs return `infos` as a dict-of-arrays. Our training
-    # adapters and tooling expect a list-of-dicts (one per env), matching the
-    # historical DummyVecEnv interface.
-    class _InfoListWrapper:
-        def __init__(self, env: Any):
-            self.env = env
+    return _InfoListWrapper(base_env)
 
-        def reset(self, *args: Any, **kwargs: Any):
-            obs, infos = self.env.reset(*args, **kwargs)
-            return obs, self._unbatch_infos(infos)
 
-        def step(self, actions: Any):
-            obs, rewards, terminated, truncated, infos = self.env.step(actions)
-            return obs, rewards, terminated, truncated, self._unbatch_infos(infos)
+# Gymnasium vector envs return `infos` as a dict-of-arrays. Our training adapters
+# and tooling expect a list-of-dicts (one per env), matching the historical
+# DummyVecEnv interface.
+#
+# While we adapt the info structure, we also attach standard episode statistics
+# (`info["episode"] = {"r": return, "l": length}`) so training algorithms can
+# report returns/lengths consistently across backends.
+class _InfoListWrapper:
+    def __init__(self, env: Any):
+        self.env = env
+        self._num_envs = int(getattr(env, "num_envs", 1))
+        self._episode_returns = np.zeros(self._num_envs, dtype=np.float64)
+        self._episode_lengths = np.zeros(self._num_envs, dtype=np.int64)  # frames (uses placements/tau when present)
+        self._episode_decisions = np.zeros(self._num_envs, dtype=np.int64)  # wrapper step calls
 
-        def render(self, *args: Any, **kwargs: Any) -> Any:
-            if hasattr(self.env, "render"):
-                return self.env.render(*args, **kwargs)
+        self._viruses_prev = np.full(self._num_envs, -1, dtype=np.int32)
+        self._episode_viruses_cleared = np.zeros(self._num_envs, dtype=np.int64)
+
+    def reset(self, *args: Any, **kwargs: Any):
+        obs, infos = self.env.reset(*args, **kwargs)
+        infos_list = self._unbatch_infos(infos)
+        self._episode_returns.fill(0.0)
+        self._episode_lengths.fill(0)
+        self._episode_decisions.fill(0)
+        self._episode_viruses_cleared.fill(0)
+        self._viruses_prev.fill(-1)
+        for i, info in enumerate(infos_list):
+            v = self._extract_int(info.get("viruses_remaining"))
+            if v is not None:
+                self._viruses_prev[i] = int(v)
+        return obs, infos_list
+
+    def step(self, actions: Any):
+        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        infos_list = self._unbatch_infos(infos)
+
+        rewards_arr = np.asarray(rewards, dtype=np.float64).reshape(self._num_envs)
+        terminated_arr = np.asarray(terminated, dtype=bool).reshape(self._num_envs)
+        truncated_arr = np.asarray(truncated, dtype=bool).reshape(self._num_envs)
+
+        for i in range(self._num_envs):
+            info = infos_list[i] if i < len(infos_list) else {}
+
+            tau = self._extract_tau(info)
+            self._episode_returns[i] += float(rewards_arr[i])
+            self._episode_lengths[i] += int(tau)
+            self._episode_decisions[i] += 1
+
+            v_now = self._extract_int(info.get("viruses_remaining"))
+            if v_now is not None:
+                v_prev = int(self._viruses_prev[i])
+                if v_prev >= 0:
+                    self._episode_viruses_cleared[i] += max(0, int(v_prev) - int(v_now))
+                self._viruses_prev[i] = int(v_now)
+
+            if bool(terminated_arr[i] or truncated_arr[i]):
+                info["episode"] = {
+                    "r": float(self._episode_returns[i]),
+                    "l": int(self._episode_lengths[i]),
+                    "decisions": int(self._episode_decisions[i]),
+                }
+                drm: Dict[str, Any] = {
+                    "viruses_cleared": int(self._episode_viruses_cleared[i]),
+                }
+                if v_now is not None:
+                    drm["viruses_remaining"] = int(v_now)
+                topout = info.get("topout")
+                if topout is not None:
+                    drm["top_out"] = bool(topout)
+                cleared = info.get("cleared")
+                if cleared is not None:
+                    drm["cleared"] = bool(cleared)
+                level = self._extract_int(info.get("level"))
+                if level is not None:
+                    drm["level"] = int(level)
+                info["drm"] = drm
+
+                self._episode_returns[i] = 0.0
+                self._episode_lengths[i] = 0
+                self._episode_decisions[i] = 0
+                self._episode_viruses_cleared[i] = 0
+
+        return obs, rewards, terminated, truncated, infos_list
+
+    def render(self, *args: Any, **kwargs: Any) -> Any:
+        if hasattr(self.env, "render"):
+            return self.env.render(*args, **kwargs)
+        return None
+
+    def close(self) -> None:
+        if hasattr(self.env, "close"):
+            self.env.close()
+
+    def _unbatch_infos(self, infos: Any) -> List[Dict[str, Any]]:
+        n = self._num_envs
+        if infos is None:
+            return [{} for _ in range(n)]
+        if isinstance(infos, (list, tuple)):
+            return [dict(i) for i in infos]
+        if not isinstance(infos, dict):
+            return [{} for _ in range(n)]
+        out: List[Dict[str, Any]] = [dict() for _ in range(n)]
+        for key, value in infos.items():
+            try:
+                arr = np.asarray(value)
+            except Exception:
+                arr = None
+            if arr is not None and arr.shape[:1] == (n,):
+                for i in range(n):
+                    out[i][key] = value[i]
+            else:
+                for i in range(n):
+                    out[i][key] = value
+        return out
+
+    @staticmethod
+    def _extract_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            try:
+                value = value.item()
+            except Exception:
+                return None
+        try:
+            return int(value)
+        except Exception:
             return None
 
-        def close(self) -> None:
-            if hasattr(self.env, "close"):
-                self.env.close()
+    @classmethod
+    def _extract_tau(cls, info: Dict[str, Any]) -> int:
+        tau = info.get("placements/tau", 1)
+        tau_int = cls._extract_int(tau)
+        return max(1, int(tau_int) if tau_int is not None else 1)
 
-        def _unbatch_infos(self, infos: Any) -> List[Dict[str, Any]]:
-            n = int(getattr(self.env, "num_envs", num_envs))
-            if infos is None:
-                return [{} for _ in range(n)]
-            if isinstance(infos, (list, tuple)):
-                return [dict(i) for i in infos]
-            if not isinstance(infos, dict):
-                return [{} for _ in range(n)]
-            out: List[Dict[str, Any]] = [dict() for _ in range(n)]
-            for key, value in infos.items():
-                try:
-                    arr = np.asarray(value)
-                except Exception:
-                    arr = None
-                if arr is not None and arr.shape[:1] == (n,):
-                    for i in range(n):
-                        out[i][key] = value[i]
-                else:
-                    for i in range(n):
-                        out[i][key] = value
-            return out
-
-        def __getattr__(self, name: str) -> Any:  # pragma: no cover - passthrough
-            return getattr(self.env, name)
-
-    return _InfoListWrapper(base_env)
+    def __getattr__(self, name: str) -> Any:  # pragma: no cover - passthrough
+        return getattr(self.env, name)

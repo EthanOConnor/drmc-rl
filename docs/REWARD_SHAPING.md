@@ -1,5 +1,43 @@
 # Reward Shaping & Evaluator Integration (Dr. Mario RL)
 
+## 0) Base Environment Reward (`r_env`)
+
+`DrMarioRetroEnv` computes a per-frame reward that is reported in `info` as:
+
+- `r_env`: the “native” environment reward (configured via `RewardConfig`)
+- `r_shape`: optional potential-based shaping (evaluator-driven)
+- `r_total = r_env + r_shape`: the reward returned by `env.step()`
+
+For macro-action training (`DrMarioPlacementEnv`), each macro step returns the
+**sum of `r_total` over all emulated frames** consumed by the macro action
+(`placements/tau` frames).
+
+### Configuration
+
+The default reward config is loaded from `envs/specs/reward_config.json`.
+You can override it via:
+
+- `DrMarioRetroEnv(..., reward_config_path=...)`, or
+- the env var `DRMARIO_REWARD_CONFIG=...`
+
+Key terms in `r_env` (see `envs/retro/drmario_env.py`):
+
+- **Pill lock bonus** when the ROM pill spawn counter advances (previous pill locked):
+  `pill_place_base` with quadratic growth `pill_place_growth`.
+  Optionally adjusted by a “high placement” heuristic:
+  `punish_high_placements`, `placement_height_threshold`, `placement_height_penalty_multiplier`.
+- **Virus clear reward**: `virus_clear_bonus * delta_v` where `delta_v` is viruses cleared this frame.
+- **Non-virus clear reward**: `non_virus_clear_bonus * cleared_non_virus` (heuristic, state-mode only).
+- **Adjacency shaping** (optional): `adjacency_pair_bonus` / `adjacency_triplet_bonus`.
+- **Column height penalty** (optional): a dense penalty based on tallest stack vs virus band,
+  applied as a delta each frame via `column_height_penalty`.
+- **Action penalty** (optional): `action_penalty_scale * action_events` subtracted each frame.
+- **Terminal bonuses/penalties**:
+  - `terminal_clear_bonus` on stage clear
+  - `topout_penalty` on top-out
+  - time-to-clear shaping at episode end:
+    `time_penalty_clear_per_60_frames` (clear) and `time_bonus_topout_per_60_frames` (top-out)
+
 **Goal:** Use the position evaluator (predicting a distribution of time-to-clear, `T_clear`) to provide dense, low-latency learning signals while preserving the optimal policy.
 
 ## 1) Potential-Based Reward Shaping (safe)

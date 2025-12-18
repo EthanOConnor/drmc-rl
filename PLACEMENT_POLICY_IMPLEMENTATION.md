@@ -186,9 +186,9 @@ With 16 parallel environments on a modern GPU:
 ## Next Steps (Optional Enhancements)
 
 ### Curriculum Learning
-- [ ] Virus count progression (4 → 8 → 16 → 84)
-- [ ] Level progression (0 → 5 → 10 → 20)
-- [ ] Adaptive sampling based on success rate
+- [x] Virus-count scripted curriculum (synthetic levels `-4..0`, enabled in `training/configs/smdp_ppo.yaml`)
+- [ ] Level progression (0 → 5 → 10 → 20) using real ROM levels
+- [ ] Adaptive sampling based on success rate beyond scripted schedule
 
 ### Advanced Heads
 - [ ] Set-to-Set cross-attention (Perceiver-style)

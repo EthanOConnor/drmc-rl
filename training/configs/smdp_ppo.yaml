@@ -46,6 +46,16 @@ env:
   obs_mode: state
   num_envs: 16
   frame_stack: 1
+
+# Scripted curriculum (synthetic negative levels: fewer viruses)
+curriculum:
+  enabled: true
+  start_level: -4
+  max_level: 0
+  success_threshold: 0.9
+  window_episodes: 100
+  min_episodes: 50
+  rehearsal_prob: 0.1
   
 # Logging
 logdir: "runs/smdp_ppo"

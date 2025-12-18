@@ -96,6 +96,18 @@ class _MetricState:
             return 0.0
         return float(sum(self.recent_returns) / float(len(self.recent_returns)))
 
+    def median_return_16(self) -> float:
+        if not self.recent_returns:
+            return 0.0
+        window = list(self.recent_returns)[-16:]
+        if not window:
+            return 0.0
+        window_sorted = sorted(float(x) for x in window)
+        mid = len(window_sorted) // 2
+        if len(window_sorted) % 2 == 1:
+            return float(window_sorted[mid])
+        return 0.5 * float(window_sorted[mid - 1] + window_sorted[mid])
+
 
 class RunnerDebugTUI:
     def __init__(
@@ -162,9 +174,15 @@ class RunnerDebugTUI:
 
         table.add_row("steps", f"{metrics.steps:,}")
         table.add_row("episodes", f"{metrics.episodes:,}")
-        table.add_row("ret(last)", f"{metrics.last_return:.1f}")
-        table.add_row("ret(mean100)", f"{metrics.mean_return_100():.1f}")
-        table.add_row("len(last)", f"{metrics.last_length}")
+        table.add_row("ret(curr)", f"{perf.get('ep_return_curr', 0.0):.3f}")
+        table.add_row("ret(last)", f"{metrics.last_return:.3f}")
+        table.add_row("ret(med16)", f"{metrics.median_return_16():.3f}")
+        table.add_row("ret(mean100)", f"{metrics.mean_return_100():.3f}")
+        table.add_row(
+            "len(curr)",
+            f"{int(perf.get('ep_decisions_curr', 0) or 0)} dec / {int(perf.get('ep_frames_curr', 0) or 0)} f",
+        )
+        table.add_row("len(last)", f"{metrics.last_length} f")
         table.add_row("sps", f"{metrics.sps:.0f}")
 
         table.add_row("", "")
@@ -175,11 +193,85 @@ class RunnerDebugTUI:
         table.add_row("emu_fps(step)", f"{perf.get('step_fps', 0.0):.1f}")
         table.add_row("emu_fps(total)", f"{perf.get('emu_fps', 0.0):.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
+        table.add_row("step_ms/frame", f"{perf.get('step_ms_per_frame', 0.0):.4f}")
+
+        infer_calls = int(perf.get("inference_calls", 0) or 0)
+        if infer_calls > 0:
+            table.add_row("", "")
+            table.add_row("infer_calls", f"{infer_calls:,}")
+            table.add_row(
+                "infer_ms/frame",
+                f"{perf.get('inference_ms_per_frame', 0.0):.4f} "
+                f"(avg {perf.get('inference_ms_per_call', 0.0):.3f}, last {perf.get('last_inference_ms', 0.0):.3f})",
+            )
+
+        planner_calls = int(perf.get("planner_calls", 0) or 0)
+        if planner_calls > 0:
+            table.add_row("", "")
+            table.add_row("planner_calls", f"{planner_calls:,}")
+            table.add_row(
+                "planner_ms/frame",
+                f"{perf.get('planner_ms_per_frame', 0.0):.4f} (avg {perf.get('planner_ms_per_call', 0.0):.3f})",
+            )
+            table.add_row(
+                "planner_build",
+                f"{int(perf.get('planner_build_calls', 0) or 0):,} calls  "
+                f"avg {perf.get('planner_build_ms_per_call', 0.0):.3f}  "
+                f"last {perf.get('last_planner_build_ms', 0.0):.3f}",
+            )
+            table.add_row(
+                "planner_plan",
+                f"{int(perf.get('planner_plan_calls', 0) or 0):,} calls  "
+                f"avg {perf.get('planner_plan_ms_per_call', 0.0):.3f}  "
+                f"last {perf.get('last_planner_plan_ms', 0.0):.3f}",
+            )
+
+        update_calls = int(perf.get("update_calls", 0) or 0)
+        if update_calls > 0:
+            table.add_row("", "")
+            table.add_row(
+                "update_last",
+                f"{perf.get('update_sec_last', 0.0):.3f}s "
+                f"({perf.get('update_ms_per_frame', 0.0):.4f} ms/frame)",
+            )
+            table.add_row("update_ms/frame", f"{perf.get('update_ms_per_frame_avg', 0.0):.4f} (avg)")
 
         spawn_id = info0.get("placements/spawn_id")
         if spawn_id is not None:
             try:
                 table.add_row("spawn_id", f"{int(spawn_id)}")
+            except Exception:
+                pass
+
+        # Curriculum (optional)
+        curr_env_level = info0.get("curriculum/env_level", info0.get("curriculum_level"))
+        if curr_env_level is not None:
+            try:
+                table.add_row("curriculum", f"{int(curr_env_level)}")
+            except Exception:
+                pass
+        curr_stage = info0.get("curriculum/current_level")
+        if curr_stage is not None:
+            try:
+                rate = float(info0.get("curriculum/rate_current", 0.0) or 0.0)
+                eps = int(info0.get("curriculum/episodes_current", 0) or 0)
+                table.add_row("curr_stage", f"{int(curr_stage)} ({rate*100:.1f}%/{eps})")
+            except Exception:
+                pass
+        task_mode = info0.get("task_mode")
+        if task_mode is not None:
+            table.add_row("task", str(task_mode))
+
+        level = info0.get("level")
+        if level is not None:
+            try:
+                table.add_row("level", f"{int(level)}")
+            except Exception:
+                pass
+        viruses_remaining = info0.get("viruses_remaining")
+        if viruses_remaining is not None:
+            try:
+                table.add_row("viruses", f"{int(viruses_remaining)}")
             except Exception:
                 pass
         options = info0.get("placements/options")

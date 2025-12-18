@@ -116,6 +116,16 @@ def load_config(args: argparse.Namespace) -> Any:
             cfg_dict["engine"] = "builtin" if algo in {"simple_pg", "ppo_smdp"} else "sf2"
     if args.viz is not None:
         cfg_dict["viz"] = args.viz if isinstance(args.viz, list) else [args.viz]
+    if args.wandb:
+        viz = cfg_dict.get("viz", [])
+        if isinstance(viz, str):
+            viz = [viz]
+        if not isinstance(viz, list):
+            viz = []
+        if "wandb" not in viz:
+            viz.append("wandb")
+        cfg_dict["viz"] = viz
+        cfg_dict["wandb_project"] = str(args.wandb_project)
     if args.video_interval is not None:
         cfg_dict["video_interval"] = int(args.video_interval)
     if args.logdir is not None:

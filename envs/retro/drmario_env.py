@@ -148,6 +148,13 @@ class DrMarioRetroEnv(gym.Env):
         self.rom_path = Path(rom_path).expanduser() if rom_path is not None else None
         self.render_mode = render_mode
         self.level = level
+        # "Curriculum level" is an extension used by scripted curricula. For
+        # non-negative levels, it matches the ROM level selection. For negative
+        # levels, we interpret it as a synthetic difficulty stage (e.g., fewer
+        # viruses) while still selecting level 0 in the ROM.
+        self._curriculum_level = int(level)
+        self._task_goal_mode: str = "viruses"  # viruses|any_clear
+        self._synthetic_virus_target: Optional[int] = None
         self.backend_name = (backend or os.environ.get("DRMARIO_BACKEND", "libretro")).lower()
         self._backend_kwargs = dict(backend_kwargs or {})
         if self.core_path is not None and "core_path" not in self._backend_kwargs:
@@ -262,6 +269,139 @@ class DrMarioRetroEnv(gym.Env):
         self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
         self._backend_reset_done = False
         self._prev_height_penalty = 0.0
+
+    def _configure_task_from_level(self) -> None:
+        """Configure synthetic task parameters derived from `self.level`.
+
+        Convention used by the scripted curriculum:
+          - level  0: 4 viruses (vanilla)
+          - level -1: 3 viruses
+          - level -2: 2 viruses
+          - level -3: 1 virus
+          - level -4: 0 viruses, goal = "any 4-match" (first clear event)
+        """
+
+        lvl = int(getattr(self, "level", 0) or 0)
+        self._curriculum_level = lvl
+        self._synthetic_virus_target = None
+        self._task_goal_mode = "viruses"
+
+        if lvl < 0:
+            # For now we only support the first few synthetic levels.
+            target = max(0, 4 + lvl)
+            self._synthetic_virus_target = int(target)
+            if target == 0:
+                self._task_goal_mode = "any_clear"
+
+    @staticmethod
+    def _to_bcd(value: int) -> int:
+        v = max(0, int(value))
+        return ((v // 10) << 4) | (v % 10)
+
+    def _apply_synthetic_virus_target(self, target: int, *, patch_counter: bool) -> None:
+        """Patch the bottle RAM to contain exactly `target` virus tiles.
+
+        This is used for scripted curriculum stages (negative levels) to create
+        easier tasks while still using the real ROM dynamics.
+
+        Notes:
+          - Requires a backend that supports `write_ram` (libretro does).
+          - Virus selection is randomized using the env's RNG so it's
+            deterministic under seeding but still provides variety.
+          - When `patch_counter` is True, also patches the RAM virus counter
+            (`p1_virusLeft`, usually $0324) to keep the ROM's stage-clear logic
+            consistent with the patched board.
+        """
+
+        if not self._using_backend or self._backend is None:
+            return
+        writer = getattr(self._backend, "write_ram", None)
+        if not callable(writer):
+            return
+
+        target_int = max(0, int(target))
+        ram_arr = self._read_ram_array(refresh=True)
+        if ram_arr is None:
+            return
+
+        bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
+        base_hex = bottle.get("base_addr") if isinstance(bottle, dict) else None
+        stride_val = bottle.get("stride") if isinstance(bottle, dict) else None
+        try:
+            base_addr = int(base_hex, 16) if base_hex else 0x0400
+        except Exception:
+            base_addr = 0x0400
+        try:
+            stride = int(stride_val) if stride_val is not None else 8
+        except Exception:
+            stride = 8
+
+        virus_addrs: list[int] = []
+        H = int(getattr(ram_specs, "STATE_HEIGHT", 16))
+        W = int(getattr(ram_specs, "STATE_WIDTH", 8))
+        ram_len = int(ram_arr.shape[0])
+
+        for r in range(H):
+            row_base = int(base_addr + r * stride)
+            for c in range(W):
+                addr = int(row_base + c)
+                if addr < 0 or addr >= ram_len:
+                    continue
+                tile = int(ram_arr[addr]) & 0xFF
+                if (tile & 0xF0) == int(getattr(ram_specs, "T_VIRUS", 0xD0)):
+                    virus_addrs.append(addr)
+
+        if target_int >= len(virus_addrs):
+            # Nothing to remove (or already below target).
+            return
+
+        keep: set[int]
+        if target_int <= 0:
+            keep = set()
+        else:
+            try:
+                keep = set(int(v) for v in self._rng.choice(virus_addrs, size=target_int, replace=False))
+            except Exception:
+                # Deterministic fallback: keep the first N in address order.
+                keep = set(int(v) for v in sorted(virus_addrs)[:target_int])
+
+        patches: Dict[int, int] = {}
+        empty_tile = int(getattr(ram_specs, "FIELD_EMPTY", 0xFF))
+        for addr in virus_addrs:
+            if int(addr) not in keep:
+                patches[int(addr)] = empty_tile
+
+        if patch_counter:
+            viruses_spec = self._ram_offsets.get("viruses") if isinstance(self._ram_offsets, dict) else None
+            counter_hex = viruses_spec.get("remaining_addr") if isinstance(viruses_spec, dict) else None
+            try:
+                counter_addr = int(counter_hex, 16) if counter_hex else 0x0324
+            except Exception:
+                counter_addr = 0x0324
+            if 0 <= counter_addr < ram_len:
+                patches[int(counter_addr)] = int(self._to_bcd(target_int))
+
+        if not patches:
+            return
+
+        items = sorted(patches.items())
+        chunk_start: Optional[int] = None
+        chunk_values: list[int] = []
+        for addr, value in items:
+            if chunk_start is None:
+                chunk_start = int(addr)
+                chunk_values = [int(value) & 0xFF]
+            elif int(addr) == int(chunk_start) + len(chunk_values):
+                chunk_values.append(int(value) & 0xFF)
+            else:
+                writer(int(chunk_start), chunk_values)
+                chunk_start = int(addr)
+                chunk_values = [int(value) & 0xFF]
+        if chunk_start is not None and chunk_values:
+            writer(int(chunk_start), chunk_values)
+
+        self._ram_cache = None
+        self._read_ram_array(refresh=True)
 
     # ------------------------------------------------------------------
     # Canonical termination detection (state/RAM mode)
@@ -1066,9 +1206,12 @@ class DrMarioRetroEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self._rng = np.random.RandomState(seed)
+        self._configure_task_from_level()
         self._t = 0
         self._viruses_remaining = 8
-        self._t_max = get_level_timeout(self.level)
+        # Negative "curriculum levels" still run the ROM at level 0; timeouts
+        # should follow the closest real level.
+        self._t_max = get_level_timeout(max(0, int(getattr(self, "level", 0) or 0)))
         self._state_viz_last_t = -1
         self._pix_stack = None
         self._state_stack = None
@@ -1161,11 +1304,10 @@ class DrMarioRetroEnv(gym.Env):
                 self._maybe_auto_start(opts)
             except Exception as exc:
                 warnings.warn(f"Auto-start sequence failed: {exc}")
-            # Auto-start advances emulator frames but `_backend_step_buttons`
-            # intentionally does not rebuild `_state_cache` (to keep step() fast).
-            # Rebuild canonical state once here so reset() returns a consistent
-            # observation/info snapshot.
             try:
+                if self._synthetic_virus_target is not None:
+                    patch_counter = bool(self._synthetic_virus_target > 0 and self._task_goal_mode != "any_clear")
+                    self._apply_synthetic_virus_target(self._synthetic_virus_target, patch_counter=patch_counter)
                 ram_arr = self._read_ram_array(refresh=True)
                 if ram_arr is not None:
                     ram_bytes = ram_arr.tobytes()
@@ -1188,12 +1330,20 @@ class DrMarioRetroEnv(gym.Env):
                     self._frames_until_drop_val = self._state_cache.ram_vals.gravity_counter
             except Exception as exc:
                 warnings.warn(f"Failed to rebuild state cache after auto-start: {exc}")
-        # Initialize viruses remaining from RAM if available
-        vcount = self._extract_virus_count()
-        if vcount is not None:
-            self._viruses_remaining = vcount
-        self._viruses_initial = max(1, self._viruses_remaining)
-        self._viruses_prev = self._viruses_remaining
+
+        # Initialize viruses remaining from the rendered board (authoritative).
+        vcount_state = None
+        if self._state_cache is not None:
+            try:
+                vcount_state = int(self._state_cache.calc.viruses_remaining)
+            except Exception:
+                vcount_state = None
+        if vcount_state is None:
+            vcount_state = self._extract_virus_count()
+        if vcount_state is not None:
+            self._viruses_remaining = int(vcount_state)
+        self._viruses_initial = int(self._viruses_remaining)
+        self._viruses_prev = int(self._viruses_remaining)
         # Reset holds
         self._hold_left = self._hold_right = self._hold_down = False
         obs = self._observe(risk_tau=(options.get("risk_tau") if options else self.default_risk_tau))
@@ -1207,8 +1357,12 @@ class DrMarioRetroEnv(gym.Env):
         info: Dict[str, Any] = {
             "viruses_remaining": self._viruses_remaining,
             "level": self.level,
+            "curriculum_level": int(getattr(self, "_curriculum_level", self.level)),
+            "task_mode": str(getattr(self, "_task_goal_mode", "viruses")),
             "rng_randomize": bool(getattr(self, "rng_randomize", False)),
         }
+        if self._synthetic_virus_target is not None:
+            info["synthetic_virus_target"] = int(self._synthetic_virus_target)
         info["raw_ram"] = self._raw_ram_bytes()
         if self._last_rng_seed_bytes is not None:
             info["rng_seed"] = self._last_rng_seed_bytes
@@ -1434,6 +1588,8 @@ class DrMarioRetroEnv(gym.Env):
         nonvirus_bonus = 0.0
         height_penalty_raw = 0.0
         height_penalty_delta = 0.0
+        tiles_cleared_total = 0
+        tiles_cleared_non_virus = 0
         if state_prev_frame is not None and state_next_frame is not None:
             s_prev_latest_frame = state_prev_frame
             s_next_latest_frame = state_next_frame
@@ -1450,6 +1606,8 @@ class DrMarioRetroEnv(gym.Env):
                 # Heuristics below are superseded by canonical RAM checks in state mode; keep
                 # reward signals but gate them based on coefficients for efficiency.
                 cleared_non_virus = total_cleared - delta_v
+                tiles_cleared_total = int(total_cleared)
+                tiles_cleared_non_virus = int(max(0.0, float(cleared_non_virus)))
                 if cleared_non_virus > 0 and float(self.reward_cfg.non_virus_clear_bonus) != 0.0:
                     nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
                     r_env += nonvirus_bonus
@@ -1496,23 +1654,42 @@ class DrMarioRetroEnv(gym.Env):
 
         r_env += self.reward_cfg.virus_clear_bonus * float(delta_v)
 
+        task_mode = str(getattr(self, "_task_goal_mode", "viruses") or "viruses")
+        goal_achieved = False
+        goal_reason: Optional[str] = None
+
         # Canonical termination from RAM (state mode): overrides any heuristic earlier.
         can_fail, can_clear = self._canonical_ram_outcome()
         if self.obs_mode == "state":
             if can_fail is True:
                 topout = True
                 done = True
-            elif can_clear is True:
+            elif task_mode == "viruses" and can_clear is True:
+                goal_achieved = True
+                goal_reason = "clear"
                 # Prefer clear over any prior heuristic failure
                 topout = False
                 done = True
 
-        # Terminal conditions
-        if self._viruses_remaining == 0 and not topout:
+        # Task-specific terminal conditions.
+        if not topout:
+            if task_mode == "any_clear":
+                # Curriculum level -4: treat the first clear event (a 4-match)
+                # as the terminal success condition.
+                if tiles_cleared_total >= 4:
+                    goal_achieved = True
+                    goal_reason = "match"
+            else:
+                # Default Dr. Mario objective: eliminate all viruses.
+                if self._viruses_remaining == 0:
+                    goal_achieved = True
+                    goal_reason = "clear"
+
+        if goal_achieved and not topout:
             r_env += self.reward_cfg.terminal_clear_bonus
             done = True
             self._in_game = False
-            self._prev_terminal = self._last_terminal = "clear"
+            self._prev_terminal = self._last_terminal = str(goal_reason or "clear")
         if topout:
             r_env += self.reward_cfg.topout_penalty
             self._prev_terminal = self._last_terminal = "topout"
@@ -1568,7 +1745,15 @@ class DrMarioRetroEnv(gym.Env):
             "placement_height_diff": None if placement_height_diff is None else float(placement_height_diff),
             "action_penalty": float(step_action_penalty),
             "action_events": int(action_events),
-            "cleared": bool(self._viruses_remaining == 0 and not topout),
+            "tiles_cleared_total": int(tiles_cleared_total),
+            "tiles_cleared_non_virus": int(tiles_cleared_non_virus),
+            "task_mode": str(task_mode),
+            "curriculum_level": int(getattr(self, "_curriculum_level", self.level)),
+            "synthetic_virus_target": None
+            if getattr(self, "_synthetic_virus_target", None) is None
+            else int(getattr(self, "_synthetic_virus_target")),
+            "goal_achieved": bool(goal_achieved),
+            "cleared": bool(goal_achieved),
             "topout": bool(topout),
             "backend_active": bool(self._using_backend),
             "terminal_reason": self._last_terminal,

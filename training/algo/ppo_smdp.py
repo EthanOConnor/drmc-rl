@@ -140,6 +140,12 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.batch_lengths: deque[int] = deque(maxlen=100)
         self.batch_viruses: deque[float] = deque(maxlen=100)
         self.batch_decisions: deque[int] = deque(maxlen=100)
+
+        # Lightweight perf counters (used by debug UI via RateLimitedVecEnv hooks).
+        self._perf_inference_calls: int = 0
+        self._perf_inference_sec_total: float = 0.0
+        self._perf_last_inference_sec: float = 0.0
+        self._last_update_step: int = 0
         
         self.checkpoint_dir = Path(getattr(cfg, "logdir", "runs/smdp_ppo")) / "checkpoints"
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -255,10 +261,31 @@ class SMDPPPOAdapter(AlgoAdapter):
             
             update_time = time.time() - update_start
             metrics["perf/update_sec"] = update_time
+
+            frames_since_update = int(self.global_step - self._last_update_step)
+            self._last_update_step = int(self.global_step)
+            try:
+                if hasattr(self.env, "record_update"):
+                    self.env.record_update(float(update_time), frames=frames_since_update)
+            except Exception:
+                pass
             
             elapsed = time.time() - start_time
             metrics["perf/sps"] = float(self.global_step / max(elapsed, 1e-6))
             metrics["perf/dps"] = float(self.decision_step / max(elapsed, 1e-6))  # decisions/sec
+
+            # Inference timing (policy forward passes outside the PPO update).
+            metrics["perf/inference_calls"] = float(self._perf_inference_calls)
+            metrics["perf/inference_sec_total"] = float(self._perf_inference_sec_total)
+            metrics["perf/last_inference_ms"] = float(self._perf_last_inference_sec) * 1000.0
+            if self._perf_inference_calls > 0:
+                metrics["perf/inference_ms_avg"] = (
+                    float(self._perf_inference_sec_total) * 1000.0 / float(self._perf_inference_calls)
+                )
+            if self.global_step > 0:
+                metrics["perf/inference_ms_per_frame"] = (
+                    float(self._perf_inference_sec_total) * 1000.0 / float(self.global_step)
+                )
             
             self._log_metrics(metrics)
             self.event_bus.emit("update_end", step=self.global_step, **metrics)
@@ -281,7 +308,17 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask_t = torch.from_numpy(mask).unsqueeze(0).to(self.device)
         colors_t = torch.from_numpy(pill_colors).unsqueeze(0).to(self.device)
         
+        t0 = time.perf_counter()
         logits_map, value = self.net(obs_t, colors_t, mask_t)
+        dt = float(time.perf_counter() - t0)
+        self._perf_inference_calls += 1
+        self._perf_inference_sec_total += dt
+        self._perf_last_inference_sec = dt
+        try:
+            if hasattr(self.env, "record_inference"):
+                self.env.record_inference(dt)
+        except Exception:
+            pass
         
         return logits_map.squeeze(0), float(value.squeeze().item())
         

@@ -15,6 +15,7 @@ enters `nextAction_pillFalling` (i.e., the player can control the new pill).
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
@@ -49,6 +50,7 @@ class _DecisionContext:
     snapshot: PillSnapshot
     board: BoardState
     reach: SpawnReachability
+    planner_build_sec: float = 0.0
 
 
 class DrMarioPlacementEnv(gym.Wrapper):
@@ -70,6 +72,18 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._max_wait_frames = int(max_wait_frames)
         self._debug = bool(debug)
         self._ctx: Optional[_DecisionContext] = None
+        # The NES exposes a monotonically increasing spawn counter (`pill_counter`,
+        # RAM $0310) that increments whenever a new pill appears.
+        #
+        # The macro env must be *spawn-latched*: one decision per pill spawn, not
+        # one per falling frame. We therefore treat a pill as "consumed" once we
+        # either (a) execute a macro plan for it, or (b) determine that there are
+        # no feasible in-bounds macro actions (spawn-blocked / immediate top-out).
+        #
+        # While a pill is falling, `currentP_nextAction == nextAction_pillFalling`
+        # stays true for many frames; `pill_counter` is what lets us distinguish
+        # "still the same spawn" vs "new spawn".
+        self._consumed_spawn_id: Optional[int] = None
         self._last_obs: Any = None
         self._last_info: Dict[str, Any] = {}
 
@@ -81,15 +95,38 @@ class DrMarioPlacementEnv(gym.Wrapper):
             raise RuntimeError("Underlying env does not expose _state_cache (state mode required)")
         return state
 
+    def _spawn_id(self, state: DrMarioState) -> Optional[int]:
+        try:
+            spawn_id = getattr(state.ram_vals, "pill_counter", None)
+            return int(spawn_id) if spawn_id is not None else None
+        except Exception:
+            return None
+
     def _at_decision_point(self, state: DrMarioState) -> bool:
-        # Decision point == currentP_nextAction == pillFalling, and a falling pill exists.
+        # "Controllable pill" state (player inputs are interpreted) is indicated
+        # by `currentP_nextAction == nextAction_pillFalling` and a present
+        # falling pill mask.
+        #
+        # This is true for *many* consecutive frames while the capsule falls, so
+        # we additionally gate on the spawn counter to ensure one macro decision
+        # per spawn.
         nxt = _read_u8(state.ram.bytes, ZP_CURRENT_P_NEXT_ACTION)
         if nxt != NEXT_ACTION_PILL_FALLING:
             return False
         try:
-            return bool(state.calc.falling_mask.any())
+            if not bool(state.calc.falling_mask.any()):
+                return False
         except Exception:
             return False
+
+        spawn_id = self._spawn_id(state)
+        if spawn_id is None:
+            # Fallback for test stubs / unknown RAM layouts: treat any
+            # controllable falling-pill state as a decision.
+            return True
+        if self._consumed_spawn_id is None:
+            return True
+        return int(spawn_id) != int(self._consumed_spawn_id)
 
     def _clear_holds(self) -> None:
         base = self.env.unwrapped
@@ -109,6 +146,12 @@ class DrMarioPlacementEnv(gym.Wrapper):
     def _decision_info(self, ctx: _DecisionContext) -> Dict[str, Any]:
         snap = ctx.snapshot
         info: Dict[str, Any] = {}
+        # Emit planner-build timing once per reachability computation so UI-side
+        # perf counters reflect actual work (invalid-action loops reuse the same
+        # cached ctx and should not count as additional build calls).
+        if float(ctx.planner_build_sec) > 0.0:
+            info["perf/planner_build_sec"] = float(ctx.planner_build_sec)
+            ctx.planner_build_sec = 0.0
         info["placements/legal_mask"] = ctx.reach.legal_mask.copy()
         info["placements/feasible_mask"] = ctx.reach.feasible_mask.copy()
         info["placements/costs"] = ctx.reach.costs.copy()
@@ -134,7 +177,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         offsets = getattr(self.env.unwrapped, "_ram_offsets", {})
         snap = PillSnapshot.from_state(state, offsets)
         board = BoardState.from_planes(state.calc.planes)
+        t0 = time.perf_counter()
         reach = self._planner.build_spawn_reachability(board, snap)
+        planner_build_sec = float(time.perf_counter() - t0)
         # Symmetry reduction: identical colors => drop H-/V- duplicates.
         if int(snap.colors[0]) == int(snap.colors[1]):
             reach = SpawnReachability(
@@ -162,7 +207,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
                         to_drop.append(a)
                 for a in to_drop:
                     reach.action_to_terminal_node.pop(a, None)
-        return _DecisionContext(snapshot=snap, board=board, reach=reach)
+        return _DecisionContext(snapshot=snap, board=board, reach=reach, planner_build_sec=planner_build_sec)
 
     def _advance_until_decision(self, obs: Any, info: Dict[str, Any]) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
         """Advance the underlying env until the next macro decision point."""
@@ -170,16 +215,37 @@ class DrMarioPlacementEnv(gym.Wrapper):
         total_reward = 0.0
         terminated = False
         truncated = False
+        saw_no_feasible = False
 
         self._clear_holds()
+        # Invalidate any cached decision context while we advance the underlying
+        # per-frame env.
+        self._ctx = None
         for _ in range(self._max_wait_frames):
             state = self._state_cache()
             if self._at_decision_point(state):
-                self._ctx = self._build_decision_context()
-                out_info = dict(info or {})
-                out_info.update(self._decision_info(self._ctx))
-                out_info["placements/needs_action"] = True
-                return obs, out_info, float(total_reward), terminated, truncated
+                ctx = self._build_decision_context()
+                # If there are *no feasible in-bounds placements* for this spawn,
+                # there is no meaningful macro-action to request. This can happen
+                # when the spawn is immediately blocked and the capsule will lock
+                # offscreen (top-out) before the player gets a usable input window.
+                #
+                # In that situation we keep stepping NOOP until the underlying env
+                # transitions (lock / top-out / reset) or a later spawn becomes
+                # controllable.
+                if int(ctx.reach.feasible_mask.sum()) > 0:
+                    self._ctx = ctx
+                    out_info = dict(info or {})
+                    out_info.update(self._decision_info(ctx))
+                    out_info["placements/needs_action"] = True
+                    if saw_no_feasible:
+                        out_info["placements/no_feasible_actions"] = True
+                    return obs, out_info, float(total_reward), terminated, truncated
+                saw_no_feasible = True
+                # Mark this spawn as consumed (no feasible actions) so we don't
+                # treat subsequent falling frames as new decisions.
+                if ctx.snapshot.spawn_id is not None:
+                    self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
 
             obs, r, terminated, truncated, info = self.env.step(int(Action.NOOP))
             total_reward += float(r)
@@ -189,7 +255,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
         # Timed out or terminated.
         out_info = dict(info or {})
         out_info["placements/needs_action"] = False
-        if self._debug:
+        if saw_no_feasible:
+            out_info["placements/no_feasible_actions"] = True
+        if self._debug and not (terminated or truncated):
             out_info["placements/wait_timeout"] = True
         return obs, out_info, float(total_reward), terminated, truncated
 
@@ -200,6 +268,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._last_obs = obs
         self._last_info = dict(info or {})
         self._ctx = None
+        self._consumed_spawn_id = None
         obs, info, _, terminated, truncated = self._advance_until_decision(obs, self._last_info)
         self._last_obs = obs
         self._last_info = dict(info or {})
@@ -208,11 +277,15 @@ class DrMarioPlacementEnv(gym.Wrapper):
         return obs, info
 
     def step(self, action: int):
-        frames_start = int(getattr(self.env.unwrapped, "_t", 0) or 0)
+        frames_start_any = int(getattr(self.env.unwrapped, "_t", 0) or 0)
 
         total_reward = 0.0
         terminated = False
         truncated = False
+        plan_calls = 0
+        plan_latency_sec_total = 0.0
+        plan_latency_sec_max = 0.0
+        plan_options = 0
 
         # Ensure we are at a decision point.
         state = self._state_cache()
@@ -223,15 +296,37 @@ class DrMarioPlacementEnv(gym.Wrapper):
             total_reward += float(r_wait)
             self._last_obs, self._last_info = obs, dict(info or {})
             if terminated or truncated:
-                frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
+                frames_end = int(getattr(self.env.unwrapped, "_t", frames_start_any) or frames_start_any)
                 out_info = dict(self._last_info)
-                out_info["placements/tau"] = max(1, frames_end - frames_start)
+                out_info["placements/tau"] = max(1, frames_end - frames_start_any)
                 return obs, float(total_reward), terminated, truncated, out_info
+
+        # Start τ after we have reached a decision for this spawn.
+        frames_start = int(getattr(self.env.unwrapped, "_t", frames_start_any) or frames_start_any)
 
         if self._ctx is None:
             self._ctx = self._build_decision_context()
 
         ctx = self._ctx
+        # If the planner reports no feasible in-bounds macro placements, we
+        # cannot accept any `action` and must advance the underlying env until
+        # it either terminates (top-out) or reaches a later controllable spawn.
+        plan_options = int(ctx.reach.feasible_mask.sum())
+        if plan_options == 0:
+            # Consume this spawn (no feasible macro actions) to avoid returning
+            # repeated "decisions" while the offscreen pill locks/top-outs.
+            if ctx.snapshot.spawn_id is not None:
+                self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
+            obs, info, r_wait, terminated, truncated = self._advance_until_decision(self._last_obs, self._last_info)
+            total_reward += float(r_wait)
+            self._last_obs, self._last_info = obs, dict(info or {})
+            frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
+            out_info = dict(self._last_info)
+            out_info["placements/no_feasible_actions"] = True
+            out_info["placements/plan_count_last"] = float(plan_options)
+            out_info["placements/tau"] = max(1, frames_end - frames_start)
+            out_info["placements/needs_action"] = bool(out_info.get("placements/needs_action", False))
+            return obs, float(total_reward), terminated, truncated, out_info
         # Refresh decision context if spawn id changed.
         try:
             snap_now = PillSnapshot.from_state(self._state_cache(), getattr(self.env.unwrapped, "_ram_offsets", {}))
@@ -241,16 +336,33 @@ class DrMarioPlacementEnv(gym.Wrapper):
         except Exception:
             pass
 
+        plan_t0 = time.perf_counter()
         plan = self._planner.plan_action(ctx.reach, int(action))
+        plan_latency_sec_total = float(time.perf_counter() - plan_t0)
+        plan_calls = 1
+        plan_latency_sec_max = max(plan_latency_sec_max, plan_latency_sec_total)
         if plan is None:
             # Invalid choice; surface mask again and request a new decision.
             out_info = dict(self._last_info)
             out_info.update(self._decision_info(ctx))
             out_info["placements/needs_action"] = True
             out_info["placements/invalid_action"] = int(action)
+            out_info["perf/planner_plan_sec"] = float(plan_latency_sec_total)
+            out_info["placements/plan_calls"] = int(plan_calls)
+            out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
+            out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
+            out_info["placements/plan_count_last"] = float(plan_options)
             frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
             out_info["placements/tau"] = max(1, frames_end - frames_start)
             return self._last_obs, 0.0, False, False, out_info
+
+        # We are committing to a macro action for this spawn; mark it as
+        # consumed so `_advance_until_decision` ignores subsequent falling frames
+        # until the next pill spawns.
+        if ctx.snapshot.spawn_id is not None:
+            self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
+        # Invalidate cached ctx while we execute the plan.
+        self._ctx = None
 
         # Execute the per-frame script.
         obs = self._last_obs
@@ -276,6 +388,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
         out_info = dict(self._last_info)
         out_info["placements/tau"] = int(tau)
         out_info["placements/needs_action"] = bool(out_info.get("placements/needs_action", False))
+        out_info["perf/planner_plan_sec"] = float(plan_latency_sec_total)
+        out_info["placements/plan_calls"] = int(plan_calls)
+        out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
+        out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
+        out_info["placements/plan_count_last"] = float(plan_options)
         return obs, float(total_reward), terminated, truncated, out_info
 
 

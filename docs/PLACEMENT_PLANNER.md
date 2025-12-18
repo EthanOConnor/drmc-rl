@@ -105,10 +105,18 @@ Module: `envs/retro/placement_env.py`
 
 `DrMarioPlacementEnv` wraps `DrMarioRetroEnv` (state observations only) and:
 
-- Detects decision points using `currentP_nextAction == nextAction_pillFalling`
-  and a present falling pill mask.
+- Detects decision points when:
+  1) `currentP_nextAction == nextAction_pillFalling` (inputs are interpreted),
+  2) a falling pill exists, and
+  3) the pill spawn counter (`pill_counter`, RAM `$0310`) differs from the last
+     *consumed* spawn id (spawn-latching: exactly one macro decision per pill).
 - On reset and after each macro step, advances with `Action.NOOP` until a decision
   point, then emits masks/costs in `info`.
+- If a “decision point” is reached but the planner reports **zero feasible
+  in-bounds macro actions** (`placements/options == 0`), the wrapper treats it as
+  a non-decision (spawn-blocked / immediate lock / top-out edge cases) and
+  continues stepping NOOP until the env transitions or a later controllable spawn
+  appears. These macro steps are flagged with `placements/no_feasible_actions`.
 - On `step(action)`, executes the plan’s per-frame script, then advances until the
   next decision point and returns aggregated reward plus `placements/tau`.
 

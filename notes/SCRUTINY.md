@@ -143,10 +143,13 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ## 2025-12-18 – Macro Placement Planner: New Risks
 
-**R5. Decision-point detection depends on a single ZP state (`currentP_nextAction`)**
-- **Concern**: `DrMarioPlacementEnv` gates decisions on `currentP_nextAction == pillFalling` and a non-empty falling mask.
-- **Risk**: ROM revision differences, menu/ending edge cases, or 2P modes could violate this heuristic and cause timeouts or planning during non-controllable frames.
-- **Mitigation**: Add a small battery of emulator-driven regression traces (spawn/settle/ending) and consider additional guards (e.g., gameplay mode `$0046`, player count `$0727`).
+**R5. Decision-point detection depends on ZP state + spawn counter**
+- **Concern**: `DrMarioPlacementEnv` gates decisions on:
+  - `currentP_nextAction == pillFalling`,
+  - a non-empty falling mask, and
+  - `pill_counter` (`$0310`) differing from the last consumed spawn.
+- **Risk**: ROM revision differences, menu/ending edge cases, or 2P modes could violate these assumptions and cause timeouts or planning during non-controllable frames.
+- **Mitigation**: Add emulator-driven regression traces (spawn/settle/ending) and consider additional guards (e.g., gameplay mode `$0046`, player count `$0727`).
 
 **R6. Snapshot vs state-tensor address mismatch (ZP vs P1 RAM mirror)**
 - **Concern**: The planner reads falling pill state from zero-page current-player addresses, while `ram_to_state` renders the falling mask from P1 RAM buffers.
@@ -171,6 +174,16 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Downstream code that assumes “always 4 orientations” could log misleading action stats if it doesn’t account for mask structure.
 - **Mitigation**: Keep masking entirely within `placements/feasible_mask`/`legal_mask` (policy is already mask-aware) and surface option counts via `placements/options`.
 
+**R14. Spawn-blocked “dead decisions” can produce empty feasible masks**
+- **Concern**: Some spawns are immediately blocked (capsule locks offscreen/top-out before any actionable input window). The reachability planner correctly reports `placements/options == 0` for in-bounds macro placements.
+- **Risk**: If the macro env returns `placements/needs_action == True` with an all-false feasible mask, policies can enter an infinite invalid-action loop (no emulator progress), freezing the debug UI and collapsing training metrics.
+- **Mitigation**: `DrMarioPlacementEnv` now treats `options==0` decision points as non-decision frames and continues stepping NOOP until the env transitions (lock/top-out) or a later controllable spawn appears. Regression test: `tests/test_placement_env_no_feasible_actions.py`.
+
+**R15. Spawn-latching depends on `pill_counter` semantics**
+- **Concern**: The spawn-latched macro env relies on `pill_counter` (`$0310`) being a reliable “new pill appeared” signal and on it advancing *before* the first controllable `pillFalling` frame we want to treat as a decision.
+- **Risk**: If a core/ROM revision reports `pill_counter` differently (e.g., increments earlier/later than expected, or is temporarily stale during reset/auto-start), the wrapper could (a) surface a decision late, shrinking feasibility masks, or (b) fail to surface a decision, hitting `max_wait_frames` timeouts.
+- **Mitigation**: Keep decision detection conjunctive (`pillFalling` + falling mask + spawn counter change) and validate via recorded emulator traces; if needed, extend gating with additional “entered controllable state” transitions or gameplay-mode guards.
+
 ---
 
 ## 2025-12-18 – Unified Runner + Debug TUI: New Risks
@@ -194,3 +207,28 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: `envs/backends/libretro_backend.py` copies the full 240×256 frame buffer in the libretro video callback on every `retro_run()` (even for state-mode runs that only need RAM).
 - **Risk**: Reset/start sequences and training throughput can become effectively near-realtime (seconds per reset), which makes RL experiments impractically slow and can hide logic issues behind “it’s just slow”.
 - **Mitigation**: Add an option for “RAM-only” stepping (skip video copies unless explicitly requested), and ensure reset/start sequences don’t pay video costs when `obs_mode=state` and rendering/video logging are disabled.
+
+**R16. Episode length reporting depends on `placements/tau`**
+- **Concern**: The vector-env wrapper injects `info["episode"]["l"]` as emulated frames using `placements/tau` when present.
+- **Risk**: If an env forgets to emit `placements/tau` (or emits an incorrect value), episode lengths will be misreported and “time-to-clear” metrics can become misleading even if rewards/training are otherwise fine.
+- **Mitigation**: Keep `placements/tau` required for macro envs (tests already cover presence for placement env steps) and add lightweight sanity checks (e.g., `tau >= 1`, `tau` not exploding) when debugging. Consider adding an integration test that asserts monotonic frame counters for a short recorded trace.
+
+**R17. Scripted curriculum depends on RAM patching support**
+- **Concern**: The curriculum uses `write_ram` to patch the bottle buffer (reduce virus count) at reset time.
+- **Risk**: Backends without `write_ram` (or cores that don’t expose RAM writes) will silently ignore the patch, yielding unexpected virus counts and invalid curriculum statistics.
+- **Mitigation**: Treat libretro as the required backend for curriculum runs; surface `synthetic_virus_target`/`curriculum_level` in `info` and the debug UI; consider adding a reset-time assertion (debug-only) that the derived virus count matches the target.
+
+**R18. “Negative levels” can confuse logging and tooling**
+- **Concern**: `env.level` is overloaded for curriculum staging, but `info["level"]` is often overwritten with `level_state` (0..20) from RAM.
+- **Risk**: External tooling may read `level` and miss the curriculum stage; comparisons across runs can become ambiguous.
+- **Mitigation**: Log and display `curriculum_level`/`curriculum/env_level` explicitly and document that `level_state` is the ROM level.
+
+**R19. Curriculum wrapper assumes Gymnasium `autoreset_mode=NextStep`**
+- **Concern**: `CurriculumVecEnv` sets per-env `level` immediately after observing a terminal step, relying on Gymnasium’s default `autoreset_mode=NextStep` to apply it on the next call to `step()`.
+- **Risk**: If autoreset semantics change (or a custom vector env resets immediately), the next episode may start with the wrong curriculum level.
+- **Mitigation**: Keep using Gymnasium’s default vector envs (which default to `NextStep`), and if this becomes configurable, explicitly set/validate the autoreset mode in the env factory.
+
+**R20. “Any 4-match” success detection uses occupancy deltas**
+- **Concern**: The curriculum level `-4` terminates on the first clear event, detected as a drop in occupancy between consecutive state frames.
+- **Risk**: If the occupancy definition changes (e.g., counting clearing tiles as occupied), or if a non-clear event reduces occupancy, the terminal condition could misfire.
+- **Mitigation**: Keep occupancy semantics stable (`static|virus|falling`), gate success on `tiles_cleared_total >= 4`, and validate on a small suite of scripted placements.

@@ -193,3 +193,43 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Enhanced debug UI performance telemetry:
   - `emu_fps(step)` = frames/sec inside `env.step` only (planner + emu)
   - `emu_fps(total)` = frames/sec including training compute between env steps
+
+## 2025-12-18 – Codex CLI – Placement Env: Skip No-Feasible Spawns
+
+- Fixed `envs/retro/placement_env.py` to treat “decision points” with **zero feasible macro placements** (e.g., spawn-blocked top-out) as non-decision frames and keep stepping NOOP until the env transitions (lock/top-out/reset) instead of returning an empty mask that can cause an infinite invalid-action loop.
+- Added regression coverage: `tests/test_placement_env_no_feasible_actions.py`.
+
+## 2025-12-18 – Codex CLI – Debug TUI: Perf Diagnostics (Inference/Planner)
+
+- Added lightweight perf counters + timing breakdowns for interactive runs:
+  - `DrMarioPlacementEnv` now emits planner timings (`perf/planner_build_sec`, `perf/planner_plan_sec`) and legacy planner-step keys (`placements/plan_calls`, `placements/plan_latency_ms_*`).
+  - `RateLimitedVecEnv` accumulates inference/planner/update timing and exposes derived `ms/frame` and `ms/call` stats via `perf_snapshot()`.
+  - `RunnerDebugTUI` displays inference/planner/update diagnostics alongside FPS.
+- Added unit coverage: `tests/test_interactive_perf_counters.py`.
+
+## 2025-12-18 – Codex CLI – Placement Env: Spawn-Latched Decisions (Fix Excess Replanning)
+
+- Fixed `envs/retro/placement_env.py` to expose **exactly one macro decision per pill spawn** by gating decision-point detection on the ROM spawn counter (`pill_counter`, RAM `$0310`) in addition to `currentP_nextAction == nextAction_pillFalling`.
+- Marked a spawn as “consumed” once we commit to a macro plan (or when `placements/options == 0`) so we don’t surface new decisions mid-fall (prevents “options ticking down” + hundreds of extra planner/inference calls per spawn).
+- Adjusted planner-build timing emission so `perf/planner_build_sec` counts actual reachability builds (invalid-action retries reuse cached ctx).
+- Added regression coverage: `tests/test_placement_env_spawn_latch.py`.
+
+## 2025-12-18 – Codex CLI – Episode Stats + Live Return Metrics (Runner Debug UI)
+
+- Added a vector-env wrapper episode-stat injector (`training/envs/dr_mario_vec.py`) that attaches:
+  - `info["episode"] = {"r": return, "l": length_frames, "decisions": decisions}`
+  - `info["drm"]` with lightweight end-of-episode summaries (e.g., `viruses_cleared`, `top_out`, `cleared`)
+  This fixes `ret(last)`, `ret(mean100)`, and `len(last)` reporting for real envs.
+- Extended the debug TUI stats panel (`training/ui/runner_debug_tui.py`) to show:
+  - live per-episode return (`ret(curr)`), median of last 16 (`ret(med16)`), and current episode progress (`len(curr)`).
+- Added unit coverage for episode stats injection: `tests/test_vec_env_episode_stats.py`.
+- Documented the current base reward terms in `docs/REWARD_SHAPING.md`.
+
+## 2025-12-18 – Codex CLI – Scripted Curriculum + WandB Wiring
+
+- Wired `training.run --wandb/--wandb-project` into `DiagLogger` by ensuring `"wandb"` is added to `cfg.viz` when enabled.
+- Implemented a scripted curriculum based on synthetic negative levels:
+  - `DrMarioRetroEnv` interprets `level < 0` as a curriculum stage and patches the bottle RAM at reset time to reduce virus count (`-4..-1`), with `-4` using “any 4-match” (first clear event) as the success condition.
+  - Added `training/envs/curriculum.py` (`CurriculumVecEnv`) to schedule levels based on rolling clear rate and optional rehearsal of lower levels.
+  - Enabled the curriculum in `training/configs/smdp_ppo.yaml` and surfaced curriculum stats in `RunnerDebugTUI`.
+- Updated docs to reflect implemented curriculum (`docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`, `PLACEMENT_POLICY_IMPLEMENTATION.md`).

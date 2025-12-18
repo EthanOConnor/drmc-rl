@@ -396,3 +396,99 @@ tensor only when RAM is unavailable.
 **Why:** During reset/startup sequences, `_state_cache` may be temporarily stale.
 The raw counter is cheap to read and provides a reliable “game has loaded” signal
 for auto-start wait loops.
+
+### Decision: Treat empty-feasible “decision points” as non-decisions
+
+**Decision:** If `DrMarioPlacementEnv` reaches a `pillFalling` decision point but
+the placement planner reports **zero feasible in-bounds macro actions**
+(`placements/options == 0`), do **not** surface a macro decision to the agent.
+Instead, continue stepping NOOP until the underlying env transitions (lock /
+top-out / reset) or a later controllable spawn appears.
+
+**Why:** In spawn-blocked/top-out scenarios the capsule can lock offscreen before
+any meaningful input window exists. Surfacing an empty mask would otherwise
+cause policies to loop on invalid actions without advancing the emulator,
+freezing interactive runs and corrupting training data.
+
+### Decision: Interactive perf diagnostics are accumulated in `RateLimitedVecEnv`
+
+**Decision:** For `training.run --ui debug`, accumulate performance counters
+(inference/planner/update timings) inside `training.envs.interactive.RateLimitedVecEnv`,
+using:
+- env-emitted per-step timings (`perf/planner_build_sec`, `perf/planner_plan_sec`)
+- optional training-thread hooks (`record_inference`, `record_update`)
+
+**Why:** The debug UI runs in a separate thread/process context and should read a
+single thread-safe snapshot (`perf_snapshot()`) without coupling to a specific
+training algorithm or backend. This keeps overhead low and makes it easy to
+compare “emu step” vs “training compute” bottlenecks.
+
+### Decision: `DrMarioPlacementEnv` decisions are spawn-latched via `pill_counter` (RAM `$0310`)
+
+**Decision:** `DrMarioPlacementEnv` must expose *one macro decision per pill
+spawn* (not one per falling frame). Decision-point detection is therefore gated
+on the ROM spawn counter (`pill_counter`, RAM `$0310`) in addition to
+`currentP_nextAction == nextAction_pillFalling` and a present falling-pill mask.
+
+Concretely:
+- The wrapper tracks a `_consumed_spawn_id`.
+- A macro decision is only produced when `pill_counter != _consumed_spawn_id`.
+- A spawn becomes “consumed” when we commit to a macro plan for it (or when the
+  planner reports `placements/options == 0` and we auto-advance).
+
+**Why:** `nextAction_pillFalling` stays active for many consecutive frames while
+the capsule falls. Treating every `pillFalling` frame as a decision causes the
+policy to re-run inference and rebuild reachability masks *mid-fall* as the
+capsule descends (“options ticking down”), inflating planner/inference counts
+and breaking the intended SMDP semantics.
+
+### Decision: Attach `episode` stats in the vector-env wrapper (length in emulated frames)
+
+**Decision:** Normalize real Gymnasium vector env outputs to the project’s
+historical list-of-dicts `infos` format *and* attach standard episode summaries
+(`info["episode"]`) inside `training.envs.dr_mario_vec._InfoListWrapper`.
+
+Concretely, on terminal steps the wrapper injects:
+- `info["episode"]["r"]`: cumulative return since last termination
+- `info["episode"]["l"]`: episode length in **emulated frames**
+  - uses `placements/tau` when present (macro env)
+  - falls back to 1 frame per env step (controller env)
+- `info["episode"]["decisions"]`: number of wrapper `step()` calls in the episode
+
+**Why:** Multiple training adapters (`simple_pg`, `sf2_adapter`, `ppo_smdp`) and
+UIs expect `info["episode"]` to exist (matching `DummyVecEnv`). Using frames for
+`l` keeps episode “length” consistent with SMDP training where time-to-clear is
+measured in emulator frames.
+
+---
+
+## 2025-12-18 – Scripted Curriculum via Synthetic Negative Levels
+
+### Decision: Encode early curriculum stages as negative `env.level`
+
+**Decision:** Represent virus-count curriculum stages as negative `env.level`
+values (`-4..-1`) and implement them by patching the bottle RAM at reset time,
+while still selecting ROM level 0 (the only valid menu level for these stages).
+
+Mapping:
+- `level=-4`: 0 viruses; **success** = first clear event (“any 4-match”)
+- `level=-3`: 1 virus
+- `level=-2`: 2 viruses
+- `level=-1`: 3 viruses
+- `level=0`: vanilla level 0 (4 viruses)
+
+**Why:** This keeps the ROM’s real physics, timing, and clearing rules (the same
+ones used by the reachability planner) while enabling a simple, high-signal
+curriculum without introducing bespoke env ids or synthetic dynamics.
+
+### Decision: Curriculum scheduling lives in the vector-env wrapper
+
+**Decision:** Implement curriculum progression as a vector-env wrapper
+(`training.envs.curriculum.CurriculumVecEnv`) that:
+- tracks rolling clear rates,
+- updates per-env `level` via `set_attr` *after* terminal steps (works with
+  Gymnasium’s default `autoreset_mode=NextStep`), and
+- optionally rehearses lower levels with a small probability.
+
+**Why:** Training algorithms assume vector autoresets; keeping curriculum logic
+outside the env avoids coupling and makes it easy to disable/adjust via config.

@@ -166,12 +166,27 @@ def _extract_tau(info: Any) -> int:
         return 1
 
 
+def _extract_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        try:
+            value = value.item()
+        except Exception:
+            return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 class RateLimitedVecEnv:
     """Vector env wrapper that implements pause/step and frame-rate limiting."""
 
     def __init__(self, env: Any, control: PlaybackControl) -> None:
         self.env = env
         self.control = control
+        self.num_envs = int(getattr(env, "num_envs", 1))
         self._next_step_time = time.perf_counter()
         self._frames_total = 0.0
         self._fps_times: Deque[Tuple[float, float]] = deque(maxlen=240)
@@ -181,6 +196,36 @@ class RateLimitedVecEnv:
         self._last_tau_max: int = 1
         self._last_emu_fps: float = 0.0
         self._last_step_fps: float = 0.0
+        self._step_calls_total: int = 0
+        self._step_sec_total: float = 0.0
+        self._last_rewards: Optional[np.ndarray] = None
+
+        # Per-episode (level) live stats for the debug UI. This is independent of
+        # the training algorithm and uses env-returned rewards + SMDP frame
+        # counts (`placements/tau` when present).
+        self._ep_return = np.zeros(self.num_envs, dtype=np.float64)
+        self._ep_frames = np.zeros(self.num_envs, dtype=np.int64)
+        self._ep_decisions = np.zeros(self.num_envs, dtype=np.int64)
+        self._ep_return_last = np.zeros(self.num_envs, dtype=np.float64)
+        self._ep_frames_last = np.zeros(self.num_envs, dtype=np.int64)
+        self._ep_decisions_last = np.zeros(self.num_envs, dtype=np.int64)
+
+        self._planner_build_calls_total: int = 0
+        self._planner_build_sec_total: float = 0.0
+        self._planner_plan_calls_total: int = 0
+        self._planner_plan_sec_total: float = 0.0
+        self._last_planner_build_sec: float = 0.0
+        self._last_planner_plan_sec: float = 0.0
+
+        self._inference_calls_total: int = 0
+        self._inference_sec_total: float = 0.0
+        self._last_inference_sec: float = 0.0
+
+        self._update_calls_total: int = 0
+        self._update_sec_total: float = 0.0
+        self._update_frames_total: float = 0.0
+        self._last_update_sec: float = 0.0
+        self._last_update_frames: int = 0
 
     # ---------------------------- snapshot access (thread-safe)
     def latest_info(self, env_index: int = 0) -> Dict[str, Any]:
@@ -197,11 +242,91 @@ class RateLimitedVecEnv:
 
     def perf_snapshot(self) -> Dict[str, Any]:
         with self._lock:
+            frames_total = float(self._frames_total)
+
+            inference_calls = int(self._inference_calls_total)
+            inference_sec = float(self._inference_sec_total)
+            planner_build_calls = int(self._planner_build_calls_total)
+            planner_build_sec = float(self._planner_build_sec_total)
+            planner_plan_calls = int(self._planner_plan_calls_total)
+            planner_plan_sec = float(self._planner_plan_sec_total)
+            planner_calls = int(planner_build_calls + planner_plan_calls)
+            planner_sec = float(planner_build_sec + planner_plan_sec)
+
+            def _ms_per_call(sec_total: float, calls: int) -> float:
+                if calls <= 0:
+                    return 0.0
+                return float(sec_total) * 1000.0 / float(calls)
+
+            def _ms_per_frame(sec_total: float) -> float:
+                if frames_total <= 0.0:
+                    return 0.0
+                return float(sec_total) * 1000.0 / frames_total
+
             return {
+                "frames_total": frames_total,
                 "tau_max": int(self._last_tau_max),
                 "emu_fps": float(self._last_emu_fps),
                 "step_fps": float(self._last_step_fps),
+                "step_calls_total": int(self._step_calls_total),
+                "step_ms_per_frame": _ms_per_frame(float(self._step_sec_total)),
+                "reward_last": float(self._last_rewards[0]) if self._last_rewards is not None else 0.0,
+                "ep_return_curr": float(self._ep_return[0]) if self._ep_return.size else 0.0,
+                "ep_frames_curr": int(self._ep_frames[0]) if self._ep_frames.size else 0,
+                "ep_decisions_curr": int(self._ep_decisions[0]) if self._ep_decisions.size else 0,
+                "ep_return_last": float(self._ep_return_last[0]) if self._ep_return_last.size else 0.0,
+                "ep_frames_last": int(self._ep_frames_last[0]) if self._ep_frames_last.size else 0,
+                "ep_decisions_last": int(self._ep_decisions_last[0]) if self._ep_decisions_last.size else 0,
+
+                "inference_calls": inference_calls,
+                "inference_ms_per_call": _ms_per_call(inference_sec, inference_calls),
+                "inference_ms_per_frame": _ms_per_frame(inference_sec),
+                "last_inference_ms": float(self._last_inference_sec) * 1000.0,
+
+                "planner_calls": planner_calls,
+                "planner_ms_per_call": _ms_per_call(planner_sec, planner_calls),
+                "planner_ms_per_frame": _ms_per_frame(planner_sec),
+                "planner_build_calls": planner_build_calls,
+                "planner_build_ms_per_call": _ms_per_call(planner_build_sec, planner_build_calls),
+                "planner_build_ms_per_frame": _ms_per_frame(planner_build_sec),
+                "planner_plan_calls": planner_plan_calls,
+                "planner_plan_ms_per_call": _ms_per_call(planner_plan_sec, planner_plan_calls),
+                "planner_plan_ms_per_frame": _ms_per_frame(planner_plan_sec),
+                "last_planner_build_ms": float(self._last_planner_build_sec) * 1000.0,
+                "last_planner_plan_ms": float(self._last_planner_plan_sec) * 1000.0,
+
+                "update_calls": int(self._update_calls_total),
+                "update_sec_last": float(self._last_update_sec),
+                "update_frames_last": int(self._last_update_frames),
+                "update_ms_per_frame": (
+                    float(self._last_update_sec) * 1000.0 / float(self._last_update_frames)
+                    if int(self._last_update_frames) > 0
+                    else 0.0
+                ),
+                "update_ms_per_frame_avg": (
+                    float(self._update_sec_total) * 1000.0 / float(self._update_frames_total)
+                    if self._update_frames_total > 0.0
+                    else 0.0
+                ),
             }
+
+    # ---------------------------- external perf hooks (training thread)
+    def record_inference(self, duration_sec: float) -> None:
+        dur = float(max(0.0, duration_sec))
+        with self._lock:
+            self._inference_calls_total += 1
+            self._inference_sec_total += dur
+            self._last_inference_sec = dur
+
+    def record_update(self, duration_sec: float, *, frames: int = 0) -> None:
+        dur = float(max(0.0, duration_sec))
+        frame_count = int(max(0, frames))
+        with self._lock:
+            self._update_calls_total += 1
+            self._update_sec_total += dur
+            self._update_frames_total += float(frame_count)
+            self._last_update_sec = dur
+            self._last_update_frames = frame_count
 
     # ---------------------------- vector api
     def reset(self, *args: Any, **kwargs: Any):
@@ -214,6 +339,32 @@ class RateLimitedVecEnv:
             self._last_step_fps = 0.0
             self._frames_total = 0.0
             self._fps_times.clear()
+            self._step_calls_total = 0
+            self._step_sec_total = 0.0
+            self._last_rewards = None
+            self._ep_return.fill(0.0)
+            self._ep_frames.fill(0)
+            self._ep_decisions.fill(0)
+            self._ep_return_last.fill(0.0)
+            self._ep_frames_last.fill(0)
+            self._ep_decisions_last.fill(0)
+
+            self._planner_build_calls_total = 0
+            self._planner_build_sec_total = 0.0
+            self._planner_plan_calls_total = 0
+            self._planner_plan_sec_total = 0.0
+            self._last_planner_build_sec = 0.0
+            self._last_planner_plan_sec = 0.0
+
+            self._inference_calls_total = 0
+            self._inference_sec_total = 0.0
+            self._last_inference_sec = 0.0
+
+            self._update_calls_total = 0
+            self._update_sec_total = 0.0
+            self._update_frames_total = 0.0
+            self._last_update_sec = 0.0
+            self._last_update_frames = 0
         self._next_step_time = time.perf_counter()
         return obs, infos
 
@@ -264,9 +415,15 @@ class RateLimitedVecEnv:
         with self._lock:
             self._last_obs = obs
             self._last_infos = infos_seq
+            try:
+                self._last_rewards = np.asarray(rewards, dtype=np.float64).reshape(self.num_envs)
+            except Exception:
+                self._last_rewards = None
             self._last_tau_max = int(tau_max)
+            self._step_calls_total += 1
             self._frames_total += float(tau_max)
             dt = float(step_end - step_start)
+            self._step_sec_total += dt
             if dt > 1e-9:
                 self._last_step_fps = float(tau_max) / dt
             self._fps_times.append((step_end, self._frames_total))
@@ -276,6 +433,48 @@ class RateLimitedVecEnv:
                 span = float(t1 - t0)
                 if span > 1e-6:
                     self._last_emu_fps = float(f1 - f0) / span
+
+            for info in infos_seq:
+                if not isinstance(info, dict):
+                    continue
+                build_sec = _extract_float(info.get("perf/planner_build_sec"))
+                if build_sec is not None:
+                    self._planner_build_calls_total += 1
+                    self._planner_build_sec_total += float(max(0.0, build_sec))
+                    self._last_planner_build_sec = float(max(0.0, build_sec))
+                plan_sec = _extract_float(info.get("perf/planner_plan_sec"))
+                if plan_sec is not None:
+                    self._planner_plan_calls_total += 1
+                    self._planner_plan_sec_total += float(max(0.0, plan_sec))
+                    self._last_planner_plan_sec = float(max(0.0, plan_sec))
+
+            # Live per-episode stats for env0 (and friends).
+            try:
+                terminated_arr = np.asarray(terminated, dtype=bool).reshape(self.num_envs)
+                truncated_arr = np.asarray(truncated, dtype=bool).reshape(self.num_envs)
+                rewards_arr = (
+                    np.asarray(rewards, dtype=np.float64).reshape(self.num_envs)
+                    if self._last_rewards is not None
+                    else np.zeros((self.num_envs,), dtype=np.float64)
+                )
+            except Exception:
+                terminated_arr = np.zeros((self.num_envs,), dtype=bool)
+                truncated_arr = np.zeros((self.num_envs,), dtype=bool)
+                rewards_arr = np.zeros((self.num_envs,), dtype=np.float64)
+
+            for i in range(self.num_envs):
+                info_i = infos_seq[i] if i < len(infos_seq) and isinstance(infos_seq[i], dict) else {}
+                tau_i = _extract_tau(info_i)
+                self._ep_return[i] += float(rewards_arr[i])
+                self._ep_frames[i] += int(tau_i)
+                self._ep_decisions[i] += 1
+                if bool(terminated_arr[i] or truncated_arr[i]):
+                    self._ep_return_last[i] = float(self._ep_return[i])
+                    self._ep_frames_last[i] = int(self._ep_frames[i])
+                    self._ep_decisions_last[i] = int(self._ep_decisions[i])
+                    self._ep_return[i] = 0.0
+                    self._ep_frames[i] = 0
+                    self._ep_decisions[i] = 0
 
         self.control.note_step_consumed()
         return obs, rewards, terminated, truncated, infos_seq
