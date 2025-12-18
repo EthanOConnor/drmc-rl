@@ -116,7 +116,7 @@ class Rotation(Enum):
     CCW = 2  # NES "B" button: rotation index increments
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FrameAction:
     """Buttons held/pressed for one frame of planning."""
 
@@ -125,7 +125,7 @@ class FrameAction:
     rotation: Rotation
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FrameState:
     """Falling pill state at the start of a frame (planner coordinates)."""
 
@@ -141,7 +141,7 @@ class FrameState:
     locked: bool = False
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FrameNode:
     state: FrameState
     parent: int  # node index; -1 for root
@@ -149,12 +149,12 @@ class FrameNode:
     depth: int  # frames elapsed from spawn (root depth = 0)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ReachabilityConfig:
     max_frames: int = 2048
 
 
-@dataclass
+@dataclass(slots=True)
 class ReachabilityResult:
     nodes: List[FrameNode]
     terminal_nodes: Dict[Tuple[int, int, int], int]  # (x,y,rot) -> node index (locked state)
@@ -429,54 +429,260 @@ def build_reachability(
     speed_threshold: int,
     config: Optional[ReachabilityConfig] = None,
 ) -> ReachabilityResult:
-    """Enumerate all locked (x,y,rot) placements reachable from the spawn state."""
+    """Enumerate all locked (x,y,rot) placements reachable from the spawn state.
+
+    Performance note
+    ----------------
+    The reference stepper (`_step_state`) returns a new `FrameState` object for
+    every transition. A full reachability BFS can evaluate millions of
+    transitions per spawn, and allocating Python objects per transition is
+    prohibitively slow.
+
+    This implementation keeps the public API (`ReachabilityResult` with
+    `FrameNode`/`FrameState` objects) but runs the inner BFS over packed integer
+    states. We only materialize `FrameState` objects for *new* states appended to
+    the BFS tree (≈O(#visited)), not for every candidate edge (≈O(#visited×18)).
+    """
 
     cfg = config or ReachabilityConfig()
 
     if spawn_state.locked:
         raise ValueError("Spawn state cannot be locked")
-    if not _fits(cols_u16, spawn_state.x, spawn_state.y, spawn_state.rot):
-        # Unspawnable: no reachable placements.
+
+    cols = np.asarray(cols_u16, dtype=np.uint16).reshape(-1)
+    # Convert to Python ints once; inner loop wants cheap bit ops.
+    cols_i = [int(v) for v in cols.tolist()]
+
+    def fits(x: int, y: int, rot: int) -> bool:
+        x_i = int(x)
+        y_i = int(y)
+        rot_i = int(rot) & 3
+        if x_i < 0 or x_i >= GRID_WIDTH or y_i < 0 or y_i >= GRID_HEIGHT:
+            return False
+        if cols_i[x_i] & (1 << y_i):
+            return False
+        if (rot_i & 1) == 0:
+            if x_i + 1 >= GRID_WIDTH:
+                return False
+            if cols_i[x_i + 1] & (1 << y_i):
+                return False
+        else:
+            if y_i - 1 >= 0 and (cols_i[x_i] & (1 << (y_i - 1))):
+                return False
+        return True
+
+    if not fits(spawn_state.x, spawn_state.y, spawn_state.rot):
         nodes = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
         return ReachabilityResult(nodes=nodes, terminal_nodes={})
 
+    # Precompute action attributes as small ints for the hot loop.
+    action_hold_dir = [0] * len(_ACTION_SPACE)
+    action_hold_down = [0] * len(_ACTION_SPACE)
+    action_rotation = [0] * len(_ACTION_SPACE)  # 0 none, 1 cw, 2 ccw
+    for i, act in enumerate(_ACTION_SPACE):
+        action_hold_dir[i] = int(act.hold_dir.value)
+        action_hold_down[i] = 1 if act.hold_down else 0
+        if act.rotation is Rotation.CW:
+            action_rotation[i] = 1
+        elif act.rotation is Rotation.CCW:
+            action_rotation[i] = 2
+
+    LOCK_BIT = 1 << 23
+
+    def pack(x: int, y: int, rot: int, sc: int, hv: int, hd: int, parity: int) -> int:
+        return (
+            (int(x) & 0x7)
+            | ((int(y) & 0xF) << 3)
+            | ((int(rot) & 0x3) << 7)
+            | ((int(sc) & 0x7F) << 9)
+            | ((int(hv) & 0xF) << 16)
+            | ((int(hd) & 0x3) << 20)
+            | ((int(parity) & 0x1) << 22)
+        )
+
+    def step_packed(packed_state: int, act_idx: int) -> int:
+        # Decode packed state.
+        x = packed_state & 0x7
+        y = (packed_state >> 3) & 0xF
+        rot = (packed_state >> 7) & 0x3
+        sc = (packed_state >> 9) & 0x7F
+        hv = (packed_state >> 16) & 0xF
+        prev_hd = (packed_state >> 20) & 0x3
+        parity = (packed_state >> 22) & 0x1
+
+        hd = action_hold_dir[act_idx]
+        hold_down = action_hold_down[act_idx]
+        rotation = action_rotation[act_idx]
+
+        prev_left = prev_hd == 1
+        prev_right = prev_hd == 2
+        hold_left = hd == 1
+        hold_right = hd == 2
+
+        press_left = hold_left and not prev_left
+        press_right = hold_right and not prev_right
+        press_lr = press_left or press_right
+
+        down_only = bool(hold_down) and hd == 0
+        drop_triggered = False
+
+        # ---------------- Y stage (gravity / soft drop) ----------------
+        if parity != 0 and down_only:
+            drop_triggered = True
+            sc = 0
+        else:
+            sc = min(sc + 1, 0xFF)
+            if sc > int(speed_threshold):
+                drop_triggered = True
+                sc = 0
+
+        if drop_triggered:
+            if y + 1 < GRID_HEIGHT and fits(x, y + 1, rot):
+                y += 1
+            else:
+                # Immediate lock.
+                parity ^= 1
+                return pack(x, y, rot, 0, hv, hd, parity) | LOCK_BIT
+
+        # ---------------- X stage (DAS movement) ----------------
+        allow_move = False
+        if press_lr:
+            hv = 0
+            allow_move = True
+        else:
+            if hd != 0:
+                hv = min(hv + 1, 0xFF)
+                if hv >= HOR_ACCEL_SPEED:
+                    hv = HOR_RELOAD
+                    allow_move = True
+
+        if allow_move:
+            # ROM order: right check then left check.
+            if hold_right:
+                if fits(x + 1, y, rot):
+                    x += 1
+                else:
+                    hv = HOR_BLOCKED
+            if hold_left:
+                if fits(x - 1, y, rot):
+                    x -= 1
+                else:
+                    hv = HOR_BLOCKED
+
+        # ---------------- Rotate stage ----------------
+        if rotation:
+            rot0 = rot
+            if rotation == 1:
+                rot1 = (rot0 - 1) & 3
+            else:
+                rot1 = (rot0 + 1) & 3
+
+            if (rot1 & 1) == 0:
+                # Target is horizontal.
+                if fits(x, y, rot1):
+                    if hold_left and fits(x - 1, y, rot1):
+                        x -= 1
+                    rot = rot1
+                elif fits(x - 1, y, rot1):
+                    x -= 1
+                    rot = rot1
+            else:
+                if fits(x, y, rot1):
+                    rot = rot1
+
+        parity ^= 1
+        return pack(x, y, rot, sc, hv, hd, parity)
+
     nodes: List[FrameNode] = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
+    packed_nodes: List[int] = [
+        pack(
+            spawn_state.x,
+            spawn_state.y,
+            int(spawn_state.rot) & 3,
+            spawn_state.speed_counter,
+            spawn_state.hor_velocity,
+            int(spawn_state.hold_dir.value),
+            int(spawn_state.frame_parity) & FAST_DROP_MASK,
+        )
+    ]
+
     q: deque[int] = deque([0])
-    visited: Dict[int, int] = {_pack_state(spawn_state): 0}
+    visited: Dict[int, int] = {packed_nodes[0]: 0}
     terminal_nodes: Dict[Tuple[int, int, int], int] = {}
 
+    max_depth = int(cfg.max_frames)
     while q:
         idx = q.popleft()
         node = nodes[idx]
-        if node.depth >= int(cfg.max_frames):
+        if node.depth >= max_depth:
             continue
         if node.state.locked:
             continue
 
-        for action_index in range(len(_ACTION_SPACE)):
-            next_state = _step_state(cols_u16, node.state, _ACTION_SPACE[action_index], speed_threshold=speed_threshold)
-            child_depth = node.depth + 1
-            child = FrameNode(
-                state=next_state,
-                parent=idx,
-                action_index=action_index,
-                depth=child_depth,
-            )
+        packed_state = packed_nodes[idx]
+        child_depth = node.depth + 1
+        for act_idx in range(len(_ACTION_SPACE)):
+            packed_next = step_packed(packed_state, act_idx)
+            locked = bool(packed_next & LOCK_BIT)
+            packed_core = packed_next & (LOCK_BIT - 1)
+
+            if locked:
+                x = packed_core & 0x7
+                y = (packed_core >> 3) & 0xF
+                rot = (packed_core >> 7) & 0x3
+                key = (int(x), int(y), int(rot))
+                if key in terminal_nodes:
+                    continue
+                sc = (packed_core >> 9) & 0x7F
+                hv = (packed_core >> 16) & 0xF
+                hd = (packed_core >> 20) & 0x3
+                parity = (packed_core >> 22) & 0x1
+                locked_state = FrameState(
+                    x=int(x),
+                    y=int(y),
+                    rot=int(rot),
+                    speed_counter=int(sc),
+                    hor_velocity=int(hv),
+                    hold_dir=HoldDir(hd),
+                    frame_parity=int(parity),
+                    locked=True,
+                )
+                nodes.append(
+                    FrameNode(
+                        state=locked_state,
+                        parent=idx,
+                        action_index=act_idx,
+                        depth=child_depth,
+                    )
+                )
+                packed_nodes.append(packed_core)
+                terminal_nodes[key] = len(nodes) - 1
+                continue
+
+            existing = visited.get(packed_core)
+            if existing is not None:
+                continue
             child_idx = len(nodes)
-
-            if next_state.locked:
-                key = (int(next_state.x), int(next_state.y), int(next_state.rot) & 3)
-                # BFS order guarantees first hit is minimal depth; keep first.
-                if key not in terminal_nodes:
-                    nodes.append(child)
-                    terminal_nodes[key] = child_idx
-                continue
-
-            packed = _pack_state(next_state)
-            if packed in visited:
-                continue
-            visited[packed] = child_idx
-            nodes.append(child)
+            visited[packed_core] = child_idx
+            x = packed_core & 0x7
+            y = (packed_core >> 3) & 0xF
+            rot = (packed_core >> 7) & 0x3
+            sc = (packed_core >> 9) & 0x7F
+            hv = (packed_core >> 16) & 0xF
+            hd = (packed_core >> 20) & 0x3
+            parity = (packed_core >> 22) & 0x1
+            state = FrameState(
+                x=int(x),
+                y=int(y),
+                rot=int(rot),
+                speed_counter=int(sc),
+                hor_velocity=int(hv),
+                hold_dir=HoldDir(hd),
+                frame_parity=int(parity),
+                locked=False,
+            )
+            nodes.append(FrameNode(state=state, parent=idx, action_index=act_idx, depth=child_depth))
+            packed_nodes.append(packed_core)
             q.append(child_idx)
 
     return ReachabilityResult(nodes=nodes, terminal_nodes=terminal_nodes)
@@ -530,4 +736,3 @@ __all__ = [
     "reconstruct_actions",
     "frame_action_from_index",
 ]
-

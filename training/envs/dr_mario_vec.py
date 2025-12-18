@@ -281,8 +281,6 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
         def _init():
             env = gym.make(env_id, **kwargs)
             env = _wrap_last_frame_if_needed(env, frame_stack=int(env_cfg.frame_stack))
-            if seed is not None:
-                env.reset(seed=int(seed) + int(rank))
             return env
 
         return _init

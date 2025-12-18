@@ -295,7 +295,9 @@ Future enhancements:
 
 ### Slow Training
 **Symptom**: Low decisions/sec
-**Fix**: Increase `num_envs`, reduce `decisions_per_update`
+**Fix**:
+- Ensure the native reachability helper is built: `python -m tools.build_reach_native` (required for practical speed)
+- Increase `num_envs`, reduce `decisions_per_update`
 
 ## References
 

@@ -60,6 +60,27 @@ relevant counters (`speed_counter`, `hor_velocity`, held direction, frame parity
 It records the earliest locked “terminal” nodes for each reachable `(x, y, rot)`
 and parent pointers so we can reconstruct a minimal-time controller script.
 
+## Native Acceleration (Recommended for Training)
+
+Modules:
+- Native BFS: `reach_native/drm_reach_full.c`
+- Python wrapper: `envs/retro/reach_native.py`
+- Build helper: `python -m tools.build_reach_native`
+
+The Python reference BFS can be prohibitively slow when executed once per pill
+spawn. The native helper implements the same per-frame step semantics and returns
+for every reachable locked pose:
+- minimal `tau` (frames-to-lock)
+- a compact per-frame action script (indices into the stable 18-way frame action space)
+
+Backend selection is handled by `PlacementPlanner(reach_backend=...)`:
+- `auto` (default): use native if the shared library exists, else fall back to Python
+- `native`: require native (raise if missing)
+- `python`: force the reference implementation (useful as an oracle)
+
+At runtime, the macro env surfaces the chosen backend as `placements/reach_backend`
+in `info` (`native` or `python`).
+
 ## Planner (Spawn-Latched Masks + Plans)
 
 Module: `envs/retro/placement_planner.py`
@@ -70,7 +91,7 @@ Key responsibilities:
 - Build a `BoardState` occupancy bitboard from the state planes (static + viruses).
 - Compute `SpawnReachability` for the spawn:
   - `legal_mask`, `feasible_mask`, `costs` all shaped `(4, 16, 8)`
-  - `action_to_terminal_node` for reconstructing a plan to a specific action
+  - Python backend: `action_to_terminal_node` for reconstructing a plan to a specific action
 - `plan_action(reach, action)` reconstructs the per-frame controller script:
   an array of holds (`left/right/down`) plus button taps (`NOOP`, `ROTATE_A/B`).
 

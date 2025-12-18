@@ -113,6 +113,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info["placements/feasible_mask"] = ctx.reach.feasible_mask.copy()
         info["placements/costs"] = ctx.reach.costs.copy()
         info["placements/options"] = int(ctx.reach.feasible_mask.sum())
+        info["placements/reach_backend"] = "native" if ctx.reach.native is not None else "python"
         if snap.spawn_id is not None:
             info["placements/spawn_id"] = int(snap.spawn_id)
             info["pill/spawn_id"] = int(snap.spawn_id)
@@ -141,7 +142,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 feasible_mask=reach.feasible_mask.copy(),
                 costs=reach.costs.copy(),
                 reach=reach.reach,
-                action_to_terminal_node=dict(reach.action_to_terminal_node),
+                action_to_terminal_node=(
+                    dict(reach.action_to_terminal_node) if reach.action_to_terminal_node is not None else None
+                ),
+                native=reach.native,
             )
             reach.feasible_mask[2, :, :] = False
             reach.feasible_mask[3, :, :] = False
@@ -149,14 +153,15 @@ class DrMarioPlacementEnv(gym.Wrapper):
             reach.legal_mask[3, :, :] = False
             reach.costs[2, :, :] = np.inf
             reach.costs[3, :, :] = np.inf
-            # Remove disabled actions from the terminal map.
-            to_drop = []
-            for a in reach.action_to_terminal_node:
-                o = a // (GRID_HEIGHT * GRID_WIDTH)
-                if o in (2, 3):
-                    to_drop.append(a)
-            for a in to_drop:
-                reach.action_to_terminal_node.pop(a, None)
+            if reach.action_to_terminal_node is not None:
+                # Remove disabled actions from the terminal map.
+                to_drop = []
+                for a in reach.action_to_terminal_node:
+                    o = a // (GRID_HEIGHT * GRID_WIDTH)
+                    if o in (2, 3):
+                        to_drop.append(a)
+                for a in to_drop:
+                    reach.action_to_terminal_node.pop(a, None)
         return _DecisionContext(snapshot=snap, board=board, reach=reach)
 
     def _advance_until_decision(self, obs: Any, info: Dict[str, Any]) -> Tuple[Any, Dict[str, Any], float, bool, bool]:

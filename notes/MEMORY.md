@@ -288,6 +288,22 @@ order (Y move → X move/DAS → rotate), including the relevant counters
 but it is correctness-first and forms a reliable reference for later native
 optimizations (C++/SIMD/bitboard acceleration) without changing behaviour.
 
+### Decision: Native reachability accelerator via a small C shared library
+
+**Decision:** Keep `envs/retro/fast_reach.py` as the oracle, but run the
+spawn-time BFS in native code for training-speed performance:
+
+- C implementation: `reach_native/drm_reach_full.c`
+- Python wrapper: `envs/retro/reach_native.py` (ctypes)
+- Build command: `python -m tools.build_reach_native`
+- Runtime selection: `PlacementPlanner(reach_backend=auto|native|python)` and
+  `info["placements/reach_backend"]` for debugging.
+
+**Why:** The per-spawn BFS is the dominant cost in the placement macro env when
+implemented in Python. A small, dependency-free C helper preserves exact ROM
+semantics while making training runs practical (and keeps the Python reference
+available for parity checks).
+
 ### Decision: Spawn-latched macro environment wrapper
 
 **Decision:** Provide `DrMarioPlacementEnv` (`envs/retro/placement_env.py`) as the

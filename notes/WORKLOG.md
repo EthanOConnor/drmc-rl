@@ -160,3 +160,15 @@ Chronological log of work done. Format: date, actor, brief summary.
   - Rebuild `_state_cache` after the auto-start sequence so `reset()` returns observations consistent with the post-start `raw_ram` snapshot.
   - `viruses_remaining` now prefers the raw RAM counter during startup (avoids stale `_state_cache` during reset/start sequences).
 - Fixed a `SyntaxError` in `training/ui/runner_debug_tui.py` (`f-string` quoting in the speed display).
+
+## 2025-12-18 – Coding Agent (Codex CLI) – Runner Reset Fix + Native Reachability
+
+- Fixed a training-time double-reset bug in `training/envs/dr_mario_vec.py` that prevented `DrMarioRetroEnv` from running the full 3-press auto-start sequence (led to empty board/viruses=0 on the placement env).
+- Added a native reachability accelerator for the macro placement planner:
+  - C BFS implementation: `reach_native/drm_reach_full.c`
+  - Python wrapper + buffer management: `envs/retro/reach_native.py`
+  - Build helper: `python -m tools.build_reach_native`
+  - Bench harness: `python -m tools.bench_reachability`
+- Integrated native backend into `envs/retro/placement_planner.py` (`reach_backend=auto|native|python`) while keeping `envs/retro/fast_reach.py` as the oracle.
+- Surfaced the active planner backend in env `info` as `placements/reach_backend` and displayed it in the debug TUI stats panel.
+- Updated docs: `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`.

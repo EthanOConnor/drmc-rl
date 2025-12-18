@@ -15,10 +15,12 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### High Priority
 
-- **Placement planner: native acceleration + parity oracle**
+- **Placement planner: native acceleration + parity oracle** ✅ (native accel shipped)
   - Keep `envs/retro/fast_reach.py` as the reference implementation.
-  - Port reachability + plan reconstruction to `reach_native/` (C++/pybind) once behaviour is locked.
-  - Add a micro-benchmark per spawn (empty board + a few typical clutter cases).
+  - Native BFS accelerator: `reach_native/drm_reach_full.c` + `envs/retro/reach_native.py` (ctypes).
+  - Build: `python -m tools.build_reach_native`
+  - Benchmark: `python -m tools.bench_reachability` (add `--include-python` for slow oracle timing)
+  - Remaining: expand parity-oracle traces beyond the “immediate lock” smoke test.
 
 - **Placement env: decision-point regression traces**
   - Record short emulator traces covering: spawn → lock → settle → next spawn, stage clear, top-out, ending.

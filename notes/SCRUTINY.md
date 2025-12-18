@@ -153,10 +153,18 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Synthetic tests or alternate backends that don’t keep both views consistent could produce contradictory observations vs masks.
 - **Mitigation**: Document the invariant and add a helper to mirror ZP → P1 fields in test fixtures/backends when needed.
 
-**R7. Planner performance is Python-bound**
-- **Concern**: Frame-accurate reachability uses a bounded BFS over counter-augmented states per spawn.
-- **Risk**: With large `num_envs`, planning latency could dominate wall-clock training throughput.
-- **Mitigation**: Benchmark regularly and plan a native (C++/Numba) port once behaviour is fully locked down; keep the Python version as the reference oracle.
+**R7. Planner performance and native/Python divergence risk**
+- **Concern**: Frame-accurate reachability is inherently heavier than geometry-only BFS because it includes ROM counters (gravity, DAS, parity).
+- **Risk**: The Python reference implementation is too slow for training; the native accelerator could drift from ROM semantics or the Python oracle over time.
+- **Mitigation**:
+  - Use the native accelerator (`reach_native/drm_reach_full.c` via `envs/retro/reach_native.py`) for training runs.
+  - Keep `envs/retro/fast_reach.py` as the behavioural oracle and add small parity tests (start with “immediate lock” cases).
+  - Provide a benchmark harness (`python -m tools.bench_reachability`) to catch performance regressions early.
+
+**R13. Native reachability build + portability**
+- **Concern**: The native planner is a locally-built shared library (clang toolchain, per-arch dylib/so).
+- **Risk**: Missing builds silently fall back to Python (very slow), or platform-specific build issues block training.
+- **Mitigation**: Document `python -m tools.build_reach_native` in quick-start docs and surface the active backend via `placements/reach_backend` in `info`/debug UI.
 
 **R8. Symmetry reduction for identical colors changes the effective action space**
 - **Concern**: The macro env masks out H-/V- when the capsule colors match (orientation duplicates).

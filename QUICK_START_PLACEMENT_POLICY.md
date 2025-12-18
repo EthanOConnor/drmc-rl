@@ -9,9 +9,12 @@ source .venv-py313/bin/activate
 # Install/update QuickNES core (macOS arm64)
 python tools/update_quicknes_core.py --force
 
+# Build the native reachability accelerator (required for practical training speed)
+python -m tools.build_reach_native
+
 # Train placement policy (unified runner + interactive board/debug UI)
 python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
-  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
+  --backend libretro --core quicknes --rom-path "legal_ROMs/Dr. Mario (Japan, USA) (rev0).nes" \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 
 # Monitor training
@@ -188,6 +191,9 @@ assert "spawn_id" in info
 
 ### Slow Training
 ```bash
+# Ensure the native reachability helper is built (the Python reference planner is very slow).
+python -m tools.build_reach_native
+
 # More parallel environments
 --num-envs 32
 

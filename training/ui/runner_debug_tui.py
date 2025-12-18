@@ -186,6 +186,9 @@ class RunnerDebugTUI:
                 table.add_row("options", f"{int(options)}")
             except Exception:
                 pass
+        backend = info0.get("placements/reach_backend")
+        if backend is not None:
+            table.add_row("planner", str(backend))
 
         if last_update:
             table.add_row("", "")
