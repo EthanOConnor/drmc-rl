@@ -8,10 +8,13 @@ import ctypes
 import pytest
 
 from game_engine.engine_shm import DrMarioStatePy, SHM_SIZE, open_shared_memory, repo_root
+from tools.game_transcript import compare_transcripts, load_json
+from tools.record_demo import record_cpp_demo
 
 
 ENGINE_DIR = repo_root() / "game_engine"
 DEMO_DATA_PATH = repo_root() / "dr-mario-disassembly" / "data" / "drmario_data_demo_field_pills.asm"
+NES_DEMO_TRANSCRIPT_PATH = repo_root() / "data" / "nes_demo.json"
 
 COLOR_COMBO_LEFT = [0x00, 0x00, 0x00, 0x01, 0x01, 0x01, 0x02, 0x02, 0x02]
 COLOR_COMBO_RIGHT = [0x00, 0x01, 0x02, 0x00, 0x01, 0x02, 0x00, 0x01, 0x02]
@@ -40,7 +43,24 @@ def parse_demo_field() -> list[int]:
 
 
 def parse_demo_pills() -> list[int]:
-    return parse_block("demo_pills:", 45)
+    # demo_pills is a 128-byte ROM table. The disassembly splits it into the
+    # first 45 bytes (reachable in a normal demo playback) and an UNUSED
+    # continuation (still present in ROM and addressable by the &0x7F index).
+    data: list[int] = []
+    seen = False
+    for line in DEMO_DATA_PATH.read_text().splitlines():
+        if line.startswith("demo_pills:"):
+            seen = True
+            continue
+        if not seen:
+            continue
+        if line.strip() == "endif":
+            break
+        for match in re.findall(r"\$([0-9A-Fa-f]{2})", line):
+            data.append(int(match, 16))
+            if len(data) == 128:
+                return data
+    raise ValueError("Failed to parse demo_pills (expected 128 bytes)")
 
 
 @pytest.fixture(scope="module")
@@ -102,3 +122,21 @@ def test_demo_reset_matches_disassembly(engine_proc, demo_data):
     finally:
         del state
         mm.close()
+
+
+def test_demo_trace_matches_nes_ground_truth():
+    expected = load_json(NES_DEMO_TRANSCRIPT_PATH)
+    actual = record_cpp_demo(
+        engine_path=ENGINE_DIR / "drmario_engine",
+        max_frames=8000,  # should stop naturally at demo end (~5701)
+        verbose=False,
+    )
+
+    divergences = compare_transcripts(expected, actual, stop_on_first=True)
+    if divergences:
+        d = divergences[0]
+        pytest.fail(
+            f"Demo transcript diverged at frame {d.frame} ({d.field}): {d.message}\n"
+            f"expected={d.expected}\n"
+            f"actual={d.actual}"
+        )

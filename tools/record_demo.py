@@ -1,14 +1,17 @@
-"""Record demo playback from C++ engine to GameTranscript.
+"""Record demo playback from the C++ engine to a `GameTranscript`.
 
-This feeds the demo inputs to the C++ engine frame-by-frame and
-records the full state changes for parity verification.
+Important: The C++ engine replays the retail ROM demo input stream internally
+(mirroring `getInputs_checkMode` in the disassembly). For parity with the NES
+ground-truth transcript (`data/nes_demo.json`), this recorder:
+
+- Does **not** feed any controller inputs from Python (always writes 0).
+- Records `FrameState.buttons = 0` (the NES recorder also stores 0 in demo mode).
+- Stops when the engine exits demo mode, *before* appending that final frame,
+  matching the NES recorder’s frame list semantics.
 
 Usage:
-    # Build engine first
-    cd game_engine && make
-    
-    # Record demo
-    python tools/record_demo.py --output data/cpp_demo.json
+  cd game_engine && make
+  python tools/record_demo.py --output data/cpp_demo.json
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,8 +30,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from tools.game_transcript import (
     GameTranscript,
     FrameState,
-    parse_demo_inputs,
-    expand_inputs,
     save_transcript,
     BOARD_SIZE,
     TILE_EMPTY,
@@ -37,29 +38,20 @@ from tools.game_transcript import (
 
 def record_cpp_demo(
     engine_path: Path,
-    demo_inputs_path: Path,
     max_frames: int = 10000,
     verbose: bool = False,
 ) -> GameTranscript:
     """Record demo playback from C++ engine.
     
     Args:
-        engine_path: Path to compiled drmario_engine binary
-        demo_inputs_path: Path to demo_inputs.asm
-        max_frames: Maximum frames to record
-        verbose: Print progress
+        engine_path: Path to compiled `drmario_engine` binary.
+        max_frames: Maximum frames to step after recording starts.
+        verbose: Print progress.
     
     Returns:
-        GameTranscript with frame-by-frame recording
+        `GameTranscript` with frame-by-frame recording.
     """
     import tempfile
-    
-    # Parse demo inputs
-    rle_inputs = parse_demo_inputs(demo_inputs_path)
-    frame_inputs = expand_inputs(rle_inputs)
-    
-    if verbose:
-        print(f"Parsed {len(rle_inputs)} input pairs → {len(frame_inputs)} frames")
     
     # Create temp file for shared memory - set env var BEFORE importing shm module
     with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
@@ -68,18 +60,20 @@ def record_cpp_demo(
         from game_engine.engine_shm import SHM_SIZE
         f.write(b"\x00" * SHM_SIZE)
     
-    # Set env var for both engine and our Python code
+    # Set env var for both engine and our Python code (restore on exit so tests
+    # and other tools are not affected).
+    prev_shm_env = os.environ.get("DRMARIO_SHM_FILE")
     os.environ["DRMARIO_SHM_FILE"] = str(shm_file)
     
     env = os.environ.copy()
     
     # Import shared memory module AFTER setting env var
-    from game_engine.engine_shm import DrMarioStatePy, open_shared_memory
+    from game_engine.engine_shm import open_shared_memory
     
     # Start engine in demo mode with manual-step for synchronized stepping
     # --manual-step: engine only advances when control_flags bit 0x04 is set
     proc = subprocess.Popen(
-        [str(engine_path), "--demo", "--manual-step"],
+        [str(engine_path), "--demo", "--wait-start", "--manual-step"],
         cwd=engine_path.parent,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -89,6 +83,8 @@ def record_cpp_demo(
     # Give it time to initialize
     time.sleep(0.1)
     
+    mm = None
+    state = None
     try:
         mm, state = open_shared_memory()
         
@@ -100,23 +96,9 @@ def record_cpp_demo(
             speed=1,   # Medium speed
         )
         
-        # Start the engine: set bit 0x01 to release any wait gate
+        # Release wait-start gate and ensure no external inputs are applied.
         state.control_flags |= 0x01
         state.buttons = 0
-        
-        # Trigger first step to initialize
-        state.control_flags |= 0x04  # Step trigger
-        time.sleep(0.01)
-        
-        # Wait for first frame
-        timeout = 100
-        while state.frame_count == 0 and timeout > 0:
-            state.control_flags |= 0x04
-            time.sleep(0.001)
-            timeout -= 1
-        
-        if timeout == 0:
-            raise RuntimeError("Engine failed to start")
         
         # Capture initial state
         transcript.initial_board = bytes(state.board)
@@ -124,35 +106,32 @@ def record_cpp_demo(
             viruses = sum(1 for b in transcript.initial_board if b != TILE_EMPTY and (b & 0xF0) == 0xD0)
             print(f"Initial board captured: {viruses} viruses")
         
-        # State tracking for delta encoding
+        # State tracking for delta encoding (mirrors NES recorder).
         prev_board = bytearray(state.board)
         prev_pill_row = state.falling_pill_row
         prev_pill_col = state.falling_pill_col
         prev_pill_orient = state.falling_pill_orient
         prev_viruses = state.viruses_remaining
         
-        # Use frame_count as canonical frame number (engine starts at 1)
-        start_frame = state.frame_count
-        
-        while state.frame_count < start_frame + max_frames and not state.stage_clear and not state.level_fail:
-            # Get button input for this frame
-            # NES demo has ~159 frames of intro before first button (RIGHT)
-            # C++ engine now has spawn_delay=35, so pill responds at frame 36
-            # Frame 36 should use demo_input[159]: 35 + OFFSET = 159 => OFFSET = 124
-            INPUT_OFFSET = 124
-            input_idx = state.frame_count - 1 + INPUT_OFFSET
-            buttons = frame_inputs[input_idx] if input_idx < len(frame_inputs) else 0
-            
-            # Send input
-            state.buttons = buttons
-            
-            # Trigger step (manual-step mode: set bit 0x04)
+        frame_num = 0
+        while frame_num < max_frames:
+            # Demo mode: engine replays the ROM inputs internally, so we always
+            # provide 0 from the outside (matching the NES recorder).
+            state.buttons = 0
+
             expected_frame = state.frame_count + 1
             state.control_flags |= 0x04
             
             # Wait for engine to process frame
-            timeout = 1000
+            timeout = 20000
             while state.frame_count < expected_frame and timeout > 0:
+                if proc.poll() is not None:
+                    out, err = proc.communicate(timeout=1)
+                    raise RuntimeError(
+                        "Engine exited unexpectedly while recording.\n"
+                        f"stdout:\n{out.decode(errors='replace')}\n"
+                        f"stderr:\n{err.decode(errors='replace')}\n"
+                    )
                 time.sleep(0.0001)
                 timeout -= 1
             
@@ -162,9 +141,26 @@ def record_cpp_demo(
                 break
             
             frame_num = state.frame_count
+
+            # Stop conditions are checked *before* appending a FrameState, to
+            # mirror the NES ground-truth recorder.
+            if state.mode != 0x00:  # MODE_DEMO
+                if verbose:
+                    print(f"Demo ended at frame {frame_num}, mode=0x{state.mode:02x}")
+                break
+            if state.stage_clear:
+                transcript.outcome = "clear"
+                if verbose:
+                    print(f"Stage cleared at frame {frame_num}")
+                break
+            if state.level_fail:
+                transcript.outcome = "topout"
+                if verbose:
+                    print(f"Top-out at frame {frame_num}")
+                break
             
             # Build frame state
-            fs = FrameState(frame=frame_num, buttons=buttons)
+            fs = FrameState(frame=frame_num, buttons=0)
             
             # Check pill position changes
             if state.falling_pill_row != prev_pill_row:
@@ -203,14 +199,9 @@ def record_cpp_demo(
             if verbose and frame_num % 500 == 0:
                 print(f"Frame {frame_num}: viruses={state.viruses_remaining}, pills={state.pill_counter_total}")
         
-        # Record outcome
-        if state.stage_clear:
-            transcript.outcome = "clear"
-        elif state.level_fail:
-            transcript.outcome = "topout"
-        else:
+        if transcript.outcome not in {"clear", "topout"}:
             transcript.outcome = "ongoing"
-        
+
         transcript.total_frames = frame_num
         
         if verbose:
@@ -219,6 +210,11 @@ def record_cpp_demo(
         return transcript
         
     finally:
+        if state is not None:
+            del state
+        if mm is not None:
+            mm.close()
+
         proc.terminate()
         try:
             proc.wait(timeout=2)
@@ -230,6 +226,11 @@ def record_cpp_demo(
             shm_file.unlink()
         except Exception:
             pass
+
+        if prev_shm_env is None:
+            os.environ.pop("DRMARIO_SHM_FILE", None)
+        else:
+            os.environ["DRMARIO_SHM_FILE"] = prev_shm_env
 
 
 def main():
@@ -263,7 +264,6 @@ def main():
     # Resolve paths
     repo_root = Path(__file__).parent.parent
     engine_path = repo_root / args.engine
-    demo_inputs = repo_root / "dr-mario-disassembly" / "data" / "drmario_data_demo_inputs.asm"
     output = repo_root / args.output
     
     if not engine_path.exists():
@@ -271,14 +271,9 @@ def main():
         print("Build it with: cd game_engine && make")
         return 1
     
-    if not demo_inputs.exists():
-        print(f"Error: Demo inputs not found at {demo_inputs}")
-        return 1
-    
     # Record
     transcript = record_cpp_demo(
         engine_path=engine_path,
-        demo_inputs_path=demo_inputs,
         max_frames=args.max_frames,
         verbose=args.verbose,
     )

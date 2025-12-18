@@ -153,10 +153,16 @@ Created `training/ui/` with clear separation:
 - `tools/game_transcript.py`: JSON serialization, delta encoding, comparison utils
 - Pill positions/colors/board state all correctly captured
 
-### Key Constants
-- `spawn_delay = 35` frames (NES throw animation)
-- `INPUT_OFFSET = 124` (demo input indexing with spawn_delay)
-- `demo_pills` array: 45 bytes, matches NES ROM exactly
+**Update (2025-12-18):** The below constants were part of an *interim* alignment
+hack and are superseded by the rules-exact parity port described in the
+2025-12-18 entry (NMI-tick emulation + NES `nextAction` / `pillPlacedStep` state
+machines, full ROM tables, BCD counters, etc.). Keep this section as historical
+context only.
+
+### Key Constants (interim, superseded)
+- `spawn_delay = 35` frames (throw animation approximation)
+- `INPUT_OFFSET = 124` (external demo input indexing hack)
+- `demo_pills` array: 45 bytes (partial table; later corrected to full 128 bytes)
 
 ### Parity Status
 - **Pills 1-3**: ✓ Full parity (positions, colors, board state)
@@ -175,3 +181,45 @@ Created `training/ui/` with clear separation:
 1. Gravity counter comparison (`speedCounterTable` indexing)
 2. DAS timing differences (`hor_velocity` counter)
 3. spawn_delay interaction with input frame indexing
+
+---
+
+## 2025-12-18 – NES Demo Parity: Rules-Exact Frame Loop Port
+
+### Decision: Emulate the NES’s 2-phase per-frame model
+
+**Context:** Dr. Mario’s gameplay logic is split across:
+1) **NMI-time work** (input sampling / demo replay, one-row status rendering, etc.)
+2) **Main-thread work** (the `nextAction` dispatcher and its sub-state machines)
+
+The earlier `spawn_delay` / input-offset approach matched a few early pills but
+drifted because it did not reproduce the actual NES control flow and NMI-coupled
+timing.
+
+**Decision:** Model each frame as:
+- `nmi_tick()` at the *start* of `step()` (status-row countdown + input update)
+- One main-thread `nextAction` routine per frame (`PillFalling`, `PillPlaced`, `SendPill`, …)
+
+**Why:** This matches how the ROM interleaves rendering/input and gameplay state,
+and it eliminates cumulative drift.
+
+### Key parity facts captured in code
+
+- **Status-row gating:** `checkDrop` is gated on `status_row == 0xFF`, which is
+  decremented by NMI-time bottle row rendering (modeled explicitly).
+- **`nextAction` / `pillPlacedStep`:** Implemented as explicit state machines;
+  the demo drift root cause was missing these transitions and micro-steps.
+- **BCD counters:** Virus count (`viruses_remaining`) and pill counters use BCD
+  semantics. The transcript’s “viruses_cleared” deltas reflect BCD boundaries.
+- **ROM tables:** Use full retail ROM data:
+  - `demo_pills`: 128 bytes, indexed by `& 0x7F` (includes the “UNUSED” tail).
+  - `demo_instruction_set`: 512 bytes (256 pairs); each (btn,dur) lasts `dur+1` frames.
+  - `speedCounterTable`: full NTSC table from `drmario_data_game.asm`.
+- **Demo capture alignment:** `DEMO_INPUT_PREROLL_FRAMES = 7` matches the start
+  state of the recorded ground truth in `data/nes_demo.json`.
+
+### Tooling alignment decision
+
+- **Recorder semantics:** `tools/record_demo.py` stops recording when demo ends
+  *before* appending that final frame, matching the NES recorder (frames end at
+  5700 while `total_frames = 5701` in the ground truth).

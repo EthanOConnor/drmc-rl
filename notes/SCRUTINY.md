@@ -13,18 +13,21 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Issue**: Current implementation moves pieces instantly on input. Real NES has Delayed Auto Shift with specific frame timings.
 - **Impact**: Agent trained on C++ engine will have different timing assumptions than real hardware or emulator.
 - **Mitigation**: Implement DAS per `fallingPill_checkXMove` in disassembly before using C++ engine for training.
+- **Status (2025-12-18)**: Mitigated. DAS timing now follows the disassembly and is validated against the full demo trace.
 
 **C2. C++ engine missing wall kicks**
 - **Location**: `game_engine/GameLogic.cpp`, `game_engine/AGENTS.md` L59
 - **Issue**: Rotation validation does not handle wall kicks (pushing piece left/right when blocked).
 - **Impact**: Certain placements possible on NES are impossible in C++ engine, causing parity failure.
 - **Mitigation**: Implement `pillRotateValidation` ($8E70) from disassembly.
+- **Status (2025-12-18)**: Mitigated. Wall-kick behavior now follows the disassembly and is validated against the full demo trace.
 
 **C3. No parity tests for C++ engine**
 - **Location**: `game_engine/`, `tests/`
 - **Issue**: No automated tests comparing C++ engine output vs NES demo data.
 - **Impact**: Cannot verify correctness. May ship subtle bugs that affect training.
 - **Mitigation**: Create parity test suite using demo mode input sequences and expected board states.
+- **Status (2025-12-18)**: Mitigated. Added a regression test that asserts the full demo trace matches `data/nes_demo.json`.
 
 ---
 
@@ -101,6 +104,20 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 2. Run same inputs through C++ engine.
 3. Assert board state matches at each frame.
 4. Automate as CI test.
+
+---
+
+## 2025-12-18 – Demo Parity Port: New Risks
+
+**R1. Demo-input preroll is transcript-start dependent**
+- **Concern**: `DEMO_INPUT_PREROLL_FRAMES = 7` is calibrated to the specific ground-truth capture start used for `data/nes_demo.json`.
+- **Risk**: A new ground-truth capture (different recorder start frame) could require a different preroll, and parity would appear “broken” even if the engine is correct.
+- **Mitigation**: Document the invariant (“align engine demo input pointer to transcript start”) and consider auto-calibrating by matching the first few non-zero input spans to the transcript.
+
+**R2. Demo-end semantics are modeled as a mode flip**
+- **Concern**: The ROM uses `flag_demo` / title-screen state to exit demo; the engine approximates this by switching `state.mode` from `MODE_DEMO` to `MODE_PLAYING` when the demo input stream ends.
+- **Risk**: Downstream tooling might treat this as a gameplay mode transition rather than “demo ended”.
+- **Mitigation**: Keep recorder semantics aligned (stop before appending the final frame) and consider adding an explicit `demo_active`/`demo_ended` flag in shared memory if needed by training/eval code.
 
 ### Placement Policy Correctness
 

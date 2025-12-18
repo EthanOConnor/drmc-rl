@@ -105,4 +105,12 @@ Chronological log of work done. Format: date, actor, brief summary.
 - See walkthrough.md for detailed analysis and next steps
 - Probable causes: gravity counter timing, DAS timing, spawn_delay interaction
 
+## 2025-12-18 – Coding Agent (Codex CLI)
+
+- Reimplemented `game_engine/GameLogic.cpp` as a parity-first port of the NES frame loop (explicit NMI tick + `nextAction` / `pillPlacedStep` state machines).
+- Corrected core ROM tables and counters for rules-exact timing: full NTSC `speedCounterTable`, full 128-byte `demo_pills`, 512-byte demo input stream semantics, and BCD counter behavior (viruses/pill counters).
+- Updated demo tooling for ground-truth verification:
+  - `tools/record_demo.py` now relies on engine-internal demo replay (no external input feeding) and matches NES recorder stop semantics.
+  - `tools/game_transcript.py` comparison fixes + normalization.
+- Added regression coverage: `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth` asserts full demo trace matches `data/nes_demo.json`.
 

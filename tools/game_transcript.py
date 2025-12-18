@@ -83,13 +83,19 @@ class FrameState:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "FrameState":
+        bc_raw = d.get("bc")
+        bc: Optional[List[Tuple[int, int, int]]] = None
+        if bc_raw:
+            # JSON decodes tuples as lists; normalize to a stable internal type so that
+            # comparisons and reconstruction behave identically across formats.
+            bc = [(int(i), int(old), int(new)) for i, old, new in bc_raw]
         return cls(
             frame=d["f"],
             buttons=d.get("b", 0),
             pill_row=d.get("pr"),
             pill_col=d.get("pc"),
             pill_orient=d.get("po"),
-            board_changes=d.get("bc"),
+            board_changes=bc,
             pill_locked=bool(d.get("pl", 0)),
             viruses_cleared=d.get("vc", 0),
             chain_triggered=bool(d.get("ch", 0)),
@@ -298,23 +304,23 @@ def compare_transcripts(
         if exp_f is None:
             divergences.append(Divergence(
                 frame=frame_num,
-                field="frame_missing",
-                expected="present",
-                actual="missing",
-                message=f"Frame {frame_num} missing in actual",
-            ))
-        elif act_f is None:
-            divergences.append(Divergence(
-                frame=frame_num,
                 field="frame_extra",
                 expected="missing",
                 actual="present",
                 message=f"Unexpected frame {frame_num} in actual",
             ))
+        elif act_f is None:
+            divergences.append(Divergence(
+                frame=frame_num,
+                field="frame_missing",
+                expected="present",
+                actual="missing",
+                message=f"Frame {frame_num} missing in actual",
+            ))
         else:
             # Compare frame contents
             for field_name in ["buttons", "pill_row", "pill_col", "pill_orient",
-                               "pill_locked", "viruses_cleared"]:
+                               "pill_locked", "viruses_cleared", "chain_triggered"]:
                 exp_val = getattr(exp_f, field_name)
                 act_val = getattr(act_f, field_name)
                 if exp_val != act_val:
@@ -331,12 +337,16 @@ def compare_transcripts(
             # Compare board changes
             exp_bc = exp_f.board_changes or []
             act_bc = act_f.board_changes or []
-            if exp_bc != act_bc:
+            # Defensive normalization: ensure stable type even for callers that
+            # construct FrameState objects directly.
+            exp_bc_norm = [tuple(map(int, bc)) for bc in exp_bc]
+            act_bc_norm = [tuple(map(int, bc)) for bc in act_bc]
+            if exp_bc_norm != act_bc_norm:
                 divergences.append(Divergence(
                     frame=frame_num,
                     field="board_changes",
-                    expected=exp_bc,
-                    actual=act_bc,
+                    expected=exp_bc_norm,
+                    actual=act_bc_norm,
                     message=f"Frame {frame_num}: board changes differ",
                 ))
                 if stop_on_first:
@@ -401,10 +411,17 @@ def parse_demo_inputs(asm_path: Path) -> List[Tuple[int, int]]:
 
 
 def expand_inputs(rle_inputs: List[Tuple[int, int]]) -> List[int]:
-    """Expand run-length encoded inputs to per-frame button states."""
+    """Expand demo inputs to per-frame button states.
+
+    The retail ROM stores demo instructions as (buttons, duration) pairs, where
+    `duration` is loaded into a countdown that is decremented each frame.
+
+    Because the new (buttons, duration) pair is applied immediately on the load
+    frame (when the countdown is 0), each pair lasts for `duration + 1` frames.
+    """
     frames = []
     for btn, duration in rle_inputs:
-        frames.extend([btn] * duration)
+        frames.extend([btn] * (duration + 1))
     return frames
 
 

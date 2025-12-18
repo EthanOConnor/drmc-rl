@@ -15,9 +15,9 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### High Priority
 
-- **C++ engine: Parity testing**
-  - Use demo mode data (`dr-mario-disassembly/data/drmario_data_demo_*.asm`) to verify exact board/moves vs NES.
-  - Create test fixtures for CI.
+- **C++ engine: Parity beyond demo**
+  - Add golden traces for non-demo gameplay (seeded levels, edge-case rotations/DAS).
+  - Validate 2P / attack logic once implemented.
 
 - **Extract diagnostics tracker**
   - Move `NetworkDiagnosticsTracker` from `speedrun_experiment.py` to `training/diagnostics/tracker.py`.
@@ -41,6 +41,9 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### Recently Completed ✅
 
+- C++ engine demo parity suite (frame-perfect vs `data/nes_demo.json`)
+  - Tooling: `tools/record_demo.py`, `tools/game_transcript.py`
+  - Regression test: `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth`
 - Rich TUI with sparklines (`training/ui/tui.py`)
 - Board state viewer (`training/ui/board_viewer.py`)
 - Debug viewer (`training/ui/debug_viewer.py`)
