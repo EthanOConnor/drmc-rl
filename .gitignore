@@ -19,6 +19,7 @@ wandb/
 tensorboard/
 data/datasets/
 data/states/
+data/pose_mismatches*.jsonl
 retro-data/
 retro/"*"
 !retro/README.md

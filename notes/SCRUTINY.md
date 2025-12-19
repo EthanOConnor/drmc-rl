@@ -162,12 +162,21 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Mitigation**:
   - Use the native accelerator (`reach_native/drm_reach_full.c` via `envs/retro/reach_native.py`) for training runs.
   - Keep `envs/retro/fast_reach.py` as the behavioural oracle and add small parity tests (start with “immediate lock” cases).
+  - Add unit coverage that applies `reconstruct_actions()` outputs via `simulate_frame()` and asserts the locked terminal pose is actually reached (guards against drift between the packed BFS and the oracle stepper).
   - Provide a benchmark harness (`python -m tools.bench_reachability`) to catch performance regressions early.
 
 **R13. Native reachability build + portability**
 - **Concern**: The native planner is a locally-built shared library (clang toolchain, per-arch dylib/so).
 - **Risk**: Missing builds silently fall back to Python (very slow), or platform-specific build issues block training.
 - **Mitigation**: Document `python -m tools.build_reach_native` in quick-start docs and surface the active backend via `placements/reach_backend` in `info`/debug UI.
+
+**R24. Native reachability frontier batching / early-stop correctness**
+- **Concern**: The optimized native BFS uses frontier aggregation (batching x positions per counter-state key) and early-stop pruning (timer-free geometric reachable terminal set).
+- **Risk**: A subtle under-approximation bug could silently drop feasible macro actions (empty/too-small feasible masks), or generate scripts that don’t execute correctly, leading to rare pose mismatches and unstable learning.
+- **Mitigation**:
+  - Keep `simulate_frame()` in `envs/retro/fast_reach.py` as the behavioural oracle and add replay-style unit tests (native plan → simulate_frame → verify lock pose).
+  - Use `placements/pose_mismatch_*` JSONL logging to capture any remaining divergences post-hoc.
+  - Enable `DRMARIO_REACH_STATS=1` when profiling/benchmarking to surface state/edge counts and ensure expected scaling.
 
 **R8. Symmetry reduction for identical colors changes the effective action space**
 - **Concern**: The macro env masks out H-/V- when the capsule colors match (orientation duplicates).
@@ -233,7 +242,17 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: If a different ROM revision/core uses different marker codes or delays updating the bottle buffer, the terminal condition could misfire or lag.
 - **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`), explicitly exclude `FIELD_EMPTY == 0xFF` when matching `FIELD_JUST_EMPTIED` (empty tiles share the same high nibble `0xF0`), and gate the scan on `gameplay_active` to avoid menu/reset stale RAM. Keep the logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.
 
-**R21. Placement verification can miss the lock frame**
-- **Concern**: The macro env records `placements/lock_pose` by detecting the lock frame via `pill_bonus_adjusted > 0` and capturing the falling-pill pose from RAM.
-- **Risk**: If reward coefficients disable pill-lock reward (or if a core/ROM variant doesn’t present the lock pose in the expected registers on that exact frame), verification may show `placements/lock_pose` missing even when execution is correct.
-- **Mitigation**: Treat verification as diagnostic-only (don’t crash training). If this becomes common, extend detection to use `lock_counter` transitions and/or bottle-buffer diffs for the two target cells.
+**R21. Placement verification depends on a stable “lock boundary” signal**
+- **Concern**: `DrMarioPlacementEnv` captures `placements/lock_pose` by tracking the last valid falling-pill pose while `currentP_nextAction == nextAction_pillFalling`, then freezing it when we leave that state (or when the spawn counter advances).
+- **Risk**: If a ROM/core changes the `currentP_nextAction` semantics (or briefly toggles it during non-lock transitions), the captured pose could be stale or missing, which would mask planner/executor mismatches.
+- **Mitigation**: Keep verification diagnostic-only. If this occurs in practice, extend capture to also use `lock_counter` transitions and/or bottle-buffer diffs (detect the two newly-written pill tiles) as alternate “lock boundary” detectors.
+
+**R22. Pose mismatch logging overhead / log growth**
+- **Concern**: Diagnosing rare mismatches benefits from rich dumps (feasible masks, costs, bottle grids, scripts).
+- **Risk**: If mismatches become frequent (early development), JSONL logs can grow quickly and I/O may impact throughput; per-frame trace capture adds overhead if enabled.
+- **Mitigation**: Log only on mismatch; keep trace capture behind `DRMARIO_POSE_MISMATCH_TRACE`; allow disabling/redirecting logs via `DRMARIO_POSE_MISMATCH_LOG` and capping with `DRMARIO_POSE_MISMATCH_LOG_MAX`.
+
+**R23. Rotation edge semantics increases planner state space**
+- **Concern**: Correct rotation modelling requires tracking whether A/B was held on the previous frame (`btnsPressed` edge semantics).
+- **Risk**: The Python reachability backend’s BFS state space grows (~3×), making tests and any accidental Python-backend training noticeably slower.
+- **Mitigation**: Prefer the native reachability backend for training; keep Python as the behavioural oracle + unit-test target. Consider reducing test `max_frames` where possible and/or adding a focused micro-benchmark to catch accidental Python-backend regressions.

@@ -116,8 +116,9 @@ def _read_flags(arr: np.ndarray, offsets: Dict[str, Any]) -> Tuple[Optional[int]
 
     ending_flag = None
     if offsets.get("ending"):
-        val = _read_offset_value(arr, offsets, "ending", "state_addr")
-        non_val = _parse_int(offsets["ending"].get("non_value"))
+        # `ram_offsets.json` uses `{"addr": ..., "non_ending_value": ...}`.
+        val = _read_offset_value(arr, offsets, "ending", "addr")
+        non_val = _parse_int(offsets["ending"].get("non_ending_value"))
         if val is not None and non_val is not None:
             ending_flag = (val != non_val)
 
@@ -143,25 +144,14 @@ def build_state(
     # Derive masks & counts
     occupancy, static, falling, virus, v_rem, preview = _derive_from_planes(planes)
 
-    # Gravity/lock/level via helpers (preferred) or RAM fallback if rep changes:
-    try:
-        gravity = int(r2s.get_gravity_value(planes))
-    except Exception:
-        gravity = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "gravity_counter_addr")
-
-    try:
-        lock = int(r2s.get_lock_value(planes))
-    except Exception:
-        lock = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "lock_counter_addr")
-
-    try:
-        level = int(r2s.get_level_value(planes))
-    except Exception:
-        level = _read_offset_value(ram.arr, ram_offsets, "level", "addr")
+    # Canonical scalar reads: use raw RAM bytes, not normalized planes.
+    gravity = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "gravity_counter_addr")
+    lock = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "lock_counter_addr")
+    level = _read_offset_value(ram.arr, ram_offsets, "level", "addr")
 
     # Other RAM scalars
     mode_val, gameplay, stage_clear, ending = _read_flags(ram.arr, ram_offsets)
-    players = _read_offset_value(ram.arr, ram_offsets, "players", "count_addr")
+    players = _read_offset_value(ram.arr, ram_offsets, "players", "addr")
     pill_counter = _read_offset_value(ram.arr, ram_offsets, "pill_counter", "addr")
 
     speed_setting = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "speed_setting_addr")

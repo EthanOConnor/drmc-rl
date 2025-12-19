@@ -30,7 +30,7 @@ See `halfPill_posOffset_rotationAndSizeBased` in `drmario_data_game.asm`.
 Important behavioural details mirrored here
 -------------------------------------------
 * Gravity triggers when `speedCounter > speedCounterTable[idx]` (cmp + bcs exit).
-* Soft drop ("down") is only checked every other frame (frameCounter & 1 != 0),
+* Soft drop ("down") is only checked every other frame (frameCounter & 1 == 0),
   and only when DOWN is the *only* d-pad direction held.
 * Lock is *immediate* when a drop attempt is blocked: the ROM calls
   `confirmPlacement` inside `fallingPill_checkYMove`.
@@ -138,6 +138,7 @@ class FrameState:
 
     hold_dir: HoldDir  # held L/R from previous frame (for edge detection)
     frame_parity: int  # frameCounter & 1 at start of this frame
+    rot_hold: Rotation = Rotation.NONE  # held A/B from previous frame (btnsPressed edge)
     locked: bool = False
 
 
@@ -287,7 +288,7 @@ def _pack_state(state: FrameState) -> int:
     """Pack a FrameState into a small int key for visited pruning."""
 
     # Layout (low bits first):
-    #   x:3, y:4, rot:2, speed_counter:7, hor_velocity:4, hold_dir:2, parity:1
+    #   x:3, y:4, rot:2, speed_counter:7, hor_velocity:4, hold_dir:2, parity:1, rot_hold:2
     x = int(state.x) & 0x7
     y = int(state.y) & 0xF
     rot = int(state.rot) & 0x3
@@ -295,7 +296,8 @@ def _pack_state(state: FrameState) -> int:
     hv = int(state.hor_velocity) & 0xF
     hd = int(state.hold_dir.value) & 0x3
     p = int(state.frame_parity) & 0x1
-    return x | (y << 3) | (rot << 7) | (sc << 9) | (hv << 16) | (hd << 20) | (p << 22)
+    rh = int(state.rot_hold.value) & 0x3
+    return x | (y << 3) | (rot << 7) | (sc << 9) | (hv << 16) | (hd << 20) | (p << 22) | (rh << 23)
 
 
 def _step_state(
@@ -313,6 +315,8 @@ def _step_state(
     prev_left, prev_right = _dir_flags(state.hold_dir)
     hold_left, hold_right = _dir_flags(action.hold_dir)
     hold_down = bool(action.hold_down)
+    prev_rot_hold = state.rot_hold
+    cur_rot_hold = action.rotation
 
     press_left = hold_left and not prev_left
     press_right = hold_right and not prev_right
@@ -329,7 +333,7 @@ def _step_state(
     down_only = hold_down and (action.hold_dir is HoldDir.NEUTRAL)
     drop_triggered = False
 
-    if (parity != 0) and down_only:
+    if (parity == 0) and down_only:
         # Down-only soft drop (checked every other frame).
         drop_triggered = True
         speed_counter = 0
@@ -353,6 +357,7 @@ def _step_state(
                 speed_counter=0,
                 hor_velocity=hor_velocity,
                 hold_dir=action.hold_dir,
+                rot_hold=cur_rot_hold,
                 frame_parity=next_parity,
                 locked=True,
             )
@@ -383,12 +388,15 @@ def _step_state(
                 hor_velocity = HOR_BLOCKED
 
     # ---------------- Rotate stage ----------------
+    # NES: fallingPill_checkRotate looks at btnsPressed (edge), not btnsHeld.
+    # Holding A/B across consecutive frames only triggers rotation on the first.
+    rotation_pressed = cur_rot_hold is not Rotation.NONE and cur_rot_hold is not prev_rot_hold
     x, rot = _apply_rotation(
         cols_u16,
         x=x,
         y=y,
         rot=rot,
-        rotation=action.rotation,
+        rotation=cur_rot_hold if rotation_pressed else Rotation.NONE,
         hold_left=hold_left,
     )
 
@@ -400,6 +408,7 @@ def _step_state(
         speed_counter=speed_counter,
         hor_velocity=hor_velocity,
         hold_dir=action.hold_dir,
+        rot_hold=cur_rot_hold,
         frame_parity=next_parity,
         locked=False,
     )
@@ -487,9 +496,9 @@ def build_reachability(
         elif act.rotation is Rotation.CCW:
             action_rotation[i] = 2
 
-    LOCK_BIT = 1 << 23
+    LOCK_BIT = 1 << 25
 
-    def pack(x: int, y: int, rot: int, sc: int, hv: int, hd: int, parity: int) -> int:
+    def pack(x: int, y: int, rot: int, sc: int, hv: int, hd: int, parity: int, rh: int) -> int:
         return (
             (int(x) & 0x7)
             | ((int(y) & 0xF) << 3)
@@ -498,6 +507,7 @@ def build_reachability(
             | ((int(hv) & 0xF) << 16)
             | ((int(hd) & 0x3) << 20)
             | ((int(parity) & 0x1) << 22)
+            | ((int(rh) & 0x3) << 23)
         )
 
     def step_packed(packed_state: int, act_idx: int) -> int:
@@ -509,6 +519,7 @@ def build_reachability(
         hv = (packed_state >> 16) & 0xF
         prev_hd = (packed_state >> 20) & 0x3
         parity = (packed_state >> 22) & 0x1
+        prev_rh = (packed_state >> 23) & 0x3
 
         hd = action_hold_dir[act_idx]
         hold_down = action_hold_down[act_idx]
@@ -527,7 +538,7 @@ def build_reachability(
         drop_triggered = False
 
         # ---------------- Y stage (gravity / soft drop) ----------------
-        if parity != 0 and down_only:
+        if parity == 0 and down_only:
             drop_triggered = True
             sc = 0
         else:
@@ -542,7 +553,7 @@ def build_reachability(
             else:
                 # Immediate lock.
                 parity ^= 1
-                return pack(x, y, rot, 0, hv, hd, parity) | LOCK_BIT
+                return pack(x, y, rot, 0, hv, hd, parity, rotation) | LOCK_BIT
 
         # ---------------- X stage (DAS movement) ----------------
         allow_move = False
@@ -570,7 +581,8 @@ def build_reachability(
                     hv = HOR_BLOCKED
 
         # ---------------- Rotate stage ----------------
-        if rotation:
+        rotation_pressed = rotation != 0 and rotation != prev_rh
+        if rotation_pressed:
             rot0 = rot
             if rotation == 1:
                 rot1 = (rot0 - 1) & 3
@@ -591,7 +603,7 @@ def build_reachability(
                     rot = rot1
 
         parity ^= 1
-        return pack(x, y, rot, sc, hv, hd, parity)
+        return pack(x, y, rot, sc, hv, hd, parity, rotation)
 
     nodes: List[FrameNode] = [FrameNode(state=spawn_state, parent=-1, action_index=-1, depth=0)]
     packed_nodes: List[int] = [
@@ -603,6 +615,7 @@ def build_reachability(
             spawn_state.hor_velocity,
             int(spawn_state.hold_dir.value),
             int(spawn_state.frame_parity) & FAST_DROP_MASK,
+            int(spawn_state.rot_hold.value),
         )
     ]
 
@@ -637,6 +650,7 @@ def build_reachability(
                 hv = (packed_core >> 16) & 0xF
                 hd = (packed_core >> 20) & 0x3
                 parity = (packed_core >> 22) & 0x1
+                rh = (packed_core >> 23) & 0x3
                 locked_state = FrameState(
                     x=int(x),
                     y=int(y),
@@ -644,6 +658,7 @@ def build_reachability(
                     speed_counter=int(sc),
                     hor_velocity=int(hv),
                     hold_dir=HoldDir(hd),
+                    rot_hold=Rotation(rh),
                     frame_parity=int(parity),
                     locked=True,
                 )
@@ -671,6 +686,7 @@ def build_reachability(
             hv = (packed_core >> 16) & 0xF
             hd = (packed_core >> 20) & 0x3
             parity = (packed_core >> 22) & 0x1
+            rh = (packed_core >> 23) & 0x3
             state = FrameState(
                 x=int(x),
                 y=int(y),
@@ -678,6 +694,7 @@ def build_reachability(
                 speed_counter=int(sc),
                 hor_velocity=int(hv),
                 hold_dir=HoldDir(hd),
+                rot_hold=Rotation(rh),
                 frame_parity=int(parity),
                 locked=False,
             )

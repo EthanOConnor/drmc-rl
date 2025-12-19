@@ -40,14 +40,14 @@ def test_soft_drop_honours_frame_parity():
     speed_threshold = 30  # large enough to avoid gravity triggering
 
     first = simulate_frame(cols, state, down_action, speed_threshold=speed_threshold)
-    assert first.y == state.y  # parity gate blocks the drop
-    assert first.speed_counter == state.speed_counter + 1
+    assert first.y == state.y + 1  # down-only soft drop triggers on parity==0
+    assert first.speed_counter == 0
     assert not first.locked
     assert first.frame_parity == 1
 
     second = simulate_frame(cols, first, down_action, speed_threshold=speed_threshold)
-    assert second.y == state.y + 1  # drop occurs on the parity frame
-    assert second.speed_counter == 0
+    assert second.y == state.y + 1  # parity gate blocks soft drop on the next frame
+    assert second.speed_counter == 1
     assert not second.locked
 
 

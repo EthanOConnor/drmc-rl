@@ -1,5 +1,6 @@
 import numpy as np
 
+from envs.retro.fast_reach import Rotation
 from envs.retro.placement_planner import BoardState, PillSnapshot, PlacementPlanner
 from envs.retro.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS, TOTAL_ACTIONS, invalid_boundary_mask
 
@@ -25,6 +26,7 @@ def test_planner_builds_nonempty_feasible_mask_on_empty_board():
         hold_left=False,
         hold_right=False,
         hold_down=False,
+        rot_hold=Rotation.NONE,
         speed_setting=0,
         speed_ups=0,
         spawn_id=1,
@@ -51,6 +53,7 @@ def test_planner_plan_action_returns_script_for_feasible_action():
         hold_left=False,
         hold_right=False,
         hold_down=False,
+        rot_hold=Rotation.NONE,
         speed_setting=0,
         speed_ups=0,
         spawn_id=1,
@@ -64,4 +67,3 @@ def test_planner_plan_action_returns_script_for_feasible_action():
     assert plan.action == flat
     assert plan.cost == len(plan.controller)
     assert plan.cost >= 1
-

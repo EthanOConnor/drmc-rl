@@ -527,3 +527,122 @@ episode totals (or last episode totals when between episodes).
 **Why:** This makes reward shaping auditable and helps catch subtle mistakes in
 curriculum success detection, reward config signs, and per-term scaling without
 digging through logs post-hoc.
+
+---
+
+## 2025-12-19 – Planner/Input Parity + Canonical Clear Counting
+
+### Decision: Down-only soft drop parity is `frameCounter & 1 == 0`
+
+**Decision:** In the falling-pill update, “down-only” soft drop is applied on
+frames where `frameCounter & 1 == 0` (with DOWN held and no LEFT/RIGHT).
+
+**Why:** Emulator tracing shows the pill advances downward exactly on even-parity
+frames under down-only input. This parity gate must match across:
+- the Python oracle (`envs/retro/fast_reach.py`),
+- the Python packed BFS (reachability fast path), and
+- the native reachability helper (`reach_native/drm_reach_full.c`),
+or else the planner will generate controller scripts that don’t execute correctly.
+
+### Decision: Pose verification uses RAM state transitions (not reward signals)
+
+**Decision:** `DrMarioPlacementEnv` captures `placements/lock_pose` by tracking
+the last valid falling-pill pose while `currentP_nextAction == nextAction_pillFalling`,
+then freezing it when we leave that state (or when the spawn counter advances).
+
+**Why:** Reward terms like `pill_bonus_adjusted` are configurable and may be zero
+for shaping-focused runs; using them for correctness checks is brittle and can
+silently disable verification.
+
+### Decision: Clear counts for reward are derived from bottle-buffer diffs
+
+**Decision:** `tiles_cleared_total` / `tiles_cleared_non_virus` are computed
+canonically from the bottle buffer (occupied→non-occupied transitions) using
+`envs/specs/ram_to_state.count_tile_removals`, with a cached previous bottle
+snapshot in `DrMarioRetroEnv`.
+
+**Why:** This avoids false positives from observation overlays (falling pill,
+preview) and keeps reward/curriculum/debug tooling consistent with the ROM’s
+own tile encodings.
+
+### Decision: Pose mismatch diagnostics are logged as JSONL events
+
+**Decision:** When `DrMarioPlacementEnv` detects a planner/executor pose mismatch
+(`placements/pose_ok == False`), it increments a persistent mismatch counter
+(`placements/pose_mismatch_count`) and appends a single JSONL record containing
+the decision snapshot, board/bottle bytes, feasibility masks/costs, the chosen
+macro action + controller script, and the observed `lock_pose`/`lock_reason`.
+
+**Defaults & controls:**
+- Default log path: `data/pose_mismatches.jsonl` (git-ignored)
+- Disable/override via `DRMARIO_POSE_MISMATCH_LOG` (`0/off/false/none` disables)
+- Optional per-frame trace capture via `DRMARIO_POSE_MISMATCH_TRACE=1`
+
+**Why:** Pose mismatches are rare and hard to reproduce; logging a rich,
+single-event snapshot makes them diagnosable post-hoc without slowing down
+normal training/inference.
+
+### Decision: Rotation planning models btnsPressed (edge), not btnsHeld
+
+**Decision:** The reachability planner must treat A/B rotation as edge-triggered
+(`currentP_btnsPressed`), not “rotate every frame while held”. Concretely:
+holding A across consecutive frames rotates at most once, and a second rotation
+requires at least one intervening frame where A is released.
+
+**Implementation:** Extend the falling-pill per-frame state with a `rot_hold`
+field (which rotate button was held on the previous frame). Apply rotation only
+when `rot_hold` changes from NONE→(A/B). This is implemented in:
+- Python oracle stepper + packed BFS: `envs/retro/fast_reach.py`
+- Native BFS helper: `reach_native/drm_reach_full.c`
+- Snapshot decoding: `envs/retro/placement_planner.PillSnapshot.rot_hold`
+
+**Why:** Emulator mismatch logs showed almost all pose mismatches occurred when
+the planner emitted consecutive `ROTATE_A` frames; ROM disassembly confirms
+rotation checks `currentP_btnsPressed` (edge), so the second frame doesn’t
+rotate.
+
+---
+
+## 2025-12-19 – Native Reachability Performance: Frontier x-mask BFS
+
+### Decision: Native reachability batches x positions per counter-state key
+
+**Decision:** The native reachability helper (`reach_native/drm_reach_full.c`)
+performs a level-order BFS over the falling-pill per-frame state, but *batches*
+the x dimension using 8-bit masks. Concretely, each frontier node represents:
+
+- a counter-state “key” `(y, rot, sc, hv, hd, p, rh)`, and
+- an `xmask` (which x positions are present for that key at the current depth).
+
+The BFS aggregates `xmask` per key per depth (frontier merging), so we avoid the
+degenerate case where the queue contains one entry per x even when many x
+positions share the same counters.
+
+**Why:** This yields a large constant-factor speedup (typically several ×) while
+preserving exact per-frame semantics and minimal-time costs. It also reduces
+memory pressure vs a “one queue node per full state” BFS.
+
+### Decision: Early termination targets only in-bounds, geometrically reachable terminals
+
+**Decision:** The native helper can terminate early once it has discovered
+minimal-cost scripts for all *in-bounds* terminal poses that are reachable in a
+timer-free (over-approximate) geometric flood fill.
+
+**Why:** Many boards contain macro-legal lock poses that are *geometrically*
+unreachable (sealed cavities). Without pruning, the exact BFS must explore out
+to the per-call `max_lock_frames` just to prove those are unreachable, which is
+wasted work for macro-action planning.
+
+**Caveat:** This early-stop set intentionally excludes offscreen/top-out
+terminal poses (which aren’t valid macro actions). The macro env ignores these
+poses anyway.
+
+### Decision: Optional native BFS stats are exposed for profiling
+
+**Decision:** The native helper exposes lightweight per-call stats via
+`drm_reach_get_last_stats()` and the Python wrapper `NativeReachabilityRunner.get_last_stats()`,
+enabled by setting `DRMARIO_REACH_STATS=1`.
+
+**Why:** Planner throughput is a critical bottleneck during training; having a
+first-party “how many states/edges did we explore” counter makes regressions
+and board-dependent slowdowns diagnosable without external profilers.

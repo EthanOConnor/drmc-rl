@@ -18,13 +18,25 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 
 # Note: `training/configs/smdp_ppo.yaml` enables a scripted curriculum by default
-# (starts at synthetic level -4 with 0 viruses, then ramps to level 0).
+# (starts at synthetic level -10: 0 viruses + "any match", then ramps through
+# -9..-4 match-count stages and -3..0 virus-count stages).
 # Disable with: `--override curriculum.enabled=false`
 
 # Monitor training
 # - Stats-only TUI: add `--ui tui`
 # - Headless: use `--ui headless` (default)
 ```
+
+## Debugging Pose Mismatches
+
+If the debug UI shows `pose_ok=no`, the macro env writes a single diagnostic JSONL record
+containing the board, feasibility masks/costs, chosen macro action, controller script, and
+observed lock pose:
+
+- Default: `data/pose_mismatches.jsonl` (git-ignored)
+- Disable or redirect: `DRMARIO_POSE_MISMATCH_LOG=0` (or set a custom path)
+- Optional per-frame trace: `DRMARIO_POSE_MISMATCH_TRACE=1`
+- Optional cap: `DRMARIO_POSE_MISMATCH_LOG_MAX=25`
 
 ## 30-Second Setup
 

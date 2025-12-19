@@ -52,6 +52,8 @@ from envs.retro.placement_space import (
 BTN_RIGHT = 0x01
 BTN_LEFT = 0x02
 BTN_DOWN = 0x04
+BTN_B = 0x40
+BTN_A = 0x80
 
 # Zero-page current-player addresses (drmario_ram_zp.asm)
 ZP_FALLING_PILL_COLOR_1 = 0x0081
@@ -189,6 +191,7 @@ class PillSnapshot:
     hold_left: bool
     hold_right: bool
     hold_down: bool
+    rot_hold: Rotation
 
     speed_setting: int
     speed_ups: int
@@ -222,6 +225,17 @@ class PillSnapshot:
         hold_left = bool(held & BTN_LEFT)
         hold_right = bool(held & BTN_RIGHT)
         hold_down = bool(held & BTN_DOWN)
+        hold_a = bool(held & BTN_A)
+        hold_b = bool(held & BTN_B)
+        if hold_a and not hold_b:
+            rot_hold = Rotation.CW
+        elif hold_b and not hold_a:
+            rot_hold = Rotation.CCW
+        else:
+            # Both (or neither) held: the ROM treats A and B separately via
+            # btnsPressed bits. Our planner action space only models one
+            # rotate button at a time, so treat this as neutral.
+            rot_hold = Rotation.NONE
 
         spawn_id = state.ram_vals.pill_counter
 
@@ -237,6 +251,7 @@ class PillSnapshot:
             hold_left=bool(hold_left),
             hold_right=bool(hold_right),
             hold_down=bool(hold_down),
+            rot_hold=rot_hold,
             speed_setting=int(speed_setting),
             speed_ups=int(speed_ups),
             spawn_id=int(spawn_id) if spawn_id is not None else None,
@@ -333,6 +348,7 @@ class PlacementPlanner:
             speed_counter=int(snapshot.speed_counter),
             hor_velocity=int(snapshot.hor_velocity),
             hold_dir=self._hold_dir(snapshot),
+            rot_hold=snapshot.rot_hold,
             frame_parity=int(snapshot.frame_parity) & 1,
             locked=False,
         )

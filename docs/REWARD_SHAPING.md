@@ -27,7 +27,8 @@ Key terms in `r_env` (see `envs/retro/drmario_env.py`):
   Optionally adjusted by a “high placement” heuristic:
   `punish_high_placements`, `placement_height_threshold`, `placement_height_penalty_multiplier`.
 - **Virus clear reward**: `virus_clear_bonus * delta_v` where `delta_v` is viruses cleared this frame.
-- **Non-virus clear reward**: `non_virus_clear_bonus * cleared_non_virus` (heuristic, state-mode only).
+- **Non-virus clear reward**: `non_virus_clear_bonus * tiles_cleared_non_virus`, counted canonically from the
+  bottle buffer as occupied→non-occupied tile transitions (state-mode only).
 - **Adjacency shaping** (optional): `adjacency_pair_bonus` / `adjacency_triplet_bonus`.
 - **Column height penalty** (optional): a dense penalty based on tallest stack vs virus band,
   applied as a delta each frame via `column_height_penalty`.

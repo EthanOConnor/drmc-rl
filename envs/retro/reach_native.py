@@ -35,6 +35,24 @@ POSES = 4 * GRID_H * GRID_W  # (rot, y, x)
 class NativeReachError(RuntimeError):
     """Raised when the native reachability helper fails."""
 
+@dataclass(frozen=True)
+class NativeReachStats:
+    """Optional instrumentation for the last native BFS call.
+
+    Enable collection by setting `DRMARIO_REACH_STATS=1` in the environment.
+    """
+
+    visited_states: int
+    expanded_states: int
+    transitions: int
+    locks_found: int
+    queue_nodes_enqueued: int
+    queue_nodes_expanded: int
+    max_depth: int
+    depth_processed: int
+    wanted_count: int
+    found_wanted: int
+
 
 def _default_library_name() -> str:
     if sys.platform == "darwin":
@@ -149,12 +167,13 @@ class NativeReachabilityRunner:
         # C signature:
         # int drm_reach_bfs_full(
         #   const uint16_t cols[8],
-        #   int sx,int sy,int srot,int sc,int hv,int hold_dir,int parity,
+        #   int sx,int sy,int srot,int sc,int hv,int hold_dir,int parity,int rot_hold,
         #   int speed_threshold,int max_frames,
         #   uint16_t out_costs[512], uint16_t out_offsets[512], uint16_t out_lengths[512],
         #   uint8_t* out_script_buf, int script_buf_cap, int* out_script_used)
         fn.argtypes = [
             C.POINTER(C.c_uint16),
+            C.c_int,
             C.c_int,
             C.c_int,
             C.c_int,
@@ -173,6 +192,30 @@ class NativeReachabilityRunner:
         ]
         fn.restype = C.c_int
         self._fn = fn
+
+        # Optional stats hook (may be missing in older builds).
+        self._stats_fn = None
+        stats_fn = getattr(self._lib, "drm_reach_get_last_stats", None)
+        if stats_fn is not None:
+
+            class _DrmReachStats(C.Structure):
+                _fields_ = [
+                    ("visited_states", C.c_uint32),
+                    ("expanded_states", C.c_uint32),
+                    ("transitions", C.c_uint32),
+                    ("locks_found", C.c_uint32),
+                    ("queue_nodes_enqueued", C.c_uint32),
+                    ("queue_nodes_expanded", C.c_uint32),
+                    ("max_depth", C.c_uint16),
+                    ("depth_processed", C.c_uint16),
+                    ("wanted_count", C.c_uint16),
+                    ("found_wanted", C.c_uint16),
+                ]
+
+            stats_fn.argtypes = [C.POINTER(_DrmReachStats), C.c_int]
+            stats_fn.restype = C.c_int
+            self._stats_fn = stats_fn
+            self._stats_struct = _DrmReachStats()  # type: ignore[attr-defined]
 
         self._out_costs = np.empty(POSES, dtype=np.uint16)
         self._out_offsets = np.empty(POSES, dtype=np.uint16)
@@ -201,6 +244,7 @@ class NativeReachabilityRunner:
 
         hold_dir = int(getattr(spawn.hold_dir, "value", spawn.hold_dir))  # enum or int
         parity = int(spawn.frame_parity) & 1
+        rot_hold = int(getattr(spawn.rot_hold, "value", spawn.rot_hold))  # enum or int
 
         rc = int(
             self._fn(
@@ -212,6 +256,7 @@ class NativeReachabilityRunner:
                 int(spawn.hor_velocity),
                 int(hold_dir),
                 int(parity),
+                int(rot_hold),
                 int(speed_threshold),
                 int(self._max_frames),
                 self._out_costs.ctypes.data_as(C.POINTER(C.c_uint16)),
@@ -234,13 +279,35 @@ class NativeReachabilityRunner:
             script_buf=self._script_buf[:used],
         )
 
+    def get_last_stats(self) -> Optional[NativeReachStats]:
+        if self._stats_fn is None:
+            return None
+        st = getattr(self, "_stats_struct", None)
+        if st is None:
+            return None
+        rc = int(self._stats_fn(C.byref(st), C.sizeof(st)))
+        if rc != 0:
+            return None
+        return NativeReachStats(
+            visited_states=int(st.visited_states),
+            expanded_states=int(st.expanded_states),
+            transitions=int(st.transitions),
+            locks_found=int(st.locks_found),
+            queue_nodes_enqueued=int(st.queue_nodes_enqueued),
+            queue_nodes_expanded=int(st.queue_nodes_expanded),
+            max_depth=int(st.max_depth),
+            depth_processed=int(st.depth_processed),
+            wanted_count=int(st.wanted_count),
+            found_wanted=int(st.found_wanted),
+        )
+
 
 __all__ = [
     "NativeReachError",
     "NativeReachability",
     "NativeReachabilityRunner",
+    "NativeReachStats",
     "default_library_path",
     "resolve_library_path",
     "is_library_present",
 ]
-

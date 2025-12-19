@@ -255,3 +255,26 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Made RNG randomization default-on in the standard training configs, and added spawn-level perf ratios (`infer/spawn`, `planner/spawn`) plus last terminal reason tracking to the debug UI (`training/configs/base.yaml`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
 - Surfaced placement verification status in the debug UI (`pose_ok`, `pose_err`) so mismatches are visible without digging through raw infos (`training/ui/runner_debug_tui.py`).
 - Added coverage for the new negative-level mapping (`tests/test_synthetic_level_mapping.py`).
+
+## 2025-12-19 – Codex CLI – Planner Parity + Canonical Clear Counting
+
+- Fixed placement pose verification to capture the locked-pill pose from RAM state transitions (leaving `nextAction_pillFalling` / spawn counter advancing) instead of relying on `pill_bonus_adjusted` (which can be disabled by reward config). Added `placements/lock_reason` and surfaced `target_pose`/`lock_pose` in the debug UI.
+- Corrected “down-only” soft drop parity: soft drop triggers when `frameCounter & 1 == 0` (not `== 1`). Updated:
+  - Python oracle stepper (`envs/retro/fast_reach._step_state`)
+  - Python packed BFS (`build_reachability` fast path)
+  - Native BFS helper (`reach_native/drm_reach_full.c`, rebuild via `python -m tools.build_reach_native`)
+  This restores frame-accurate agreement between native reachability scripts and the emulator (pose mismatches disappear).
+- Replaced non-virus clear reward counting with a canonical bottle-buffer diff (`envs/specs/ram_to_state.count_tile_removals`) and cached bottle snapshots in `DrMarioRetroEnv` to avoid false positives from falling-pill overlays. Updated docs (`docs/REWARD_SHAPING.md`) and added unit coverage.
+
+## 2025-12-19 – Codex CLI – Pose Mismatch Logging
+
+- Added persistent pose mismatch counters (`placements/pose_mismatch_*`) and JSONL logging for rare planner/executor divergences, dumping snapshot + board + feasibility + plan + observed lock pose into `data/pose_mismatches.jsonl` (override/disable via `DRMARIO_POSE_MISMATCH_LOG`). Optional per-frame trace capture is gated by `DRMARIO_POSE_MISMATCH_TRACE` (`envs/retro/placement_env.py`, `training/ui/runner_debug_tui.py`).
+
+## 2025-12-19 – Codex CLI – Rotation Edge Semantics + Reward Config Safety
+
+- Fixed reachability/planner rotation semantics to match the ROM: rotate uses `currentP_btnsPressed` (edge), so holding A/B across consecutive frames must not rotate repeatedly. Implemented by tracking a new per-frame `rot_hold` state across the Python stepper, Python packed BFS, and native BFS helper; rebuilt native dylib (`envs/retro/fast_reach.py`, `envs/retro/placement_planner.py`, `reach_native/drm_reach_full.c`, `envs/retro/reach_native.py`).
+- Made reward-config failures non-silent and aligned `RewardConfig` dataclass defaults with `envs/specs/reward_config.json` so reward scale can’t unexpectedly jump to legacy “hundreds” defaults (`envs/retro/drmario_env.py`).
+
+## 2025-12-19 – Codex CLI – Native Reachability Planner Performance
+
+- Optimized the native reachability helper by (a) early-stopping once all in-bounds terminal poses are found, (b) pruning the early-stop target set via a timer-free geometric flood fill (to avoid max-depth blowups from sealed cavities), and (c) switching to a frontier-aggregated BFS that batches x positions per counter-state key (8-bit x masks). Added optional stats via `DRMARIO_REACH_STATS=1` and a replay test that validates native plans against the Python per-frame stepper (`reach_native/drm_reach_full.c`, `envs/retro/reach_native.py`, `tests/test_reach_native_smoke.py`).

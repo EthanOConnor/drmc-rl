@@ -57,21 +57,24 @@ class Action(IntEnum):
 
 @dataclass
 class RewardConfig:
-    pill_place_base: float = 1.2
-    pill_place_growth: float = 0.0008
-    virus_clear_bonus: float = 300.0
-    non_virus_clear_bonus: float = 50.0
-    terminal_clear_bonus: float = 150.0
-    topout_penalty: float = -50.0
-    time_bonus_topout_per_60_frames: float = 2.0
-    time_penalty_clear_per_60_frames: float = 3.0
-    adjacency_pair_bonus: float = 10.0
-    adjacency_triplet_bonus: float = 25.0
-    column_height_penalty: float = 5.0
-    action_penalty_scale: float = 0.25
+    # NOTE: These defaults are the "repo default" reward config and should stay in
+    # sync with `envs/specs/reward_config.json`. This ensures that if config
+    # loading is disabled/missing, reward scale remains sane and predictable.
+    pill_place_base: float = 0.0
+    pill_place_growth: float = 0.0
+    virus_clear_bonus: float = 0.1
+    non_virus_clear_bonus: float = 0.01
+    terminal_clear_bonus: float = 0.5
+    topout_penalty: float = -1.0
+    time_bonus_topout_per_60_frames: float = 0.001
+    time_penalty_clear_per_60_frames: float = 0.001
+    adjacency_pair_bonus: float = 0.0
+    adjacency_triplet_bonus: float = 0.0
+    column_height_penalty: float = 0.0
+    action_penalty_scale: float = 0.0
     placement_height_threshold: float = 3.0
-    placement_height_penalty_multiplier: float = -2.0
-    punish_high_placements: bool = True
+    placement_height_penalty_multiplier: float = 0.0
+    punish_high_placements: bool = False
 
 
 
@@ -272,6 +275,8 @@ class DrMarioRetroEnv(gym.Env):
         self._last_rng_seed_bytes: Optional[Tuple[int, ...]] = None
         self._backend_reset_done = False
         self._prev_height_penalty = 0.0
+        # Cached bottle buffer for canonical clear counting (occupied→empty transitions).
+        self._prev_bottle_grid: Optional[np.ndarray] = None
 
     def _configure_task_from_level(self) -> None:
         """Configure synthetic task parameters derived from `self.level`.
@@ -361,6 +366,36 @@ class DrMarioRetroEnv(gym.Env):
             )
             count += int(mask.sum())
         return int(count)
+
+    def _read_bottle_grid_u8(self) -> Optional[np.ndarray]:
+        """Return a (16,8) uint8 copy of the bottle buffer, or None if unavailable."""
+
+        if self._state_cache is None:
+            return None
+        ram_arr = self._state_cache.ram.arr
+        ram_len = int(ram_arr.shape[0])
+
+        bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
+        base_hex = bottle.get("base_addr") if isinstance(bottle, dict) else None
+        stride_val = bottle.get("stride") if isinstance(bottle, dict) else None
+        try:
+            base_addr = int(base_hex, 16) if base_hex else 0x0400
+        except Exception:
+            base_addr = 0x0400
+        try:
+            stride = int(stride_val) if stride_val is not None else 8
+        except Exception:
+            stride = 8
+
+        H = int(getattr(ram_specs, "STATE_HEIGHT", 16))
+        W = int(getattr(ram_specs, "STATE_WIDTH", 8))
+        grid = np.empty((H, W), dtype=np.uint8)
+        for r in range(H):
+            row_base = int(base_addr + r * stride)
+            if row_base < 0 or (row_base + W) > ram_len:
+                return None
+            grid[r, :] = ram_arr[row_base : row_base + W]
+        return grid
 
     @staticmethod
     def _to_bcd(value: int) -> int:
@@ -525,21 +560,27 @@ class DrMarioRetroEnv(gym.Env):
             self._reward_config_path = None
             return reward_config, {}
 
-        candidates: list[Path] = []
+        candidates: list[tuple[str, Path]] = []
         if reward_config_path is not None:
-            candidates.append(Path(reward_config_path).expanduser())
+            candidates.append(("arg", Path(reward_config_path).expanduser()))
         env_override = os.environ.get("DRMARIO_REWARD_CONFIG")
         if env_override:
-            candidates.append(Path(env_override).expanduser())
-        candidates.append(Path(__file__).with_suffix("").parent.parent / "specs" / "reward_config.json")
+            candidates.append(("env", Path(env_override).expanduser()))
+        candidates.append(("default", Path(__file__).with_suffix("").parent.parent / "specs" / "reward_config.json"))
 
-        for candidate in candidates:
+        for source, candidate in candidates:
             try:
                 if not candidate or not candidate.is_file():
+                    if source in {"arg", "env"}:
+                        raise FileNotFoundError(f"Reward config file not found: {candidate}")
                     continue
                 with candidate.open("r", encoding="utf-8") as f:
                     payload = json.load(f)
             except Exception as exc:
+                # Silent fallback here is extremely dangerous: it can change
+                # reward scale by orders of magnitude and invalidate runs.
+                if source in {"arg", "env", "default"}:
+                    raise RuntimeError(f"Failed to load reward config from {candidate}: {exc}") from exc
                 warnings.warn(f"Failed to load reward config from {candidate}: {exc}")
                 continue
             cfg_obj, descriptions = self._reward_config_from_payload(payload)
@@ -1322,6 +1363,7 @@ class DrMarioRetroEnv(gym.Env):
         self._pending_rng_override = None
         self._last_rng_seed_bytes = None
         self._prev_height_penalty = 0.0
+        self._prev_bottle_grid = None
         backend_reset_pending = getattr(self, "_backend_reset_done", False)
         self._elapsed_frames = 0
         self._prev_move_dir = "none"
@@ -1444,6 +1486,11 @@ class DrMarioRetroEnv(gym.Env):
             self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
         else:
             self._state_prev = None
+        # Initialize bottle cache after we have a state snapshot.
+        try:
+            self._prev_bottle_grid = self._read_bottle_grid_u8()
+        except Exception:
+            self._prev_bottle_grid = None
         info: Dict[str, Any] = {
             "viruses_remaining": self._viruses_remaining,
             "level": self.level,
@@ -1683,27 +1730,31 @@ class DrMarioRetroEnv(gym.Env):
         height_penalty_delta = 0.0
         tiles_cleared_total = 0
         tiles_cleared_non_virus = 0
+        # Canonical clear counting from the bottle buffer (occupied→non-occupied).
+        # This avoids false positives from falling-pill overlays and does not
+        # depend on reward coefficients being enabled.
+        bottle_grid = self._read_bottle_grid_u8() if self.obs_mode == "state" else None
+        if (
+            bottle_grid is not None
+            and self._prev_bottle_grid is not None
+            and self._gameplay_active is True
+            and not topout
+        ):
+            try:
+                cleared_total, _cleared_v, cleared_nonvirus = ram_specs.count_tile_removals(
+                    self._prev_bottle_grid, bottle_grid
+                )
+            except Exception:
+                cleared_total, cleared_nonvirus = 0, 0
+            tiles_cleared_total = int(max(0, int(cleared_total)))
+            tiles_cleared_non_virus = int(max(0, int(cleared_nonvirus)))
+            if tiles_cleared_non_virus > 0 and float(self.reward_cfg.non_virus_clear_bonus) != 0.0:
+                nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * float(tiles_cleared_non_virus)
+                r_env += nonvirus_bonus
         if state_prev_frame is not None and state_next_frame is not None:
             s_prev_latest_frame = state_prev_frame
             s_next_latest_frame = state_next_frame
             if not topout:
-                prev_occ_mask = ram_specs.get_occupancy_mask(s_prev_latest_frame)
-                next_occ_mask = ram_specs.get_occupancy_mask(s_next_latest_frame)
-                s_prev_occupied = float(prev_occ_mask.sum())
-                s_next_occupied = float(next_occ_mask.sum())
-
-                total_cleared = s_prev_occupied - s_next_occupied
-                if total_cleared < 0:
-                    total_cleared = 0 # Pills can be added, so don't count negative clears
-
-                # Heuristics below are superseded by canonical RAM checks in state mode; keep
-                # reward signals but gate them based on coefficients for efficiency.
-                cleared_non_virus = total_cleared - delta_v
-                tiles_cleared_total = int(total_cleared)
-                tiles_cleared_non_virus = int(max(0.0, float(cleared_non_virus)))
-                if cleared_non_virus > 0 and float(self.reward_cfg.non_virus_clear_bonus) != 0.0:
-                    nonvirus_bonus = self.reward_cfg.non_virus_clear_bonus * cleared_non_virus
-                    r_env += nonvirus_bonus
                 if adjacency_enabled:
                     adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
                 static_pills = ram_specs.get_static_mask(s_next_latest_frame)
@@ -1835,6 +1886,10 @@ class DrMarioRetroEnv(gym.Env):
         elif self._use_shaping:
             s_next = None if (done or truncated) else (obs["obs"] if isinstance(obs, dict) else obs)
             self._state_prev = s_next
+        # Update bottle cache at the end of the step so clear counts are
+        # computed against consecutive snapshots.
+        if bottle_grid is not None:
+            self._prev_bottle_grid = bottle_grid
 
         if done or truncated:
             self._elapsed_frames = 0
@@ -1895,6 +1950,7 @@ class DrMarioRetroEnv(gym.Env):
             base_info["pill_counter"] = int(self._pill_spawn_counter)
         if self._frames_until_drop_val is not None:
             base_info["frames_until_drop"] = int(self._frames_until_drop_val)
+        base_info["reward_config_loaded"] = bool(self._reward_config_path is not None)
         if self._reward_config_path is not None:
             base_info["reward_config_path"] = str(self._reward_config_path)
         if (

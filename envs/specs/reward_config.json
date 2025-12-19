@@ -1,6 +1,6 @@
 {
   "pill_place_base": {
-    "value": 0.001,
+    "value": 0.0,
     "description": "Base reward applied to the first pill lock; later locks scale via the exponential curve."
   },
   "pill_place_growth": {
@@ -12,7 +12,7 @@
     "description": "Reward applied per virus cleared in a single step."
   },
   "non_virus_clear_bonus": {
-    "value": 0.06,
+    "value": 0.01,
     "description": "Reward applied for clearing non-virus tiles alongside a placement."
   },
   "terminal_clear_bonus": {
@@ -20,23 +20,23 @@
     "description": "Bonus awarded when the stage is cleared."
   },
   "topout_penalty": {
-    "value": -2,
+    "value": -1.0,
     "description": "Penalty applied if the player tops out."
   },
   "time_bonus_topout_per_60_frames": {
-    "value": 0,
+    "value": 0.00,
     "description": "Additional reward per in-game second elapsed when top-out occurs."
   },
   "time_penalty_clear_per_60_frames": {
-    "value": 0.0,
+    "value": 0.001,
     "description": "Penalty per in-game second elapsed on successful clears (encourages faster runs)."
   },
   "adjacency_pair_bonus": {
-    "value": 0.01,
+    "value": 0.001,
     "description": "Reward for creating a new adjacent pair alignment that could enable future clears."
   },
   "adjacency_triplet_bonus": {
-    "value": 0.02,
+    "value": 0.003,
     "description": "Reward for creating a longer adjacency (three aligned segments)."
   },
   "column_height_penalty": {

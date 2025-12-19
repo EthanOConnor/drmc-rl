@@ -285,6 +285,18 @@ class RunnerDebugTUI:
         if task_mode is not None:
             table.add_row("task", str(task_mode))
 
+        reward_cfg_loaded = info0.get("reward_config_loaded")
+        if reward_cfg_loaded is not None:
+            try:
+                label = "loaded" if bool(reward_cfg_loaded) else "default"
+            except Exception:
+                label = str(reward_cfg_loaded)
+            reward_cfg_path = str(info0.get("reward_config_path", "") or "")
+            if reward_cfg_path:
+                table.add_row("reward_cfg", f"{label} ({reward_cfg_path})")
+            else:
+                table.add_row("reward_cfg", str(label))
+
         level = info0.get("level")
         if level is not None:
             try:
@@ -310,12 +322,34 @@ class RunnerDebugTUI:
         pose_ok = info0.get("placements/pose_ok")
         if pose_ok is not None:
             table.add_row("pose_ok", "yes" if bool(pose_ok) else "no")
+            tgt = info0.get("placements/target_pose")
+            if tgt is not None:
+                table.add_row("target_pose", str(tgt))
+            lock_pose = info0.get("placements/lock_pose")
+            if lock_pose is not None:
+                table.add_row("lock_pose", str(lock_pose))
+            lock_reason = info0.get("placements/lock_reason")
+            if lock_reason is not None:
+                table.add_row("lock_reason", str(lock_reason))
             if not bool(pose_ok):
                 dx = info0.get("placements/pose_dx")
                 dy = info0.get("placements/pose_dy")
                 drot = info0.get("placements/pose_drot")
                 if dx is not None or dy is not None or drot is not None:
                     table.add_row("pose_err", f"dx={dx} dy={dy} rot={drot}")
+        mismatch_count = info0.get("placements/pose_mismatch_count")
+        if mismatch_count is not None:
+            try:
+                table.add_row("pose_mismatches", f"{int(mismatch_count):,}")
+            except Exception:
+                pass
+        mismatch_last = info0.get("placements/pose_mismatch_last")
+        if mismatch_last:
+            mismatch_id = info0.get("placements/pose_mismatch_id")
+            if mismatch_id is not None:
+                table.add_row("mismatch_last", f"yes (#{int(mismatch_id)})")
+            else:
+                table.add_row("mismatch_last", "yes")
 
         if last_update:
             table.add_row("", "")

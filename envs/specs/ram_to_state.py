@@ -517,6 +517,46 @@ def get_occupancy_mask(frame: np.ndarray) -> np.ndarray:
     return occ
 
 
+def count_tile_removals(prev_grid: np.ndarray, next_grid: np.ndarray) -> Tuple[int, int, int]:
+    """Count bottle tiles that transitioned from occupied → non-occupied.
+
+    This is a *canonical* way to count clears directly from the bottle buffer
+    byte grid (16×8 uint8 values), independent of observation representation.
+
+    Occupied tiles include:
+      - viruses (`T_VIRUS`)
+      - locked pill halves (`PILL_TYPES`)
+
+    Clearing markers (`CLEARED_TILE`, `FIELD_JUST_EMPTIED`) and empty tiles
+    (`FIELD_EMPTY`, `0x00`) are treated as non-occupied.
+
+    Returns:
+      (total_cleared, viruses_cleared, non_virus_cleared)
+    """
+
+    prev = np.asarray(prev_grid, dtype=np.uint8)
+    nxt = np.asarray(next_grid, dtype=np.uint8)
+    if prev.shape != nxt.shape:
+        raise ValueError(f"grid shapes must match, got {prev.shape!r} vs {nxt.shape!r}")
+
+    prev_hi = (prev & np.uint8(0xF0)).astype(np.uint8, copy=False)
+    nxt_hi = (nxt & np.uint8(0xF0)).astype(np.uint8, copy=False)
+
+    prev_is_virus = prev_hi == np.uint8(T_VIRUS)
+    nxt_is_virus = nxt_hi == np.uint8(T_VIRUS)
+    prev_is_pill = np.isin(prev_hi, np.asarray(PILL_TYPES, dtype=np.uint8))
+    nxt_is_pill = np.isin(nxt_hi, np.asarray(PILL_TYPES, dtype=np.uint8))
+
+    prev_occ = prev_is_virus | prev_is_pill
+    nxt_occ = nxt_is_virus | nxt_is_pill
+    cleared = prev_occ & (~nxt_occ)
+
+    total = int(cleared.sum())
+    viruses = int((cleared & prev_is_virus).sum())
+    nonvirus = int((cleared & prev_is_pill).sum())
+    return total, viruses, nonvirus
+
+
 def extended_to_policy_v2(state: np.ndarray) -> np.ndarray:
     """Converts a 16-channel extended state to an 8-channel policy_v2 state."""
     C, H, W = state.shape
@@ -574,6 +614,7 @@ __all__ = [
     "get_gravity_value",
     "get_lock_value",
     "get_level_value",
+    "count_tile_removals",
     "decode_preview_from_state",
     "extended_to_policy_v2",
 ]
