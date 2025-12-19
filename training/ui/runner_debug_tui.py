@@ -403,6 +403,7 @@ class RunnerDebugTUI:
         table.add_row("virus_clear", f"{delta_v}", f"{_f(reward.get('virus_clear_reward')):+.4f}")
         table.add_row("nonvirus_clear", f"{tiles_nv}", f"{_f(reward.get('non_virus_bonus')):+.4f}")
         table.add_row("adjacency", "-", f"{_f(reward.get('adjacency_bonus')):+.4f}")
+        table.add_row("virus_adj", "-", f"{_f(reward.get('virus_adjacency_bonus')):+.4f}")
         table.add_row("height", "-", f"{_f(reward.get('height_penalty_delta')):+.4f}")
         table.add_row("action_pen", f"{action_events}", f"{-_f(reward.get('action_penalty')):+.4f}")
         table.add_row("terminal", "-", f"{_f(reward.get('terminal_bonus')):+.4f}")

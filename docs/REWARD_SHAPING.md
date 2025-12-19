@@ -30,6 +30,8 @@ Key terms in `r_env` (see `envs/retro/drmario_env.py`):
 - **Non-virus clear reward**: `non_virus_clear_bonus * tiles_cleared_non_virus`, counted canonically from the
   bottle buffer as occupied→non-occupied tile transitions (state-mode only).
 - **Adjacency shaping** (optional): `adjacency_pair_bonus` / `adjacency_triplet_bonus`.
+- **Virus adjacency shaping** (optional): `virus_adjacency_pair_bonus` / `virus_adjacency_triplet_bonus` for
+  creating same-color runs that touch at least one virus (helps curriculum ramp into virus-clearing).
 - **Column height penalty** (optional): a dense penalty based on tallest stack vs virus band,
   applied as a delta each frame via `column_height_penalty`.
 - **Action penalty** (optional): `action_penalty_scale * action_events` subtracted each frame.

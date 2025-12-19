@@ -256,3 +256,8 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: Correct rotation modelling requires tracking whether A/B was held on the previous frame (`btnsPressed` edge semantics).
 - **Risk**: The Python reachability backend’s BFS state space grows (~3×), making tests and any accidental Python-backend training noticeably slower.
 - **Mitigation**: Prefer the native reachability backend for training; keep Python as the behavioural oracle + unit-test target. Consider reducing test `max_frames` where possible and/or adding a focused micro-benchmark to catch accidental Python-backend regressions.
+
+**R25. Bitplane state representation mixes HUD preview into board planes**
+- **Concern**: The `bitplane` representation encodes the next-pill preview (and the falling pill) by writing into the shared color planes, plus a `preview_mask`.
+- **Risk**: If preview cells overlap with the falling pill spawn region (or if downstream code assumes the top rows are “pure bottle”), the observation can become multi-hot in color channels at a single cell and confuse policies/debugging.
+- **Mitigation**: Keep preview decoding accurate (rotation inferred from `preview_mask`), and if this becomes an issue, introduce a dedicated policy observation wrapper that (a) strips preview/falling from the board planes and (b) passes preview pill colors separately as scalars.

@@ -646,3 +646,38 @@ enabled by setting `DRMARIO_REACH_STATS=1`.
 **Why:** Planner throughput is a critical bottleneck during training; having a
 first-party “how many states/edges did we explore” counter makes regressions
 and board-dependent slowdowns diagnosable without external profilers.
+
+---
+
+## 2025-12-19 – Reward Shaping + Policy Input: Virus Adjacency + Type-Blind Colors
+
+### Decision: Add virus-specific adjacency shaping (separate from generic adjacency)
+
+**Decision:** Introduce two reward terms:
+- `virus_adjacency_pair_bonus`
+- `virus_adjacency_triplet_bonus`
+
+These award when a newly placed pill creates/extends a same-color run that
+includes at least one virus tile (stronger weight than the generic
+`adjacency_*` shaping which only considers pill-to-pill adjacency).
+
+**Why:** The early curriculum stages can teach “make clears” without teaching
+“prioritize clears that remove viruses”. Virus adjacency shaping provides a
+low-latency on-ramp toward the true objective (virus elimination) without
+requiring full clears to be frequent early in training.
+
+### Decision: Prefer type-blind color planes + virus mask for placement policy training
+
+**Decision:** For placement-policy training runs (`training/configs/smdp_ppo.yaml`),
+use the `bitplane` state representation by default.
+
+**Why:** The default `extended` state splits colors across separate planes
+(virus vs locked pill vs falling pill). While a CNN can learn to merge them, a
+type-blind “color is color” representation is a better inductive bias for
+match-based dynamics (Dr. Mario clears depend on color, not tile type). The
+bitplane representation provides (R/Y/B) color planes plus a separate `virus_mask`.
+
+**Caveat:** Bitplane also encodes the HUD preview/falling pill into the color
+planes; this is legal information (the next pill is visible to humans), but it
+should be monitored for pathological overlap. We improved preview decoding so
+the rotation can be recovered from the preview mask.

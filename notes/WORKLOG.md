@@ -278,3 +278,9 @@ Chronological log of work done. Format: date, actor, brief summary.
 ## 2025-12-19 – Codex CLI – Native Reachability Planner Performance
 
 - Optimized the native reachability helper by (a) early-stopping once all in-bounds terminal poses are found, (b) pruning the early-stop target set via a timer-free geometric flood fill (to avoid max-depth blowups from sealed cavities), and (c) switching to a frontier-aggregated BFS that batches x positions per counter-state key (8-bit x masks). Added optional stats via `DRMARIO_REACH_STATS=1` and a replay test that validates native plans against the Python per-frame stepper (`reach_native/drm_reach_full.c`, `envs/retro/reach_native.py`, `tests/test_reach_native_smoke.py`).
+
+## 2025-12-19 – Codex CLI – Virus Adjacency Shaping + Bitplane Policy Obs
+
+- Added virus-specific adjacency shaping terms (`virus_adjacency_pair_bonus`, `virus_adjacency_triplet_bonus`) and surfaced the aggregate in the debug UI reward breakdown (`envs/retro/drmario_env.py`, `envs/specs/reward_config.json`, `envs/retro/placement_env.py`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
+- Set the placement SMDP-PPO config to use the `bitplane` state representation by default (type-blind color planes + virus mask) and improved preview decoding for bitplane states to infer rotation (`training/configs/smdp_ppo.yaml`, `envs/specs/ram_to_state.py`).
+- Added unit coverage for virus adjacency shaping (`tests/test_virus_adjacency_reward.py`) and updated reward docs (`docs/REWARD_SHAPING.md`).

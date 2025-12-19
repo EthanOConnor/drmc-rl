@@ -104,6 +104,7 @@ class _RewardBreakdown:
     virus_clear_reward: float = 0.0
     non_virus_bonus: float = 0.0
     adjacency_bonus: float = 0.0
+    virus_adjacency_bonus: float = 0.0
     pill_bonus_adjusted: float = 0.0
     height_penalty_delta: float = 0.0
     action_penalty: float = 0.0
@@ -159,6 +160,7 @@ class _RewardBreakdown:
         self.virus_clear_reward += self._as_float(info.get("virus_clear_reward"))
         self.non_virus_bonus += self._as_float(info.get("non_virus_bonus"))
         self.adjacency_bonus += self._as_float(info.get("adjacency_bonus"))
+        self.virus_adjacency_bonus += self._as_float(info.get("virus_adjacency_bonus"))
         self.height_penalty_delta += self._as_float(info.get("height_penalty_delta"))
         self.action_penalty += self._as_float(info.get("action_penalty"))
         self.terminal_bonus += self._as_float(info.get("terminal_bonus_reward"))
@@ -601,6 +603,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             "reward/virus_clear_reward": float(breakdown.virus_clear_reward),
             "reward/non_virus_bonus": float(breakdown.non_virus_bonus),
             "reward/adjacency_bonus": float(breakdown.adjacency_bonus),
+            "reward/virus_adjacency_bonus": float(breakdown.virus_adjacency_bonus),
             "reward/pill_bonus_adjusted": float(breakdown.pill_bonus_adjusted),
             "reward/height_penalty_delta": float(breakdown.height_penalty_delta),
             "reward/action_penalty": float(breakdown.action_penalty),

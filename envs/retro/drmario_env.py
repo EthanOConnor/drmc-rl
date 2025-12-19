@@ -66,10 +66,12 @@ class RewardConfig:
     non_virus_clear_bonus: float = 0.01
     terminal_clear_bonus: float = 0.5
     topout_penalty: float = -1.0
-    time_bonus_topout_per_60_frames: float = 0.001
+    time_bonus_topout_per_60_frames: float = 0.0
     time_penalty_clear_per_60_frames: float = 0.001
-    adjacency_pair_bonus: float = 0.0
-    adjacency_triplet_bonus: float = 0.0
+    adjacency_pair_bonus: float = 0.001
+    adjacency_triplet_bonus: float = 0.003
+    virus_adjacency_pair_bonus: float = 0.002
+    virus_adjacency_triplet_bonus: float = 0.006
     column_height_penalty: float = 0.0
     action_penalty_scale: float = 0.0
     placement_height_threshold: float = 3.0
@@ -1043,6 +1045,135 @@ class DrMarioRetroEnv(gym.Env):
 
         return total_bonus
 
+    def _compute_virus_adjacency_bonus(self, prev_frame: np.ndarray, next_frame: np.ndarray) -> float:
+        """Reward creating same-color runs that touch at least one virus.
+
+        This is analogous to `_compute_adjacency_bonus`, but:
+          - it still only considers *newly placed pill cells* (new static tiles), and
+          - it evaluates adjacency/run length on the union of (static pills + viruses),
+          - it only awards if the resulting run includes at least one virus cell.
+
+        Intuition: generic adjacency shaping helps the policy build matches anywhere;
+        virus adjacency shaping biases it toward building around the objective tiles.
+        """
+
+        static_prev = ram_specs.get_static_color_planes(prev_frame)
+        static_next = ram_specs.get_static_color_planes(next_frame)
+        virus_prev = ram_specs.get_virus_color_planes(prev_frame)
+        virus_next = ram_specs.get_virus_color_planes(next_frame)
+
+        if (
+            static_prev.shape[0] < 3
+            or static_next.shape[0] < 3
+            or virus_prev.shape[0] < 3
+            or virus_next.shape[0] < 3
+        ):
+            return 0.0
+
+        static_prev_mask = static_prev > 0.5
+        static_next_mask = static_next > 0.5
+        virus_prev_mask = virus_prev > 0.5
+        virus_next_mask = virus_next > 0.5
+
+        # Only count newly placed pill cells (static pills).
+        new_cells = static_next_mask & ~static_prev_mask
+
+        total_bonus = 0.0
+        for color_idx in range(3):
+            coords = np.argwhere(new_cells[color_idx])
+            if coords.size == 0:
+                continue
+
+            combined_prev = static_prev_mask[color_idx] | virus_prev_mask[color_idx]
+            combined_new = static_next_mask[color_idx] | virus_next_mask[color_idx]
+            virus_mask = virus_next_mask[color_idx]
+
+            pair_awarded = False
+            triplet_awarded = False
+
+            for r, c in coords:
+                # Horizontal runs
+                left_prev = 0
+                cc = c - 1
+                while cc >= 0 and combined_prev[r, cc]:
+                    left_prev += 1
+                    cc -= 1
+                right_prev = 0
+                cc = c + 1
+                while cc < combined_prev.shape[1] and combined_prev[r, cc]:
+                    right_prev += 1
+                    cc += 1
+
+                left_new = 0
+                cc = c - 1
+                while cc >= 0 and combined_new[r, cc]:
+                    left_new += 1
+                    cc -= 1
+                right_new = 0
+                cc = c + 1
+                while cc < combined_new.shape[1] and combined_new[r, cc]:
+                    right_new += 1
+                    cc += 1
+
+                run_prev_best_h = max(left_prev, right_prev)
+                run_new_total_h = left_new + 1 + right_new
+
+                virus_in_run_h = False
+                if run_new_total_h >= 2:
+                    c0 = max(0, c - left_new)
+                    c1 = min(combined_new.shape[1] - 1, c + right_new)
+                    virus_in_run_h = bool(virus_mask[r, c0 : c1 + 1].any())
+
+                # Vertical runs
+                up_prev = 0
+                rr = r - 1
+                while rr >= 0 and combined_prev[rr, c]:
+                    up_prev += 1
+                    rr -= 1
+                down_prev = 0
+                rr = r + 1
+                while rr < combined_prev.shape[0] and combined_prev[rr, c]:
+                    down_prev += 1
+                    rr += 1
+
+                up_new = 0
+                rr = r - 1
+                while rr >= 0 and combined_new[rr, c]:
+                    up_new += 1
+                    rr -= 1
+                down_new = 0
+                rr = r + 1
+                while rr < combined_new.shape[0] and combined_new[rr, c]:
+                    down_new += 1
+                    rr += 1
+
+                run_prev_best_v = max(up_prev, down_prev)
+                run_new_total_v = up_new + 1 + down_new
+
+                virus_in_run_v = False
+                if run_new_total_v >= 2:
+                    r0 = max(0, r - up_new)
+                    r1 = min(combined_new.shape[0] - 1, r + down_new)
+                    virus_in_run_v = bool(virus_mask[r0 : r1 + 1, c].any())
+
+                if (virus_in_run_h or virus_in_run_v) and (
+                    (run_prev_best_h < 3 and run_new_total_h >= 3)
+                    or (run_prev_best_v < 3 and run_new_total_v >= 3)
+                ):
+                    triplet_awarded = True
+                elif (virus_in_run_h or virus_in_run_v) and (
+                    (run_prev_best_h < 2 and run_new_total_h >= 2)
+                    or (run_prev_best_v < 2 and run_new_total_v >= 2)
+                ):
+                    pair_awarded = True
+
+            if triplet_awarded:
+                total_bonus += float(self.reward_cfg.virus_adjacency_triplet_bonus)
+            elif pair_awarded:
+                total_bonus += float(self.reward_cfg.virus_adjacency_pair_bonus)
+
+        return total_bonus
+
     def _extract_virus_count(self) -> Optional[int]:
         # Prefer the raw RAM counter when available (works during reset/startup
         # sequences where `_state_cache` may be stale).
@@ -1676,6 +1807,10 @@ class DrMarioRetroEnv(gym.Env):
             float(self.reward_cfg.adjacency_pair_bonus) != 0.0
             or float(self.reward_cfg.adjacency_triplet_bonus) != 0.0
         )
+        virus_adjacency_enabled = (
+            float(getattr(self.reward_cfg, "virus_adjacency_pair_bonus", 0.0)) != 0.0
+            or float(getattr(self.reward_cfg, "virus_adjacency_triplet_bonus", 0.0)) != 0.0
+        )
         height_penalty_enabled = float(self.reward_cfg.column_height_penalty) != 0.0
         placement_bonus_enabled = float(self.reward_cfg.pill_place_base) != 0.0
         placement_height_analysis_enabled = placement_bonus_enabled and bool(self.reward_cfg.punish_high_placements)
@@ -1725,6 +1860,7 @@ class DrMarioRetroEnv(gym.Env):
 
         # Virus and non-virus clear bonus
         adjacency_bonus = 0.0
+        virus_adjacency_bonus = 0.0
         nonvirus_bonus = 0.0
         height_penalty_raw = 0.0
         height_penalty_delta = 0.0
@@ -1757,6 +1893,10 @@ class DrMarioRetroEnv(gym.Env):
             if not topout:
                 if adjacency_enabled:
                     adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
+                if virus_adjacency_enabled:
+                    virus_adjacency_bonus = self._compute_virus_adjacency_bonus(
+                        s_prev_latest_frame, s_next_latest_frame
+                    )
                 static_pills = ram_specs.get_static_mask(s_next_latest_frame)
                 if height_penalty_enabled:
                     if static_pills.any():
@@ -1795,6 +1935,8 @@ class DrMarioRetroEnv(gym.Env):
                     self._prev_height_penalty = 0.0
         if adjacency_bonus > 0.0:
             r_env += adjacency_bonus
+        if virus_adjacency_bonus > 0.0:
+            r_env += virus_adjacency_bonus
 
         virus_clear_reward = self.reward_cfg.virus_clear_bonus * float(delta_v)
         r_env += virus_clear_reward
@@ -1905,6 +2047,7 @@ class DrMarioRetroEnv(gym.Env):
             "r_total": float(r_total),
             "time_reward": float(time_reward),
             "adjacency_bonus": float(adjacency_bonus),
+            "virus_adjacency_bonus": float(virus_adjacency_bonus),
             "pill_bonus": float(placement_bonus),
             "pill_bonus_adjusted": float(placement_bonus_adjusted),
             "non_virus_bonus": float(nonvirus_bonus),

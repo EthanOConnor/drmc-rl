@@ -464,13 +464,32 @@ def decode_preview_from_state(frame: np.ndarray) -> Optional[Tuple[int, int, int
         mask = arr[STATE_IDX.preview_mask] > 0.5
         if not mask.any():
             return None
+        # Infer rotation from the two occupied preview cells.
+        coords = np.argwhere(mask)
+        rotation = 0
+        if coords.shape[0] >= 2:
+            rel = {(int(r) - int(_PREVIEW_BASE[0]), int(c) - int(_PREVIEW_BASE[1])) for r, c in coords[:2]}
+            for rot, offsets in _PREVIEW_OFFSETS.items():
+                if rel == {tuple(offsets[0]), tuple(offsets[1])}:
+                    rotation = int(rot) & 0x03
+                    break
+
         colors = arr[list(STATE_IDX.color_channels)] > 0.5
-        color_hits = [int((colors[i] & mask).any()) for i in range(3)]
-        if sum(color_hits) == 0:
-            return None
-        first = next((idx for idx, hit in enumerate(color_hits) if hit), None)
-        second = next((idx for idx, hit in enumerate(color_hits) if hit and idx != first), first)
-        return (first or 0, second or 0, 0)
+        pos_first, pos_second = _preview_positions(rotation)
+
+        def _color_at(dr: int, dc: int) -> int:
+            rr = int(_PREVIEW_BASE[0]) + int(dr)
+            cc = int(_PREVIEW_BASE[1]) + int(dc)
+            if rr < 0 or rr >= colors.shape[1] or cc < 0 or cc >= colors.shape[2]:
+                return 0
+            for idx in range(3):
+                if bool(colors[idx, rr, cc]):
+                    return idx
+            return 0
+
+        first = _color_at(int(pos_first[0]), int(pos_first[1]))
+        second = _color_at(int(pos_second[0]), int(pos_second[1]))
+        return (int(first), int(second), int(rotation))
     if STATE_IDX.preview_rotation is None:
         return None
     rotation = int(round(float(arr[STATE_IDX.preview_rotation, 0, 0]) * 3.0))

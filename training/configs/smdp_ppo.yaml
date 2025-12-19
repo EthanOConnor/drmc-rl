@@ -44,6 +44,9 @@ smdp_ppo:
 env:
   id: "DrMarioPlacementEnv-v0"
   obs_mode: state
+  # `bitplane` gives type-blind color planes (R/Y/B) + a virus mask, which is a
+  # better inductive bias for matching than the default `extended` split planes.
+  state_repr: bitplane
   num_envs: 16
   frame_stack: 1
   randomize_rng: true
