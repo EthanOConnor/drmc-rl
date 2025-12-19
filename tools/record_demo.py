@@ -96,9 +96,26 @@ def record_cpp_demo(
             speed=1,   # Medium speed
         )
         
+        # Wait for the engine to finish its startup memset/arg parsing before
+        # releasing the start gate. If we set the gate too early it can be
+        # wiped and the engine will block forever in the --wait-start loop.
+        t0 = time.perf_counter()
+        while (int(state.control_flags) & 0x02) == 0:
+            if time.perf_counter() - t0 > 1.0:
+                break
+            time.sleep(0.001)
+
         # Release wait-start gate and ensure no external inputs are applied.
         state.control_flags |= 0x01
         state.buttons = 0
+
+        # Engine performs its initial `reset()` after the gate is released.
+        # Wait briefly for level setup to populate the board.
+        t0 = time.perf_counter()
+        while int(state.board[0]) == 0:
+            if time.perf_counter() - t0 > 1.0:
+                break
+            time.sleep(0.001)
         
         # Capture initial state
         transcript.initial_board = bytes(state.board)
@@ -140,7 +157,10 @@ def record_cpp_demo(
                     print(f"Warning: timeout at frame {state.frame_count}")
                 break
             
-            frame_num = state.frame_count
+            # Use a deterministic frame counter matching `tools/record_nes_demo.py`
+            # (not the ROM `frameCounter`), so transcripts compare cleanly even
+            # when `frameCounter` is seeded for parity.
+            frame_num += 1
 
             # Stop conditions are checked *before* appending a FrameState, to
             # mirror the NES ground-truth recorder.

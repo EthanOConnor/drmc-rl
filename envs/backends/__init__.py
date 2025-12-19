@@ -11,6 +11,7 @@ _BACKENDS: Dict[str, Type[EmulatorBackend]] = {}
 _BUILTIN_SPECS: Dict[str, Tuple[str, str]] = {
     "libretro": ("envs.backends.libretro_backend", "LibretroBackend"),
     "stable-retro": ("envs.backends.stable_retro_backend", "StableRetroBackend"),
+    "cpp-engine": ("envs.backends.cpp_engine_backend", "CppEngineBackend"),
 }
 
 

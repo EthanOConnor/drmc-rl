@@ -79,7 +79,9 @@ Examples:
     parser.add_argument("--device", type=str, default=None)
 
     # Retro backend convenience flags (also available via --override env.*)
-    parser.add_argument("--backend", type=str, default=None, help="Backend: libretro|stable-retro|mock")
+    parser.add_argument(
+        "--backend", type=str, default=None, help="Backend: libretro|stable-retro|cpp-engine|mock"
+    )
     parser.add_argument("--core", type=str, default=None, help="Libretro core name (e.g. quicknes) or path")
     parser.add_argument("--core-path", type=str, default=None, help="Path to libretro core file")
     parser.add_argument("--rom-path", type=str, default=None, help="Path to Dr. Mario ROM")

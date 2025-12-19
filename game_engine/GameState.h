@@ -23,8 +23,9 @@ struct DrMarioState {
   u8 buttons_prev; // For edge detection (internal bookkeeping)
   u8 buttons_pressed; // Newly pressed this frame (edge triggered)
   u8 buttons_held;    // Currently held buttons (debounced)
-  u8 control_flags; // Bit0: start gate; Bit1: manual stepping; Bit2: step once
-  u8 pad0;
+  u8 control_flags; // Bit0: start gate; Bit1: manual stepping; Bit2: step once;
+                    // Bit3: request exit; Bit4: request reset.
+  u8 next_action; // currentP_nextAction ($0097), jumpTable_nextAction index.
 
   // --- Game State (Written by Engine, Read by Agent) ---
 
@@ -43,6 +44,7 @@ struct DrMarioState {
   // Preview Pill
   u8 preview_pill_color_l; // 0x031A
   u8 preview_pill_color_r; // 0x031B
+  u8 preview_pill_rotation; // 0x0322 (visual-only; useful for parity/debug)
   u8 preview_pill_size;    // 0x0323
 
   // Game Status
@@ -52,21 +54,24 @@ struct DrMarioState {
   u8 level_fail;    // top-out detection for loop/reset
 
   // Counters & Settings
-  u8 pill_counter; // 0x0310
-  u16 pill_counter_total;
-  u8 level;             // 0x0316
-  u8 speed_setting;     // 0x008B (Low/Med/Hi)
-  u8 viruses_remaining; // 0x0324
-  u8 speed_ups;         // Number of speed ups applied
+  u8 pill_counter; // p1_pillsCounter ($0327), reserve index (wraps &0x7F)
+  u16 pill_counter_total; // p1_pillsCounter_decimal/hundreds ($0310/$0311), packed BCD
+  u8 level;             // p1_level ($0316)
+  u8 speed_setting;     // p1_speedSetting ($030B), mirrored in ZP ($008B)
+  u8 viruses_remaining; // p1_virusLeft ($0324), BCD
+  u8 speed_ups;         // p1_speedUps ($030A), mirrored in ZP ($008A)
 
-  // Physics / Timers
-  u8 gravity_counter; // 0x0312
-  u8 lock_counter;    // 0x0307
-  u8 speed_counter;   // Internal counter for gravity
-  u8 hor_velocity;    // DAS accumulator
+  // Timers
+  // `waitFrames` ($0051): used during level intro delay (`waitFor_A_frames`).
+  // We expose it to Python for parity + tooling; it is 0 during normal play.
+  u8 wait_frames;
+  u8 lock_counter;    // p1_pillPlacedStep ($0307)
+  u8 speed_counter;   // p1_speedCounter ($0312), gravity timing accumulator
+  u8 hor_velocity;    // p1_horVelocity ($0313), DAS accumulator
 
   // RNG State (for reproducibility)
   u8 rng_state[2]; // 0x0017, 0x0018
+  u8 rng_override; // If non-zero, `reset()` preserves rng_state and clears this.
 
   // Frame Counter (Internal)
   u32 frame_count;
@@ -76,12 +81,13 @@ struct DrMarioState {
   u8 last_fail_row;
   u8 last_fail_col;
   u8 spawn_delay; // Frames before new pill can be controlled (throw animation)
-  u8 pad1[1];
+  u8 reset_wait_frames; // If non-zero, `reset()` uses this as the intro waitFrames seed.
+  u16 reset_framecounter_lo_plus1; // Optional: (frameCounter_lo + 1) seed for parity resets.
 };
 
-static_assert(sizeof(DrMarioState) == 180,
+static_assert(sizeof(DrMarioState) == 188,
               "DrMarioState layout changed unexpectedly");
 static_assert(offsetof(DrMarioState, control_flags) == 4,
               "control_flags offset mismatch");
-static_assert(offsetof(DrMarioState, frame_count) == 160,
+static_assert(offsetof(DrMarioState, frame_count) == 164,
               "frame_count offset mismatch");

@@ -310,3 +310,11 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 - Added `ram_to_state.get_plane_names()` and a small test to keep plane-name lists consistent with channel counts (`envs/specs/ram_to_state.py`, `tests/test_state_plane_names.py`).
 - Extended the debug TUI Perf panel to show `state_repr`, per-env observation shape, plane index→name map, next-pill colors, and mask/orientation conventions (`training/ui/runner_debug_tui.py`).
+
+## 2025-12-19 – Codex CLI – C++ Engine ↔ Libretro Ghost Parity
+
+- Added `cpp-engine` backend (shared memory + subprocess) with a synthetic 2 KB NES RAM view so the existing RAM→state pipeline works unchanged (`envs/backends/cpp_engine_backend.py`, `envs/backends/__init__.py`, `game_engine/engine_shm.py`, `game_engine/GameState.h`).
+- Made libretro RNG seeding parity-robust by applying `rng_seed_bytes` at the `initData_level` boundary (mode==0x03), removed the engine’s menu-time RNG warmup hack, and added per-reset `frameCounter` low-byte seeding for exact soft-drop timing parity (`envs/retro/drmario_env.py`, `game_engine/GameLogic.cpp`).
+- Added a ghosting parity harness that runs libretro and the C++ engine side-by-side and stops on first divergence (`tools/ghost_parity.py`).
+- Hardened libretro auto-start: level selection clamps (no wrap-around) and added `start_sync_wait_frames` (`waitFrames` sync) so resets land in a stable post-virus-placement checkpoint across levels (`envs/retro/drmario_env.py`, `tools/ghost_parity.py`).
+- Fixed demo recorder startup gating + transcript frame numbering so demo parity remains deterministic under the new frameCounter seeding (`tools/record_demo.py`, `tests/test_rng_randomization.py`), and updated docs (`docs/RETRO_CORE_NOTES.md`, `docs/CPP_SIM_NOTES.md`, `docs/DYNAMICS_SPEC.md`).

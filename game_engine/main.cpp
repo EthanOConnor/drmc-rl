@@ -99,20 +99,19 @@ int main(int argc, char **argv) {
     speed_setting = 2;
   state->speed_setting = static_cast<u8>(speed_setting);
 
-  // Debug/flag bits in control_flags high nibble (does not affect protocol):
-  // 0x10 = wait_start requested, 0x20 = manual-step arg, 0x40 = no-sleep arg
+  // Informational bits in the high nibble (do not affect protocol):
+  // 0x20 = wait_start requested, 0x40 = manual-step arg, 0x80 = no-sleep arg
   if (wait_start)
-    state->control_flags |= 0x10;
-  if (manual_step)
     state->control_flags |= 0x20;
-  if (no_sleep)
+  if (manual_step)
     state->control_flags |= 0x40;
+  if (no_sleep)
+    state->control_flags |= 0x80;
   if (manual_step)
     state->control_flags |= 0x02; // ensure manual-mode bit set for drivers
 
   // Initialize Game Logic
   GameLogic game(state);
-  game.reset();
 
   std::cout << "Dr. Mario Engine Running..."
             << (demo_mode ? " (demo mode)" : "") << std::endl;
@@ -123,11 +122,22 @@ int main(int argc, char **argv) {
     }
   }
 
+  // Perform the initial reset only after the optional start gate is released,
+  // so external drivers can pre-seed RNG/level settings before level setup.
+  game.reset();
+
   // Main Loop
   // For now, run at ~60Hz to simulate NES speed
   auto next_frame = std::chrono::steady_clock::now();
 
   while (true) {
+    // Out-of-band commands from the driver (do not require a step request).
+    if (state->control_flags & 0x10) { // reset requested
+      game.reset();
+      state->control_flags &= static_cast<u8>(~0x10);
+      continue;
+    }
+
     const bool manual_mode = manual_step || ((state->control_flags & 0x02) != 0);
     if (manual_mode) { // manual stepping mode: only step when bit2 set
       if (state->control_flags & 0x04) {

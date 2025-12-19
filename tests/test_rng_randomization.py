@@ -15,6 +15,7 @@ class _StubBackend:
         self.frame = np.zeros((240, 256, 3), dtype=np.uint8)
         self.ram = np.zeros(0x10000, dtype=np.uint8)
         self.events: list[tuple] = []
+        self._step_count = 0
 
     def reset(self) -> None:
         self.events.append(("reset",))
@@ -32,6 +33,12 @@ class _StubBackend:
 
     def step(self, buttons, repeat: int = 1) -> None:
         self.events.append(("step", list(buttons), int(repeat)))
+        # Simulate the ROM reaching the `initData_level` boundary (mode==0x03)
+        # during the START press, which is where `DrMarioRetroEnv` applies RNG
+        # seeds for parity.
+        self._step_count += 1
+        if self._step_count == 1:
+            self.ram[0x0046] = 0x03
 
     def get_state(self):
         raise NotImplementedError
@@ -63,8 +70,8 @@ def test_randomize_rng_defers_until_start_sequence():
     write_indices = [idx for idx, event in enumerate(stub.events) if event[0] == "write"]
     assert write_indices, "RNG randomization never triggered"
     first_write = write_indices[0]
-    assert not any(event[0] == "step" for event in stub.events[:first_write]), (
-        "RNG randomization should happen before issuing start inputs"
+    assert any(event[0] == "step" for event in stub.events[:first_write]), (
+        "RNG randomization should happen during the auto-start sequence (mode==0x03 boundary)"
     )
     written = stub.events[first_write]
     addr, values = written[1], written[2]
@@ -87,4 +94,3 @@ def test_randomize_rng_immediate_when_auto_start_disabled():
     assert addr == 0x0017
     assert tuple(int(v) for v in values) == tuple(override)
     assert info.get("rng_seed") == tuple(override)
-

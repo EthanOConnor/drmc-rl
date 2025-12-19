@@ -46,6 +46,9 @@ smdp_ppo:
 env:
   id: "DrMarioPlacementEnv-v0"
   obs_mode: state
+  # Default to the headless C++ engine for training throughput.
+  # Override on the CLI with `--backend libretro --core quicknes --rom-path ...` for emulator runs.
+  backend: cpp-engine
   # Observation representation for state-mode:
   #   - extended: 16ch (explicit virus/static/falling + scalars)
   #   - bitplane_bottle: 4ch (bottle-only color planes + virus_mask)

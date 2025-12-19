@@ -245,9 +245,10 @@ class EngineSession:
         time.sleep(0.05)
         self.mm, self.state = open_shared_memory()
 
-        # Wait until the engine has finished its initial memset/reset pass.
-        # If we set the start-gate bit too early, the engine can wipe it during
-        # initialization and then block forever in the --wait-start loop.
+        # Wait until the engine has finished its initial memset/arg parsing
+        # pass. If we set the start-gate bit too early, the engine can wipe it
+        # during initialization and then block forever in the --wait-start
+        # loop.
         deadline = time.time() + 2.0
         while True:
             if self.proc is not None and self.proc.poll() is not None:
@@ -258,17 +259,31 @@ class EngineSession:
                     f"stderr:\n{err.decode(errors='replace')}\n"
                 )
 
-            # Demo reset sets viruses_remaining to the demo board count (BCD 0x44).
-            if self.state is not None and int(self.state.viruses_remaining) != 0:
+            # Engine sets manual-step bit (0x02) after parsing args.
+            if self.state is not None and (int(self.state.control_flags) & 0x02) != 0:
                 break
             if time.time() > deadline:
                 raise TimeoutError("Timed out waiting for engine initialization")
             time.sleep(0.001)
 
-        # Release wait-start gate.
+        # Release wait-start gate; engine performs its initial reset afterwards.
         self.state.control_flags |= 0x01
         # External inputs are ignored in demo mode, but keep this at 0 anyway.
         self.state.buttons = 0
+
+        # Wait for reset to populate the demo board (viruses_remaining is BCD).
+        deadline = time.time() + 2.0
+        while self.state is not None and int(self.state.viruses_remaining) == 0:
+            if self.proc is not None and self.proc.poll() is not None:
+                out, err = self.proc.communicate(timeout=1)
+                raise RuntimeError(
+                    "Engine exited during reset.\n"
+                    f"stdout:\n{out.decode(errors='replace')}\n"
+                    f"stderr:\n{err.decode(errors='replace')}\n"
+                )
+            if time.time() > deadline:
+                raise TimeoutError("Timed out waiting for engine reset")
+            time.sleep(0.001)
 
     def stop(self) -> None:
         if self.state is not None:
@@ -426,7 +441,7 @@ def _render_stats_panel(state, ui: PlaybackState) -> Panel:
     table.add_row("speed_counter", str(int(state.speed_counter)))
     table.add_row("hor_velocity", str(int(state.hor_velocity)))
     table.add_row("lock_counter", str(int(state.lock_counter)))
-    table.add_row("gravity_counter", str(int(state.gravity_counter)))
+    table.add_row("wait_frames", str(int(state.wait_frames)))
     table.add_row("stage_clear", str(int(state.stage_clear)))
     table.add_row("level_fail", str(int(state.level_fail)))
     table.add_row("fail_count", str(int(state.fail_count)))

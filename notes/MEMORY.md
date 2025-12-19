@@ -726,3 +726,25 @@ the rotation can be recovered from the preview mask.
 - **Raw NES encoding (from RAM / board bytes):** yellow=0, red=1, blue=2.
 - **Canonical policy/plane indices:** red=0, yellow=1, blue=2 (matches plane naming order).
 - **Rule:** State planes and policy vectors use canonical indices; UI/board-byte tools may use raw NES values and must convert explicitly when mixing.
+
+---
+
+## 2025-12-19 – Emulator/Engine Parity: RNG + Reset Sync Semantics
+
+### Decision: Define `rng_seed_bytes` at the `initData_level` boundary (mode==0x03)
+
+**Decision:** Treat `rng_seed_bytes` as “the RNG state at `initData_level` entry” (Dr. Mario rev0, `$0046 == 0x03`), not as “RNG state at some menu-time frame”.
+
+**Implementation:**
+- **Libretro backend:** during auto-start, apply RNG seed bytes exactly when mode transitions to `0x03` (observed at a frame boundary), i.e., *after* the START press begins the game but *before* `initData_level` runs on the next frame.
+- **C++ engine backend:** pre-seed `rng_state` before calling `GameLogic::reset()`, and do **no** menu-time RNG warmup in the engine.
+
+**Why:** Menu-time RNG consumption is not stable across seeds/levels. Seeding at the level-init boundary makes virus layout + pill reserve generation deterministic and allows a single seed to reproduce both libretro and the engine exactly.
+
+### Decision: Parity sync point uses `waitFrames` and `frameCounter` low byte
+
+**Decision:** For “ghost parity” resets, align the engine to the emulator’s in-level checkpoint by mirroring:
+- `waitFrames` (`$0051`) via `intro_wait_frames` (level-intro delay)
+- `frameCounter` low byte (`$0043`) via `intro_frame_counter_lo` (soft-drop timing parity)
+
+**Why:** Soft drop and some animation timing read the NMI `frameCounter` LSB; syncing it prevents cumulative one-frame drift in long runs.

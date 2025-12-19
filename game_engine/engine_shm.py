@@ -3,23 +3,22 @@ import ctypes.util
 import mmap
 import os
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 # Shared memory configuration (must match C++)
 SHM_NAME = "/drmario_shm"
-SHM_SIZE = 180
 
 
 class DrMarioStatePy(ctypes.Structure):
     _fields_ = [
-    ("buttons", ctypes.c_uint8),
-    ("buttons_prev", ctypes.c_uint8),
-    ("buttons_pressed", ctypes.c_uint8),
-    ("buttons_held", ctypes.c_uint8),
-    ("control_flags", ctypes.c_uint8),
-    ("_pad0", ctypes.c_uint8),
-    ("board", ctypes.c_uint8 * 128),
-    ("falling_pill_row", ctypes.c_uint8),
+        ("buttons", ctypes.c_uint8),
+        ("buttons_prev", ctypes.c_uint8),
+        ("buttons_pressed", ctypes.c_uint8),
+        ("buttons_held", ctypes.c_uint8),
+        ("control_flags", ctypes.c_uint8),
+        ("next_action", ctypes.c_uint8),
+        ("board", ctypes.c_uint8 * 128),
+        ("falling_pill_row", ctypes.c_uint8),
         ("falling_pill_col", ctypes.c_uint8),
         ("falling_pill_orient", ctypes.c_uint8),
         ("falling_pill_color_l", ctypes.c_uint8),
@@ -27,30 +26,33 @@ class DrMarioStatePy(ctypes.Structure):
         ("falling_pill_size", ctypes.c_uint8),
         ("preview_pill_color_l", ctypes.c_uint8),
         ("preview_pill_color_r", ctypes.c_uint8),
+        ("preview_pill_rotation", ctypes.c_uint8),
         ("preview_pill_size", ctypes.c_uint8),
-    ("mode", ctypes.c_uint8),
-    ("stage_clear", ctypes.c_uint8),
-    ("ending_active", ctypes.c_uint8),
-    ("level_fail", ctypes.c_uint8),
-    ("pill_counter", ctypes.c_uint8),
-    ("pill_counter_total", ctypes.c_uint16),
+        ("mode", ctypes.c_uint8),
+        ("stage_clear", ctypes.c_uint8),
+        ("ending_active", ctypes.c_uint8),
+        ("level_fail", ctypes.c_uint8),
+        ("pill_counter", ctypes.c_uint8),
+        ("pill_counter_total", ctypes.c_uint16),
         ("level", ctypes.c_uint8),
         ("speed_setting", ctypes.c_uint8),
         ("viruses_remaining", ctypes.c_uint8),
         ("speed_ups", ctypes.c_uint8),
-        ("gravity_counter", ctypes.c_uint8),
+        ("wait_frames", ctypes.c_uint8),
         ("lock_counter", ctypes.c_uint8),
         ("speed_counter", ctypes.c_uint8),
         ("hor_velocity", ctypes.c_uint8),
-    ("rng_state", ctypes.c_uint8 * 2),
-    ("frame_count", ctypes.c_uint32),
-    ("frame_budget", ctypes.c_uint32),
-    ("fail_count", ctypes.c_uint32),
-    ("last_fail_frame", ctypes.c_uint32),
-    ("last_fail_row", ctypes.c_uint8),
-    ("last_fail_col", ctypes.c_uint8),
-    ("spawn_delay", ctypes.c_uint8),  # Frames before new pill can be controlled
-    ("_pad1", ctypes.c_uint8 * 1),
+        ("rng_state", ctypes.c_uint8 * 2),
+        ("rng_override", ctypes.c_uint8),
+        ("frame_count", ctypes.c_uint32),
+        ("frame_budget", ctypes.c_uint32),
+        ("fail_count", ctypes.c_uint32),
+        ("last_fail_frame", ctypes.c_uint32),
+        ("last_fail_row", ctypes.c_uint8),
+        ("last_fail_col", ctypes.c_uint8),
+        ("spawn_delay", ctypes.c_uint8),  # Frames before new pill can be controlled
+        ("reset_wait_frames", ctypes.c_uint8),
+        ("reset_framecounter_lo_plus1", ctypes.c_uint16),
 ]
 
 
@@ -62,8 +64,10 @@ def _load_libc() -> ctypes.CDLL:
 
 
 def open_shared_memory(
-    name: str = SHM_NAME, size: int = SHM_SIZE
+    name: str = SHM_NAME, size: Optional[int] = None
 ) -> Tuple[mmap.mmap, DrMarioStatePy]:
+    if size is None:
+        size = ctypes.sizeof(DrMarioStatePy)
     shm_file_env = os.environ.get("DRMARIO_SHM_FILE")
     if shm_file_env:
         fd = os.open(shm_file_env, os.O_RDWR | os.O_CREAT, 0o666)
@@ -97,3 +101,27 @@ def open_shared_memory(
 
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def open_shared_memory_file(path: Path, *, size: Optional[int] = None) -> Tuple[mmap.mmap, DrMarioStatePy]:
+    """Open an engine shared-memory mapping backed by a concrete file path.
+
+    This is the preferred entry point for running multiple engine instances in
+    the same Python process, because it avoids relying on the global
+    `DRMARIO_SHM_FILE` environment variable.
+    """
+
+    if size is None:
+        size = ctypes.sizeof(DrMarioStatePy)
+    p = Path(path)
+    fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o666)
+    current_size = os.path.getsize(p)
+    if current_size < size:
+        os.ftruncate(fd, size)
+    mm = mmap.mmap(fd, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE)
+    os.close(fd)
+    state = DrMarioStatePy.from_buffer(mm)
+    return mm, state
+
+
+SHM_SIZE = ctypes.sizeof(DrMarioStatePy)

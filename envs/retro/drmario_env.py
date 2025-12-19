@@ -169,6 +169,11 @@ class DrMarioRetroEnv(gym.Env):
             self._backend_kwargs["core_path"] = str(self.core_path)
         if self.rom_path is not None and "rom_path" not in self._backend_kwargs:
             self._backend_kwargs["rom_path"] = str(self.rom_path)
+        if self.backend_name == "cpp-engine":
+            # The C++ engine has no menus; level/speed must be provided out-of-band.
+            # Keep the same convention as the emulator curriculum: negative levels
+            # clamp to 0 for ROM level selection.
+            self._backend_kwargs.setdefault("level", int(self.level))
         self.auto_start = auto_start
         # Default RNG randomization policy for `reset()` when options do not specify.
         # Stored on the env so Gymnasium vector autoresets (which call `reset()`
@@ -1281,23 +1286,53 @@ class DrMarioRetroEnv(gym.Env):
         gap_frames = int(opts.get("start_gap_frames", 40))
         settle_frames = int(opts.get("start_settle_frames", 180))
         wait_frames = int(opts.get("start_wait_viruses", 600))
-        level_taps = int(opts.get("start_level_taps", 12))
+        level_taps = int(opts.get("start_level_taps", 21))
         noop = self._button_vector(None)
         start_vec = self._button_vector(["START"])
         left_vec = self._button_vector(["LEFT"])
         right_vec = self._button_vector(["RIGHT"])
 
-        def press_start() -> None:
-            self._backend_step_buttons(start_vec, repeat=hold_frames)
-            self._backend_step_buttons(noop, repeat=gap_frames)
-
         rng_applied = False
+        seeded_on_init_boundary = False
 
         def apply_rng_now() -> None:
             nonlocal rng_applied
             if apply_rng and not rng_applied:
                 self._apply_pending_rng_randomization()
                 rng_applied = True
+
+        def press_start(*, seed_on_init_boundary: bool = False) -> None:
+            """Press START for `hold_frames` then release for `gap_frames`.
+
+            For libretro parity seeding, we want RNG writes to land *exactly*
+            between `toLevel` (mode==0x02) and `initData_level` (mode==0x03)
+            so both the emulator and the headless C++ engine see the same RNG
+            state at level initialization time.
+
+            Empirically, mode==0x03 is visible for at least one frame on the
+            START press that begins gameplay; `initData_level` runs on the
+            following frame and consumes RNG for pill reserve + virus placement.
+            """
+
+            nonlocal seeded_on_init_boundary
+
+            if not seed_on_init_boundary or not apply_rng:
+                self._backend_step_buttons(start_vec, repeat=hold_frames)
+                self._backend_step_buttons(noop, repeat=gap_frames)
+                return
+
+            seeded_on_init_boundary = True
+            total_frames = int(max(0, hold_frames) + max(0, gap_frames))
+            for t in range(total_frames):
+                vec = start_vec if t < hold_frames else noop
+                self._backend_step_buttons(vec, repeat=1)
+                if rng_applied:
+                    continue
+                mode_raw = self._read_offset_value("mode", "addr")
+                if mode_raw is None:
+                    continue
+                if int(mode_raw) == 0x03:
+                    apply_rng_now()
 
         presses = int(presses)
         if presses <= 0:
@@ -1321,13 +1356,12 @@ class DrMarioRetroEnv(gym.Env):
             if cur == desired:
                 return
 
-            diff_right = (desired - cur) % 21
-            diff_left = (cur - desired) % 21
-            if diff_right <= diff_left:
-                taps = int(diff_right)
+            # The level selector clamps at [0, 20] (no wrap-around).
+            if cur < desired:
+                taps = int(desired - cur)
                 vec = right_vec
             else:
-                taps = int(diff_left)
+                taps = int(cur - desired)
                 vec = left_vec
             taps = max(0, min(taps, int(level_taps)))
             for _ in range(taps):
@@ -1338,21 +1372,67 @@ class DrMarioRetroEnv(gym.Env):
             presses = max(2, presses)
             press_start()  # leave game-over screen
             align_level()
-            apply_rng_now()
-            for _ in range(presses - 1):
-                press_start()
+            for i in range(presses - 1):
+                press_start(seed_on_init_boundary=(i == 0))
         elif presses == 1:
             align_level()
-            apply_rng_now()
-            press_start()
+            press_start(seed_on_init_boundary=True)
         else:
+            # Libretro cold resets land on the title/intro sequence. Empirically,
+            # it takes *two* START presses to reach the options screen where
+            # level/speed/music can be adjusted:
+            #   1) title/intro -> title
+            #   2) title -> options
+            #
+            # Once we're on options, we can safely align level and apply RNG
+            # seeds before starting the game.
             press_start()
-            align_level()
-            apply_rng_now()
-            for _ in range(presses - 1):
+            if presses >= 2:
                 press_start()
+            align_level()
+            for i in range(max(0, presses - 2)):
+                press_start(seed_on_init_boundary=(i == 0))
 
-        apply_rng_now()
+        if apply_rng and seeded_on_init_boundary and not rng_applied:
+            # We attempted to seed on the initData_level boundary but never
+            # observed mode==0x03. Seeding at this point is only safe if we're
+            # still in menus; otherwise it's too late and would corrupt the
+            # in-level RNG stream (pill order).
+            mode_now = self._read_offset_value("mode", "addr")
+            mode_val = int(mode_now) if mode_now is not None else None
+            msg = (
+                "RNG seed bytes were requested, but the initData_level boundary "
+                "(mode==0x03) was not observed during auto-start."
+            )
+            if bool(opts.get("rng_seed_strict", False)):
+                raise RuntimeError(msg)
+            if mode_val is not None and mode_val <= 0x03:
+                warnings.warn(msg + " Applying seed immediately while still in menus.")
+                apply_rng_now()
+            else:
+                warnings.warn(msg + " Seed not applied (already past level init).")
+                self._pending_rng_randomize = False
+                self._pending_rng_override = None
+
+        sync_wait_frames_val = opts.get("start_sync_wait_frames")
+        if sync_wait_frames_val is not None:
+            sync_raw = int(sync_wait_frames_val)
+            target = sync_raw & 0xFF
+            max_sync = int(opts.get("start_sync_max_frames", 2000))
+            for _ in range(max(0, max_sync)):
+                cur = self._read_ram_value(0x0051)
+                if cur is not None:
+                    cur_int = int(cur)
+                    if sync_raw < 0:
+                        # "First non-zero waitFrames" is a robust sync point:
+                        # it happens only after virus placement, right when the
+                        # ROM enters `waitFor_A_frames` during `levelIntro`.
+                        if cur_int > 0:
+                            break
+                    else:
+                        if cur_int == target:
+                            break
+                self._backend_step_buttons(noop, repeat=1)
 
         if settle_frames > 0:
             self._backend_step_buttons(noop, repeat=settle_frames)
@@ -1377,8 +1457,13 @@ class DrMarioRetroEnv(gym.Env):
             presses = int(presses_opt)
         else:
             # Libretro backend reset returns to a cold menu state that requires the
-            # full 3-press start sequence every time.
-            presses = 3
+            # full 3-press start sequence every time. The C++ engine backend starts
+            # directly in gameplay mode and must not receive START (it would pause),
+            # so default to 0 presses there.
+            if str(getattr(self, "backend_name", "")).lower() in {"cpp-engine"}:
+                presses = 0
+            else:
+                presses = 3
         apply_rng = bool(self._pending_rng_randomize)
         if presses > 0:
             self._run_start_sequence(
@@ -1498,6 +1583,60 @@ class DrMarioRetroEnv(gym.Env):
         backend_reset_pending = getattr(self, "_backend_reset_done", False)
         self._elapsed_frames = 0
         self._prev_move_dir = "none"
+
+        # Options are used both for reset-time backend configuration and for the
+        # post-reset auto-start sequence.
+        opts = dict(options or {})
+        if "randomize_rng" not in opts:
+            opts["randomize_rng"] = bool(getattr(self, "rng_randomize", False))
+        seed_bytes = opts.get("rng_seed_bytes")
+        override_seq: Optional[Sequence[int]]
+        if isinstance(seed_bytes, Sequence) and not isinstance(seed_bytes, (str, bytes, bytearray)):
+            override_seq = [int(v) & 0xFF for v in seed_bytes]
+        else:
+            override_seq = None
+
+        # Some backends (notably the C++ engine) can accept RNG seeds *before*
+        # their reset routine runs, which is necessary for randomizing the
+        # initial virus layout (level setup).
+        pre_seeded = False
+        if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
+            pre_seed_fn = getattr(self._backend, "set_next_reset_rng_seed_bytes", None)
+            if callable(pre_seed_fn):
+                try:
+                    if override_seq is None:
+                        rng = np.random.default_rng()
+                        override_seq = [
+                            int(v) & 0xFF
+                            for v in rng.integers(0, 256, size=2, dtype=np.uint8).tolist()
+                        ]
+                    pre_seed_fn(override_seq)
+                    self._last_rng_seed_bytes = tuple(int(v) & 0xFF for v in override_seq)  # type: ignore[assignment]
+                    pre_seeded = True
+                except Exception as exc:
+                    warnings.warn(f"Pre-reset RNG seeding failed: {exc}")
+                    pre_seeded = False
+
+        # Some backends can also accept the `waitFrames` seed for the level-intro
+        # delay *before* their reset runs. This is used by emulator parity tools
+        # to match the Python-side auto-start boundary, which can vary by a
+        # frame in the libretro pipeline.
+        if self._using_backend and self._backend is not None and "intro_wait_frames" in opts:
+            pre_wait_fn = getattr(self._backend, "set_next_reset_intro_wait_frames", None)
+            if callable(pre_wait_fn):
+                try:
+                    pre_wait_fn(int(opts.get("intro_wait_frames") or 0))
+                except Exception as exc:
+                    warnings.warn(f"Pre-reset waitFrames seeding failed: {exc}")
+
+        # Parity harnesses may also seed `frameCounter` (NMI) low byte.
+        if self._using_backend and self._backend is not None and "intro_frame_counter_lo" in opts:
+            pre_fc_fn = getattr(self._backend, "set_next_reset_intro_frame_counter_lo", None)
+            if callable(pre_fc_fn):
+                try:
+                    pre_fc_fn(int(opts.get("intro_frame_counter_lo")) & 0xFF)
+                except Exception as exc:
+                    warnings.warn(f"Pre-reset frameCounter seeding failed: {exc}")
         if self._using_backend and self._backend is not None:
             try:
                 if not backend_reset_pending:
@@ -1533,19 +1672,8 @@ class DrMarioRetroEnv(gym.Env):
                 self._backend_reset_done = False
         else:
             self._backend_reset_done = False
-        opts = dict(options or {})
-        if "randomize_rng" not in opts:
-            opts["randomize_rng"] = bool(getattr(self, "rng_randomize", False))
-        if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
+        if (not pre_seeded) and opts.get("randomize_rng") and self._using_backend and self._backend is not None:
             try:
-                seed_bytes = opts.get("rng_seed_bytes")
-                override_seq: Optional[Sequence[int]]
-                if isinstance(seed_bytes, Sequence) and not isinstance(
-                    seed_bytes, (str, bytes, bytearray)
-                ):
-                    override_seq = [int(v) & 0xFF for v in seed_bytes]
-                else:
-                    override_seq = None
                 self._pending_rng_randomize = True
                 self._pending_rng_override = override_seq
                 if not self.auto_start:

@@ -180,8 +180,9 @@ def pill_rotate_validation(state, prev_rot, prev_col):
 - Wall kick direction (left only)
 - Gravity threshold comparison (strictly greater than)
 - Fast drop frame parity check
+- Demo input replay (`demo_instructionSet` / `counterDemoInstruction`) and demo parity fixture
 
-### Potential Issues ⚠️
+### Notes
 
 1. **Fast drop frame check**
    - ASM: `beq @checkGravity` when `(frame & 0x01) == 0` → check down on ODD frames
@@ -193,28 +194,6 @@ def pill_rotate_validation(state, prev_rot, prev_col):
    - C++: `HOR_ACCEL_SPEED - 1` (= 15)
    - ✅ Matches
 
-3. **Demo input timing**
-   - Demo mode uses `counterDemoInstruction` to count down frames per input
-   - C++ ENGINE DOES NOT IMPLEMENT DEMO INPUT REPLAY!
-   - The engine accepts external inputs but demo mode has its own input source
-   - ❌ **This is likely the divergence source!**
-
----
-
-## 5. Root Cause Analysis
-
-The C++ engine:
-1. Initializes demo board correctly ✅
-2. Initializes demo pill sequence correctly ✅
-3. **Does NOT read demo_instructionSet** ❌
-
-The NES demo mode:
-- Reads `demo_instructionSet` (button, frame_count pairs)
-- Uses `counterDemoInstruction` to time input changes
-- CPU "plays" by itself using pre-recorded moves
-
-**Fix Required:** Either:
-1. Implement demo input replay in C++ (for demo parity testing)
-2. Feed demo inputs externally via shared memory (current approach)
-
-Option 2 is what we're doing, but we need to ensure the input timing matches exactly.
+3. **Demo parity**
+   - The C++ engine replays the demo input stream internally (`getInputs_checkMode` demo branch).
+   - Verified by `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth` against `data/nes_demo.json`.

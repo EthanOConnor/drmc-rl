@@ -33,7 +33,8 @@ ROM: Dr. Mario (Japan, USA) (rev0), SHA1 01de1e04c396298358e86468ba9614806668819
 ## RNG
 - State: rng0=$0017, rng1=$0018.
 - Update: randomNumberGenerator (carry from bit1 EOR) → ROR over two bytes.
-- Seed at init: rng0=$89, rng1=$88.
+- Default seed: rng0=$89, rng1=$88 (engine-only fallback).
+- For emulator parity, RNG seed bytes are applied at the `initData_level` boundary (mode==0x03), i.e. "RNG state at level init entry".
 
 ## Virus placement
 - addVirus: choose valid height vs level cap; choose x; color distribution (cycle every 4) + adjacency constraints; write to field.
@@ -45,6 +46,7 @@ ROM: Dr. Mario (Japan, USA) (rev0), SHA1 01de1e04c396298358e86468ba9614806668819
 
 ## Parity plan
 - Use ROM-driven parity fixtures (RAM field snapshots, preview colors, falling pill state) to assert hash of field after N steps given fixed input traces.
-- Seed determinism: use same seed path (frame offset + level) as env.
+- Seed determinism: use the same seed path as the env (initData-level seeding, not menu-time seeding).
+- Use `tools/ghost_parity.py` to run libretro (ground truth) and the C++ engine side-by-side and stop on first RAM divergence.
 
 This is enough to scaffold a performant C++ core with a clean state struct and explicit step() ordering.

@@ -45,7 +45,29 @@ constexpr int LAST_COLUMN = 7;
 constexpr int LAST_ROW = 15;
 
 // Wait before the level starts (levelIntro_delay / waitFor_A_frames).
-constexpr u16 LEVEL_INTRO_DELAY_FRAMES = 0x80;
+[[maybe_unused]] constexpr u16 LEVEL_INTRO_DELAY_FRAMES = 0x80;
+
+// --- Parity with the repo's libretro auto-start (rev0 ROM) ---
+//
+// Important: RNG seeding is defined at the *level init* boundary.
+//
+// For emulator parity, the Python env applies `rng_seed_bytes` ($0017/$0018)
+// exactly when the ROM transitions from `toLevel` (mode==0x02) to
+// `initData_level` (mode==0x03). This makes the seed bytes the "RNG state at
+// initData_level entry", rather than "RNG state at some earlier menu frame".
+//
+// The C++ engine has no menus, so we consume RNG for `generatePillsReserve()`
+// and virus placement directly from the seeded state, with *no* extra warmup.
+
+// When we begin stepping gameplay after reset (with the repo's standard
+// auto-start parameters), the ROM is partway through the levelIntro delay:
+// `waitFrames` is 93 and the NMI frameCounter low byte is 134 (level 0, rev0).
+//
+// Parity harnesses can override both values per-reset (see `reset_wait_frames`
+// and `reset_framecounter_lo_plus1`) to sync against whatever checkpoint the
+// emulator reset/auto-start landed on.
+constexpr u8 RESET_SYNC_WAIT_FRAMES = 93;
+constexpr u8 RESET_SYNC_FRAMECOUNTER = 134;
 
 // === Field object constants (drmario_constants.asm) ===
 constexpr u8 MASK_FIELDOBJECT_TYPE = 0xF0;
@@ -258,12 +280,33 @@ GameLogic::GameLogic(DrMarioState *sharedState) : state(sharedState) {}
 
 void GameLogic::reset() {
   const bool demo = (state->mode == MODE_DEMO);
-  state->mode = demo ? MODE_DEMO : MODE_PLAYING;
+  // `$0046` (state->mode here) is a gameplay-phase flag in the NES RAM map:
+  // it is not the main "mode" state machine. For rev0, values we care about:
+  //   - 0x00: demo mode (handled separately)
+  //   - 0x08: pre-bottle / intro (menus/level intro; no active pill)
+  //   - 0x04: bottle active (normal play)
+  state->mode = demo ? MODE_DEMO : static_cast<u8>(0x08);
 
   state->stage_clear = 0;
   state->ending_active = 0x0A;
   state->level_fail = 0;
-  state->frame_count = 0;
+  if (demo) {
+    // Demo recording starts from frame 0 (matches `data/nes_demo.json`).
+    state->reset_framecounter_lo_plus1 = 0;
+    state->frame_count = 1;
+  } else {
+    // Sync to the libretro auto-start episode boundary (see constants above).
+    // For parity harnesses, the driver can override the low byte via
+    // `reset_framecounter_lo_plus1`.
+    u8 framecounter_seed = RESET_SYNC_FRAMECOUNTER;
+    if (state->reset_framecounter_lo_plus1 != 0) {
+      framecounter_seed =
+          static_cast<u8>((state->reset_framecounter_lo_plus1 - 1) & 0xFF);
+    }
+    state->reset_framecounter_lo_plus1 = 0;
+    state->frame_count = framecounter_seed;
+  }
+  state->next_action = 0;
 
   state->buttons = 0;
   state->buttons_prev = 0;
@@ -292,8 +335,18 @@ void GameLogic::reset() {
   }
 
   // RNG seed used by our engine for non-demo; demo mode uses fixed tables.
-  state->rng_state[0] = 0x89;
-  state->rng_state[1] = 0x88;
+  //
+  // Training + parity tools can pre-seed `rng_state` by setting
+  // `state->rng_override != 0` before requesting a reset.
+  if (!demo) {
+    if (state->rng_override == 0) {
+      state->rng_state[0] = 0x89;
+      state->rng_state[1] = 0x88;
+    }
+    state->rng_override = 0;
+  } else {
+    state->rng_override = 0;
+  }
 
   // Reset internal (NES-private) state.
   next_action_ = NextAction::SendPill; // initData_level sets nextAction=sendPill
@@ -320,24 +373,43 @@ void GameLogic::reset() {
     state->buttons_pressed = 0;
   }
 
-  // The level intro sets status to 0x0F and then waits 0x80 frames (during which
-  // NMI decrements status once per frame).
-  status_row_ = 0x0F;
-  intro_delay_frames_ = LEVEL_INTRO_DELAY_FRAMES;
+  // The engine `reset()` corresponds to an *in-level* sync point used by the
+  // repo's parity harness: after viruses are placed, while the ROM is counting
+  // down `waitFrames` (levelIntro delay) before the first pill is thrown.
+  //
+  // At this sync point:
+  //   - status is already 0xFF (row rendering countdown completed)
+  //   - waitFrames is typically 93, but can vary by a frame depending on the
+  //     Python-side auto-start timing. We allow the driver to override the
+  //     waitFrames seed for parity testing.
+  //   - `$0046` is still 0x08 until waitFrames reaches 0, then flips to 0x04
+  status_row_ = 0xFF;
+  u8 wait_frames_seed = demo ? static_cast<u8>(LEVEL_INTRO_DELAY_FRAMES) : RESET_SYNC_WAIT_FRAMES;
+  if (!demo && state->reset_wait_frames != 0) {
+    wait_frames_seed = state->reset_wait_frames;
+  }
+  state->reset_wait_frames = 0;
+  intro_delay_frames_ = wait_frames_seed;
+  state->wait_frames = wait_frames_seed;
+
+  // Pill reserve (pillsReserve) is generated *before* viruses are placed in the
+  // retail ROM (virus placement happens during `levelIntro`). This ordering
+  // matters because both routines consume the same RNG stream.
+  if (!demo) {
+    generatePillsReserve();
+  }
 
   // Setup board/viruses.
   viruses_added = 0;
   viruses_to_place = 0;
   setupLevel();
 
-  // Pill reserve + initial next pills (initData_level calls generateNextPill twice).
-  generatePillsReserve();
-
   state->pill_counter = 0;       // pillsCounter (reserve index, wraps &0x7F)
   state->pill_counter_total = 0; // packed BCD (low=decimal, high=hundreds)
 
   state->preview_pill_color_l = 0;
   state->preview_pill_color_r = 0;
+  state->preview_pill_rotation = 0;
   state->preview_pill_size = 2;
   state->falling_pill_size = 2;
 
@@ -346,6 +418,10 @@ void GameLogic::reset() {
 
   // initData_level then sets pillsCounter_decimal to 1 (after the two calls).
   state->pill_counter_total = 0x0001;
+
+  // Expose NES-visible mirrors for external tooling (e.g., planners).
+  state->next_action = static_cast<u8>(next_action_);
+  state->preview_pill_rotation = next_pill_rotation_;
 }
 
 void GameLogic::step() {
@@ -357,6 +433,14 @@ void GameLogic::step() {
   if (!state->stage_clear && !state->level_fail) {
     if (intro_delay_frames_ > 0) {
       intro_delay_frames_--;
+      state->wait_frames = intro_delay_frames_;
+      if (intro_delay_frames_ == 0) {
+        if (state->mode != MODE_DEMO) {
+          // Mirrors rev0: when `waitFrames` reaches 0 at the end of the level
+          // intro delay, `$0046` flips to 0x04 and gameplay becomes active.
+          state->mode = MODE_PLAYING;
+        }
+      }
     } else {
       switch (next_action_) {
       case NextAction::PillFalling:
@@ -383,12 +467,18 @@ void GameLogic::step() {
     }
   }
 
-  state->frame_count++;
+  // Keep NES-visible mirrors in sync for external tooling.
+  state->next_action = static_cast<u8>(next_action_);
+  state->preview_pill_rotation = next_pill_rotation_;
 }
 
 // === NMI-time work (emulated) ===
 
 void GameLogic::nmi_tick() {
+  // The retail NMI handler increments `frameCounter` ($0043) once per vblank
+  // *before* gameplay logic reads it (e.g., fast-drop parity depends on this).
+  state->frame_count++;
+
   // In the NES, `render_fieldRow` decrements status once per frame (until 0xFF),
   // and checkDrop is gated on status == 0xFF.
   tick_status_row_render();
@@ -407,10 +497,26 @@ void GameLogic::tick_status_row_render() {
 }
 
 void GameLogic::update_buttons_from_raw(u8 raw_buttons) {
-  state->buttons = raw_buttons;
-  state->buttons_pressed = raw_buttons & static_cast<u8>(~state->buttons_prev);
-  state->buttons_held = raw_buttons;
-  state->buttons_prev = raw_buttons;
+  // Match physical NES controller constraints (and libretro frontend behavior):
+  // Left+Right cannot both be held; Up+Down cannot both be held.
+  //
+  // On the libretro QuickNES path used as our parity ground truth, "illegal"
+  // dpad chord inputs are cleaned to neutral for that axis (SOCD cleaning).
+  // This matters because our discrete action adapters can transiently emit
+  // left+right for one frame when switching directions.
+  u8 cleaned = raw_buttons;
+  if ((cleaned & BTNS_LEFT_RIGHT) == BTNS_LEFT_RIGHT) {
+    cleaned = static_cast<u8>(cleaned & ~BTNS_LEFT_RIGHT);
+  }
+  const u8 up_down = static_cast<u8>(BTN_UP | BTN_DOWN);
+  if ((cleaned & up_down) == up_down) {
+    cleaned = static_cast<u8>(cleaned & ~up_down);
+  }
+
+  state->buttons = cleaned;
+  state->buttons_pressed = cleaned & static_cast<u8>(~state->buttons_prev);
+  state->buttons_held = cleaned;
+  state->buttons_prev = cleaned;
 }
 
 void GameLogic::update_buttons_demo() {
@@ -500,6 +606,10 @@ void GameLogic::action_sendPill() {
                               state->falling_pill_orient)) {
         confirmPlacement();
         state->level_fail = 1;
+        // Mirror the retail mode transition when a player tops out. The ROM
+        // switches `$0046` from `mode_mainLoop_level` (0x04) to
+        // `mode_anyPlayerLoses` (0x05).
+        state->mode = static_cast<u8>(0x05);
         state->fail_count++;
         state->last_fail_frame = state->frame_count;
         state->last_fail_row = state->falling_pill_row;
@@ -1151,71 +1261,124 @@ void GameLogic::setupLevel() {
 }
 
 bool GameLogic::addVirus() {
+  // Rules-exact port of `addVirus` ($850D) from `drmario_prg_game_logic.asm`.
+  //
+  // Key quirks that matter for parity:
+  //  - One RNG advance (`generateRandNum`) produces TWO bytes (rng0, rng1); the
+  //    routine uses rng0 for height and rng1 for column.
+  //  - If the initially-selected cell is occupied, the routine scans forward
+  //    linearly to find the next empty cell (no RNG consumed while scanning).
+  //  - Color selection:
+  //      * `virusToAdd & 3` forces 3 deterministic colors per group of 4
+  //      * the 4th uses a RNG lookup table (indexed by rng1)
+  //    If the chosen color is present exactly 2 tiles away in any direction,
+  //    it cycles through colors without consuming RNG.
+
   int level = state->level;
   if (level > 20)
     level = 20;
 
-  rng_step();
-  const u8 r1 = rng_get();
-  const int virusHeight = r1 & 0x0F; // 0 (bottom) .. 15 (top)
-  if (virusHeight > addVirus_maxHeight_basedOnLvl[level])
-    return false;
-
-  rng_step();
-  const u8 r2 = rng_get();
-  const int col = r2 & 0x07; // 0..7
-
   if (viruses_added >= viruses_to_place)
     return false;
 
-  const int pos = (LAST_ROW - virusHeight) * BOARD_WIDTH + col;
-  if (state->board[pos] != TILE_EMPTY)
+  // `generateRandNum`: advance RNG once, then consume rng0/rng1.
+  rng_step();
+  const u8 rng0 = state->rng_state[0];
+  const u8 rng1 = state->rng_state[1];
+
+  const int virusHeight = static_cast<int>(rng0 & 0x0F); // 0 (bottom) .. 15 (top)
+  if (virusHeight > addVirus_maxHeight_basedOnLvl[level])
     return false;
 
-  const int color_cycle = viruses_added & 0x03;
-  u8 virusColor = 0;
-  if (color_cycle == 3) {
-    rng_step();
-    virusColor = virusColor_random[rng_get() & 0x0F];
-  } else {
-    virusColor = static_cast<u8>(color_cycle);
-  }
+  const int col = static_cast<int>(rng1 & 0x07); // 0..7
+  int virusPos = (LAST_ROW - virusHeight) * BOARD_WIDTH + col;
+  if (virusPos < 0)
+    return false;
 
-  auto has_same_color = [&](int row, int column) -> bool {
-    const u8 tile = get_board_tile(row, column);
-    if (tile == TILE_EMPTY)
-      return false;
-    return (tile & MASK_COLOR) == virusColor;
+  // Color cycle is based on `virusToAdd` (countdown), not viruses_added.
+  const int virusToAdd = viruses_to_place - viruses_added;
+  u8 virusColor = static_cast<u8>(virusToAdd & 0x03);
+  if (virusColor == 3) {
+    rng_step();
+    virusColor = virusColor_random[state->rng_state[1] & 0x0F];
+  }
+  virusColor &= MASK_COLOR;
+
+  // Scan forward until we find an empty cell, or give up if we hit the end.
+  while (virusPos < BOARD_SIZE && state->board[virusPos] != TILE_EMPTY) {
+    virusPos++;
+  }
+  if (virusPos >= BOARD_SIZE)
+    return false;
+
+  auto color_bits_at = [&](int pos) -> u8 {
+    if (pos < 0 || pos >= BOARD_SIZE)
+      return 0;
+    const u8 tile = state->board[pos];
+    // Matches `virusPlacement_colorBits` in the disassembly:
+    //   0->1 (Y), 1->2 (R), 2->4 (B), 3->0 (empty's masked color).
+    static constexpr u8 kColorBits[4] = {0x01, 0x02, 0x04, 0x00};
+    return kColorBits[tile & MASK_COLOR];
   };
 
-  for (int delta = 1; delta <= 2; delta++) {
-    if (has_same_color(virusHeight + delta, col))
-      return false;
-    if (has_same_color(virusHeight - delta, col))
-      return false;
-    if (has_same_color(virusHeight, col + delta))
-      return false;
-    if (has_same_color(virusHeight, col - delta))
-      return false;
+  // Attempt to place at this position; if all colors are blocked at the
+  // required offsets, advance to the next empty position and retry.
+  while (true) {
+    const int pos_col = virusPos & 0x07;
+
+    u8 verif = 0;
+    verif |= color_bits_at(virusPos - 16); // 2 rows higher
+    verif |= color_bits_at(virusPos + 16); // 2 rows lower
+    if (pos_col >= 2)
+      verif |= color_bits_at(virusPos - 2); // 2 columns left
+    if (pos_col <= 5)
+      verif |= color_bits_at(virusPos + 2); // 2 columns right
+
+    if (verif == 0x07) {
+      // No available colors at this position -> try the next empty cell.
+      do {
+        virusPos++;
+      } while (virusPos < BOARD_SIZE && state->board[virusPos] != TILE_EMPTY);
+      if (virusPos >= BOARD_SIZE)
+        return false;
+      continue;
+    }
+
+    // Cycle colors until we find one that is not present in `verif`.
+    // The ROM cycles downward (dec) with wraparound to blue.
+    for (int attempts = 0; attempts < 4; ++attempts) {
+      const u8 bits = static_cast<u8>(1u << (virusColor & MASK_COLOR));
+      if ((bits & verif) == 0)
+        break;
+      virusColor = (virusColor == 0) ? 2 : static_cast<u8>(virusColor - 1);
+    }
+
+    state->board[virusPos] = static_cast<u8>(TILE_VIRUS | (virusColor & MASK_COLOR));
+    viruses_added++;
+
+    // BCD increment p1_virusLeft.
+    state->viruses_remaining = bcd_inc_1byte(state->viruses_remaining);
+    return true;
   }
-
-  state->board[pos] = static_cast<u8>(TILE_VIRUS | (virusColor & MASK_COLOR));
-  viruses_added++;
-
-  // BCD increment virusLeft.
-  state->viruses_remaining = bcd_inc_1byte(state->viruses_remaining);
-  return true;
 }
 
 void GameLogic::generatePillsReserve() {
+  // Port of rev0 `generatePillsReserve` ($82A0).
+  //
+  // Important quirk for parity: it stores pills *from the end of the array*.
+  // The first generated pill is stored at index 127, and the last at index 0.
   int pillId = 0;
-  for (int i = 0; i < 128; i++) {
+  int pillsToGenerate = 128;
+  while (pillsToGenerate > 0) {
     rng_step();
+    const int x = pillsToGenerate - 1; // (pillsToGenerate-1), matches `dex` in ROM.
     const u8 r = rng_get();
     pillId = (pillId + (r & 0x0F));
-    while (pillId >= 9)
+    while (pillId >= 9) {
       pillId -= 9;
-    pillsReserve[i] = static_cast<u8>(pillId);
+    }
+    pillsReserve[x] = static_cast<u8>(pillId);
+    pillsToGenerate--;
   }
 }
 

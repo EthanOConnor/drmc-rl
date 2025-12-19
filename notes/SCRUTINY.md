@@ -281,3 +281,13 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: The `bitplane` representation encodes the next-pill preview (and the falling pill) by writing into the shared color planes, plus a `preview_mask`.
 - **Risk**: If preview cells overlap with the falling pill spawn region (or if downstream code assumes the top rows are “pure bottle”), the observation can become multi-hot in color channels at a single cell and confuse policies/debugging.
 - **Mitigation**: Keep preview decoding accurate (rotation inferred from `preview_mask`), and if this becomes an issue, introduce a dedicated policy observation wrapper that (a) strips preview/falling from the board planes and (b) passes preview pill colors separately as scalars.
+
+**R26. RNG seeding boundary is ROM/core sensitive**
+- **Concern**: Libretro parity seeding relies on observing the ROM mode transition to `initData_level` (`$0046 == 0x03`) during auto-start, then writing seed bytes to `$0017/$0018` immediately.
+- **Risk**: Different ROM revisions/cores (or changes to auto-start timing) could skip the observable `0x03` boundary or move it earlier/later, causing the env to miss the intended seed point and fall back to menu-time seeding (or no seeding).
+- **Mitigation**: Keep the logic localized in `DrMarioRetroEnv._run_start_sequence`, support a strict mode (`rng_seed_strict`) for parity harnesses, and validate regularly with `tools/ghost_parity.py` across multiple levels/seeds.
+
+**R27. Auto-start sync uses `waitFrames` ($0051) heuristics**
+- **Concern**: The “stable checkpoint” for ghost parity uses `waitFrames > 0` as the first post-virus-placement sync condition.
+- **Risk**: If a future ROM/core changes when `$0051` is written, the sync could stop too early (mid init) or too late (past intro), breaking parity resets.
+- **Mitigation**: Keep `start_sync_wait_frames` configurable (exact value vs first-nonzero) and cross-check with additional guards if needed (e.g., `mode==0x08` and board virus count stable).
