@@ -88,15 +88,30 @@ class DrMarioState:
     env: EnvMeta
     stack4: np.ndarray            # (4, C, 16, 8), read-only for consumers
 
-def _derive_from_planes(planes: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, Dict[str, int]]:
-    # Use your existing helpers; they handle both representations.
-    occ = r2s.get_occupancy_mask(planes).astype(bool, copy=False)
+def _derive_from_planes(
+    planes: np.ndarray, *, ram_bytes: bytes, ram_offsets: Dict[str, Any]
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, Dict[str, int]]:
+    # Keep derived masks independent of the configured observation channels.
     static = r2s.get_static_mask(planes).astype(bool, copy=False)
-    falling = r2s.get_falling_mask(planes).astype(bool, copy=False)
     virus = r2s.get_virus_mask(planes).astype(bool, copy=False)
+    falling = r2s.decode_falling_mask_from_ram(ram_bytes, ram_offsets).astype(bool, copy=False)
+    occ = np.asarray(static | virus | falling, dtype=bool)
+
     # Viruses remaining = count of virus cells / 1 per cell (Dr. Mario viruses are single tiles)
     v_rem = int(virus.sum())
-    preview = r2s.decode_preview_from_state(planes) or {}
+
+    preview: Dict[str, int] = {}
+    preview_raw = r2s.decode_preview_from_ram(ram_bytes, ram_offsets)
+    if preview_raw is not None:
+        try:
+            first, second, rotation = preview_raw
+            preview = {
+                "first_color": int(first) & 0x03,
+                "second_color": int(second) & 0x03,
+                "rotation": int(rotation) & 0x03,
+            }
+        except Exception:
+            preview = {}
     return occ, static, falling, virus, v_rem, preview
 
 def _read_flags(arr: np.ndarray, offsets: Dict[str, Any]) -> Tuple[Optional[int], Optional[bool], Optional[bool], Optional[bool]]:
@@ -142,7 +157,11 @@ def build_state(
     planes.setflags(write=False)
 
     # Derive masks & counts
-    occupancy, static, falling, virus, v_rem, preview = _derive_from_planes(planes)
+    occupancy, static, falling, virus, v_rem, preview = _derive_from_planes(
+        planes,
+        ram_bytes=ram_bytes,
+        ram_offsets=ram_offsets,
+    )
 
     # Canonical scalar reads: use raw RAM bytes, not normalized planes.
     gravity = _read_offset_value(ram.arr, ram_offsets, "gravity_lock", "gravity_counter_addr")

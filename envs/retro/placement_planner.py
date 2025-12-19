@@ -181,7 +181,7 @@ class PillSnapshot:
     base_row: int  # 0=top, 15=bottom
     base_col: int  # 0..7
     rot: int       # 0..3 (NES rotation)
-    colors: Tuple[int, int]  # (first_color, second_color) in {0,1,2}
+    colors: Tuple[int, int]  # (first_color, second_color) as indices {0:R,1:Y,2:B}
 
     speed_counter: int
     speed_threshold: int
@@ -211,8 +211,12 @@ class PillSnapshot:
 
         # First/second half colors (NES: fallingPill1stColor/2ndColor). Naming in offsets may
         # say "left/right" but order is rotation-dependent.
-        c1 = _read_u8(ram_bytes, ZP_FALLING_PILL_COLOR_1) & 0x03
-        c2 = _read_u8(ram_bytes, ZP_FALLING_PILL_COLOR_2) & 0x03
+        # Normalize to the same index order used by the observation planes:
+        # 0=red, 1=yellow, 2=blue.
+        c1_raw = _read_u8(ram_bytes, ZP_FALLING_PILL_COLOR_1) & 0x03
+        c2_raw = _read_u8(ram_bytes, ZP_FALLING_PILL_COLOR_2) & 0x03
+        c1 = ram_specs.COLOR_VALUE_TO_INDEX.get(int(c1_raw), 0)
+        c2 = ram_specs.COLOR_VALUE_TO_INDEX.get(int(c2_raw), 0)
 
         speed_setting = _read_u8(ram_bytes, ZP_SPEED_SETTING)
         speed_ups = _read_u8(ram_bytes, ZP_SPEED_UPS)

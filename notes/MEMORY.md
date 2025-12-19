@@ -681,3 +681,48 @@ bitplane representation provides (R/Y/B) color planes plus a separate `virus_mas
 planes; this is legal information (the next pill is visible to humans), but it
 should be monitored for pathological overlap. We improved preview decoding so
 the rotation can be recovered from the preview mask.
+
+---
+
+## 2025-12-19 – Reduced Bitplane Observations (and Optional Feasible-Mask Planes)
+
+### Decision: Add minimal reduced bitplane variants for spawn-latched placement
+
+- **Decision:** Add two additional state representations:
+  - `bitplane_reduced` (6ch): `color_{r,y,b}`, `virus_mask`, `pill_to_place`, `preview_pill`.
+  - `bitplane_reduced_mask` (10ch): reduced + `feasible_o0..feasible_o3`.
+- **Rationale:**
+  - For spawn-latched macro placement, most of `bitplane` is unnecessary: the agent primarily needs the color field, which tiles are viruses, and the current/next pill.
+  - Smaller C improves throughput and reduces the chance the policy overfits to unused channels.
+- **Trade-offs:**
+  - Omitting scalar broadcasts (level/gravity/lock) assumes the policy can generalize without explicit speed metadata; this is acceptable for the placement SMDP but can be revisited if needed.
+
+### Decision: Inject feasibility planes at decision time (still mask logits)
+
+- **Decision:** In `bitplane_reduced_mask`, reserve feasibility-mask channels that are emitted as zeros by the RAM mapper and filled by the placement wrapper at true decision points from `placements/feasible_mask`.
+- **Rationale:** Keeps the policy input self-contained (no runner-side concatenation) while preserving correctness: invalid actions are still masked in the action distribution.
+- **Trade-offs:** The policy can learn correlations specific to the planner/mask generator; keep masking as the hard constraint and validate periodically against pose/plan verifiers.
+
+---
+
+## 2025-12-19 – Placement Policy Inputs: Bottle-Only Planes + Pill Vectors
+
+### Decision: Keep the spatial tensor “bottle-only” for placement policies
+
+- **Decision:** Introduce `bitplane_bottle` (4ch) / `bitplane_bottle_mask` (8ch) representations:
+  - `color_{r,y,b}` + `virus_mask` are derived solely from the bottle buffer.
+  - No falling-pill or preview-pill projection into the 16×8 tensor.
+- **Rationale:** The macro-placement decision is “choose where this pill will lock”, so the falling-pill’s *current* intermediate pose is not decision-relevant, and projecting the preview pill into the grid can introduce aliasing near the top rows.
+
+### Decision: Pass pill colors as explicit vectors (current + preview)
+
+- **Decision:** Condition `PlacementPolicyNet` on two unordered color-pair vectors:
+  - `next_pill_colors` (current pill to place)
+  - `preview_pill_colors` (HUD preview pill)
+- **Rationale:** This matches human-visible information and avoids spending spatial channels to represent two cells whose identity is already captured by the color vectors.
+
+### Convention: Separate “raw NES color values” vs “canonical color indices”
+
+- **Raw NES encoding (from RAM / board bytes):** yellow=0, red=1, blue=2.
+- **Canonical policy/plane indices:** red=0, yellow=1, blue=2 (matches plane naming order).
+- **Rule:** State planes and policy vectors use canonical indices; UI/board-byte tools may use raw NES values and must convert explicitly when mixing.

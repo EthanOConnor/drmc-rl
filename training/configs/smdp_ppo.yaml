@@ -30,6 +30,8 @@ smdp_ppo:
   # Options: "dense" (recommended), "shift_score", "factorized"
   head_type: "dense"
   pill_embed_dim: 32
+  # Extra 64-channel residual blocks in the board encoder (0 keeps the tiny baseline).
+  encoder_blocks: 0
   
   # Exploration
   entropy_schedule_end: 0.003
@@ -44,9 +46,14 @@ smdp_ppo:
 env:
   id: "DrMarioPlacementEnv-v0"
   obs_mode: state
-  # `bitplane` gives type-blind color planes (R/Y/B) + a virus mask, which is a
-  # better inductive bias for matching than the default `extended` split planes.
-  state_repr: bitplane
+  # Observation representation for state-mode:
+  #   - extended: 16ch (explicit virus/static/falling + scalars)
+  #   - bitplane_bottle: 4ch (bottle-only color planes + virus_mask)
+  #   - bitplane_bottle_mask: 8ch (bottle-only + feasibility planes injected by placement env)
+  #   - bitplane: 12ch (type-blind colors + masks + scalars)
+  #   - bitplane_reduced: 6ch (colors + virus + falling + preview)
+  #   - bitplane_reduced_mask: 10ch (reduced + feasibility mask planes injected by placement env)
+  state_repr: bitplane_bottle
   num_envs: 16
   frame_stack: 1
   randomize_rng: true

@@ -112,13 +112,14 @@ class TestColorInvariance:
         
         board = torch.randn(1, 12, 16, 8)
         mask = torch.ones(1, 4, 16, 8, dtype=torch.bool)
+        preview = torch.tensor([[0, 0]])  # arbitrary fixed preview pill
         
         colors_1 = torch.tensor([[0, 2]])  # Red, Blue
         colors_2 = torch.tensor([[2, 0]])  # Blue, Red
         
         with torch.no_grad():
-            logits_1, _ = net(board, colors_1, mask)
-            logits_2, _ = net(board, colors_2, mask)
+            logits_1, _ = net(board, colors_1, preview, mask)
+            logits_2, _ = net(board, colors_2, preview, mask)
             
         # Logits should be identical
         assert torch.allclose(logits_1, logits_2, atol=1e-5)
@@ -135,12 +136,13 @@ class TestGeometryAlignment:
         
         mask = torch.ones(1, 4, 16, 8, dtype=torch.bool)
         colors = torch.tensor([[0, 0]])  # Red-red pill
+        preview = torch.tensor([[0, 0]])
         
         net = PlacementPolicyNet(in_channels=12, head_type="dense")
         net.eval()
         
         with torch.no_grad():
-            logits, _ = net(board, colors, mask)
+            logits, _ = net(board, colors, preview, mask)
             
         # Find max logit position
         logits_flat = logits.reshape(1, -1)

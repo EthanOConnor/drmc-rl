@@ -27,13 +27,60 @@ Scalars
 - Settle/lock proxy: `$0307` (`p1_pillPlacedStep` micro-step state).
 - Level: `$0316`.
 
-Channel spec (14 total)
-1–3. Viruses (R, Y, B): bytes with type `0xD0` and color 1/0/2 map to channels 0/1/2.
-4–6. Fixed pill halves (R, Y, B): bytes with type in `{0x40,0x50,0x60,0x70,0x80,0x90,0xA0}` and color 1/0/2 map to channels 3/4/5.
-7–9. Falling halves (R, Y, B): painted at `(row,col)` and its neighbor `(row+1,col)` if vertical else `(row,col+1)` using falling colors.
-10. Orientation: broadcast scalar (0 vertical, 1 horizontal).
-11–13. Gravity counter, settle/lock proxy, level (normalized planes).
-14. Spare (currently 0) reserved for an explicit settle flag if needed.
+State representations (channel specs)
+
+The state observation supports multiple channel layouts selected via:
+- `DrMarioRetroEnv(..., state_repr=...)`, or
+- `envs.specs.ram_to_state.set_state_representation(...)` (process-wide).
+
+All representations emit a `(C, 16, 8)` float32 tensor per frame; `DrMarioRetroEnv`
+then provides a fixed 4-frame stack shaped `(4, C, 16, 8)` (some training setups
+keep only the last frame).
+
+### `extended` (16 channels)
+- Explicit split planes for viruses/static/falling by color, plus scalar broadcasts:
+  - `virus_{red,yellow,blue}`
+  - `static_{red,yellow,blue}`
+  - `falling_{red,yellow,blue}`
+  - `orientation`, `gravity`, `lock`, `level`
+  - `preview_first`, `preview_second`, `preview_rotation`
+
+### `bitplane` (12 channels)
+- Type-blind color planes + entity masks + scalar broadcasts:
+  - `color_{red,yellow,blue}`
+  - `virus_mask`, `locked_mask`, `falling_mask`, `preview_mask`
+  - `clearing_mask`, `empty_mask`
+  - `gravity`, `lock`, `level`
+
+### `bitplane_bottle` (4 channels)
+- Bottle-only board state (no falling/preview projection):
+  - `color_{red,yellow,blue}` (type-blind)
+  - `virus_mask`
+
+This is intended for spawn-latched placement policies that receive pill colors
+as separate vector inputs (`next_pill_colors` for the current pill and
+`preview_pill` for the next/preview pill).
+
+### `bitplane_bottle_mask` (8 channels)
+- `bitplane_bottle` plus 4 feasibility-mask channels:
+  - `feasible_o0..feasible_o3`
+
+These feasibility planes are *not* derived from RAM; they are injected by the
+placement wrapper at decision points and match `info["placements/feasible_mask"]`.
+
+### `bitplane_reduced` (6 channels)
+- Minimal decision-time features for spawn-latched placement policies:
+  - `color_{red,yellow,blue}` (type-blind)
+  - `virus_mask`
+  - `pill_to_place` (falling pill mask)
+  - `preview_pill` (HUD preview mask projected into the 16×8 grid)
+
+### `bitplane_reduced_mask` (10 channels)
+- `bitplane_reduced` plus 4 feasibility-mask channels:
+  - `feasible_o0..feasible_o3`
+
+These feasibility planes are *not* derived from RAM; they are injected by the
+placement wrapper at true decision points and match `info["placements/feasible_mask"]`.
 
 Implementation
 - Code: `envs/specs/ram_to_state.py:1` implements the decoder using the above masks and addresses.

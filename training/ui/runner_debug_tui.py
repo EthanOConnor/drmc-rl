@@ -131,6 +131,7 @@ class RunnerDebugTUI:
         self._metrics_lock = threading.Lock()
         self._status: str = ""
         self._show_help = True
+        self._show_planes = False
 
         # Subscribe to training events (emitted from the training thread).
         event_bus.on("episode_end", self._on_episode_end)
@@ -221,15 +222,18 @@ class RunnerDebugTUI:
                 names = []
 
             if names:
-                # Display a compact index→name map, grouped to avoid an overly tall panel.
-                def _chunk(items, n: int):
-                    for i in range(0, len(items), n):
-                        yield items[i : i + n]
+                if self._show_planes:
+                    # Display a compact index→name map, grouped to avoid an overly tall panel.
+                    def _chunk(items, n: int):
+                        for i in range(0, len(items), n):
+                            yield items[i : i + n]
 
-                lines = []
-                for group in _chunk(list(enumerate(names)), 4):
-                    lines.append("  ".join(f"{i}:{nm}" for i, nm in group))
-                table.add_row("planes", "\n".join(lines))
+                    lines = []
+                    for group in _chunk(list(enumerate(names)), 4):
+                        lines.append("  ".join(f"{i}:{nm}" for i, nm in group))
+                    table.add_row("planes", "\n".join(lines))
+                else:
+                    table.add_row("planes", f"{len(names)} channels (press p)")
 
             colors = info0.get("next_pill_colors")
             if colors is not None:
@@ -239,6 +243,38 @@ class RunnerDebugTUI:
                         idx0, idx1 = int(c[0]), int(c[1])
                         lut = {0: "R", 1: "Y", 2: "B"}
                         table.add_row("pill", f"[{idx0},{idx1}] ({lut.get(idx0,'?')}{lut.get(idx1,'?')})")
+                except Exception:
+                    pass
+
+            # Preview pill colors (decoded from raw RAM when available).
+            raw_left = None
+            raw_right = None
+            raw_ram = info0.get("raw_ram")
+            try:
+                if isinstance(raw_ram, (bytes, bytearray, memoryview)) and len(raw_ram) > 0x031B:
+                    raw_left = int(raw_ram[0x031A]) & 0x03
+                    raw_right = int(raw_ram[0x031B]) & 0x03
+            except Exception:
+                raw_left = None
+                raw_right = None
+            if raw_left is None or raw_right is None:
+                preview = info0.get("preview_pill")
+                if isinstance(preview, dict):
+                    try:
+                        raw_left = int(preview.get("first_color", 0)) & 0x03
+                        raw_right = int(preview.get("second_color", 0)) & 0x03
+                    except Exception:
+                        raw_left = None
+                        raw_right = None
+            if raw_left is not None and raw_right is not None:
+                try:
+                    idx0 = int(ram_specs.COLOR_VALUE_TO_INDEX.get(int(raw_left), 0))
+                    idx1 = int(ram_specs.COLOR_VALUE_TO_INDEX.get(int(raw_right), 0))
+                    lut = {0: "R", 1: "Y", 2: "B"}
+                    table.add_row(
+                        "preview",
+                        f"[{idx0},{idx1}] ({lut.get(idx0,'?')}{lut.get(idx1,'?')})",
+                    )
                 except Exception:
                     pass
 
@@ -510,7 +546,9 @@ class RunnerDebugTUI:
         if not interactive:
             lines.append("stdin is not a TTY: controls disabled (rendering only)")
         if self._show_help:
-            lines.append("Controls: Space pause  n step  f+60  +/- speed  0 max  1/2/4 presets  r rng  h help  q quit")
+            lines.append(
+                "Controls: Space pause  n step  f+60  +/- speed  0 max  1/2/4 presets  r rng  p planes  h help  q quit"
+            )
         return Panel(Text("\n".join(lines) if lines else ""), border_style="blue")
 
     def _render_layout(self, interactive: bool) -> Layout:
@@ -575,6 +613,8 @@ class RunnerDebugTUI:
                                 self.control.set_speed_x(4.0)
                             elif key in {"r", "R"}:
                                 self.control.toggle_rng_randomize()
+                            elif key in {"p", "P"}:
+                                self._show_planes = not self._show_planes
                             elif key in {"h", "H", "?"}:
                                 self._show_help = not self._show_help
                         live.update(self._render_layout(interactive))

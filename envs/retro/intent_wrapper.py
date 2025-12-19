@@ -71,7 +71,7 @@ def _decode_pill_state(env) -> PillState:
     drop_counter = int(ram_arr[int(drop_addr, 16)]) if drop_addr else 0
 
     state = ram_specs.ram_to_state(ram_bytes, offsets)
-    falling_mask = ram_specs.get_falling_mask(state)
+    falling_mask = ram_specs.decode_falling_mask_from_ram(ram_bytes, offsets)
     static_mask = ram_specs.get_static_mask(state)
 
     coords = [(int(r), int(c)) for r, c in zip(*np.where(falling_mask))]

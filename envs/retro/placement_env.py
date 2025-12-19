@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
 from envs.retro.drmario_env import Action
 from envs.state_core import DrMarioState
 from envs.retro.placement_planner import (
@@ -507,6 +508,62 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info["next_pill_colors"] = np.asarray(snap.colors, dtype=np.int64)
         return info
 
+    @staticmethod
+    def _maybe_inject_feasible_mask(obs: Any, feasible_mask: np.ndarray) -> Any:
+        """Optionally write the feasibility mask into dedicated observation planes.
+
+        This is only active for representations that reserve feasibility mask
+        channels (e.g. `bitplane_reduced_mask`). The RAM→state mapper emits
+        those channels as zeros; the placement wrapper fills them at the true
+        decision point where reachability is known.
+        """
+
+        channels = getattr(ram_specs.STATE_IDX, "feasible_mask_channels", None)
+        if not channels:
+            return obs
+        try:
+            dst = tuple(int(c) for c in channels)
+        except Exception:
+            return obs
+        if len(dst) != 4:
+            return obs
+
+        try:
+            mask = np.asarray(feasible_mask, dtype=np.float32)
+        except Exception:
+            return obs
+        if mask.shape != (4, GRID_HEIGHT, GRID_WIDTH):
+            return obs
+
+        def _inject(arr: np.ndarray) -> np.ndarray:
+            if arr.ndim == 4:
+                # (T,C,H,W) frame-stack: repeat mask across the stack for
+                # simplicity and to avoid stale channels in older frames.
+                out = np.array(arr, copy=True)
+                for o, ch in enumerate(dst):
+                    out[:, ch, :, :] = mask[o]
+                return out
+            if arr.ndim == 3:
+                # (C,H,W) single frame.
+                out = np.array(arr, copy=True)
+                for o, ch in enumerate(dst):
+                    out[ch, :, :] = mask[o]
+                return out
+            return arr
+
+        if isinstance(obs, dict) and "obs" in obs:
+            out = dict(obs)
+            try:
+                out["obs"] = _inject(np.asarray(out["obs"]))
+            except Exception:
+                return obs
+            return out
+
+        try:
+            return _inject(np.asarray(obs))
+        except Exception:
+            return obs
+
     def _update_lock_capture(self, lock_capture: Dict[str, Any], info: Dict[str, Any]) -> None:
         """Best-effort capture of the locked pill pose for the current macro step.
 
@@ -687,7 +744,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     out_info["placements/needs_action"] = True
                     if saw_no_feasible:
                         out_info["placements/no_feasible_actions"] = True
-                    return obs, out_info, float(total_reward), terminated, truncated
+                    obs_out = self._maybe_inject_feasible_mask(obs, ctx.reach.feasible_mask)
+                    return obs_out, out_info, float(total_reward), terminated, truncated
                 saw_no_feasible = True
                 # Mark this spawn as consumed (no feasible actions) so we don't
                 # treat subsequent falling frames as new decisions.

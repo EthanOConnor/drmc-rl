@@ -25,10 +25,11 @@ class TestPlacementPolicySmoke:
         # Dummy inputs
         board = torch.randn(2, 12, 16, 8)
         pill_colors = torch.randint(0, 3, (2, 2))
+        preview_colors = torch.randint(0, 3, (2, 2))
         mask = torch.ones(2, 4, 16, 8, dtype=torch.bool)
         
         with torch.no_grad():
-            logits, values = net(board, pill_colors, mask)
+            logits, values = net(board, pill_colors, preview_colors, mask)
             
         assert logits.shape == (2, 4, 16, 8)
         assert values.shape == (2, 1)
@@ -77,6 +78,7 @@ class TestPlacementPolicySmoke:
                 obs=np.random.randn(12, 16, 8).astype(np.float32),
                 mask=np.ones((4, 16, 8), dtype=bool),
                 pill_colors=np.array([0, 1], dtype=np.int64),
+                preview_pill_colors=np.array([2, 0], dtype=np.int64),
                 action=42,
                 log_prob=-1.5,
                 value=2.3,
@@ -113,10 +115,11 @@ class TestPlacementPolicySmoke:
             
             board = torch.randn(1, 12, 16, 8)
             colors = torch.tensor([[0, 2]])
+            preview = torch.tensor([[1, 1]])
             mask = torch.ones(1, 4, 16, 8, dtype=torch.bool)
             
             with torch.no_grad():
-                logits, values = net(board, colors, mask)
+                logits, values = net(board, colors, preview, mask)
                 
             assert logits.shape == (1, 4, 16, 8), f"{head_type} failed"
             assert values.shape == (1, 1), f"{head_type} failed"
@@ -131,9 +134,10 @@ class TestPlacementPolicySmoke:
         # Forward pass
         board = torch.randn(2, 12, 16, 8)
         colors = torch.randint(0, 3, (2, 2))
+        preview = torch.randint(0, 3, (2, 2))
         mask = torch.ones(2, 4, 16, 8, dtype=torch.bool)
         
-        logits, values = net(board, colors, mask)
+        logits, values = net(board, colors, preview, mask)
         
         # Create distributions and sample
         losses = []

@@ -22,7 +22,7 @@ head_type = "dense"
 ```
 - Simplest strong baseline
 - Direct 4×16×8 heatmap generation
-- FiLM conditioning on next-pill colors
+- FiLM conditioning on current + preview pill colors
 - Fast parallel inference
 
 #### B. Shift-and-Score
@@ -44,7 +44,7 @@ head_type = "factorized"
 
 All heads:
 - Accept `[B, C, 16, 8]` board state
-- Embed next-pill colors via Deep-Sets (order-invariant)
+- Embed current + preview pill colors via Deep-Sets (order-invariant per pill)
 - Apply CoordConv for spatial awareness
 - Output `[B, 4, 16, 8]` logit maps + value estimates
 
@@ -63,7 +63,8 @@ All heads:
 - Each decision includes:
   - `obs`: Board state at decision time
   - `mask`: Feasibility mask [4, 16, 8]
-  - `pill_colors`: Next pill [2]
+  - `pill_colors`: Current pill [2]
+  - `preview_pill_colors`: Preview pill [2]
   - `action`: Selected placement
   - `log_prob`, `value`: Policy outputs
   - `tau`: Frame duration
@@ -111,17 +112,18 @@ from models.policy.placement_dist import MaskedPlacementDist
 
 # Create policy
 net = PlacementPolicyNet(
-    in_channels=12,
+    in_channels=4,  # `bitplane_bottle`; see `env.state_repr`
     head_type="dense",
     pill_embed_dim=32,
 )
 
 # Forward pass
-board = ...  # [B, 12, 16, 8]
-pill_colors = ...  # [B, 2] with color indices
+board = ...  # [B, C, 16, 8]
+pill_colors = ...  # [B, 2] current pill color indices
+preview_pill_colors = ...  # [B, 2] preview pill color indices
 mask = ...  # [B, 4, 16, 8] boolean
 
-logits_map, value = net(board, pill_colors, mask)
+logits_map, value = net(board, pill_colors, preview_pill_colors, mask)
 
 # Sample action
 dist = MaskedPlacementDist(logits_map, mask)
@@ -218,7 +220,8 @@ The placement macro-environment (`envs/retro/placement_env.py`) provides:
 - `info["placements/feasible_mask"]`: Boolean mask [4, 16, 8]
 - `info["placements/legal_mask"]`: Boolean mask [4, 16, 8] (in-bounds-only)
 - `info["placements/costs"]`: Float costs [4, 16, 8] (frames to lock; `inf` if unreachable)
-- `info["next_pill_colors"]`: Color indices [2]
+- `info["next_pill_colors"]`: Current pill color indices [2]
+- `info["preview_pill"]`: HUD preview pill metadata (colors/rotation; raw NES encoding)
 - `info["placements/spawn_id"]`: Pill spawn counter for cache invalidation
 - `info["placements/tau"]`: Frames consumed by the macro step (SMDP duration)
 
@@ -235,7 +238,7 @@ Example pattern:
 spawn_id = info.get("placements/spawn_id")
 if spawn_id != last_spawn_id:
     # New spawn: run inference
-    logits, value = policy(obs, colors, mask)
+    logits, value = policy(obs, colors, preview_colors, mask)
     cache[spawn_id] = logits
     last_spawn_id = spawn_id
 else:

@@ -183,6 +183,26 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Downstream code that assumes “always 4 orientations” could log misleading action stats if it doesn’t account for mask structure.
 - **Mitigation**: Keep masking entirely within `placements/feasible_mask`/`legal_mask` (policy is already mask-aware) and surface option counts via `placements/options`.
 
+**R25. Feasibility mask planes in observations can bias learning toward planner artifacts**
+- **Concern**: `bitplane_reduced_mask` injects `placements/feasible_mask` into observation planes (`feasible_o0..feasible_o3`) at decision points.
+- **Risk**:
+  - Policies may overfit to idiosyncrasies of the planner/mask generator instead of learning a robust value function from board state alone.
+  - Future training against a different backend (e.g. the C++ engine) must produce an identical feasibility mask to preserve policy behavior.
+- **Mitigation**:
+  - Keep action masking as the hard constraint (always apply feasibility mask to logits); treat mask planes as optional auxiliary input.
+  - Run periodic ablations/evals on `bitplane_reduced` (no mask planes) to ensure the policy still learns sensible board features.
+  - Maintain strict oracle parity tests for the planner so injected mask planes remain faithful to emulator dynamics.
+
+**R26. Color encoding mismatch between RAM/board bytes and policy indices**
+- **Concern**: Dr. Mario uses two natural encodings:
+  - raw NES color bits (yellow=0, red=1, blue=2) in RAM/board bytes, and
+  - canonical plane/policy indices (red=0, yellow=1, blue=2) used by `color_{r,y,b}` planes and policy embeddings.
+- **Risk**: If a caller mixes these conventions (e.g., treats `preview_pill.first_color` as canonical when it is raw), the agent can receive inconsistent conditioning and learning can silently degrade.
+- **Mitigation**:
+  - Treat UI/board-byte fields as “raw” and policy conditioning vectors as “canonical”; convert explicitly.
+  - Prefer decoding policy-conditioning colors from source-of-truth RAM bytes (or from the RAM offsets spec) rather than from representation-dependent state tensors.
+  - Add small unit tests around the conversions when adding new representations/backends.
+
 **R14. Spawn-blocked “dead decisions” can produce empty feasible masks**
 - **Concern**: Some spawns are immediately blocked (capsule locks offscreen/top-out before any actionable input window). The reachability planner correctly reports `placements/options == 0` for in-bounds macro placements.
 - **Risk**: If the macro env returns `placements/needs_action == True` with an all-false feasible mask, policies can enter an infinite invalid-action loop (no emulator progress), freezing the debug UI and collapsing training metrics.

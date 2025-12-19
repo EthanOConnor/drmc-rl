@@ -199,6 +199,27 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Fixed `envs/retro/placement_env.py` to treat “decision points” with **zero feasible macro placements** (e.g., spawn-blocked top-out) as non-decision frames and keep stepping NOOP until the env transitions (lock/top-out/reset) instead of returning an empty mask that can cause an infinite invalid-action loop.
 - Added regression coverage: `tests/test_placement_env_no_feasible_actions.py`.
 
+## 2025-12-19 – Codex CLI – Reduced Bitplane Observations + Mask Injection
+
+- Added two new state representations in `envs/specs/ram_to_state.py`:
+  - `bitplane_reduced` (6ch): type-blind color planes + `virus_mask` + `pill_to_place` + `preview_pill`.
+  - `bitplane_reduced_mask` (10ch): reduced + 4 feasibility-mask channels (`feasible_o0..feasible_o3`).
+- Implemented feasibility-mask injection at true decision points in `envs/retro/placement_env.py` (fills reserved obs channels from `placements/feasible_mask`).
+- Made the debug runner UI less noisy by hiding the channel index→name list by default (toggle with `p`) in `training/ui/runner_debug_tui.py`.
+- Updated docs: `docs/STATE_OBS_AND_RAM_MAPPING.md`, `docs/RAM_TO_STATE.md`, `docs/PLACEMENT_POLICY.md`.
+- Added tests for the new representations and mask injection:
+  - `tests/test_bitplane_reduced_helpers.py`
+  - `tests/test_feasible_mask_obs_injection.py`
+
+## 2025-12-19 – Codex CLI – Bottle-Only Obs + Preview-Pill Vectors
+
+- Added bottle-only state representations:
+  - `bitplane_bottle` (4ch): bottle color planes + `virus_mask` (no falling/preview projection).
+  - `bitplane_bottle_mask` (8ch): bottle-only + feasibility planes injected by placement env.
+- Decoded falling/preview pill metadata directly from RAM in `envs/state_core.py` (observation-repr independent), and updated intent wrapper to decode falling coords from RAM.
+- Updated the placement policy to condition on both **current** and **preview** pill colors as vectors (no longer requires `pill_to_place`/`preview_pill` planes), and extended the rollout buffer accordingly.
+- Added optional encoder scaling via `encoder_blocks` (extra 64-channel residual blocks) and updated debug UI to show preview pill colors.
+
 ## 2025-12-18 – Codex CLI – Debug TUI: Perf Diagnostics (Inference/Planner)
 
 - Added lightweight perf counters + timing breakdowns for interactive runs:

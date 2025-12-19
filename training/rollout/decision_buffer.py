@@ -17,7 +17,8 @@ class DecisionStep:
     
     obs: np.ndarray  # Observation at decision time
     mask: np.ndarray  # Action mask [4, 16, 8]
-    pill_colors: np.ndarray  # Next pill colors [2]
+    pill_colors: np.ndarray  # Current pill colors [2]
+    preview_pill_colors: np.ndarray  # Next (preview) pill colors [2]
     action: int  # Selected action index
     log_prob: float  # Log probability of action
     value: float  # Value estimate V(s)
@@ -35,6 +36,7 @@ class DecisionBatch:
     observations: np.ndarray  # [T, ...]
     masks: np.ndarray  # [T, 4, 16, 8]
     pill_colors: np.ndarray  # [T, 2]
+    preview_pill_colors: np.ndarray  # [T, 2]
     actions: np.ndarray  # [T]
     log_probs: np.ndarray  # [T]
     values: np.ndarray  # [T]
@@ -81,6 +83,7 @@ class DecisionRolloutBuffer:
         self.observations = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self.masks = np.zeros((capacity, 4, 16, 8), dtype=np.bool_)
         self.pill_colors = np.zeros((capacity, 2), dtype=np.int64)
+        self.preview_pill_colors = np.zeros((capacity, 2), dtype=np.int64)
         self.actions = np.zeros(capacity, dtype=np.int64)
         self.log_probs = np.zeros(capacity, dtype=np.float32)
         self.values = np.zeros(capacity, dtype=np.float32)
@@ -99,6 +102,7 @@ class DecisionRolloutBuffer:
         self.observations[idx] = step.obs
         self.masks[idx] = step.mask
         self.pill_colors[idx] = step.pill_colors
+        self.preview_pill_colors[idx] = step.preview_pill_colors
         self.actions[idx] = step.action
         self.log_probs[idx] = step.log_prob
         self.values[idx] = step.value
@@ -199,6 +203,7 @@ class DecisionRolloutBuffer:
             observations=self.observations[:T].copy(),
             masks=self.masks[:T].copy(),
             pill_colors=self.pill_colors[:T].copy(),
+            preview_pill_colors=self.preview_pill_colors[:T].copy(),
             actions=self.actions[:T].copy(),
             log_probs=self.log_probs[:T].copy(),
             values=self.values[:T].copy(),

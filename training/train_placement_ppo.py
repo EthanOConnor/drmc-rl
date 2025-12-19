@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 
 import numpy as np
+
+import envs.specs.ram_to_state as ram_specs
 import torch
 
 # Import existing components
@@ -146,6 +148,7 @@ def main():
         # Extract info
         mask = _extract_mask(info)
         pill_colors = _extract_pill_colors(info)
+        preview_pill_colors = _extract_preview_pill_colors(info)
         spawn_id = info.get("placements/spawn_id", decision_count)  # Fallback if not available
         
         # Get raw 464-element mask for action conversion
@@ -156,7 +159,7 @@ def main():
             # Select action (policy outputs 512-space action)
             with torch.no_grad():
                 action_512, log_prob, value = _select_action(
-                    policy, obs, mask, pill_colors, device, deterministic=False
+                    policy, obs, mask, pill_colors, preview_pill_colors, device, deterministic=False
                 )
                 # Cache for this spawn
                 spawn_cache[spawn_id] = (action_512, log_prob, value)
@@ -188,6 +191,7 @@ def main():
             obs=_obs_to_array(obs),
             mask=mask,
             pill_colors=pill_colors,
+            preview_pill_colors=preview_pill_colors,
             action=action_512,  # Store policy's native action
             log_prob=log_prob,
             value=value,
@@ -223,7 +227,10 @@ def main():
             with torch.no_grad():
                 mask_boot = _extract_mask(info)
                 colors_boot = _extract_pill_colors(info)
-                _, value_boot = _forward_policy(policy, obs, mask_boot, colors_boot, device)
+                preview_boot = _extract_preview_pill_colors(info)
+                _, value_boot = _forward_policy(
+                    policy, obs, mask_boot, colors_boot, preview_boot, device
+                )
                 
             # Get batch with advantages
             batch = buffer.get_batch(bootstrap_value=value_boot)
@@ -421,6 +428,46 @@ def _extract_pill_colors(info: dict) -> np.ndarray:
     return np.array([0, 0], dtype=np.int64)
 
 
+def _extract_preview_pill_colors(info: dict) -> np.ndarray:
+    """Extract preview pill colors (canonical indices 0=R,1=Y,2=B)."""
+
+    raw_left = None
+    raw_right = None
+    raw_ram = info.get("raw_ram")
+    try:
+        if isinstance(raw_ram, (bytes, bytearray, memoryview)) and len(raw_ram) > 0x031B:
+            raw_left = int(raw_ram[0x031A]) & 0x03
+            raw_right = int(raw_ram[0x031B]) & 0x03
+    except Exception:
+        raw_left = None
+        raw_right = None
+
+    if raw_left is None or raw_right is None:
+        preview = info.get("preview_pill")
+        if isinstance(preview, dict):
+            try:
+                raw_left = int(preview.get("first_color", 0)) & 0x03
+                raw_right = int(preview.get("second_color", 0)) & 0x03
+            except Exception:
+                raw_left = None
+                raw_right = None
+        elif isinstance(preview, (list, tuple)) and len(preview) >= 2:
+            try:
+                raw_left = int(preview[0]) & 0x03
+                raw_right = int(preview[1]) & 0x03
+            except Exception:
+                raw_left = None
+                raw_right = None
+
+    if raw_left is None or raw_right is None:
+        return np.array([0, 0], dtype=np.int64)
+
+    def _map_color(raw: int) -> int:
+        return int(ram_specs.COLOR_VALUE_TO_INDEX.get(int(raw) & 0x03, 0))
+
+    return np.array([_map_color(raw_left), _map_color(raw_right)], dtype=np.int64)
+
+
 def _obs_to_array(obs) -> np.ndarray:
     """Convert observation (dict or array) to numpy array."""
     if isinstance(obs, np.ndarray):
@@ -454,21 +501,22 @@ def _obs_to_array(obs) -> np.ndarray:
     return np.array(arr, dtype=np.float32)
 
 
-def _forward_policy(policy, obs, mask, colors, device):
+def _forward_policy(policy, obs, mask, colors, preview_colors, device):
     """Forward pass through policy."""
     obs_arr = _obs_to_array(obs)
     obs_t = torch.from_numpy(obs_arr).unsqueeze(0).to(device)
     mask_t = torch.from_numpy(mask).unsqueeze(0).to(device)
     colors_t = torch.from_numpy(colors).unsqueeze(0).to(device)
+    preview_t = torch.from_numpy(preview_colors).unsqueeze(0).to(device)
     
-    logits, value = policy(obs_t, colors_t, mask_t)
+    logits, value = policy(obs_t, colors_t, preview_t, mask_t)
     return logits.squeeze(0), float(value.squeeze().item())
 
 
-def _select_action(policy, obs, mask, colors, device, deterministic=False):
+def _select_action(policy, obs, mask, colors, preview_colors, device, deterministic=False):
     """Select action using masked distribution."""
     policy.eval()
-    logits, value = _forward_policy(policy, obs, mask, colors, device)
+    logits, value = _forward_policy(policy, obs, mask, colors, preview_colors, device)
     
     dist = MaskedPlacementDist(logits, torch.from_numpy(mask).to(device))
     action_idx, log_prob = dist.sample(deterministic=deterministic)
@@ -486,6 +534,7 @@ def _update_ppo(policy, optimizer, batch, device, num_epochs, minibatch_size, cl
     obs = torch.from_numpy(batch.observations).to(device)
     masks = torch.from_numpy(batch.masks).to(device)
     colors = torch.from_numpy(batch.pill_colors).to(device)
+    preview_colors = torch.from_numpy(batch.preview_pill_colors).to(device)
     actions = torch.from_numpy(batch.actions).to(device)
     log_probs_old = torch.from_numpy(batch.log_probs).to(device)
     returns = torch.from_numpy(batch.returns).to(device)
@@ -517,13 +566,14 @@ def _update_ppo(policy, optimizer, batch, device, num_epochs, minibatch_size, cl
             mb_obs = obs[mb_idx]
             mb_masks = masks[mb_idx]
             mb_colors = colors[mb_idx]
+            mb_preview = preview_colors[mb_idx]
             mb_actions = actions[mb_idx]
             mb_log_probs_old = log_probs_old[mb_idx]
             mb_returns = returns[mb_idx]
             mb_adv = advantages[mb_idx]
             
             # Forward
-            logits, values = policy(mb_obs, mb_colors, mb_masks)
+            logits, values = policy(mb_obs, mb_colors, mb_preview, mb_masks)
             
             # Compute log probs and entropy
             log_probs_list = []

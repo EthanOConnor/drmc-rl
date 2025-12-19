@@ -30,6 +30,7 @@ from training.utils.reproducibility import git_commit
 from models.policy.placement_heads import PlacementPolicyNet
 from models.policy.placement_dist import MaskedPlacementDist, unflatten_placement
 
+import envs.specs.ram_to_state as ram_specs
 
 @dataclass(slots=True)
 class SMDPPPOConfig:
@@ -54,6 +55,7 @@ class SMDPPPOConfig:
     # Policy head
     head_type: str = "dense"  # dense, shift_score, or factorized
     pill_embed_dim: int = 32
+    encoder_blocks: int = 0
     
     # Exploration
     entropy_schedule_end: float = 0.003
@@ -99,6 +101,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             minibatch_size=int(ppo_cfg_dict.get("minibatch_size", 128)),
             head_type=str(ppo_cfg_dict.get("head_type", "dense")),
             pill_embed_dim=int(ppo_cfg_dict.get("pill_embed_dim", 32)),
+            encoder_blocks=int(ppo_cfg_dict.get("encoder_blocks", 0)),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
             entropy_schedule_steps=int(ppo_cfg_dict.get("entropy_schedule_steps", 1000000)),
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
@@ -116,6 +119,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             in_channels=in_channels,
             head_type=self.hparams.head_type,
             pill_embed_dim=self.hparams.pill_embed_dim,
+            encoder_blocks=self.hparams.encoder_blocks,
             num_colors=3,
         ).to(self.device)
         
@@ -185,11 +189,12 @@ class SMDPPPOAdapter(AlgoAdapter):
                     # Get action mask and pill colors
                     mask = self._extract_mask(env_info)
                     pill_colors = self._extract_pill_colors(env_info)
+                    preview_pill_colors = self._extract_preview_pill_colors(env_info)
                     
                     # Policy forward
                     with torch.no_grad():
                         action_idx, log_prob, value = self._select_action(
-                            env_obs, mask, pill_colors, deterministic=False
+                            env_obs, mask, pill_colors, preview_pill_colors, deterministic=False
                         )
                         
                     # Execute action (placement happens over τ frames)
@@ -204,6 +209,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                         obs=env_obs,
                         mask=mask,
                         pill_colors=pill_colors,
+                        preview_pill_colors=preview_pill_colors,
                         action=action_idx,
                         log_prob=log_prob,
                         value=value,
@@ -250,7 +256,10 @@ class SMDPPPOAdapter(AlgoAdapter):
                     env_info = decision_info[env_idx]
                     mask = self._extract_mask(env_info)
                     pill_colors = self._extract_pill_colors(env_info)
-                    _, value_bootstrap = self._forward_policy(env_obs, mask, pill_colors)
+                    preview_pill_colors = self._extract_preview_pill_colors(env_info)
+                    _, value_bootstrap = self._forward_policy(
+                        env_obs, mask, pill_colors, preview_pill_colors
+                    )
                     bootstrap_values.append(value_bootstrap)
                 bootstrap = float(np.mean(bootstrap_values))
                 
@@ -298,6 +307,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs: np.ndarray,
         mask: np.ndarray,
         pill_colors: np.ndarray,
+        preview_pill_colors: np.ndarray,
     ) -> Tuple[torch.Tensor, float]:
         """Forward pass through policy network.
         
@@ -307,9 +317,10 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs_t = torch.from_numpy(obs).unsqueeze(0).to(self.device)
         mask_t = torch.from_numpy(mask).unsqueeze(0).to(self.device)
         colors_t = torch.from_numpy(pill_colors).unsqueeze(0).to(self.device)
+        preview_t = torch.from_numpy(preview_pill_colors).unsqueeze(0).to(self.device)
         
         t0 = time.perf_counter()
-        logits_map, value = self.net(obs_t, colors_t, mask_t)
+        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t)
         dt = float(time.perf_counter() - t0)
         self._perf_inference_calls += 1
         self._perf_inference_sec_total += dt
@@ -327,6 +338,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs: np.ndarray,
         mask: np.ndarray,
         pill_colors: np.ndarray,
+        preview_pill_colors: np.ndarray,
         deterministic: bool = False,
     ) -> Tuple[int, float, float]:
         """Select action using masked policy.
@@ -334,7 +346,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         Returns:
             Tuple of (action_idx, log_prob, value)
         """
-        logits_map, value = self._forward_policy(obs, mask, pill_colors)
+        logits_map, value = self._forward_policy(obs, mask, pill_colors, preview_pill_colors)
         
         # Create masked distribution
         dist = MaskedPlacementDist(logits_map, torch.from_numpy(mask).to(self.device))
@@ -386,6 +398,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs = torch.from_numpy(batch.observations).to(self.device)
         masks = torch.from_numpy(batch.masks).to(self.device)
         pill_colors = torch.from_numpy(batch.pill_colors).to(self.device)
+        preview_pill_colors = torch.from_numpy(batch.preview_pill_colors).to(self.device)
         actions = torch.from_numpy(batch.actions).to(self.device)
         log_probs_old = torch.from_numpy(batch.log_probs).to(self.device)
         returns = torch.from_numpy(batch.returns).to(self.device)
@@ -419,13 +432,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                 mb_obs = obs[mb_indices]
                 mb_masks = masks[mb_indices]
                 mb_colors = pill_colors[mb_indices]
+                mb_preview = preview_pill_colors[mb_indices]
                 mb_actions = actions[mb_indices]
                 mb_log_probs_old = log_probs_old[mb_indices]
                 mb_returns = returns[mb_indices]
                 mb_advantages = advantages[mb_indices]
                 
                 # Forward pass
-                logits_map, values = self.net(mb_obs, mb_colors, mb_masks)
+                logits_map, values = self.net(mb_obs, mb_colors, mb_preview, mb_masks)
                 
                 # Compute log probs and entropy
                 dist = MaskedPlacementDist(logits_map, mb_masks)
@@ -500,7 +514,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         return np.ones((4, 16, 8), dtype=bool)
         
     def _extract_pill_colors(self, info: Dict) -> np.ndarray:
-        """Extract next pill colors from info dict."""
+        """Extract current pill colors (canonical indices 0=R,1=Y,2=B) from info dict."""
         colors = info.get("next_pill_colors")
         if colors is not None:
             arr = np.asarray(colors, dtype=np.int64)
@@ -508,6 +522,46 @@ class SMDPPPOAdapter(AlgoAdapter):
                 return arr
         # Fallback: [0, 0]
         return np.array([0, 0], dtype=np.int64)
+
+    def _extract_preview_pill_colors(self, info: Dict) -> np.ndarray:
+        """Extract preview pill colors (canonical indices 0=R,1=Y,2=B) from info dict."""
+
+        raw_left: Optional[int] = None
+        raw_right: Optional[int] = None
+
+        raw_ram = info.get("raw_ram")
+        try:
+            if isinstance(raw_ram, (bytes, bytearray, memoryview)) and len(raw_ram) > 0x031B:
+                raw_left = int(raw_ram[0x031A]) & 0x03
+                raw_right = int(raw_ram[0x031B]) & 0x03
+        except Exception:
+            raw_left = None
+            raw_right = None
+
+        if raw_left is None or raw_right is None:
+            preview = info.get("preview_pill")
+            if isinstance(preview, dict):
+                try:
+                    raw_left = int(preview.get("first_color", 0)) & 0x03
+                    raw_right = int(preview.get("second_color", 0)) & 0x03
+                except Exception:
+                    raw_left = None
+                    raw_right = None
+            elif isinstance(preview, (list, tuple)) and len(preview) >= 2:
+                try:
+                    raw_left = int(preview[0]) & 0x03
+                    raw_right = int(preview[1]) & 0x03
+                except Exception:
+                    raw_left = None
+                    raw_right = None
+
+        if raw_left is None or raw_right is None:
+            return np.array([0, 0], dtype=np.int64)
+
+        def _map_color(raw: int) -> int:
+            return int(ram_specs.COLOR_VALUE_TO_INDEX.get(int(raw) & 0x03, 0))
+
+        return np.array([_map_color(raw_left), _map_color(raw_right)], dtype=np.int64)
         
     def _get_entropy_coef(self) -> float:
         """Get current entropy coefficient (annealed over training)."""

@@ -5,7 +5,17 @@ import pytest
 import envs.specs.ram_to_state as ram_specs
 
 
-@pytest.mark.parametrize("state_repr", ["extended", "bitplane"])
+@pytest.mark.parametrize(
+    "state_repr",
+    [
+        "extended",
+        "bitplane",
+        "bitplane_bottle",
+        "bitplane_bottle_mask",
+        "bitplane_reduced",
+        "bitplane_reduced_mask",
+    ],
+)
 def test_plane_names_match_channel_count(state_repr: str) -> None:
     prev = ram_specs.get_state_representation()
     try:
@@ -15,4 +25,3 @@ def test_plane_names_match_channel_count(state_repr: str) -> None:
         assert len(set(names)) == len(names)
     finally:
         ram_specs.set_state_representation(prev)
-

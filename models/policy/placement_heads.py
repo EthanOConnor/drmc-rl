@@ -65,12 +65,13 @@ class DrMarioBoardEncoder(nn.Module):
     Takes multi-channel board state and produces spatial features [B, 64, 16, 8].
     """
     
-    def __init__(self, in_ch: int = 12):
+    def __init__(self, in_ch: int = 12, *, res_blocks: int = 0):
         super().__init__()
         # Small, efficient encoder
         self.conv1 = CoordConv2d(in_ch, 32, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=2, dilation=2)
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.res_blocks = nn.Sequential(*[_ResBlock64() for _ in range(int(max(0, res_blocks)))])
         self.act = nn.ReLU(inplace=True)
         
     def forward(self, x):
@@ -85,7 +86,23 @@ class DrMarioBoardEncoder(nn.Module):
         x = self.act(self.conv1(x))
         x = self.act(self.conv2(x))
         x = self.act(self.conv3(x))
+        x = self.res_blocks(x)
         return x
+
+
+class _ResBlock64(nn.Module):
+    """Simple 64-channel residual block for the 16×8 board encoder."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.act = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        y = self.act(self.conv1(x))
+        y = self.conv2(y)
+        return self.act(x + y)
 
 
 class UnorderedPillEmbedding(nn.Module):
@@ -382,15 +399,25 @@ class PlacementPolicyNet(nn.Module):
         in_channels: int = 12,
         head_type: str = "dense",
         pill_embed_dim: int = 32,
+        encoder_blocks: int = 0,
         num_colors: int = 3,
     ):
         super().__init__()
         
-        self.encoder = DrMarioBoardEncoder(in_ch=in_channels)
+        self.encoder = DrMarioBoardEncoder(in_ch=in_channels, res_blocks=int(encoder_blocks))
         self.pill_embedding = UnorderedPillEmbedding(
             num_colors=num_colors,
             embedding_dim=16,
             output_dim=pill_embed_dim,
+        )
+        self.preview_embedding = UnorderedPillEmbedding(
+            num_colors=num_colors,
+            embedding_dim=16,
+            output_dim=pill_embed_dim,
+        )
+        self.pill_fusion = nn.Sequential(
+            nn.Linear(pill_embed_dim * 2, pill_embed_dim),
+            nn.ReLU(inplace=True),
         )
         
         # Select head
@@ -411,12 +438,13 @@ class PlacementPolicyNet(nn.Module):
             nn.Linear(128, 1),
         )
         
-    def forward(self, board, next_pill_colors, mask):
+    def forward(self, board, pill_colors, preview_pill_colors, mask):
         """Forward pass.
         
         Args:
             board: Board state [B, C, 16, 8]
-            next_pill_colors: Color indices [B, 2]
+            pill_colors: Current pill color indices [B, 2]
+            preview_pill_colors: Next (preview) pill color indices [B, 2]
             mask: Feasibility mask [B, 4, 16, 8]
             
         Returns:
@@ -425,8 +453,10 @@ class PlacementPolicyNet(nn.Module):
         # Encode board
         F = self.encoder(board)  # [B, 64, 16, 8]
         
-        # Embed pill colors
-        p_embed = self.pill_embedding(next_pill_colors)  # [B, P]
+        # Embed current + preview pills and fuse to a single conditioning vector.
+        p_curr = self.pill_embedding(pill_colors)  # [B, P]
+        p_prev = self.preview_embedding(preview_pill_colors)  # [B, P]
+        p_embed = self.pill_fusion(torch.cat([p_curr, p_prev], dim=-1))  # [B, P]
         
         # Generate placement logits
         logits_map = self.head(F, p_embed, mask)  # [B, 4, 16, 8]

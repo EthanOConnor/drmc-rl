@@ -1,11 +1,15 @@
 """RAM → state-tensor mapper for Dr. Mario with pluggable representations.
 
-Two representations are supported:
+Representations (all emit a `(C, 16, 8)` float32 tensor):
 
 1. ``extended`` (default): 16-channel tensor with explicit planes for viruses,
    fixed/falling pills, orientation, scalar broadcasts, and preview metadata.
-2. ``bitplane``: 12-channel tensor of mostly binary masks (color planes, entity
-   masks, preview positions) plus scalar broadcasts.
+2. ``bitplane``: 12-channel tensor of mostly binary masks (type-blind color
+   planes, entity masks, preview positions) plus scalar broadcasts.
+3. ``bitplane_reduced``: 6-channel tensor containing only decision-relevant
+   bitplanes (type-blind colors + virus + current pill + preview pill).
+4. ``bitplane_reduced_mask``: ``bitplane_reduced`` plus 4 additional channels
+   reserved for a feasibility mask (filled by the placement SMDP wrapper).
 
 Use :func:`set_state_representation` to switch modes at runtime. The change
 applies process-wide (matching the previous environment-variable behaviour).
@@ -42,7 +46,15 @@ def _normalize_mode(mode: Optional[str]) -> str:
     if not mode:
         return "extended"
     value = str(mode).strip().lower()
-    if value not in {"extended", "bitplane", "policy_v1"}:
+    if value not in {
+        "extended",
+        "bitplane",
+        "bitplane_bottle",
+        "bitplane_bottle_mask",
+        "bitplane_reduced",
+        "bitplane_reduced_mask",
+        "policy_v1",
+    }:
         raise ValueError(f"Unknown state representation '{mode}'")
     return value
 
@@ -66,6 +78,7 @@ def _build_state_index_extended() -> SimpleNamespace:
         preview_mask=None,
         clearing_mask=None,
         empty_mask=None,
+        feasible_mask_channels=None,
     )
 
 
@@ -88,7 +101,90 @@ def _build_state_index_bitplane() -> SimpleNamespace:
         preview_first=None,
         preview_second=None,
         preview_rotation=None,
+        feasible_mask_channels=None,
     )
+
+
+def _build_state_index_bitplane_reduced() -> SimpleNamespace:
+    """6-channel reduced bitplane representation.
+
+    Channels:
+      0..2: color_{red,yellow,blue}  (type-blind)
+         3: virus_mask
+         4: pill_to_place (falling pill mask)
+         5: preview_pill (HUD preview mask projected into the 16×8 grid)
+
+    This representation is designed for *spawn-latched placement decisions*.
+    It intentionally omits scalar broadcasts (level/gravity/lock), clearing
+    markers, and explicit locked/empty masks.
+    """
+
+    return SimpleNamespace(
+        color_channels=(0, 1, 2),
+        virus_mask=3,
+        locked_mask=None,
+        falling_mask=4,
+        preview_mask=5,
+        clearing_mask=None,
+        empty_mask=None,
+        gravity=None,
+        lock=None,
+        level=None,
+        virus_color_channels=None,
+        static_color_channels=None,
+        falling_color_channels=None,
+        orientation=None,
+        preview_first=None,
+        preview_second=None,
+        preview_rotation=None,
+        feasible_mask_channels=None,
+    )
+
+
+def _build_state_index_bitplane_reduced_mask() -> SimpleNamespace:
+    """10-channel reduced bitplane representation with feasibility-mask slots."""
+
+    base = _build_state_index_bitplane_reduced()
+    base.feasible_mask_channels = (6, 7, 8, 9)
+    return base
+
+
+def _build_state_index_bitplane_bottle() -> SimpleNamespace:
+    """4-channel bottle-only bitplane representation.
+
+    Channels:
+      0..2: color_{red,yellow,blue}  (type-blind; bottle contents only)
+         3: virus_mask
+    """
+
+    return SimpleNamespace(
+        color_channels=(0, 1, 2),
+        virus_mask=3,
+        locked_mask=None,
+        falling_mask=None,
+        preview_mask=None,
+        clearing_mask=None,
+        empty_mask=None,
+        gravity=None,
+        lock=None,
+        level=None,
+        virus_color_channels=None,
+        static_color_channels=None,
+        falling_color_channels=None,
+        orientation=None,
+        preview_first=None,
+        preview_second=None,
+        preview_rotation=None,
+        feasible_mask_channels=None,
+    )
+
+
+def _build_state_index_bitplane_bottle_mask() -> SimpleNamespace:
+    """8-channel bottle-only bitplane representation with feasibility-mask slots."""
+
+    base = _build_state_index_bitplane_bottle()
+    base.feasible_mask_channels = (4, 5, 6, 7)
+    return base
 
 
 def _build_state_index_policy_v1() -> SimpleNamespace:
@@ -100,8 +196,17 @@ def _build_state_index_policy_v1() -> SimpleNamespace:
         level=9,
         preview_first=10,
         preview_second=11,
+        preview_rotation=None,
+        virus_mask=None,
+        locked_mask=None,
+        falling_mask=None,
+        preview_mask=None,
         clearing_mask=None,
         empty_mask=None,
+        gravity=None,
+        lock=None,
+        orientation=None,
+        feasible_mask_channels=None,
     )
 
 
@@ -140,6 +245,46 @@ _PLANE_NAMES_BY_REPR: Dict[str, Tuple[str, ...]] = {
         "lock",
         "level",
     ),
+    # 4 channels (see `_build_state_index_bitplane_bottle`).
+    "bitplane_bottle": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+    ),
+    # 8 channels (see `_build_state_index_bitplane_bottle_mask`).
+    "bitplane_bottle_mask": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "feasible_o0",
+        "feasible_o1",
+        "feasible_o2",
+        "feasible_o3",
+    ),
+    # 6 channels (see `_build_state_index_bitplane_reduced`).
+    "bitplane_reduced": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "pill_to_place",
+        "preview_pill",
+    ),
+    # 10 channels (see `_build_state_index_bitplane_reduced_mask`).
+    "bitplane_reduced_mask": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "pill_to_place",
+        "preview_pill",
+        "feasible_o0",
+        "feasible_o1",
+        "feasible_o2",
+        "feasible_o3",
+    ),
     # `policy_v1` is not actively used by the current training stack, but we
     # keep a stable naming for debugging/tools.
     #
@@ -168,16 +313,16 @@ def get_plane_names(mode: Optional[str] = None) -> Tuple[str, ...]:
 
     mode_norm = _normalize_mode(mode or STATE_REPR)
     names = _PLANE_NAMES_BY_REPR.get(mode_norm)
-    if names is None or len(names) != int(STATE_CHANNELS):
+    if names is None:
+        return tuple(f"ch{i}" for i in range(int(STATE_CHANNELS)))
+    # Sanity check when querying the *current* representation.
+    if mode is None and len(names) != int(STATE_CHANNELS):
         return tuple(f"ch{i}" for i in range(int(STATE_CHANNELS)))
     return names
 
 
-
-
-
 def _configure_state_representation(mode: str) -> None:
-    global STATE_REPR, STATE_USE_BITPLANES, STATE_CHANNELS, STATE_IDX, STATE_FRAME_SHAPE
+    global STATE_REPR, STATE_USE_BITPLANES, STATE_CHANNELS, STATE_IDX, STATE_FRAME_SHAPE, STATE_DECODER
     mode_norm = _normalize_mode(mode)
     if "STATE_REPR" in globals() and STATE_REPR == mode_norm:
         return
@@ -186,32 +331,55 @@ def _configure_state_representation(mode: str) -> None:
         STATE_USE_BITPLANES = True
         STATE_CHANNELS = 12
         STATE_IDX = _build_state_index_bitplane()
+        STATE_DECODER = _ram_to_state_bitplanes
+    elif mode_norm == "bitplane_bottle":
+        STATE_REPR = "bitplane_bottle"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 4
+        STATE_IDX = _build_state_index_bitplane_bottle()
+        STATE_DECODER = _ram_to_state_bitplane_bottle
+    elif mode_norm == "bitplane_bottle_mask":
+        STATE_REPR = "bitplane_bottle_mask"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 8
+        STATE_IDX = _build_state_index_bitplane_bottle_mask()
+        STATE_DECODER = _ram_to_state_bitplane_bottle
+    elif mode_norm == "bitplane_reduced":
+        STATE_REPR = "bitplane_reduced"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 6
+        STATE_IDX = _build_state_index_bitplane_reduced()
+        STATE_DECODER = _ram_to_state_bitplane_reduced
+    elif mode_norm == "bitplane_reduced_mask":
+        STATE_REPR = "bitplane_reduced_mask"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 10
+        STATE_IDX = _build_state_index_bitplane_reduced_mask()
+        STATE_DECODER = _ram_to_state_bitplane_reduced
     elif mode_norm == "policy_v1":
         STATE_REPR = "policy_v1"
         STATE_USE_BITPLANES = False
         STATE_CHANNELS = 13
         STATE_IDX = _build_state_index_policy_v1()
+        STATE_DECODER = _ram_to_state_extended
 
     else:
         STATE_REPR = "extended"
         STATE_USE_BITPLANES = False
         STATE_CHANNELS = 16
         STATE_IDX = _build_state_index_extended()
+        STATE_DECODER = _ram_to_state_extended
     STATE_FRAME_SHAPE = (STATE_CHANNELS, STATE_HEIGHT, STATE_WIDTH)
 
 
 def set_state_representation(mode: str) -> None:
-    """Set the process-wide state representation (``extended`` or ``bitplane``)."""
+    """Set the process-wide state representation."""
     _configure_state_representation(mode)
 
 
 def get_state_representation() -> str:
     """Return the current state representation name."""
     return STATE_REPR
-
-
-# Initialise globals with default representation.
-_configure_state_representation("extended")
 
 
 def _read_byte(ram: bytes, addr_hex: str) -> int:
@@ -299,9 +467,12 @@ def _ram_to_state_extended(
         _read_optional(ram, offsets.get("gravity_lock", {}).get("lock_counter_addr")) or 0
     ) / 255.0
     level = (_read_optional(ram, offsets.get("level", {}).get("addr")) or 0) / 20.0
-    state[STATE_IDX.gravity, :, :] = gravity
-    state[STATE_IDX.lock, :, :] = lock
-    state[STATE_IDX.level, :, :] = level
+    if getattr(STATE_IDX, "gravity", None) is not None:
+        state[STATE_IDX.gravity, :, :] = gravity
+    if getattr(STATE_IDX, "lock", None) is not None:
+        state[STATE_IDX.lock, :, :] = lock
+    if getattr(STATE_IDX, "level", None) is not None:
+        state[STATE_IDX.level, :, :] = level
 
     # Preview metadata (matches HUD preview only)
     preview_offsets = offsets.get("preview_pill", {}) if offsets is not None else {}
@@ -319,9 +490,12 @@ def _ram_to_state_extended(
             return 0.0
         return float(rot & 0x03) / 3.0
 
-    state[STATE_IDX.preview_first, :, :] = _normalize_color(next_left)
-    state[STATE_IDX.preview_second, :, :] = _normalize_color(next_right)
-    state[STATE_IDX.preview_rotation, :, :] = _normalize_rotation(next_rotation)
+    if getattr(STATE_IDX, "preview_first", None) is not None:
+        state[STATE_IDX.preview_first, :, :] = _normalize_color(next_left)
+    if getattr(STATE_IDX, "preview_second", None) is not None:
+        state[STATE_IDX.preview_second, :, :] = _normalize_color(next_right)
+    if getattr(STATE_IDX, "preview_rotation", None) is not None:
+        state[STATE_IDX.preview_rotation, :, :] = _normalize_rotation(next_rotation)
 
     return state
 
@@ -429,6 +603,133 @@ def _ram_to_state_bitplanes(
     return state
 
 
+def _ram_to_state_bitplane_reduced(
+    ram: bytes,
+    offsets: Dict,
+    *,
+    H: int = STATE_HEIGHT,
+    W: int = STATE_WIDTH,
+) -> np.ndarray:
+    """Reduced bitplane mapper used by `bitplane_reduced*` representations.
+
+    Note: feasibility-mask channels (if configured) are *not* derived from RAM;
+    they are filled by the placement wrapper at decision points.
+    """
+
+    grid = np.zeros((H, W), dtype=np.uint8)
+    base = int(offsets["bottle"]["base_addr"], 16)
+    stride = int(offsets["bottle"]["stride"])
+    for r in range(H):
+        row = ram[base + r * stride : base + r * stride + W]
+        grid[r, :] = np.frombuffer(row, dtype=np.uint8)
+
+    state = np.zeros((STATE_CHANNELS, H, W), dtype=np.float32)
+    type_hi = (grid & 0xF0).astype(np.uint8)
+    color_lo = (grid & 0x03).astype(np.uint8)
+
+    is_empty = grid == FIELD_EMPTY
+    is_just_emptied = (type_hi == FIELD_JUST_EMPTIED) & (~is_empty)
+    is_zero = grid == 0x00
+    is_clearing = (type_hi == CLEARED_TILE) | is_just_emptied
+
+    # Keep the reduced representation focused on stable, decision-relevant
+    # board tiles. Clearing markers and transient "just emptied" tiles are
+    # excluded from the color planes.
+    color_valid = ~(is_empty | is_zero | is_clearing)
+    for color_value, plane_idx in zip((1, 0, 2), STATE_IDX.color_channels):
+        mask = (color_lo == color_value) & color_valid
+        state[plane_idx] = mask.astype(np.float32)
+
+    virus_mask = type_hi == T_VIRUS
+    state[STATE_IDX.virus_mask] = virus_mask.astype(np.float32)
+
+    # Falling pill projected from RAM pose + colors.
+    falling_offsets = offsets.get("falling_pill", {}) if offsets is not None else {}
+    fr = _read_optional(ram, falling_offsets.get("row_addr")) or 0
+    fc = _read_optional(ram, falling_offsets.get("col_addr")) or 0
+    rotation = (_read_optional(ram, falling_offsets.get("orient_addr")) or 0) & 0x03
+    lc = _read_optional(ram, falling_offsets.get("left_color_addr")) or 0
+    rc = _read_optional(ram, falling_offsets.get("right_color_addr")) or 0
+
+    if 0 <= fc < W:
+        base_row = (H - 1) - fr if 0 <= fr < H else None
+        offsets_local = {
+            0: ((0, 0), (0, 1)),
+            1: ((0, 0), (-1, 0)),
+            2: ((0, 1), (0, 0)),
+            3: ((-1, 0), (0, 0)),
+        }.get(rotation, ((0, 0), (0, 1)))
+        if base_row is not None:
+            for color, (dr, dc) in zip((lc, rc), offsets_local):
+                channel = COLOR_VALUE_TO_INDEX.get(color)
+                if channel is None:
+                    continue
+                row = base_row + dr
+                col = fc + dc
+                if 0 <= row < H and 0 <= col < W:
+                    state[STATE_IDX.falling_mask, row, col] = 1.0
+                    state[STATE_IDX.color_channels[channel], row, col] = 1.0
+
+    # Preview pill projected into spawn area (matches visible HUD preview exactly).
+    preview_offsets = offsets.get("preview_pill", {}) if offsets is not None else {}
+    next_left = _read_optional(ram, preview_offsets.get("left_color_addr"))
+    next_right = _read_optional(ram, preview_offsets.get("right_color_addr"))
+    next_rotation = (_read_optional(ram, preview_offsets.get("rotation_addr")) or 0) & 0x03
+
+    preview_positions = _preview_positions(next_rotation)
+    for color, (dr, dc) in zip((next_left, next_right), preview_positions):
+        if color is None:
+            continue
+        channel = COLOR_VALUE_TO_INDEX.get(color & 0x03)
+        if channel is None:
+            continue
+        row = _PREVIEW_BASE[0] + dr
+        col = _PREVIEW_BASE[1] + dc
+        if 0 <= row < H and 0 <= col < W:
+            state[STATE_IDX.preview_mask, row, col] = 1.0
+            state[STATE_IDX.color_channels[channel], row, col] = 1.0
+
+    return state
+
+
+def _ram_to_state_bitplane_bottle(
+    ram: bytes,
+    offsets: Dict,
+    *,
+    H: int = STATE_HEIGHT,
+    W: int = STATE_WIDTH,
+) -> np.ndarray:
+    """Bottle-only bitplane mapper used by `bitplane_bottle*` representations."""
+
+    grid = np.zeros((H, W), dtype=np.uint8)
+    base = int(offsets["bottle"]["base_addr"], 16)
+    stride = int(offsets["bottle"]["stride"])
+    for r in range(H):
+        row = ram[base + r * stride : base + r * stride + W]
+        grid[r, :] = np.frombuffer(row, dtype=np.uint8)
+
+    state = np.zeros((STATE_CHANNELS, H, W), dtype=np.float32)
+    type_hi = (grid & 0xF0).astype(np.uint8)
+    color_lo = (grid & 0x03).astype(np.uint8)
+
+    is_empty = grid == FIELD_EMPTY
+    is_just_emptied = (type_hi == FIELD_JUST_EMPTIED) & (~is_empty)
+    is_zero = grid == 0x00
+    is_clearing = (type_hi == CLEARED_TILE) | is_just_emptied
+
+    # Only bottle tiles: ignore clear-animation markers and transient empties.
+    color_valid = ~(is_empty | is_zero | is_clearing)
+    for color_value, plane_idx in zip((1, 0, 2), STATE_IDX.color_channels):
+        mask = (color_lo == color_value) & color_valid
+        state[plane_idx] = mask.astype(np.float32)
+
+    virus_mask = type_hi == T_VIRUS
+    state[STATE_IDX.virus_mask] = virus_mask.astype(np.float32)
+
+    # Feasible mask channels (if configured) are filled by the placement wrapper.
+    return state
+
+
 def ram_to_state(
     ram: bytes,
     offsets: Dict,
@@ -437,9 +738,7 @@ def ram_to_state(
     W: int = STATE_WIDTH,
 ) -> np.ndarray:
     """Decode NES RAM bytes into the configured state tensor representation."""
-    if STATE_USE_BITPLANES:
-        return _ram_to_state_bitplanes(ram, offsets, H=H, W=W)
-    return _ram_to_state_extended(ram, offsets, H=H, W=W)
+    return STATE_DECODER(ram, offsets, H=H, W=W)
 
 
 # ---------------------------------------------------------------------------
@@ -470,8 +769,25 @@ def get_static_color_planes(frame: np.ndarray) -> np.ndarray:
     arr = _ensure_np(frame)
     if STATE_USE_BITPLANES:
         colors = arr[list(STATE_IDX.color_channels)]
-        locked = arr[STATE_IDX.locked_mask]
-        return colors * locked
+        locked_idx = getattr(STATE_IDX, "locked_mask", None)
+        if locked_idx is not None:
+            locked = arr[int(locked_idx)] > 0.5
+        else:
+            # Derive "static pills" by exclusion: any colored tile that is not
+            # a virus, falling pill, or preview pill.
+            any_color = (colors > 0.5).any(axis=0)
+            virus_idx = getattr(STATE_IDX, "virus_mask", None)
+            virus = (arr[int(virus_idx)] > 0.5) if virus_idx is not None else np.zeros_like(any_color, dtype=bool)
+            falling_idx = getattr(STATE_IDX, "falling_mask", None)
+            falling = (
+                (arr[int(falling_idx)] > 0.5) if falling_idx is not None else np.zeros_like(any_color, dtype=bool)
+            )
+            preview_idx = getattr(STATE_IDX, "preview_mask", None)
+            preview = (
+                (arr[int(preview_idx)] > 0.5) if preview_idx is not None else np.zeros_like(any_color, dtype=bool)
+            )
+            locked = any_color & (~virus) & (~falling) & (~preview)
+        return colors * locked.astype(np.float32)
     return arr[list(STATE_IDX.static_color_channels)]
 
 
@@ -479,8 +795,11 @@ def get_falling_color_planes(frame: np.ndarray) -> np.ndarray:
     arr = _ensure_np(frame)
     if STATE_USE_BITPLANES:
         colors = arr[list(STATE_IDX.color_channels)]
-        falling = arr[STATE_IDX.falling_mask]
-        return colors * falling
+        falling_idx = getattr(STATE_IDX, "falling_mask", None)
+        if falling_idx is None:
+            return np.zeros_like(colors)
+        falling = arr[int(falling_idx)] > 0.5
+        return colors * falling.astype(np.float32)
     return arr[list(STATE_IDX.falling_color_channels)]
 
 
@@ -496,14 +815,32 @@ def get_virus_color_planes(frame: np.ndarray) -> np.ndarray:
 def get_static_mask(frame: np.ndarray) -> np.ndarray:
     arr = _ensure_np(frame)
     if STATE_USE_BITPLANES:
-        return arr[STATE_IDX.locked_mask] > 0.5
+        locked_idx = getattr(STATE_IDX, "locked_mask", None)
+        if locked_idx is not None:
+            return arr[int(locked_idx)] > 0.5
+        colors = arr[list(STATE_IDX.color_channels)]
+        any_color = (colors > 0.5).any(axis=0)
+        virus_idx = getattr(STATE_IDX, "virus_mask", None)
+        virus = (arr[int(virus_idx)] > 0.5) if virus_idx is not None else np.zeros_like(any_color, dtype=bool)
+        falling_idx = getattr(STATE_IDX, "falling_mask", None)
+        falling = (
+            (arr[int(falling_idx)] > 0.5) if falling_idx is not None else np.zeros_like(any_color, dtype=bool)
+        )
+        preview_idx = getattr(STATE_IDX, "preview_mask", None)
+        preview = (
+            (arr[int(preview_idx)] > 0.5) if preview_idx is not None else np.zeros_like(any_color, dtype=bool)
+        )
+        return any_color & (~virus) & (~falling) & (~preview)
     return (arr[list(STATE_IDX.static_color_channels)] > 0.1).any(axis=0)
 
 
 def get_falling_mask(frame: np.ndarray) -> np.ndarray:
     arr = _ensure_np(frame)
     if STATE_USE_BITPLANES:
-        return arr[STATE_IDX.falling_mask] > 0.5
+        falling_idx = getattr(STATE_IDX, "falling_mask", None)
+        if falling_idx is None:
+            return np.zeros((STATE_HEIGHT, STATE_WIDTH), dtype=bool)
+        return arr[int(falling_idx)] > 0.5
     return (arr[list(STATE_IDX.falling_color_channels)] > 0.1).any(axis=0)
 
 
@@ -564,6 +901,62 @@ def decode_preview_from_state(frame: np.ndarray) -> Optional[Tuple[int, int, int
     first_color = int(round(float(arr[STATE_IDX.preview_first, 0, 0]) * 2.0))
     second_color = int(round(float(arr[STATE_IDX.preview_second, 0, 0]) * 2.0))
     return (first_color, second_color, rotation)
+
+
+def decode_preview_from_ram(ram: bytes, offsets: Dict) -> Optional[Tuple[int, int, int]]:
+    """Decode the HUD preview pill directly from RAM (no dependence on state_repr).
+
+    Returns:
+      (first_color_raw, second_color_raw, rotation) where colors use the NES
+      encoding: yellow=0, red=1, blue=2.
+    """
+
+    preview_offsets = offsets.get("preview_pill", {}) if offsets is not None else {}
+    left = _read_optional(ram, preview_offsets.get("left_color_addr"))
+    right = _read_optional(ram, preview_offsets.get("right_color_addr"))
+    rot = _read_optional(ram, preview_offsets.get("rotation_addr"))
+    if left is None or right is None:
+        return None
+    rotation = int(rot or 0) & 0x03
+    return (int(left) & 0x03, int(right) & 0x03, rotation)
+
+
+def decode_falling_mask_from_ram(
+    ram: bytes,
+    offsets: Dict,
+    *,
+    H: int = STATE_HEIGHT,
+    W: int = STATE_WIDTH,
+) -> np.ndarray:
+    """Decode the current falling pill as a (H,W) boolean mask from RAM."""
+
+    mask = np.zeros((H, W), dtype=bool)
+    falling_offsets = offsets.get("falling_pill", {}) if offsets is not None else {}
+    fr = _read_optional(ram, falling_offsets.get("row_addr"))
+    fc = _read_optional(ram, falling_offsets.get("col_addr"))
+    rotation = _read_optional(ram, falling_offsets.get("orient_addr"))
+    if fr is None or fc is None or rotation is None:
+        return mask
+    fc_i = int(fc) & 0xFF
+    fr_i = int(fr) & 0xFF
+    rot = int(rotation) & 0x03
+    if not (0 <= fc_i < W and 0 <= fr_i < H):
+        return mask
+
+    base_row = (H - 1) - fr_i
+    offsets_local = {
+        0: ((0, 0), (0, 1)),
+        1: ((0, 0), (-1, 0)),
+        2: ((0, 1), (0, 0)),
+        3: ((-1, 0), (0, 0)),
+    }.get(rot, ((0, 0), (0, 1)))
+
+    for dr, dc in offsets_local:
+        row = int(base_row) + int(dr)
+        col = int(fc_i) + int(dc)
+        if 0 <= row < H and 0 <= col < W:
+            mask[row, col] = True
+    return mask
 
 
 def get_preview_mask(frame: np.ndarray) -> np.ndarray:
@@ -677,6 +1070,10 @@ def extended_to_policy_v2(state: np.ndarray) -> np.ndarray:
     return policy_state
 
 
+# Initialise globals with default representation (must happen after decoder defs).
+_configure_state_representation("extended")
+
+
 __all__ = [
     "ram_to_state",
     "set_state_representation",
@@ -704,5 +1101,7 @@ __all__ = [
     "get_level_value",
     "count_tile_removals",
     "decode_preview_from_state",
+    "decode_preview_from_ram",
+    "decode_falling_mask_from_ram",
     "extended_to_policy_v2",
 ]
