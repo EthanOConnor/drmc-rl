@@ -105,6 +105,74 @@ def _build_state_index_policy_v1() -> SimpleNamespace:
     )
 
 
+_PLANE_NAMES_BY_REPR: Dict[str, Tuple[str, ...]] = {
+    # 16 channels (see `_build_state_index_extended`).
+    "extended": (
+        "virus_red",
+        "virus_yellow",
+        "virus_blue",
+        "static_red",
+        "static_yellow",
+        "static_blue",
+        "falling_red",
+        "falling_yellow",
+        "falling_blue",
+        "orientation",
+        "gravity",
+        "lock",
+        "level",
+        "preview_first",
+        "preview_second",
+        "preview_rotation",
+    ),
+    # 12 channels (see `_build_state_index_bitplane`).
+    "bitplane": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "locked_mask",
+        "falling_mask",
+        "preview_mask",
+        "clearing_mask",
+        "empty_mask",
+        "gravity",
+        "lock",
+        "level",
+    ),
+    # `policy_v1` is not actively used by the current training stack, but we
+    # keep a stable naming for debugging/tools.
+    #
+    # NOTE: This representation is currently only partially supported by the
+    # mapper (some scalar channels are not emitted); treat it as experimental.
+    "policy_v1": (
+        "virus_red",
+        "virus_yellow",
+        "virus_blue",
+        "static_red",
+        "static_yellow",
+        "static_blue",
+        "falling_red",
+        "falling_yellow",
+        "falling_blue",
+        "level",
+        "preview_first",
+        "preview_second",
+        "unused",
+    ),
+}
+
+
+def get_plane_names(mode: Optional[str] = None) -> Tuple[str, ...]:
+    """Return the channel names for the configured state representation."""
+
+    mode_norm = _normalize_mode(mode or STATE_REPR)
+    names = _PLANE_NAMES_BY_REPR.get(mode_norm)
+    if names is None or len(names) != int(STATE_CHANNELS):
+        return tuple(f"ch{i}" for i in range(int(STATE_CHANNELS)))
+    return names
+
+
 
 
 
@@ -613,6 +681,7 @@ __all__ = [
     "ram_to_state",
     "set_state_representation",
     "get_state_representation",
+    "get_plane_names",
     "STATE_REPR",
     "STATE_USE_BITPLANES",
     "STATE_CHANNELS",

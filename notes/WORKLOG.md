@@ -284,3 +284,8 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Added virus-specific adjacency shaping terms (`virus_adjacency_pair_bonus`, `virus_adjacency_triplet_bonus`) and surfaced the aggregate in the debug UI reward breakdown (`envs/retro/drmario_env.py`, `envs/specs/reward_config.json`, `envs/retro/placement_env.py`, `training/envs/interactive.py`, `training/ui/runner_debug_tui.py`).
 - Set the placement SMDP-PPO config to use the `bitplane` state representation by default (type-blind color planes + virus mask) and improved preview decoding for bitplane states to infer rotation (`training/configs/smdp_ppo.yaml`, `envs/specs/ram_to_state.py`).
 - Added unit coverage for virus adjacency shaping (`tests/test_virus_adjacency_reward.py`) and updated reward docs (`docs/REWARD_SHAPING.md`).
+
+## 2025-12-19 – Codex CLI – Debug TUI: State Representation + Input Plane Names
+
+- Added `ram_to_state.get_plane_names()` and a small test to keep plane-name lists consistent with channel counts (`envs/specs/ram_to_state.py`, `tests/test_state_plane_names.py`).
+- Extended the debug TUI Perf panel to show `state_repr`, per-env observation shape, plane index→name map, next-pill colors, and mask/orientation conventions (`training/ui/runner_debug_tui.py`).

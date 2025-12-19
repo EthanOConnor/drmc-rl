@@ -24,6 +24,8 @@ from typing import Any, Deque, Dict, Optional
 
 import numpy as np
 
+import envs.specs.ram_to_state as ram_specs
+
 try:
     from rich.console import Console
     from rich.layout import Layout
@@ -162,6 +164,7 @@ class RunnerDebugTUI:
     def _render_perf_panel(self) -> Panel:
         ctrl = self.control.snapshot()
         perf = self.env.perf_snapshot()
+        info0 = self.env.latest_info(0)
 
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("Key", style="dim")
@@ -177,6 +180,81 @@ class RunnerDebugTUI:
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
         table.add_row("spawns_total", f"{int(perf.get('spawns_total', 0) or 0):,}")
         table.add_row("step_ms/frame", f"{perf.get('step_ms_per_frame', 0.0):.4f}")
+
+        # ----------------------------------------------------------------- policy inputs
+        try:
+            state_repr = str(ram_specs.get_state_representation())
+        except Exception:
+            state_repr = ""
+
+        obs_any = self.env.latest_obs()
+        obs_arr = None
+        if obs_any is not None:
+            try:
+                if isinstance(obs_any, dict) and "obs" in obs_any:
+                    obs_any = obs_any["obs"]
+                obs_arr = np.asarray(obs_any)
+            except Exception:
+                obs_arr = None
+
+        obs0_shape = None
+        obs_dtype = None
+        if obs_arr is not None and obs_arr.size > 0:
+            obs_dtype = getattr(obs_arr, "dtype", None)
+            try:
+                # Vector envs: obs is typically [N, ...]. For N==1, obs[0] is still correct.
+                obs0_shape = tuple(np.asarray(obs_arr[0]).shape)
+            except Exception:
+                obs0_shape = tuple(getattr(obs_arr, "shape", ()))
+
+        if state_repr or obs0_shape is not None:
+            table.add_row("", "")
+            if state_repr:
+                table.add_row("state_repr", state_repr)
+            if obs0_shape is not None:
+                dtype_s = str(obs_dtype) if obs_dtype is not None else "?"
+                table.add_row("obs(env0)", f"{obs0_shape} {dtype_s}")
+
+            try:
+                names = list(ram_specs.get_plane_names())
+            except Exception:
+                names = []
+
+            if names:
+                # Display a compact index→name map, grouped to avoid an overly tall panel.
+                def _chunk(items, n: int):
+                    for i in range(0, len(items), n):
+                        yield items[i : i + n]
+
+                lines = []
+                for group in _chunk(list(enumerate(names)), 4):
+                    lines.append("  ".join(f"{i}:{nm}" for i, nm in group))
+                table.add_row("planes", "\n".join(lines))
+
+            colors = info0.get("next_pill_colors")
+            if colors is not None:
+                try:
+                    c = np.asarray(colors, dtype=np.int64).reshape(-1)
+                    if c.size >= 2:
+                        idx0, idx1 = int(c[0]), int(c[1])
+                        lut = {0: "R", 1: "Y", 2: "B"}
+                        table.add_row("pill", f"[{idx0},{idx1}] ({lut.get(idx0,'?')}{lut.get(idx1,'?')})")
+                except Exception:
+                    pass
+
+            mask = None
+            for key in ("placements/feasible_mask", "placements/legal_mask", "mask"):
+                if key in info0:
+                    mask = info0.get(key)
+                    break
+            if mask is not None:
+                try:
+                    m = np.asarray(mask)
+                    if m.shape == (4, 16, 8):
+                        table.add_row("mask", f"{m.shape} (true={int(m.sum())})")
+                        table.add_row("orient", "0:H+  1:V+  2:H-  3:V-")
+                except Exception:
+                    pass
 
         infer_calls = int(perf.get("inference_calls", 0) or 0)
         if infer_calls > 0:
