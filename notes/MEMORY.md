@@ -914,3 +914,25 @@ the rotation can be recovered from the preview mask.
 - **Budget schedule:** Initialize the budget to the mean clear time over a recent window of successful clears. Tighten gradually over time, limiting each decrease to a fraction of the observed MAD (median absolute deviation) to avoid overreacting to noise/outliers.
 - **Why:** Separates “learn to succeed” from “learn to be fast” and provides a stable, outlier-robust way to reduce allowed time once success is essentially guaranteed.
 - **Trade-offs:** A high `mastery_target` at high σ can require a long no-failure streak before budgets activate; tune `time_budget_mastery_target/time_budget_mastery_sigmas` if budgets start too late.
+
+---
+
+## 2025-12-20 – Stage-Local Curriculum Stats + Persistent Best Times
+
+### Decision: Track `ln_hop_back` stage outcomes per stage index (fresh stats on revisits)
+
+- **Decision:** Keep hop-back advancement stats in stage-local rolling windows keyed by `stage_idx` (not just by `level`), while retaining per-level base histories for time-budget mastery checks.
+- **Why:** The same level can reappear with a *different* threshold (probe vs hop-back @ `1-exp(-k)`); stage-local windows prevent earlier easier passes from contaminating later stricter ones.
+- **Trade-offs:** Requires propagating a stable stage identifier from the vec wrapper; missing/incorrect tokens can reintroduce contamination (see SCRUTINY R45).
+
+### Decision: Pass a per-env `stage_token` through the vec wrapper to avoid multi-env races
+
+- **Decision:** `CurriculumVecEnv` captures a `stage_token` at the moment it assigns an env’s level (stored as `_env_stage_tokens`) and passes it back into `curriculum.note_episode(...)` when that env terminates.
+- **Why:** In vectorized runs, multiple envs can terminate in the same vec-step; the curriculum may advance partway through processing those terminals. The `stage_token` ensures each episode is attributed to the correct stage for stats and prevents “late” episodes from advancing a newer stage.
+- **Trade-offs:** Adds small bookkeeping to the wrapper and depends on consistent semantics across `sync`/`async` vectorization.
+
+### Decision: Record best-known clear times across runs in a small sqlite DB
+
+- **Decision:** Add a lightweight sqlite DB (`BestTimesDB`) keyed by `(level, rng_seed)` that records the best (minimum) clear times in frames and spawns across all runs.
+- **Why:** Provides “best-known floors” per level to ground time-budget curricula (avoid tightening below anything ever observed) and enables reporting the distribution of best times across seeds for profiling/target selection.
+- **Trade-offs:** Sqlite can contend if multiple runs write to the same DB; treat writes as best-effort (ignore failures), use WAL mode, and allow overriding the path via `DRMARIO_BEST_TIMES_DB`.

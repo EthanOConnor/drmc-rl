@@ -398,3 +398,18 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: Curriculum advancement now uses a σ-level one-sided Wilson lower bound (`LB > target`) with window sizes derived from a “near-target” assumption.
 - **Risk**: For targets close to 1 (especially `ln_hop_back` with large k), computed windows can become large, making stages slow to graduate and potentially amplifying non-i.i.d. effects (policy changes over time).
 - **Mitigation**: Cap hop-back k (`ln_hop_back_max_k`), tune `confidence_sigmas`/targets, and monitor `curriculum/confidence_lower_bound` + `curriculum/window_*` in the TUI. Use `tools/report_curriculum.py --confidence-table` to sanity-check implied window sizes.
+
+**R45. Stage-token mismatches can contaminate stage-local hop-back stats**
+- **Concern**: `ln_hop_back` advancement uses stage-local rolling windows keyed by `stage_idx` and relies on a `stage_token` captured when an env’s episode starts.
+- **Risk**: If `stage_token` is missing or incorrectly propagated (especially when multiple envs terminate in the same vec-step and the curriculum advances mid-loop), outcomes can be counted toward the wrong stage and cause premature advancement or stalls.
+- **Mitigation**: `CurriculumVecEnv` stores `_env_stage_tokens` at assignment time and passes them into `note_episode`; `LnHopBackCurriculum.note_episode` refuses to advance the current stage when the token doesn’t match the active `stage_idx`.
+
+**R46. Best-times sqlite DB can lock or slow under concurrent runs**
+- **Concern**: The best-times tracker writes to a sqlite file (`data/best_times.sqlite3`) as episodes complete.
+- **Risk**: Multiple training runs sharing one DB path can hit lock contention (`database is locked`), slow down training, or accumulate unbounded DB size over time.
+- **Mitigation**: Use WAL mode + timeouts; keep a single writer in the main process (write only from the vec wrapper); treat writes as best-effort (swallow exceptions); allow per-run/per-machine paths via `DRMARIO_BEST_TIMES_DB`.
+
+**R47. Clamping time budgets to “best observed” floors may reduce pressure to set new records**
+- **Concern**: When applying dynamic budgets, the wrapper clamps `task_max_frames/task_max_spawns` to be ≥ best-known per-level floors from the DB.
+- **Risk**: Once budgets reach the current best-known value, additional speed improvements become incidental rather than explicitly required by the curriculum.
+- **Mitigation**: Consider making the clamp optional (or switching to a quantile floor like p10), and track/report top-K per-seed distributions to tune targets deliberately instead of binding to the absolute minimum.

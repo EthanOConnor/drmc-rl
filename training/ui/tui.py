@@ -135,8 +135,13 @@ class TrainingMetrics:
     curriculum_stage_count: Optional[int] = None
     curriculum_probe_threshold: Optional[float] = None
     curriculum_time_budget_frames: Optional[int] = None
+    curriculum_time_budget_spawns: Optional[int] = None
     curriculum_time_mean_frames: Optional[float] = None
     curriculum_time_mad_frames: Optional[float] = None
+    curriculum_time_mean_spawns: Optional[float] = None
+    curriculum_time_mad_spawns: Optional[float] = None
+    curriculum_time_k: Optional[int] = None
+    curriculum_time_target: Optional[float] = None
     
     def avg_reward(self, last_n: int = 100) -> float:
         """Average reward over last N episodes."""
@@ -347,6 +352,12 @@ class TrainingTUI:
         if time_budget is not None:
             m.curriculum_time_budget_frames = int(time_budget)
 
+        time_budget_spawns = _to_int(
+            curriculum.get("time_budget_spawns", curriculum.get("curriculum/time_budget_spawns"))
+        )
+        if time_budget_spawns is not None:
+            m.curriculum_time_budget_spawns = int(time_budget_spawns)
+
         time_mean = _to_float(curriculum.get("time_mean_frames", curriculum.get("curriculum/time_mean_frames")))
         if time_mean is not None:
             m.curriculum_time_mean_frames = float(time_mean)
@@ -354,6 +365,26 @@ class TrainingTUI:
         time_mad = _to_float(curriculum.get("time_mad_frames", curriculum.get("curriculum/time_mad_frames")))
         if time_mad is not None:
             m.curriculum_time_mad_frames = float(time_mad)
+
+        time_mean_spawns = _to_float(
+            curriculum.get("time_mean_spawns", curriculum.get("curriculum/time_mean_spawns"))
+        )
+        if time_mean_spawns is not None:
+            m.curriculum_time_mean_spawns = float(time_mean_spawns)
+
+        time_mad_spawns = _to_float(
+            curriculum.get("time_mad_spawns", curriculum.get("curriculum/time_mad_spawns"))
+        )
+        if time_mad_spawns is not None:
+            m.curriculum_time_mad_spawns = float(time_mad_spawns)
+
+        time_k = _to_int(curriculum.get("time_k", curriculum.get("curriculum/time_k")))
+        if time_k is not None:
+            m.curriculum_time_k = int(time_k)
+
+        time_target = _to_float(curriculum.get("time_target", curriculum.get("curriculum/time_target")))
+        if time_target is not None:
+            m.curriculum_time_target = float(time_target)
 
         adv_to = _to_int(curriculum.get("advanced_to", curriculum.get("curriculum/advanced_to")))
         if adv_to is not None:
@@ -530,7 +561,34 @@ class TrainingTUI:
                     if m.curriculum_time_mad_frames is not None
                     else "-"
                 )
-                table.add_row("Time Budget", budget_label, "Mean±MAD", f"{mean_label}±{mad_label}")
+                right_key = "Mean±MAD"
+                if m.curriculum_time_k is not None and m.curriculum_time_target is not None:
+                    right_key = f"k={int(m.curriculum_time_k)} t={float(m.curriculum_time_target)*100.0:.1f}%"
+                table.add_row("Time Budget", budget_label, right_key, f"{mean_label}±{mad_label}")
+
+            if m.curriculum_time_budget_spawns is not None:
+                mean_spawns = (
+                    f"{float(m.curriculum_time_mean_spawns):.1f}"
+                    if m.curriculum_time_mean_spawns is not None
+                    else "-"
+                )
+                mad_spawns = (
+                    f"{float(m.curriculum_time_mad_spawns):.1f}"
+                    if m.curriculum_time_mad_spawns is not None
+                    else "-"
+                )
+                target = (
+                    f"{float(m.curriculum_time_target) * 100.0:.1f}%"
+                    if m.curriculum_time_target is not None
+                    else "-"
+                )
+                k_label = str(int(m.curriculum_time_k)) if m.curriculum_time_k is not None else "-"
+                table.add_row(
+                    "Spawn Budget",
+                    f"{int(m.curriculum_time_budget_spawns)}",
+                    f"k={k_label} t={target}",
+                    f"{mean_spawns}±{mad_spawns}",
+                )
 
             env_levels = m.curriculum_env_levels or ""
             table.add_row("Env Levels", env_levels, "Seen", f"{int(m.curriculum_episodes_total)}")

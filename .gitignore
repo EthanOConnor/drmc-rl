@@ -19,6 +19,7 @@ wandb/
 tensorboard/
 data/datasets/
 data/states/
+data/best_times.sqlite3
 data/pose_mismatches*.jsonl
 retro-data/
 retro/"*"

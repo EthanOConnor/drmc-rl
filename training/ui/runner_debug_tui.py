@@ -728,11 +728,26 @@ class RunnerDebugTUI:
         if time_budget is not None:
             mean = info0.get("curriculum/time_mean_frames")
             mad = info0.get("curriculum/time_mad_frames")
+            time_k = info0.get("curriculum/time_k")
+            time_target = info0.get("curriculum/time_target")
             try:
                 extra = ""
                 if mean is not None and mad is not None:
                     extra = f" mean±mad {float(mean):.0f}±{float(mad):.0f}"
+                if time_k is not None and time_target is not None:
+                    extra = f"{extra} k={int(time_k)} t={float(time_target)*100.0:.1f}%"
                 table.add_row("time_budget", f"{int(time_budget)}f{extra}")
+            except Exception:
+                pass
+        spawn_budget = info0.get("curriculum/time_budget_spawns")
+        if spawn_budget is not None:
+            mean = info0.get("curriculum/time_mean_spawns")
+            mad = info0.get("curriculum/time_mad_spawns")
+            try:
+                extra = ""
+                if mean is not None and mad is not None:
+                    extra = f" mean±mad {float(mean):.1f}±{float(mad):.1f}"
+                table.add_row("spawn_budget", f"{int(spawn_budget)}{extra}")
             except Exception:
                 pass
         task_mode = info0.get("task_mode")

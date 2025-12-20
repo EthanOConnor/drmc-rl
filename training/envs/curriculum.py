@@ -170,6 +170,10 @@ class CurriculumConfig:
     time_budget_min_frames: int = 1
     time_budget_max_drop_fraction_of_mad: float = 0.1
     time_budget_min_drop_frames: int = 1
+    time_budget_max_k: int = 3
+    # Persistent best-times DB (stored under data/, git-ignored).
+    best_times_db_path: Optional[str] = None
+    best_times_topk: int = 50
 
     @classmethod
     def from_cfg(cls, cfg: Any) -> "CurriculumConfig":
@@ -230,6 +234,9 @@ class CurriculumConfig:
             time_budget_min_frames=int(_get("time_budget_min_frames", 1)),
             time_budget_max_drop_fraction_of_mad=float(_get("time_budget_max_drop_fraction_of_mad", 0.1)),
             time_budget_min_drop_frames=int(_get("time_budget_min_drop_frames", 1)),
+            time_budget_max_k=int(_get("time_budget_max_k", 3)),
+            best_times_db_path=data.get("best_times_db_path"),
+            best_times_topk=int(_get("best_times_topk", 50)),
         )
 
 
@@ -239,10 +246,18 @@ class ScriptedCurriculum:
     def __init__(self, cfg: CurriculumConfig) -> None:
         self.cfg = cfg
         self.current_level = int(cfg.start_level)
+        # Base objective success (ignores time budgets): used for curriculum
+        # advancement and mastery detection.
         self._histories: Dict[int, Deque[bool]] = {}
         self._episodes_total: Dict[int, int] = {}
         self._time_samples: Dict[int, Deque[int]] = {}
+        self._time_samples_spawns: Dict[int, Deque[int]] = {}
         self._time_budget_frames: Dict[int, int] = {}
+        self._time_budget_spawns: Dict[int, int] = {}
+        # Time-goal success (under the currently active budgets) is tracked in a
+        # separate rolling window that is reset whenever we tighten goals.
+        self._time_success_histories: Dict[int, Deque[bool]] = {}
+        self._time_k: Dict[int, int] = {}
 
         self._sigmas = float(max(0.0, float(getattr(cfg, "confidence_sigmas", 0.0) or 0.0)))
         self._stage_window = (
@@ -261,6 +276,15 @@ class ScriptedCurriculum:
         )
         self._history_maxlen = int(max(1, self._stage_window, self._mastery_window))
         self._time_window = int(max(1, int(getattr(cfg, "time_budget_time_window", 128) or 128)))
+        self._time_max_k = int(max(1, int(getattr(cfg, "time_budget_max_k", 3) or 3)))
+        # Max history needed to evaluate time success targets.
+        time_targets = [float(1.0 - math.exp(-float(k))) for k in range(1, self._time_max_k + 1)]
+        if self._sigmas > 0.0:
+            self._time_success_maxlen = int(
+                max(confidence_window_size(target=t, sigmas=self._sigmas) for t in time_targets)
+            )
+        else:
+            self._time_success_maxlen = int(max(1, int(cfg.window_episodes)))
 
     def _history(self, level: int) -> Deque[bool]:
         lvl = int(level)
@@ -275,8 +299,23 @@ class ScriptedCurriculum:
             self._time_samples[lvl] = deque(maxlen=int(self._time_window))
         return self._time_samples[lvl]
 
+    def _times_spawns(self, level: int) -> Deque[int]:
+        lvl = int(level)
+        if lvl not in self._time_samples_spawns:
+            self._time_samples_spawns[lvl] = deque(maxlen=int(self._time_window))
+        return self._time_samples_spawns[lvl]
+
+    def _time_success_history(self, level: int) -> Deque[bool]:
+        lvl = int(level)
+        if lvl not in self._time_success_histories:
+            self._time_success_histories[lvl] = deque(maxlen=int(self._time_success_maxlen))
+        return self._time_success_histories[lvl]
+
     def task_max_frames_for_level(self, level: int) -> Optional[int]:
         return self._time_budget_frames.get(int(level))
+
+    def task_max_spawns_for_level(self, level: int) -> Optional[int]:
+        return self._time_budget_spawns.get(int(level))
 
     def note_episode(
         self,
@@ -284,25 +323,40 @@ class ScriptedCurriculum:
         level: int,
         success: bool,
         episode_frames: Optional[int] = None,
+        episode_spawns: Optional[int] = None,
         objective_met: Optional[bool] = None,
+        stage_token: Optional[object] = None,
     ) -> bool:
         """Record an episode outcome; returns True if this advanced the curriculum."""
 
+        del stage_token
         lvl = int(level)
+        base_success = bool(success if objective_met is None else objective_met)
         hist = self._history(lvl)
-        hist.append(bool(success))
+        hist.append(bool(base_success))
         self._episodes_total[lvl] = int(self._episodes_total.get(lvl, 0)) + 1
 
-        if objective_met is None:
-            objective_met = bool(success)
-        if objective_met and episode_frames is not None:
+        timed_success = bool(success)
+        if base_success and episode_frames is not None:
             try:
                 frames_i = int(episode_frames)
             except Exception:
                 frames_i = 0
             if frames_i > 0:
                 self._times(lvl).append(frames_i)
-                self._maybe_update_time_budget(lvl)
+        if base_success and episode_spawns is not None:
+            try:
+                spawns_i = int(episode_spawns)
+            except Exception:
+                spawns_i = 0
+            if spawns_i >= 0:
+                self._times_spawns(lvl).append(max(0, spawns_i))
+
+        # Track time-goal success only while budgets are active for this level.
+        if int(lvl) in self._time_budget_frames or int(lvl) in self._time_budget_spawns:
+            self._time_success_history(lvl).append(bool(timed_success))
+
+        self._maybe_update_time_budget(lvl)
 
         if lvl != int(self.current_level):
             return False
@@ -340,37 +394,80 @@ class ScriptedCurriculum:
         mastery_target = float(getattr(cfg, "time_budget_mastery_target", 0.99) or 0.99)
         if mastery_sigmas <= 0.0 or mastery_target <= 0.0:
             return
+        lvl = int(level)
         window = int(max(1, int(self._mastery_window)))
-        hist = self._histories.get(int(level))
-        if not hist:
+        hist = self._histories.get(lvl)
+        if not hist or len(hist) < window:
             return
         tail = list(hist)[-window:]
-        if len(tail) < window:
-            return
-        if int(sum(1 for x in tail if x)) != window:
-            return
-        times = list(self._time_samples.get(int(level), deque()))
-        if not times:
-            return
-        mean_frames = float(np.mean(np.asarray(times, dtype=np.float64)))
-        mad_frames = _mad([float(t) for t in times])
-        budget_now = self._time_budget_frames.get(int(level))
+        base_mastered = int(sum(1 for x in tail if x)) == window
 
-        budget_candidate = int(max(1, int(round(mean_frames))))
-        min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
-        budget_candidate = int(max(min_frames, budget_candidate))
-
-        if budget_now is None:
-            self._time_budget_frames[int(level)] = int(budget_candidate)
+        if not base_mastered:
+            # Falling below base mastery: disable time budgets and require
+            # re-mastering before we re-enable time goals.
+            self._time_budget_frames.pop(lvl, None)
+            self._time_budget_spawns.pop(lvl, None)
+            self._time_k.pop(lvl, None)
+            if lvl in self._time_success_histories:
+                self._time_success_histories[lvl].clear()
             return
 
-        if budget_candidate >= int(budget_now):
+        frames_samples = list(self._time_samples.get(lvl, deque()))
+        spawns_samples = list(self._time_samples_spawns.get(lvl, deque()))
+        if not frames_samples and not spawns_samples:
             return
+
+        # Initialize budgets on first mastery.
+        if lvl not in self._time_budget_frames and frames_samples:
+            mean_frames = float(np.mean(np.asarray(frames_samples, dtype=np.float64)))
+            budget_init = int(max(1, int(round(mean_frames))))
+            min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
+            self._time_budget_frames[lvl] = int(max(min_frames, budget_init))
+        if lvl not in self._time_budget_spawns and spawns_samples:
+            mean_spawns = float(np.mean(np.asarray(spawns_samples, dtype=np.float64)))
+            budget_init = int(max(1, int(round(mean_spawns))))
+            self._time_budget_spawns[lvl] = int(max(1, budget_init))
+
+        if lvl not in self._time_k:
+            self._time_k[lvl] = 1
+            if lvl in self._time_success_histories:
+                self._time_success_histories[lvl].clear()
+            return
+
+        # Tighten budgets when time-goal success exceeds the current time target.
+        k = int(max(1, min(self._time_max_k, int(self._time_k.get(lvl, 1)))))
+        target = float(1.0 - math.exp(-float(k)))
+        if self._sigmas <= 0.0:
+            return
+        n = int(confidence_window_size(target=target, sigmas=float(self._sigmas)))
+        hist_time = self._time_success_histories.get(lvl)
+        if not hist_time or len(hist_time) < n:
+            return
+        tail_time = list(hist_time)[-n:]
+        successes = int(sum(1 for x in tail_time if x))
+        lb = wilson_lower_bound(successes=successes, n=int(n), sigmas=float(self._sigmas))
+        if not bool(lb > target):
+            return
+
+        # Compute a capped drop based on MAD of observed successful clear times.
         drop_frac = float(getattr(cfg, "time_budget_max_drop_fraction_of_mad", 0.1) or 0.1)
-        min_drop = int(max(1, int(getattr(cfg, "time_budget_min_drop_frames", 1) or 1)))
-        max_drop = int(max(min_drop, int(round(float(mad_frames) * float(drop_frac)))))
-        new_budget = int(max(budget_candidate, int(budget_now) - max_drop))
-        self._time_budget_frames[int(level)] = int(max(min_frames, new_budget))
+        min_drop_frames = int(max(1, int(getattr(cfg, "time_budget_min_drop_frames", 1) or 1)))
+        mad_frames = _mad([float(t) for t in frames_samples]) if frames_samples else 0.0
+        max_drop_frames = int(max(min_drop_frames, int(round(float(mad_frames) * float(drop_frac)))))
+
+        if lvl in self._time_budget_frames and frames_samples:
+            cur_budget = int(self._time_budget_frames[lvl])
+            new_budget = int(max(1, cur_budget - max_drop_frames))
+            min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
+            self._time_budget_frames[lvl] = int(max(min_frames, new_budget))
+
+        if lvl in self._time_budget_spawns and spawns_samples:
+            cur_budget = int(self._time_budget_spawns[lvl])
+            self._time_budget_spawns[lvl] = int(max(1, cur_budget - 1))
+
+        if int(self._time_k.get(lvl, 1)) < int(self._time_max_k):
+            self._time_k[lvl] = int(k) + 1
+        hist_time.clear()
 
     def success_rate(self, level: int) -> float:
         hist = self._histories.get(int(level))
@@ -395,6 +492,10 @@ class ScriptedCurriculum:
         if not lower:
             return cur
         return int(rng.choice(lower))
+
+    def stage_token_for_level(self, level: int) -> int:
+        # The linear curriculum has one stage per level.
+        return int(level)
 
     def snapshot(self) -> Dict[str, Any]:
         cur = int(self.current_level)
@@ -422,11 +523,23 @@ class ScriptedCurriculum:
         budget = self._time_budget_frames.get(cur)
         if budget is not None:
             out["time_budget_frames"] = int(budget)
+        budget_spawns = self._time_budget_spawns.get(cur)
+        if budget_spawns is not None:
+            out["time_budget_spawns"] = int(budget_spawns)
+        k = self._time_k.get(cur)
+        if k is not None:
+            out["time_k"] = int(k)
+            out["time_target"] = float(1.0 - math.exp(-float(int(k))))
         times = self._time_samples.get(cur)
         if times:
             times_list = [float(t) for t in list(times)]
             out["time_mean_frames"] = float(np.mean(np.asarray(times_list, dtype=np.float64)))
             out["time_mad_frames"] = float(_mad(times_list))
+        spawns = self._time_samples_spawns.get(cur)
+        if spawns:
+            spawns_list = [float(t) for t in list(spawns)]
+            out["time_mean_spawns"] = float(np.mean(np.asarray(spawns_list, dtype=np.float64)))
+            out["time_mad_spawns"] = float(_mad(spawns_list))
         return out
 
 
@@ -454,12 +567,21 @@ class LnHopBackCurriculum:
 
     def __init__(self, cfg: CurriculumConfig) -> None:
         self.cfg = cfg
+        # Base objective success (ignores time budgets).
         self._histories: Dict[int, Deque[bool]] = {}
         self._episodes_total: Dict[int, int] = {}
+        # Stage-local histories (fresh stats each time we revisit a level with a
+        # different threshold).
+        self._stage_histories: Dict[int, Deque[bool]] = {}
+        self._stage_episodes_total: Dict[int, int] = {}
         self._stages: List[_LnStage] = self._build_stages()
         self._stage_idx = 0
         self._time_samples: Dict[int, Deque[int]] = {}
+        self._time_samples_spawns: Dict[int, Deque[int]] = {}
         self._time_budget_frames: Dict[int, int] = {}
+        self._time_budget_spawns: Dict[int, int] = {}
+        self._time_success_histories: Dict[int, Deque[bool]] = {}
+        self._time_k: Dict[int, int] = {}
 
         self._sigmas = float(max(0.0, float(getattr(cfg, "confidence_sigmas", 0.0) or 0.0)))
         if self._sigmas > 0.0:
@@ -480,6 +602,14 @@ class LnHopBackCurriculum:
         )
         self._history_maxlen = int(max(1, self._max_stage_window, self._mastery_window))
         self._time_window = int(max(1, int(getattr(cfg, "time_budget_time_window", 128) or 128)))
+        self._time_max_k = int(max(1, int(getattr(cfg, "time_budget_max_k", 3) or 3)))
+        time_targets = [float(1.0 - math.exp(-float(k))) for k in range(1, self._time_max_k + 1)]
+        if self._sigmas > 0.0:
+            self._time_success_maxlen = int(
+                max(confidence_window_size(target=t, sigmas=self._sigmas) for t in time_targets)
+            )
+        else:
+            self._time_success_maxlen = int(max(1, int(cfg.window_episodes)))
 
     def _build_stages(self) -> List[_LnStage]:
         start = int(self.cfg.start_level)
@@ -511,6 +641,11 @@ class LnHopBackCurriculum:
     def stage_count(self) -> int:
         return int(len(self._stages))
 
+    def stage_token_for_level(self, level: int) -> int:
+        # The ln-hop-back curriculum's "stage" is the current stage index.
+        del level
+        return int(self._stage_idx)
+
     def _history(self, level: int) -> Deque[bool]:
         lvl = int(level)
         if lvl not in self._histories:
@@ -518,14 +653,36 @@ class LnHopBackCurriculum:
             self._episodes_total[lvl] = 0
         return self._histories[lvl]
 
+    def _stage_history(self, stage_idx: int) -> Deque[bool]:
+        sidx = int(stage_idx)
+        if sidx not in self._stage_histories:
+            self._stage_histories[sidx] = deque(maxlen=int(self._max_stage_window))
+            self._stage_episodes_total[sidx] = 0
+        return self._stage_histories[sidx]
+
     def _times(self, level: int) -> Deque[int]:
         lvl = int(level)
         if lvl not in self._time_samples:
             self._time_samples[lvl] = deque(maxlen=int(self._time_window))
         return self._time_samples[lvl]
 
+    def _times_spawns(self, level: int) -> Deque[int]:
+        lvl = int(level)
+        if lvl not in self._time_samples_spawns:
+            self._time_samples_spawns[lvl] = deque(maxlen=int(self._time_window))
+        return self._time_samples_spawns[lvl]
+
+    def _time_success_history(self, level: int) -> Deque[bool]:
+        lvl = int(level)
+        if lvl not in self._time_success_histories:
+            self._time_success_histories[lvl] = deque(maxlen=int(self._time_success_maxlen))
+        return self._time_success_histories[lvl]
+
     def task_max_frames_for_level(self, level: int) -> Optional[int]:
         return self._time_budget_frames.get(int(level))
+
+    def task_max_spawns_for_level(self, level: int) -> Optional[int]:
+        return self._time_budget_spawns.get(int(level))
 
     def note_episode(
         self,
@@ -533,45 +690,78 @@ class LnHopBackCurriculum:
         level: int,
         success: bool,
         episode_frames: Optional[int] = None,
+        episode_spawns: Optional[int] = None,
         objective_met: Optional[bool] = None,
+        stage_token: Optional[object] = None,
     ) -> bool:
         lvl = int(level)
+        base_success = bool(success if objective_met is None else objective_met)
         hist = self._history(lvl)
-        hist.append(bool(success))
+        hist.append(bool(base_success))
         self._episodes_total[lvl] = int(self._episodes_total.get(lvl, 0)) + 1
 
-        if objective_met is None:
-            objective_met = bool(success)
-        if objective_met and episode_frames is not None:
+        # Record stage-local stats (use objective_met if provided, otherwise fall
+        # back to success).
+        if stage_token is None:
+            stage_idx = int(self._stage_idx)
+        else:
+            try:
+                stage_idx = int(stage_token)  # type: ignore[arg-type]
+            except Exception:
+                stage_idx = int(self._stage_idx)
+        stage_hist = self._stage_history(stage_idx)
+        stage_hist.append(bool(base_success))
+        self._stage_episodes_total[stage_idx] = int(self._stage_episodes_total.get(stage_idx, 0)) + 1
+
+        timed_success = bool(success)
+        if base_success and episode_frames is not None:
             try:
                 frames_i = int(episode_frames)
             except Exception:
                 frames_i = 0
             if frames_i > 0:
                 self._times(lvl).append(frames_i)
-                self._maybe_update_time_budget(lvl)
+        if base_success and episode_spawns is not None:
+            try:
+                spawns_i = int(episode_spawns)
+            except Exception:
+                spawns_i = 0
+            if spawns_i >= 0:
+                self._times_spawns(lvl).append(max(0, spawns_i))
+
+        if int(lvl) in self._time_budget_frames or int(lvl) in self._time_budget_spawns:
+            self._time_success_history(lvl).append(bool(timed_success))
+
+        self._maybe_update_time_budget(lvl)
 
         # Only advance when the active stage level completes.
         if lvl != self.current_level:
             return False
         if self._stage_idx >= len(self._stages) - 1:
             return False
+        if int(stage_idx) != int(self._stage_idx):
+            # Episode belonged to a previous stage; it should not influence
+            # advancement of the current stage.
+            return False
 
         stage = self._stages[self._stage_idx]
-        if self._meets_confidence_target(lvl, float(stage.threshold)):
+        if self._meets_confidence_target(int(stage_idx), float(stage.threshold)):
             self._stage_idx += 1
             return True
         return False
 
-    def _meets_confidence_target(self, level: int, target: float) -> bool:
+    def _meets_confidence_target(self, stage_idx: int, target: float) -> bool:
         t = float(target)
         if self._sigmas <= 0.0:
-            if int(self._episodes_total.get(int(level), 0)) < int(self.cfg.min_episodes):
+            if int(self._stage_episodes_total.get(int(stage_idx), 0)) < int(self.cfg.min_episodes):
                 return False
-            return self.success_rate(int(level)) >= t
+            hist = self._stage_histories.get(int(stage_idx))
+            if not hist:
+                return False
+            return (float(sum(1 for x in hist if x)) / float(len(hist))) >= t
 
         window_size = confidence_window_size(target=t, sigmas=float(self._sigmas))
-        hist = self._histories.get(int(level))
+        hist = self._stage_histories.get(int(stage_idx))
         if not hist:
             return False
         tail = list(hist)[-int(window_size):]
@@ -589,37 +779,75 @@ class LnHopBackCurriculum:
         mastery_target = float(getattr(cfg, "time_budget_mastery_target", 0.99) or 0.99)
         if mastery_sigmas <= 0.0 or mastery_target <= 0.0:
             return
+        lvl = int(level)
         window = int(max(1, int(self._mastery_window)))
-        hist = self._histories.get(int(level))
-        if not hist:
+        hist = self._histories.get(lvl)
+        if not hist or len(hist) < window:
             return
         tail = list(hist)[-window:]
-        if len(tail) < window:
-            return
-        if int(sum(1 for x in tail if x)) != window:
-            return
-        times = list(self._time_samples.get(int(level), deque()))
-        if not times:
-            return
-        mean_frames = float(np.mean(np.asarray(times, dtype=np.float64)))
-        mad_frames = _mad([float(t) for t in times])
-        budget_now = self._time_budget_frames.get(int(level))
+        base_mastered = int(sum(1 for x in tail if x)) == window
 
-        budget_candidate = int(max(1, int(round(mean_frames))))
-        min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
-        budget_candidate = int(max(min_frames, budget_candidate))
-
-        if budget_now is None:
-            self._time_budget_frames[int(level)] = int(budget_candidate)
+        if not base_mastered:
+            self._time_budget_frames.pop(lvl, None)
+            self._time_budget_spawns.pop(lvl, None)
+            self._time_k.pop(lvl, None)
+            if lvl in self._time_success_histories:
+                self._time_success_histories[lvl].clear()
             return
 
-        if budget_candidate >= int(budget_now):
+        frames_samples = list(self._time_samples.get(lvl, deque()))
+        spawns_samples = list(self._time_samples_spawns.get(lvl, deque()))
+        if not frames_samples and not spawns_samples:
             return
+
+        if lvl not in self._time_budget_frames and frames_samples:
+            mean_frames = float(np.mean(np.asarray(frames_samples, dtype=np.float64)))
+            budget_init = int(max(1, int(round(mean_frames))))
+            min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
+            self._time_budget_frames[lvl] = int(max(min_frames, budget_init))
+        if lvl not in self._time_budget_spawns and spawns_samples:
+            mean_spawns = float(np.mean(np.asarray(spawns_samples, dtype=np.float64)))
+            budget_init = int(max(1, int(round(mean_spawns))))
+            self._time_budget_spawns[lvl] = int(max(1, budget_init))
+
+        if lvl not in self._time_k:
+            self._time_k[lvl] = 1
+            if lvl in self._time_success_histories:
+                self._time_success_histories[lvl].clear()
+            return
+
+        k = int(max(1, min(self._time_max_k, int(self._time_k.get(lvl, 1)))))
+        target = float(1.0 - math.exp(-float(k)))
+        if self._sigmas <= 0.0:
+            return
+        n = int(confidence_window_size(target=target, sigmas=float(self._sigmas)))
+        hist_time = self._time_success_histories.get(lvl)
+        if not hist_time or len(hist_time) < n:
+            return
+        tail_time = list(hist_time)[-n:]
+        successes = int(sum(1 for x in tail_time if x))
+        lb = wilson_lower_bound(successes=successes, n=int(n), sigmas=float(self._sigmas))
+        if not bool(lb > target):
+            return
+
         drop_frac = float(getattr(cfg, "time_budget_max_drop_fraction_of_mad", 0.1) or 0.1)
-        min_drop = int(max(1, int(getattr(cfg, "time_budget_min_drop_frames", 1) or 1)))
-        max_drop = int(max(min_drop, int(round(float(mad_frames) * float(drop_frac)))))
-        new_budget = int(max(budget_candidate, int(budget_now) - max_drop))
-        self._time_budget_frames[int(level)] = int(max(min_frames, new_budget))
+        min_drop_frames = int(max(1, int(getattr(cfg, "time_budget_min_drop_frames", 1) or 1)))
+        mad_frames = _mad([float(t) for t in frames_samples]) if frames_samples else 0.0
+        max_drop_frames = int(max(min_drop_frames, int(round(float(mad_frames) * float(drop_frac)))))
+
+        if lvl in self._time_budget_frames and frames_samples:
+            cur_budget = int(self._time_budget_frames[lvl])
+            new_budget = int(max(1, cur_budget - max_drop_frames))
+            min_frames = int(max(1, int(getattr(cfg, "time_budget_min_frames", 1) or 1)))
+            self._time_budget_frames[lvl] = int(max(min_frames, new_budget))
+
+        if lvl in self._time_budget_spawns and spawns_samples:
+            cur_budget = int(self._time_budget_spawns[lvl])
+            self._time_budget_spawns[lvl] = int(max(1, cur_budget - 1))
+
+        if int(self._time_k.get(lvl, 1)) < int(self._time_max_k):
+            self._time_k[lvl] = int(k) + 1
+        hist_time.clear()
 
     def success_rate(self, level: int) -> float:
         hist = self._histories.get(int(level))
@@ -637,7 +865,7 @@ class LnHopBackCurriculum:
     def snapshot(self) -> Dict[str, Any]:
         stage = self._stages[self._stage_idx]
         cur = int(stage.level)
-        hist = self._histories.get(cur)
+        hist = self._stage_histories.get(int(self._stage_idx))
         window_size = (
             confidence_window_size(target=float(stage.threshold), sigmas=float(self._sigmas))
             if self._sigmas > 0.0
@@ -657,7 +885,7 @@ class LnHopBackCurriculum:
             "window_successes": int(successes),
             "confidence_sigmas": float(self._sigmas),
             "confidence_lower_bound": float(lb),
-            "episodes_current_total": int(self.episodes_seen(cur)),
+            "episodes_current_total": int(self._stage_episodes_total.get(int(self._stage_idx), 0)),
             "start_level": int(self.cfg.start_level),
             "max_level": int(self.cfg.max_level),
             "stage_index": int(self._stage_idx),
@@ -668,11 +896,23 @@ class LnHopBackCurriculum:
         budget = self._time_budget_frames.get(cur)
         if budget is not None:
             out["time_budget_frames"] = int(budget)
+        budget_spawns = self._time_budget_spawns.get(cur)
+        if budget_spawns is not None:
+            out["time_budget_spawns"] = int(budget_spawns)
+        k = self._time_k.get(cur)
+        if k is not None:
+            out["time_k"] = int(k)
+            out["time_target"] = float(1.0 - math.exp(-float(int(k))))
         times = self._time_samples.get(cur)
         if times:
             times_list = [float(t) for t in list(times)]
             out["time_mean_frames"] = float(np.mean(np.asarray(times_list, dtype=np.float64)))
             out["time_mad_frames"] = float(_mad(times_list))
+        spawns = self._time_samples_spawns.get(cur)
+        if spawns:
+            spawns_list = [float(t) for t in list(spawns)]
+            out["time_mean_spawns"] = float(np.mean(np.asarray(spawns_list, dtype=np.float64)))
+            out["time_mad_spawns"] = float(_mad(spawns_list))
         return out
 
 
@@ -691,12 +931,35 @@ class CurriculumVecEnv:
         else:
             self._curriculum = ScriptedCurriculum(cfg)
         self._env_levels: List[int] = [int(cfg.start_level) for _ in range(self.num_envs)]
+        self._env_stage_tokens: List[object] = [0 for _ in range(self.num_envs)]
+        self._best_times = None
+        self._best_times_topk = int(max(1, int(getattr(cfg, "best_times_topk", 50) or 50)))
+        try:
+            from pathlib import Path
+
+            from training.diagnostics.best_times import BestTimesDB
+
+            db_path_raw = getattr(cfg, "best_times_db_path", None)
+            db_path = (
+                Path(str(db_path_raw)).expanduser()
+                if db_path_raw
+                else BestTimesDB.default_path()
+            )
+            self._best_times = BestTimesDB(db_path)
+        except Exception:
+            self._best_times = None
 
         if not hasattr(env, "set_attr"):
             raise TypeError("CurriculumVecEnv requires an env that supports `set_attr`.")
 
     def reset(self, *args: Any, **kwargs: Any):
         self._env_levels = [self._curriculum.sample_level(self._rng) for _ in range(self.num_envs)]
+        try:
+            self._env_stage_tokens = [
+                getattr(self._curriculum, "stage_token_for_level")(int(lvl)) for lvl in list(self._env_levels)
+            ]
+        except Exception:
+            self._env_stage_tokens = [0 for _ in range(self.num_envs)]
         self.env.set_attr("level", list(self._env_levels))
         self._set_task_budgets(self._env_levels)
         obs, infos = self.env.reset(*args, **kwargs)
@@ -712,7 +975,9 @@ class CurriculumVecEnv:
         trunc = np.asarray(truncated, dtype=bool).reshape(self.num_envs)
 
         levels_this_step = list(self._env_levels)
+        stage_tokens_this_step = list(self._env_stage_tokens)
         next_levels = list(self._env_levels)
+        next_stage_tokens = list(self._env_stage_tokens)
         updated = False
         advanced_from: Optional[int] = None
         advanced_to: Optional[int] = None
@@ -733,21 +998,48 @@ class CurriculumVecEnv:
                     episode_frames = int(episode.get("l")) if episode.get("l") is not None else None
                 except Exception:
                     episode_frames = None
+            episode_spawns: Optional[int] = None
+            if "task/spawns_used" in info:
+                try:
+                    episode_spawns = int(info.get("task/spawns_used")) if info.get("task/spawns_used") is not None else None
+                except Exception:
+                    episode_spawns = None
+            if self._best_times is not None and objective_met:
+                rng_seed = info.get("rng_seed")
+                frames_used = info.get("task/frames_used", episode_frames)
+                spawns_used = info.get("task/spawns_used", 0)
+                try:
+                    self._best_times.record_clear(
+                        level=int(levels_this_step[i]),
+                        rng_seed=rng_seed,
+                        frames=int(frames_used or 0),
+                        spawns=int(spawns_used or 0),
+                        run_id=str(getattr(self.cfg, "run_id", "") or ""),
+                    )
+                except Exception:
+                    pass
             prev_level = int(getattr(self._curriculum, "current_level", self.cfg.start_level))
             advanced = self._curriculum.note_episode(
                 level=int(levels_this_step[i]),
                 success=success,
                 episode_frames=episode_frames,
+                episode_spawns=episode_spawns,
                 objective_met=objective_met,
+                stage_token=stage_tokens_this_step[i] if i < len(stage_tokens_this_step) else None,
             )
             if advanced and advanced_to is None:
                 advanced_from = prev_level
                 advanced_to = int(getattr(self._curriculum, "current_level", prev_level))
             next_levels[i] = int(self._curriculum.sample_level(self._rng))
+            try:
+                next_stage_tokens[i] = getattr(self._curriculum, "stage_token_for_level")(int(next_levels[i]))
+            except Exception:
+                next_stage_tokens[i] = stage_tokens_this_step[i] if i < len(stage_tokens_this_step) else 0
             updated = True
 
         if updated:
             self._env_levels = list(next_levels)
+            self._env_stage_tokens = list(next_stage_tokens)
             self.env.set_attr("level", list(self._env_levels))
             self._set_task_budgets(self._env_levels)
 
@@ -760,6 +1052,15 @@ class CurriculumVecEnv:
         )
         return obs, rewards, terminated, truncated, infos_list
 
+    def close(self) -> None:
+        if self._best_times is not None:
+            try:
+                self._best_times.close()
+            except Exception:
+                pass
+        if hasattr(self.env, "close"):
+            self.env.close()
+
     def _set_task_budgets(self, levels: List[int]) -> None:
         cfg = self.cfg
         frames_default = getattr(cfg, "task_max_frames", None)
@@ -768,6 +1069,7 @@ class CurriculumVecEnv:
         spawns_by_level = getattr(cfg, "task_max_spawns_by_level", {}) or {}
 
         dyn_frames_fn = getattr(self._curriculum, "task_max_frames_for_level", None)
+        dyn_spawns_fn = getattr(self._curriculum, "task_max_spawns_for_level", None)
 
         if (
             frames_default is None
@@ -775,6 +1077,7 @@ class CurriculumVecEnv:
             and spawns_default is None
             and not spawns_by_level
             and not callable(dyn_frames_fn)
+            and not callable(dyn_spawns_fn)
         ):
             return
 
@@ -795,16 +1098,41 @@ class CurriculumVecEnv:
                     except Exception:
                         dyn_val = None
                 if dyn_val is not None:
-                    frames_values.append(int(dyn_val))
+                    v = int(dyn_val)
+                    if self._best_times is not None:
+                        try:
+                            floor = self._best_times.best_frames_floor(level=int(lvl))
+                        except Exception:
+                            floor = None
+                        if floor is not None:
+                            v = max(int(v), int(floor))
+                    frames_values.append(int(v))
                 else:
                     frames_values.append(_resolve(frames_default, frames_by_level, int(lvl)))
             self.env.set_attr("task_max_frames", frames_values)
         except Exception:
             pass
         try:
-            spawns_values = [
-                _resolve(spawns_default, spawns_by_level, int(lvl)) for lvl in list(levels)
-            ]
+            spawns_values = []
+            for lvl in list(levels):
+                dyn_val: Optional[int] = None
+                if callable(dyn_spawns_fn):
+                    try:
+                        dyn_val = dyn_spawns_fn(int(lvl))
+                    except Exception:
+                        dyn_val = None
+                if dyn_val is not None:
+                    v = int(dyn_val)
+                    if self._best_times is not None:
+                        try:
+                            floor = self._best_times.best_spawns_floor(level=int(lvl))
+                        except Exception:
+                            floor = None
+                        if floor is not None:
+                            v = max(int(v), int(floor))
+                    spawns_values.append(int(v))
+                else:
+                    spawns_values.append(_resolve(spawns_default, spawns_by_level, int(lvl)))
             self.env.set_attr("task_max_spawns", spawns_values)
         except Exception:
             pass
@@ -830,8 +1158,13 @@ class CurriculumVecEnv:
         confidence_lower_bound = snap.get("confidence_lower_bound")
         window_successes = snap.get("window_successes")
         time_budget_frames = snap.get("time_budget_frames")
+        time_budget_spawns = snap.get("time_budget_spawns")
         time_mean_frames = snap.get("time_mean_frames")
         time_mad_frames = snap.get("time_mad_frames")
+        time_mean_spawns = snap.get("time_mean_spawns")
+        time_mad_spawns = snap.get("time_mad_spawns")
+        time_k = snap.get("time_k")
+        time_target = snap.get("time_target")
         stage_idx = snap.get("stage_index")
         stage_count = snap.get("stage_count")
         probe_threshold = snap.get("probe_threshold")
@@ -878,6 +1211,11 @@ class CurriculumVecEnv:
                     info["curriculum/time_budget_frames"] = int(time_budget_frames)
                 except Exception:
                     pass
+            if time_budget_spawns is not None:
+                try:
+                    info["curriculum/time_budget_spawns"] = int(time_budget_spawns)
+                except Exception:
+                    pass
             if time_mean_frames is not None:
                 try:
                     info["curriculum/time_mean_frames"] = float(time_mean_frames)
@@ -886,6 +1224,26 @@ class CurriculumVecEnv:
             if time_mad_frames is not None:
                 try:
                     info["curriculum/time_mad_frames"] = float(time_mad_frames)
+                except Exception:
+                    pass
+            if time_mean_spawns is not None:
+                try:
+                    info["curriculum/time_mean_spawns"] = float(time_mean_spawns)
+                except Exception:
+                    pass
+            if time_mad_spawns is not None:
+                try:
+                    info["curriculum/time_mad_spawns"] = float(time_mad_spawns)
+                except Exception:
+                    pass
+            if time_k is not None:
+                try:
+                    info["curriculum/time_k"] = int(time_k)
+                except Exception:
+                    pass
+            if time_target is not None:
+                try:
+                    info["curriculum/time_target"] = float(time_target)
                 except Exception:
                     pass
             if stage_idx is not None:

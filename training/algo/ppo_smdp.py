@@ -779,6 +779,9 @@ class SMDPPPOAdapter(AlgoAdapter):
         time_budget_frames = self._extract_int(source.get("curriculum/time_budget_frames"))
         if time_budget_frames is not None:
             snapshot["time_budget_frames"] = int(time_budget_frames)
+        time_budget_spawns = self._extract_int(source.get("curriculum/time_budget_spawns"))
+        if time_budget_spawns is not None:
+            snapshot["time_budget_spawns"] = int(time_budget_spawns)
         time_mean_frames = source.get("curriculum/time_mean_frames")
         if time_mean_frames is not None:
             try:
@@ -789,6 +792,27 @@ class SMDPPPOAdapter(AlgoAdapter):
         if time_mad_frames is not None:
             try:
                 snapshot["time_mad_frames"] = float(time_mad_frames)
+            except Exception:
+                pass
+        time_mean_spawns = source.get("curriculum/time_mean_spawns")
+        if time_mean_spawns is not None:
+            try:
+                snapshot["time_mean_spawns"] = float(time_mean_spawns)
+            except Exception:
+                pass
+        time_mad_spawns = source.get("curriculum/time_mad_spawns")
+        if time_mad_spawns is not None:
+            try:
+                snapshot["time_mad_spawns"] = float(time_mad_spawns)
+            except Exception:
+                pass
+        time_k = self._extract_int(source.get("curriculum/time_k"))
+        if time_k is not None:
+            snapshot["time_k"] = int(time_k)
+        time_target = source.get("curriculum/time_target")
+        if time_target is not None:
+            try:
+                snapshot["time_target"] = float(time_target)
             except Exception:
                 pass
 
@@ -866,12 +890,27 @@ class SMDPPPOAdapter(AlgoAdapter):
             time_budget_frames = snapshot.get("time_budget_frames")
             if time_budget_frames is not None:
                 out["curriculum/time_budget_frames"] = float(int(time_budget_frames))
+            time_budget_spawns = snapshot.get("time_budget_spawns")
+            if time_budget_spawns is not None:
+                out["curriculum/time_budget_spawns"] = float(int(time_budget_spawns))
             time_mean = snapshot.get("time_mean_frames")
             if time_mean is not None:
                 out["curriculum/time_mean_frames"] = float(time_mean)
             time_mad = snapshot.get("time_mad_frames")
             if time_mad is not None:
                 out["curriculum/time_mad_frames"] = float(time_mad)
+            time_mean_spawns = snapshot.get("time_mean_spawns")
+            if time_mean_spawns is not None:
+                out["curriculum/time_mean_spawns"] = float(time_mean_spawns)
+            time_mad_spawns = snapshot.get("time_mad_spawns")
+            if time_mad_spawns is not None:
+                out["curriculum/time_mad_spawns"] = float(time_mad_spawns)
+            time_k = snapshot.get("time_k")
+            if time_k is not None:
+                out["curriculum/time_k"] = float(int(time_k))
+            time_target = snapshot.get("time_target")
+            if time_target is not None:
+                out["curriculum/time_target"] = float(time_target)
         except Exception:
             return out
 

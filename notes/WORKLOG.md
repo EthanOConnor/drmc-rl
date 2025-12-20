@@ -386,3 +386,11 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Added “time budget after mastery” plumbing: once a level hits a perfect-streak window long enough to certify mastery at `time_budget_mastery_sigmas/time_budget_mastery_target`, the curriculum begins setting a per-level `task_max_frames` that starts at mean clear time and tightens gradually with a MAD-capped drop. Exposed mean/MAD/budget via curriculum snapshots (`training/envs/curriculum.py`).
 - Surfaced curriculum Wilson LB + time budget/mean/MAD in both the Rich TUI and debug TUI, and added `tools/report_curriculum.py --confidence-table` to print expected window sizes / requirements (`training/ui/tui.py`, `training/ui/runner_debug_tui.py`, `training/algo/ppo_smdp.py`, `tools/report_curriculum.py`).
 - Hardened `DrMarioPlacementEnv` decision-context building to treat missing `_state_cache` as a backend error and return `truncated=True` (instead of raising), improving `AsyncVectorEnv` robustness under high env counts (`envs/retro/placement_env.py`).
+
+## 2025-12-20 – Codex CLI – Stage-Local Hop-Back Stats + Persistent Best Times + Time Goal Demotion
+
+- Made `ln_hop_back` stage tracking stage-local: when revisiting a level with a tighter threshold, success-window stats are now fresh (tracked per stage token/index), avoiding contamination from earlier easier passes (`training/envs/curriculum.py`).
+- Added a persistent sqlite best-times DB (`data/best_times.sqlite3`, git-ignored) to track per-(level, rng_seed) best frames/spawns across runs, plus a small reporting script (`tools/report_best_times.py`).
+- Extended time-goal logic: once base mastery is achieved, time budgets begin tightening against an increasing `1-exp(-k)` success target; if base-objective mastery drops, time goals are cleared and must be re-earned. Exposed `time_k/time_target` and spawn stats in curriculum info and UIs (`training/envs/curriculum.py`, `training/ui/tui.py`, `training/ui/runner_debug_tui.py`, `training/algo/ppo_smdp.py`).
+- Removed a long-standing skipped test by replacing the optional `mlx.core` dependency with a deterministic fake-MLX module in tests, covering both `_mlx_set_row` code paths (`tests/test_discounting.py`).
+- Made `--ui tui` shutdown on Ctrl+C cleanly (no traceback spam) by catching `KeyboardInterrupt` around training (`training/run.py`).

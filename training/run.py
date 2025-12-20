@@ -382,20 +382,32 @@ def main(argv: Any = None) -> None:
                     env = make_vec_env(cfg)
                     adapter = build_adapter(cfg, env, logger, event_bus, device)
                     with tui:
-                        adapter.train_forever()
+                        try:
+                            adapter.train_forever()
+                        except KeyboardInterrupt:
+                            tui.set_status("Stopping (Ctrl+C)...")
                 else:
                     env = make_vec_env(cfg)
                     adapter = build_adapter(cfg, env, logger, event_bus, device)
-                    adapter.train_forever()
+                    try:
+                        adapter.train_forever()
+                    except KeyboardInterrupt:
+                        pass
             except ImportError as e:
                 print(f"Warning: TUI import failed ({e}), falling back to headless mode")
                 env = make_vec_env(cfg)
                 adapter = build_adapter(cfg, env, logger, event_bus, device)
-                adapter.train_forever()
+                try:
+                    adapter.train_forever()
+                except KeyboardInterrupt:
+                    pass
         else:
             env = make_vec_env(cfg)
             adapter = build_adapter(cfg, env, logger, event_bus, device)
-            adapter.train_forever()
+            try:
+                adapter.train_forever()
+            except KeyboardInterrupt:
+                pass
     finally:
         if adapter is not None and hasattr(adapter, "close"):
             adapter.close()
