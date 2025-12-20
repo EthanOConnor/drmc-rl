@@ -394,3 +394,4 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Extended time-goal logic: once base mastery is achieved, time budgets begin tightening against an increasing `1-exp(-k)` success target; if base-objective mastery drops, time goals are cleared and must be re-earned. Exposed `time_k/time_target` and spawn stats in curriculum info and UIs (`training/envs/curriculum.py`, `training/ui/tui.py`, `training/ui/runner_debug_tui.py`, `training/algo/ppo_smdp.py`).
 - Removed a long-standing skipped test by replacing the optional `mlx.core` dependency with a deterministic fake-MLX module in tests, covering both `_mlx_set_row` code paths (`tests/test_discounting.py`).
 - Made `--ui tui` shutdown on Ctrl+C cleanly (no traceback spam) by catching `KeyboardInterrupt` around training (`training/run.py`).
+- Ignored best-times sqlite WAL/SHM sidecar files and local scratch directories (`notes/human_notes/`, `tests/user_testing/`) in `.gitignore`.

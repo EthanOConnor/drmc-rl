@@ -19,7 +19,7 @@ wandb/
 tensorboard/
 data/datasets/
 data/states/
-data/best_times.sqlite3
+data/best_times.sqlite3*
 data/pose_mismatches*.jsonl
 retro-data/
 retro/"*"
@@ -31,3 +31,5 @@ out_frames/
 runs/
 cores/
 checkpoints/
+notes/human_notes/
+tests/user_testing/
