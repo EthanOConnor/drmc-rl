@@ -4,9 +4,10 @@ Reinforcement learning environment, training stack, and evaluation harness for N
 
 What you can do here today:
 - Run macOS/Linux/Windows stand‑up steps to smoke‑test Stable‑Retro + libretro NES core.
-- Use the provided Gymnasium‑style wrappers (skeleton) with pixel or state‑tensor observations.
-- Train with Sample Factory configs (skeleton) and evaluate distributions of time‑to‑clear.
-- Track deterministic seeds via savestates + frame‐offset registry for reproducible studies.
+- Train the placement policy with `ppo_smdp` using the headless `cpp-engine` backend (fast) or libretro (parity/debug).
+- Scale training with `AsyncVectorEnv` (`--vectorization async`) for near-linear multi-core throughput.
+- Use the unified runner with a Rich TUI (`--ui tui`) or interactive debug UI (`--ui debug`).
+- Track reproducible RNG seeds and best-known clear times per (level, seed) across runs.
 
 Legal: You must use your own legally‑obtained ROM. ROMs are not included or distributed.
 
@@ -43,7 +44,8 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
 
 ### Backend selection
 
-- libretro (default): `DRMARIO_BACKEND=libretro` (or omit, defaults here). Requires a libretro core (`DRMARIO_CORE_PATH`) and ROM (`DRMARIO_ROM_PATH`). QuickNES and Mesen cores are known good options.
+- cpp-engine (recommended for training throughput): `DRMARIO_BACKEND=cpp-engine`. Requires building `game_engine/drmario_engine` (see `make -C game_engine`). No ROM required.
+- libretro: `DRMARIO_BACKEND=libretro`. Requires a libretro core (`DRMARIO_CORE_PATH`) and ROM (`DRMARIO_ROM_PATH`). QuickNES and Mesen cores are known good options.
 - Top-outs are detected (virus count jumps to menu) and incur a penalty; the env automatically returns to level 0 using configurable START/LEFT sequences (`--start-presses`, `--start-level-taps`, etc.).
 - stable-retro: `DRMARIO_BACKEND=stable-retro`. Requires Stable-Retro install and imported game assets.
 - mock: `DRMARIO_BACKEND=mock` for deterministic mock dynamics (CI / docs).
@@ -78,17 +80,20 @@ If you need me to fetch docs or install packages, I can request elevated network
 
 ## Status
 
-- Code: Skeletons created for env wrapper, evaluator head, policy net, eval harness.
-- Docs: DESIGN, RNG plan, and CONTRIBUTING added. Open questions live in `DESIGN_DISCUSSIONS.md`.
-- Next: Connect to Stable‑Retro, implement state extraction, finalize action mapping, and add tests.
+- Code: multi-env `ppo_smdp` placement training, Rich TUI/debug UI, and a headless C++ engine backend for throughput.
+- Docs: design notes + RAM/state specs + placement-policy/training docs.
+- Next: tighten engine parity, add more eval harness coverage, and extend to vs/2P play.
 
 ## Tools
 
 - Dump state tensors: `python tools/dump_ram_and_state.py --frames 120 --mode state`
 - Visualize planes: `from tools.ram_visualizer import grid_show` (see docs/RAM_TO_STATE.md)
 - Unified runner (board + playback controls in terminal):
-  - `python -m training.run --algo ppo_smdp --ui debug --env-id DrMarioPlacementEnv-v0 --backend libretro --core quicknes --rom-path /path/to/DrMario.nes --num_envs 1`
+  - `python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug --env-id DrMarioPlacementEnv-v0 --backend libretro --core quicknes --rom-path /path/to/DrMario.nes --num_envs 1`
   - Controls: Space pause/run, `n` step, `f` +60 steps, `+/-` speed, `0` max, `q` quit
+- Multi-env scaling benchmark: `python tools/bench_multienv.py --backend cpp-engine --vectorization both --num-envs 1,2,4,8,16`
+- Curriculum confidence table + reporting: `python tools/report_curriculum.py --confidence-table`
+- Best-known clear times (sqlite): `python tools/report_best_times.py --db data/best_times.sqlite3` (override via `DRMARIO_BEST_TIMES_DB`)
 - C++ engine demo TUI (frame-accurate demo playback + step controls):
   - Build: `make -C game_engine`
   - Run: `python tools/engine_demo_tui.py` (Space pause/run, `n` step, `+/-` speed, `0` max, `b` benchmark)

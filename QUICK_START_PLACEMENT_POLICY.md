@@ -6,20 +6,25 @@
 # Activate environment
 source .venv-py313/bin/activate
 
-# Install/update QuickNES core (macOS arm64)
-python tools/update_quicknes_core.py --force
-
-# Build the native reachability accelerator (required for practical training speed)
+# Build the native reachability accelerator (required for practical planning speed)
 python -m tools.build_reach_native
 
-# Train placement policy (unified runner + interactive board/debug UI)
+# Build the headless C++ engine (recommended for training throughput)
+make -C game_engine
+
+# Train placement policy (fast headless engine + multi-env + Rich TUI)
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui \
+  --backend cpp-engine --env-id DrMarioPlacementEnv-v0 --num_envs 16 --vectorization async
+
+# Debug against libretro (interactive board/debug UI; uses sync vectorization)
+# (Optional) Install/update QuickNES core (macOS arm64): `python tools/update_quicknes_core.py --force`
 python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
   --backend libretro --core quicknes --rom-path "legal_ROMs/Dr. Mario (Japan, USA) (rev0).nes" \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 
-# Note: `training/configs/smdp_ppo.yaml` enables a scripted curriculum by default
-# (starts at synthetic level -10: 0 viruses + "any match", then ramps through
-# -9..-4 match-count stages and -3..0 virus-count stages).
+# Note: `training/configs/smdp_ppo.yaml` enables the `ln_hop_back` curriculum by default
+# (starts at synthetic level -15: 0 viruses + "any match", then tightens earlier levels
+# as it introduces -14..-4 match-count stages and -3..0 virus-count stages).
 # Disable with: `--override curriculum.enabled=false`
 
 # Monitor training
@@ -61,7 +66,8 @@ print(f'✓ Logits shape: {logits.shape}, Value: {value.item():.2f}')
 
 3. **Start training**:
 ```bash
-python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless --num_envs 4 --total_steps 100000
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+  --backend cpp-engine --vectorization async --num_envs 8 --total_steps 100000
 ```
 
 ## Key Files
@@ -88,8 +94,9 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --override smdp_ppo.
 python -m training.run --cfg training/configs/smdp_ppo.yaml \
   --override smdp_ppo.lr=5e-4,smdp_ppo.gamma=0.99,smdp_ppo.entropy_coef=0.02
 
-# More environments for faster training
-python -m training.run --cfg training/configs/smdp_ppo.yaml --num_envs 32
+# More environments for faster training (recommended: async vectorization)
+python -m training.run --cfg training/configs/smdp_ppo.yaml \
+  --backend cpp-engine --vectorization async --num_envs 32
 
 # Select device
 python -m training.run --cfg training/configs/smdp_ppo.yaml --device cuda  # or mps, cpu
@@ -213,8 +220,8 @@ assert "spawn_id" in info
 # Ensure the native reachability helper is built (the Python reference planner is very slow).
 python -m tools.build_reach_native
 
-# More parallel environments
---num-envs 32
+# Use the C++ engine backend (fast) + async vectorization for multi-core scaling
+--backend cpp-engine --vectorization async --num-envs 32
 
 # Larger batches
 --decisions-per-update 1024

@@ -10,15 +10,15 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ### 1. Correctness
 
-- [ ] **Verify multi-instance isolation**
-  - [ ] Test: spawn 4 `CppEngineBackend` instances in same process
-  - [ ] Assert unique `_shm_file` paths, independent stepping
-  - [ ] Add `tests/test_cpp_backend_multienv.py`
+- [x] **Verify multi-instance isolation**
+  - [x] Test: spawn multiple `CppEngineBackend` instances in same process
+  - [x] Assert unique `_shm_file` paths, independent stepping
+  - [x] Added `tests/test_cpp_backend_multienv.py`
 
-- [ ] **Test vector env modes**
-  - [ ] `SyncVectorEnv` with `num_envs=4` (same process)
-  - [ ] `AsyncVectorEnv` with `num_envs=4` (worker processes)
-  - [ ] Assert clean shutdown, no SHM leaks
+- [x] **Test vector env modes**
+  - [ ] `SyncVectorEnv` with `num_envs=4` (same process) + leak checks (nice-to-have)
+  - [x] `AsyncVectorEnv` smoke test with `num_envs>=8` (worker processes)
+  - [x] Prefer robust shutdown paths for long async runs (force-terminate on close)
 
 ### 2. Performance
 
@@ -27,32 +27,32 @@ Technical backlog / roadmap. More detailed items than top-level docs.
   - [ ] Bypass `_refresh_ram_from_state()` + `build_state()`
   - [ ] Benchmark: expect 0.15ms → 0.03ms per step
 
-- [ ] **Batched stepping for macro actions**
-  - [ ] Add `step_frames(buttons, n)` that polls once for N frames
-  - [ ] Use for placement env (~30 frames per decision)
+- [x] **Batched stepping for macro actions**
+  - [x] Add `step_frames`/`run_until_decision` style batching in `cpp-engine` backend
+  - [x] Use for placement env (decision → lock → settle → next spawn)
 
-- [ ] **Measure async scaling**
-  - [ ] `wall_time(N envs async) / wall_time(1 env)`
-  - [ ] Target: >3x speedup at num_envs=4
+- [x] **Measure async scaling**
+  - [x] `tools/bench_multienv.py` reports fps/dps + speedup/efficiency across `num_envs`
+  - [ ] Track benchmark results over time (CI artifact / doc table)
 
 ### 3. Debug TUI Multi-Env Support
 
-- [ ] **Hotkeys for env navigation**
-  - [ ] `Tab` — cycle per-env views (env 0, 1, ..., summary)
-  - [ ] `1`-`9` — jump to env N
-  - [ ] `0` — summary view (all boards)
+- [x] **Hotkeys for env navigation**
+  - [x] `Tab` — cycle per-env views (env 0, 1, ..., summary)
+  - [x] `1`-`9` — jump to env N
+  - [x] `0` — summary view (all boards)
 
-- [ ] **Summary view** (new layout)
-  - [ ] Grid of mini-boards (4×2 for 8 envs)
-  - [ ] Aggregate stats panel
+- [x] **Summary view** (new layout)
+  - [x] Grid of mini-boards (scales with env count)
+  - [x] Aggregate stats panel
 
-- [ ] **Speed scaling metrics**
-  - [ ] `fps(total)`, `fps(per-env)`
-  - [ ] `speedup_vs_single` — ratio vs num_envs=1 baseline
-  - [ ] `efficiency` — speedup / num_envs × 100%
+- [x] **Speed scaling metrics**
+  - [x] `fps(total)`, `fps(per-env)`
+  - [x] `speedup_vs_single` — ratio vs num_envs=1 baseline
+  - [x] `efficiency` — speedup / num_envs × 100%
 
-- [ ] **Env count hotkeys** (stretch)
-  - [ ] `[` / `]` — adjust num_envs (may require restart)
+- [x] **Env count hotkeys** (restart-only)
+  - [x] `[` / `]` — adjust num_envs (restart training)
 
 ---
 
@@ -128,17 +128,15 @@ Technical backlog / roadmap. More detailed items than top-level docs.
   - Add golden traces for non-demo gameplay (seeded levels, edge-case rotations/DAS).
   - Validate 2P / attack logic once implemented.
 
+- **Curriculum: time goals + best-times DB**
+  - Extend `BestTimesDB` to record top-K clear times per (level, seed) (not just the best).
+  - Add an optional “pill sequence signature” key so we can track best times per (level, seed, sequence).
+  - Surface best-time quantiles and current time budget floors in the Rich TUI.
+  - Consider quantile-based floors (e.g. p10) instead of clamping to the absolute minimum.
+
 - **Extract diagnostics tracker**
   - Move `NetworkDiagnosticsTracker` from `speedrun_experiment.py` to `training/diagnostics/tracker.py`.
   - Integrate with TUI for gradient/param stats display.
-
-- **Complete evaluator training**
-  - Finish `models/evaluator/train_qr.py` skeleton for QR-DQN distributional head.
-  - Train on RAM-labeled corpus.
-
-- **Populate seed registry**
-  - Capture savestates for 120 seeds per level in `envs/retro/seeds/`.
-  - Store first 128 pills and virus grid hash per seed.
 
 - **Complete evaluator training**
   - Finish `models/evaluator/train_qr.py` skeleton for QR-DQN distributional head.

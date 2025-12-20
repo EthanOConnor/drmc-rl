@@ -395,3 +395,8 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Removed a long-standing skipped test by replacing the optional `mlx.core` dependency with a deterministic fake-MLX module in tests, covering both `_mlx_set_row` code paths (`tests/test_discounting.py`).
 - Made `--ui tui` shutdown on Ctrl+C cleanly (no traceback spam) by catching `KeyboardInterrupt` around training (`training/run.py`).
 - Ignored best-times sqlite WAL/SHM sidecar files and local scratch directories (`notes/human_notes/`, `tests/user_testing/`) in `.gitignore`.
+
+## 2025-12-20 – Codex CLI – Docs/Notes Pass
+
+- Updated README + placement-policy docs to reflect fast `cpp-engine` multi-env training (`--vectorization async`) and new reporting tools (`tools/bench_multienv.py`, `tools/report_curriculum.py`, `tools/report_best_times.py`).
+- Refreshed `notes/BACKLOG.md` to mark completed multi-env items and add next steps for best-times/time-goal iteration.

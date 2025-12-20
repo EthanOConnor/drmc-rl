@@ -133,8 +133,11 @@ action_idx, log_prob = dist.sample()
 ### Training
 
 ```bash
-# Unified runner (recommended)
-# Note: requires `--core` (QuickNES/Mesen) and a local ROM path for libretro.
+# Fast training (recommended; default `training/configs/smdp_ppo.yaml` uses `cpp-engine`)
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui \
+  --backend cpp-engine --vectorization async --num_envs 16
+
+# Emulator parity/debugging (requires a libretro core + ROM)
 python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
   --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes
 ```
@@ -146,6 +149,14 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
   --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 ```
+
+### Curriculum + Time Budgets (Placement)
+
+- **Synthetic negative levels**: `-15..-4` are “0 viruses, clear N matches” (N=1..12), then `-3..0` are “clear remaining viruses” (3..4).
+- **`ln_hop_back` schedule**: each newly introduced level is probed at a low threshold (default 1%), then earlier levels are revisited with thresholds `1-exp(-k)` (k increases the further back you hop).
+- **Advancement confidence**: stage advancement uses a one-sided Wilson lower bound (`curriculum.confidence_sigmas`, default 2σ) rather than a fixed window.
+- **Time goals after mastery**: once a level is mastered (perfect streak long enough for a high-confidence mastery target), the curriculum enables `task_max_frames` / `task_max_spawns` budgets and tightens them gradually.
+- **Best-known times DB**: clears are recorded (best per `(level, rng_seed)`) in `data/best_times.sqlite3` (override via `DRMARIO_BEST_TIMES_DB`). Use `python tools/report_best_times.py` to inspect per-level distributions.
 
 ### Configuration
 
