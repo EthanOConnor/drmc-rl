@@ -80,7 +80,23 @@ class _RawTerminal:
             data = sys.stdin.read(1)
         except Exception:
             return None
-        return data or None
+        if not data:
+            return None
+        if data == "\x1b":
+            # Attempt to decode escape sequences (e.g., Shift+Tab = ESC [ Z).
+            seq = data
+            try:
+                for _ in range(2):
+                    r, _, _ = select.select([self._fd], [], [], 0.0001)
+                    if not r:
+                        break
+                    seq += sys.stdin.read(1)
+            except Exception:
+                return data
+            if seq == "\x1b[Z":
+                return "SHIFT_TAB"
+            return seq
+        return data
 
 
 @dataclass
@@ -90,6 +106,7 @@ class _MetricState:
     last_return: float = 0.0
     last_length: int = 0
     sps: float = 0.0
+    dps: float = 0.0
     last_update: Dict[str, float] = field(default_factory=dict)
     recent_returns: Deque[float] = field(default_factory=lambda: deque(maxlen=100))
 
@@ -130,8 +147,18 @@ class RunnerDebugTUI:
         self._metrics = _MetricState()
         self._metrics_lock = threading.Lock()
         self._status: str = ""
+        self._status_until: float = 0.0
         self._show_help = True
         self._show_planes = False
+        self._selected_env = 0
+        self._last_env = 0
+        self._fps_baseline: Optional[float] = None
+        self._ui_hz_target: float = float(self._refresh_hz)
+        self._env_count_debounce_sec: float = 0.5
+        self._pending_env_restart: Optional[int] = None
+        self._pending_env_restart_at: float = 0.0
+        self._env_count_entry_active: bool = False
+        self._env_count_entry: str = ""
 
         # Subscribe to training events (emitted from the training thread).
         event_bus.on("episode_end", self._on_episode_end)
@@ -155,17 +182,263 @@ class RunnerDebugTUI:
                 self._metrics.sps = float(payload.get("perf/sps", self._metrics.sps))
             except Exception:
                 pass
+            try:
+                dps_val = payload.get("perf/dps_decisions_total", payload.get("perf/dps"))
+                if dps_val is not None:
+                    self._metrics.dps = float(dps_val)
+            except Exception:
+                pass
             # Keep a compact metric snapshot.
-            keep = ("loss/policy", "loss/value", "policy/entropy", "loss/kl", "vf/explained_var", "perf/sps")
+            keep = (
+                "loss/policy",
+                "loss/value",
+                "policy/entropy",
+                "loss/kl",
+                "vf/explained_var",
+                "perf/sps",
+                "perf/sps_frames_total",
+                "perf/dps_decisions_total",
+            )
             self._metrics.last_update = {
-                k: float(payload[k]) for k in keep if k in payload and isinstance(payload[k], (int, float))
+                k: float(payload[k])
+                for k in keep
+                if k in payload and isinstance(payload[k], (int, float))
             }
 
+    def set_env(self, env: RateLimitedVecEnv) -> None:
+        """Update the active environment after a controlled restart."""
+        self.env = env
+        self._clamp_selection()
+
+    def _clamp_selection(self) -> None:
+        num_envs = int(getattr(self.env, "num_envs", 1))
+        if num_envs <= 0:
+            self._selected_env = 0
+            self._last_env = 0
+            return
+        if self._last_env >= num_envs:
+            self._last_env = max(0, num_envs - 1)
+        if self._selected_env >= num_envs:
+            self._selected_env = max(0, num_envs - 1)
+
+    def _set_selected_env(self, env_index: int) -> None:
+        num_envs = int(getattr(self.env, "num_envs", 1))
+        if num_envs <= 0:
+            return
+        idx = max(0, min(int(env_index), num_envs - 1))
+        self._selected_env = idx
+        self._last_env = idx
+
+    def _select_summary(self) -> None:
+        self._selected_env = -1
+
+    def _toggle_summary(self) -> None:
+        if self._selected_env == -1:
+            self._selected_env = int(self._last_env)
+        else:
+            self._last_env = int(self._selected_env)
+            self._selected_env = -1
+
+    def _set_status(self, message: str, *, ttl_sec: float = 2.0) -> None:
+        self._status = str(message)
+        if ttl_sec and ttl_sec > 0.0:
+            self._status_until = time.monotonic() + float(ttl_sec)
+        else:
+            self._status_until = 0.0
+
+    def _status_text(self) -> str:
+        if not self._status:
+            return ""
+        if self._status_until > 0.0 and time.monotonic() >= self._status_until:
+            self._status = ""
+            self._status_until = 0.0
+            return ""
+        return self._status
+
+    def _current_num_envs(self) -> int:
+        try:
+            return int(getattr(self.env, "num_envs", 1))
+        except Exception:
+            return 1
+
+    def _queue_env_restart(self, num_envs: int, *, debounce: bool = True) -> None:
+        target = max(1, int(num_envs))
+        current = self._current_num_envs()
+        if target == current:
+            self._pending_env_restart = None
+            self._pending_env_restart_at = 0.0
+            return
+        self._pending_env_restart = target
+        delay = float(self._env_count_debounce_sec if debounce else 0.0)
+        self._pending_env_restart_at = time.monotonic() + delay
+
+    def _cancel_pending_restart(self) -> None:
+        self._pending_env_restart = None
+        self._pending_env_restart_at = 0.0
+
+    def _pending_env_line(self) -> str:
+        if self._env_count_entry_active:
+            val = self._env_count_entry if self._env_count_entry else ""
+            suffix = "Enter apply • Esc cancel • Backspace edit"
+            return f"Set envs: {val}{'_' if not val else ''}  ({suffix})"
+        if self._pending_env_restart is None:
+            return ""
+        remaining = max(0.0, float(self._pending_env_restart_at - time.monotonic()))
+        current = self._current_num_envs()
+        target = int(self._pending_env_restart)
+        return (
+            f"Pending restart: num_envs {current} → {target}  "
+            f"(apply in {remaining:.1f}s, Enter now, Esc cancel)"
+        )
+
+    def _target_ui_hz(self) -> float:
+        base = float(self._refresh_hz)
+        try:
+            num_envs = int(getattr(self.env, "num_envs", 1))
+        except Exception:
+            num_envs = 1
+        summary = bool(self._selected_env == -1)
+
+        if summary:
+            # Grid view: keep CPU overhead roughly bounded as env count grows.
+            target = base * 4.0 / float(max(4, num_envs))
+        else:
+            target = base
+
+        # Clamp to keep the UI responsive.
+        return float(max(5.0, min(base, target)))
+
+    def _format_ms(self, value: Any) -> str:
+        try:
+            return f"{float(value):.4f}"
+        except Exception:
+            return "-"
+
+    def _timing_rows(
+        self, *, perf: Dict[str, Any], sps: float
+    ) -> list[tuple[str, str]]:
+        rows: list[tuple[str, str]] = []
+        total_ms: Optional[float] = None
+        if sps > 0.0:
+            total_ms = float(1000.0 / max(sps, 1e-9))
+            rows.append(("total", self._format_ms(total_ms)))
+        else:
+            rows.append(("total", "-"))
+
+        step_ms = float(perf.get("step_ms_per_frame", 0.0) or 0.0)
+        infer_ms = float(perf.get("inference_ms_per_frame", 0.0) or 0.0)
+        update_ms = float(perf.get("update_ms_per_frame_avg", 0.0) or 0.0)
+        rows.append(("  env.step", self._format_ms(step_ms)))
+        rows.append(
+            (
+                "    env",
+                self._format_ms(perf.get("env_step_ms_per_frame", 0.0) or 0.0),
+            )
+        )
+        rows.append(
+            (
+                "    planner",
+                self._format_ms(perf.get("planner_ms_per_frame", 0.0) or 0.0),
+            )
+        )
+        rows.append(
+            (
+                "    macro_other",
+                self._format_ms(perf.get("macro_other_ms_per_frame", 0.0) or 0.0),
+            )
+        )
+        if float(perf.get("env_step_ms_per_frame", 0.0) or 0.0) > 0.0:
+            rows.append(
+                (
+                    "      backend",
+                    self._format_ms(perf.get("env_backend_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            rows.append(
+                (
+                    "      get_ram",
+                    self._format_ms(perf.get("env_get_ram_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            rows.append(
+                (
+                    "      ram_bytes",
+                    self._format_ms(perf.get("env_ram_bytes_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            rows.append(
+                (
+                    "      build_state",
+                    self._format_ms(
+                        perf.get("env_build_state_ms_per_frame", 0.0) or 0.0
+                    ),
+                )
+            )
+            rows.append(
+                (
+                    "      observe",
+                    self._format_ms(perf.get("env_observe_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            rows.append(
+                (
+                    "      reward",
+                    self._format_ms(perf.get("env_reward_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            rows.append(
+                (
+                    "      info",
+                    self._format_ms(perf.get("env_info_ms_per_frame", 0.0) or 0.0),
+                )
+            )
+            frame_ms = float(perf.get("env_get_frame_ms_per_frame", 0.0) or 0.0)
+            pix_ms = float(perf.get("env_pixel_stack_ms_per_frame", 0.0) or 0.0)
+            if frame_ms > 0.0 or pix_ms > 0.0:
+                rows.append(("      get_frame", self._format_ms(frame_ms)))
+                rows.append(("      pix_stack", self._format_ms(pix_ms)))
+
+        rows.append(("  inference", self._format_ms(infer_ms)))
+        rows.append(("  update(avg)", self._format_ms(update_ms)))
+
+        if total_ms is not None:
+            accounted_ms = step_ms + infer_ms + update_ms
+            unaccounted_ms = max(0.0, float(total_ms) - float(accounted_ms))
+            rows.append(("  accounted", self._format_ms(accounted_ms)))
+            rows.append(("  unaccounted", self._format_ms(unaccounted_ms)))
+
+        return rows
+
+    def _render_timing_breakdown(self, *, perf: Dict[str, Any], sps: float) -> Table:
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column("Key", style="dim")
+        table.add_column("ms/frame")
+        for k, v in self._timing_rows(perf=perf, sps=sps):
+            table.add_row(k, v)
+        return table
+
+    def _cycle_env(self, direction: int) -> None:
+        num_envs = int(getattr(self.env, "num_envs", 1))
+        if num_envs <= 0:
+            return
+        order = [-1] + list(range(num_envs))
+        try:
+            pos = order.index(self._selected_env)
+        except ValueError:
+            pos = 0
+        pos = (pos + int(direction)) % len(order)
+        self._selected_env = int(order[pos])
+        if self._selected_env >= 0:
+            self._last_env = int(self._selected_env)
+
     # ---------------------------- rendering
-    def _render_perf_panel(self) -> Panel:
+    def _render_perf_panel(self, env_index: int = 0) -> Panel:
         ctrl = self.control.snapshot()
-        perf = self.env.perf_snapshot()
-        info0 = self.env.latest_info(0)
+        perf = self.env.perf_snapshot(env_index)
+        info0 = self.env.latest_info(env_index)
+        num_envs = int(perf.get("num_envs", getattr(self.env, "num_envs", 1)))
+        with self._metrics_lock:
+            sps = float(self._metrics.sps)
 
         table = Table(show_header=False, box=None, padding=(0, 1))
         table.add_column("Key", style="dim")
@@ -175,12 +448,25 @@ class RunnerDebugTUI:
         table.add_row("speed", "MAX" if ctrl["max_speed"] else f"{ctrl['speed_x']:.2f}x")
         table.add_row("target_hz", "-" if ctrl["max_speed"] else f"{ctrl['target_hz']:.1f}")
         table.add_row("rng", "on" if ctrl.get("rng_randomize") else "off")
-        table.add_row("ui_hz", f"{self._refresh_hz:.1f}")
+        table.add_row("ui_hz", f"{self._ui_hz_target:.1f}")
+        if num_envs > 1:
+            table.add_row("env", f"{env_index + 1}/{num_envs}")
         table.add_row("emu_fps(step)", f"{perf.get('step_fps', 0.0):.1f}")
         table.add_row("emu_fps(total)", f"{perf.get('emu_fps', 0.0):.1f}")
+        if num_envs > 1:
+            emu_fps_env = float(perf.get("emu_fps", 0.0)) / max(1, num_envs)
+            table.add_row("emu_fps/env", f"{emu_fps_env:.1f}")
         table.add_row("tau_max", f"{perf.get('tau_max', 1)}")
+        table.add_row("tau_total", f"{perf.get('tau_total', perf.get('tau_max', 1))}")
         table.add_row("spawns_total", f"{int(perf.get('spawns_total', 0) or 0):,}")
-        table.add_row("step_ms/frame", f"{perf.get('step_ms_per_frame', 0.0):.4f}")
+
+        if sps > 0.0:
+            table.add_row("sps(frames/sec)", f"{sps:.0f}")
+            if num_envs > 1:
+                table.add_row("sps/env", f"{float(sps) / max(1, num_envs):.1f}")
+        table.add_row("", "")
+        for k, v in self._timing_rows(perf=perf, sps=sps):
+            table.add_row(k, v)
 
         # ----------------------------------------------------------------- policy inputs
         try:
@@ -214,7 +500,7 @@ class RunnerDebugTUI:
                 table.add_row("state_repr", state_repr)
             if obs0_shape is not None:
                 dtype_s = str(obs_dtype) if obs_dtype is not None else "?"
-                table.add_row("obs(env0)", f"{obs0_shape} {dtype_s}")
+                table.add_row(f"obs(env{env_index + 1})", f"{obs0_shape} {dtype_s}")
 
             try:
                 names = list(ram_specs.get_plane_names())
@@ -242,7 +528,10 @@ class RunnerDebugTUI:
                     if c.size >= 2:
                         idx0, idx1 = int(c[0]), int(c[1])
                         lut = {0: "R", 1: "Y", 2: "B"}
-                        table.add_row("pill", f"[{idx0},{idx1}] ({lut.get(idx0,'?')}{lut.get(idx1,'?')})")
+                        table.add_row(
+                            "pill",
+                            f"[{idx0},{idx1}] ({lut.get(idx0,'?')}{lut.get(idx1,'?')})",
+                        )
                 except Exception:
                     pass
 
@@ -296,21 +585,29 @@ class RunnerDebugTUI:
         if infer_calls > 0:
             table.add_row("", "")
             table.add_row("infer_calls", f"{infer_calls:,}")
-            table.add_row("infer/spawn", f"{float(perf.get('inference_per_spawn', 0.0) or 0.0):.3f}")
+            table.add_row(
+                "infer/spawn",
+                f"{float(perf.get('inference_per_spawn', 0.0) or 0.0):.3f}",
+            )
             table.add_row(
                 "infer_ms/frame",
                 f"{perf.get('inference_ms_per_frame', 0.0):.4f} "
-                f"(avg {perf.get('inference_ms_per_call', 0.0):.3f}, last {perf.get('last_inference_ms', 0.0):.3f})",
+                f"(avg {perf.get('inference_ms_per_call', 0.0):.3f}, "
+                f"last {perf.get('last_inference_ms', 0.0):.3f})",
             )
 
         planner_calls = int(perf.get("planner_calls", 0) or 0)
         if planner_calls > 0:
             table.add_row("", "")
             table.add_row("planner_calls", f"{planner_calls:,}")
-            table.add_row("planner/spawn", f"{float(perf.get('planner_per_spawn', 0.0) or 0.0):.3f}")
+            table.add_row(
+                "planner/spawn",
+                f"{float(perf.get('planner_per_spawn', 0.0) or 0.0):.3f}",
+            )
             table.add_row(
                 "planner_ms/frame",
-                f"{perf.get('planner_ms_per_frame', 0.0):.4f} (avg {perf.get('planner_ms_per_call', 0.0):.3f})",
+                f"{perf.get('planner_ms_per_frame', 0.0):.4f} "
+                f"(avg {perf.get('planner_ms_per_call', 0.0):.3f})",
             )
             table.add_row(
                 "planner_build",
@@ -333,12 +630,16 @@ class RunnerDebugTUI:
                 f"{perf.get('update_sec_last', 0.0):.3f}s "
                 f"({perf.get('update_ms_per_frame', 0.0):.4f} ms/frame)",
             )
-            table.add_row("update_ms/frame", f"{perf.get('update_ms_per_frame_avg', 0.0):.4f} (avg)")
+            table.add_row(
+                "update_ms/frame",
+                f"{perf.get('update_ms_per_frame_avg', 0.0):.4f} (avg)",
+            )
         return Panel(table, title="[bold]Perf[/bold]", border_style="green")
 
-    def _render_learning_panel(self) -> Panel:
-        perf = self.env.perf_snapshot()
-        info0 = self.env.latest_info(0)
+    def _render_learning_panel(self, env_index: int = 0, *, summary: bool = False) -> Panel:
+        perf = self.env.perf_snapshot(env_index)
+        info0 = self.env.latest_info(env_index)
+        num_envs = int(perf.get("num_envs", getattr(self.env, "num_envs", 1)))
 
         with self._metrics_lock:
             metrics = self._metrics
@@ -350,16 +651,35 @@ class RunnerDebugTUI:
 
         table.add_row("steps", f"{metrics.steps:,}")
         table.add_row("episodes", f"{metrics.episodes:,}")
-        table.add_row("ret(curr)", f"{perf.get('ep_return_curr', 0.0):.3f}")
-        table.add_row("ret(last)", f"{metrics.last_return:.3f}")
+        if summary:
+            curr_returns = perf.get("ep_return_curr_all", []) or []
+            last_returns = perf.get("ep_return_last_all", []) or []
+            if curr_returns:
+                table.add_row("ret(curr)", f"{float(np.mean(curr_returns)):.3f}")
+            else:
+                table.add_row("ret(curr)", f"{0.0:.3f}")
+            if last_returns:
+                table.add_row("ret(last)", f"{float(np.mean(last_returns)):.3f}")
+            else:
+                table.add_row("ret(last)", f"{0.0:.3f}")
+        else:
+            table.add_row("ret(curr)", f"{perf.get('ep_return_curr', 0.0):.3f}")
+            table.add_row("ret(last)", f"{perf.get('ep_return_last', 0.0):.3f}")
         table.add_row("ret(med16)", f"{metrics.median_return_16():.3f}")
         table.add_row("ret(mean100)", f"{metrics.mean_return_100():.3f}")
         table.add_row(
             "len(curr)",
-            f"{int(perf.get('ep_decisions_curr', 0) or 0)} dec / {int(perf.get('ep_frames_curr', 0) or 0)} f",
+            f"{int(perf.get('ep_decisions_curr', 0) or 0)} dec / "
+            f"{int(perf.get('ep_frames_curr', 0) or 0)} f",
         )
-        table.add_row("len(last)", f"{metrics.last_length} f")
+        table.add_row("len(last)", f"{int(perf.get('ep_frames_last', 0) or 0)} f")
         table.add_row("sps", f"{metrics.sps:.0f}")
+        if num_envs > 1:
+            table.add_row("sps/env", f"{float(metrics.sps) / max(1, num_envs):.1f}")
+        if metrics.dps > 0.0:
+            table.add_row("dps", f"{metrics.dps:.0f}")
+            if num_envs > 1:
+                table.add_row("dps/env", f"{float(metrics.dps) / max(1, num_envs):.1f}")
         terminal_last = str(perf.get("terminal_reason_last", "") or "")
         if terminal_last:
             table.add_row("terminal(last)", terminal_last)
@@ -393,6 +713,26 @@ class RunnerDebugTUI:
                 if total_eps > 0:
                     suffix = f"{suffix} (tot {total_eps})"
                 table.add_row("curr_stage", f"{int(curr_stage)} ({suffix})")
+            except Exception:
+                pass
+
+        conf_lb = info0.get("curriculum/confidence_lower_bound")
+        conf_sigmas = info0.get("curriculum/confidence_sigmas")
+        if conf_lb is not None and conf_sigmas is not None:
+            try:
+                table.add_row("curr_lb", f"{float(conf_lb):.4f} ({float(conf_sigmas):.1f}σ)")
+            except Exception:
+                pass
+
+        time_budget = info0.get("curriculum/time_budget_frames")
+        if time_budget is not None:
+            mean = info0.get("curriculum/time_mean_frames")
+            mad = info0.get("curriculum/time_mad_frames")
+            try:
+                extra = ""
+                if mean is not None and mad is not None:
+                    extra = f" mean±mad {float(mean):.0f}±{float(mad):.0f}"
+                table.add_row("time_budget", f"{int(time_budget)}f{extra}")
             except Exception:
                 pass
         task_mode = info0.get("task_mode")
@@ -474,16 +814,21 @@ class RunnerDebugTUI:
 
         return Panel(table, title="[bold]Learning[/bold]", border_style="yellow")
 
-    def _render_reward_panel(self) -> Panel:
-        perf = self.env.perf_snapshot()
+    def _render_reward_panel(self, env_index: int = 0) -> Panel:
+        perf = self.env.perf_snapshot(env_index)
         show_last = bool(
-            int(perf.get("ep_decisions_curr", 0) or 0) == 0 and int(perf.get("ep_decisions_last", 0) or 0) > 0
+            int(perf.get("ep_decisions_curr", 0) or 0) == 0
+            and int(perf.get("ep_decisions_last", 0) or 0) > 0
         )
         reward = (
-            perf.get("ep_reward_breakdown_last", {}) if show_last else perf.get("ep_reward_breakdown_curr", {})
+            perf.get("ep_reward_breakdown_last", {})
+            if show_last
+            else perf.get("ep_reward_breakdown_curr", {})
         ) or {}
         counts = (
-            perf.get("ep_reward_counts_last", {}) if show_last else perf.get("ep_reward_counts_curr", {})
+            perf.get("ep_reward_counts_last", {})
+            if show_last
+            else perf.get("ep_reward_counts_curr", {})
         ) or {}
         r_total = float(perf.get("ep_return_last" if show_last else "ep_return_curr", 0.0) or 0.0)
         reward_last = perf.get("ep_reward_breakdown_last", {}) or {}
@@ -539,39 +884,150 @@ class RunnerDebugTUI:
         title = "[bold]Reward (last)[/bold]" if show_last else "[bold]Reward (curr)[/bold]"
         return Panel(table, title=title, border_style="magenta")
 
+    def _render_summary_panel(self) -> Panel:
+        perf = self.env.perf_snapshot(0)
+        num_envs = int(perf.get("num_envs", getattr(self.env, "num_envs", 1)))
+        fps_total = float(perf.get("emu_fps", 0.0) or 0.0)
+        fps_per_env = fps_total / max(1, num_envs)
+
+        if num_envs == 1 and fps_total > 0.0:
+            self._fps_baseline = fps_total
+
+        speedup = None
+        efficiency = None
+        if self._fps_baseline and num_envs > 0:
+            speedup = fps_total / max(self._fps_baseline, 1e-9)
+            efficiency = 100.0 * speedup / float(num_envs)
+
+        with self._metrics_lock:
+            metrics = self._metrics
+
+        left = Table(show_header=False, box=None, padding=(0, 1))
+        left.add_column("Key", style="dim")
+        left.add_column("Value")
+
+        left.add_row("envs", f"{num_envs}")
+        left.add_row("ui_hz", f"{self._ui_hz_target:.1f}")
+        left.add_row("fps(total)", f"{fps_total:.1f}")
+        left.add_row("fps/env", f"{fps_per_env:.1f}")
+        if metrics.sps > 0.0:
+            left.add_row("sps", f"{metrics.sps:.0f}")
+            if num_envs > 1:
+                left.add_row("sps/env", f"{float(metrics.sps) / max(1, num_envs):.1f}")
+        if metrics.dps > 0.0:
+            left.add_row("dps", f"{metrics.dps:.1f}")
+            left.add_row("dps/env", f"{metrics.dps / max(1, num_envs):.2f}")
+        if speedup is not None and efficiency is not None:
+            left.add_row("speedup", f"{speedup:.2f}x")
+            left.add_row("efficiency", f"{efficiency:.1f}%")
+        else:
+            left.add_row("speedup", "n/a")
+            left.add_row("efficiency", "n/a")
+        left.add_row("episodes", f"{metrics.episodes:,}")
+        left.add_row("ret(med16)", f"{metrics.median_return_16():.3f}")
+        left.add_row("ret(mean100)", f"{metrics.mean_return_100():.3f}")
+
+        right = self._render_timing_breakdown(perf=perf, sps=float(metrics.sps))
+
+        grid = Table.grid(expand=True)
+        grid.add_column(ratio=1)
+        grid.add_column(ratio=2)
+        grid.add_row(left, right)
+        return Panel(grid, title="[bold]Summary[/bold]", border_style="cyan")
+
+    def _render_grid_panel(self) -> Panel:
+        num_envs = int(getattr(self.env, "num_envs", 1))
+        cols = min(4, max(1, num_envs))
+        grid = Table.grid(expand=True)
+        for _ in range(cols):
+            grid.add_column(justify="center")
+
+        panels = []
+        for i in range(num_envs):
+            info_i = self.env.latest_info(i)
+            board_state = board_from_env_info(info_i)
+            panels.append(
+                render_board_panel(
+                    board_state,
+                    title=f"Env {i + 1}",
+                    show_stats=False,
+                    compact=True,
+                    show_preview=False,
+                    show_subtitle=False,
+                )
+            )
+
+        if not panels:
+            panels.append(Text("No envs"))
+
+        for start in range(0, len(panels), cols):
+            row = panels[start : start + cols]
+            if len(row) < cols:
+                row.extend("" for _ in range(cols - len(row)))
+            grid.add_row(*row)
+
+        title = f"[bold]All Boards ({num_envs})[/bold]"
+        return Panel(grid, title=title, border_style="blue")
+
     def _render_footer(self, interactive: bool) -> Panel:
         lines = []
-        if self._status:
-            lines.append(self._status)
+        pending = self._pending_env_line()
+        if pending:
+            lines.append(pending)
+        status = self._status_text()
+        if status:
+            lines.append(status)
         if not interactive:
             lines.append("stdin is not a TTY: controls disabled (rendering only)")
         if self._show_help:
             lines.append(
-                "Controls: Space pause  n step  f+60  +/- speed  0 max  1/2/4 presets  r rng  p planes  h help  q quit"
+                "Controls: Space pause  n step  f+60  +/- speed  m max  0 summary  "
+                "tab/shift+tab env  1-9 jump  g grid  [/] envs  e set_envs  "
+                "r rng  p planes  h help  q quit"
             )
         return Panel(Text("\n".join(lines) if lines else ""), border_style="blue")
 
     def _render_layout(self, interactive: bool) -> Layout:
         layout = Layout()
-        layout.split_column(Layout(name="main", ratio=1), Layout(name="footer", size=3))
-        layout["main"].split_row(
-            Layout(name="board", ratio=2),
-            Layout(name="perf", ratio=1),
-            Layout(name="learning", ratio=1),
-            Layout(name="reward", ratio=1),
-        )
+        layout.split_column(Layout(name="main", ratio=1), Layout(name="footer", size=4))
+        summary = self._selected_env == -1
+        if summary:
+            layout["main"].split_row(
+                Layout(name="board", ratio=2),
+                Layout(name="perf", ratio=2),
+                Layout(name="learning", ratio=1),
+            )
+        else:
+            layout["main"].split_row(
+                Layout(name="board", ratio=2),
+                Layout(name="perf", ratio=1),
+                Layout(name="learning", ratio=1),
+                Layout(name="reward", ratio=1),
+            )
+        focus_env = int(self._last_env if summary else self._selected_env)
+        focus_env = max(0, min(focus_env, int(getattr(self.env, "num_envs", 1)) - 1))
 
-        info0 = self.env.latest_info(0)
-        board_state = board_from_env_info(info0)
-        layout["board"].update(render_board_panel(board_state, title=self._title))
-        layout["perf"].update(self._render_perf_panel())
-        layout["learning"].update(self._render_learning_panel())
-        layout["reward"].update(self._render_reward_panel())
+        if summary:
+            layout["board"].update(self._render_grid_panel())
+            layout["perf"].update(self._render_summary_panel())
+            layout["learning"].update(self._render_learning_panel(focus_env, summary=True))
+        else:
+            info_focus = self.env.latest_info(focus_env)
+            board_state = board_from_env_info(info_focus)
+            layout["board"].update(
+                render_board_panel(
+                    board_state,
+                    title=f"{self._title} (Env {focus_env + 1}/{getattr(self.env, 'num_envs', 1)})",
+                )
+            )
+            layout["perf"].update(self._render_perf_panel(focus_env))
+            layout["learning"].update(self._render_learning_panel(focus_env, summary=False))
+            layout["reward"].update(self._render_reward_panel(focus_env))
         layout["footer"].update(self._render_footer(interactive))
         return layout
 
     # ---------------------------- main loop (UI thread)
-    def run(self, training_thread: threading.Thread) -> None:
+    def run(self, session: Any) -> None:
         console = Console()
         raw = _RawTerminal()
         interactive = raw.enabled
@@ -582,15 +1038,37 @@ class RunnerDebugTUI:
             with Live(
                 self._render_layout(interactive),
                 console=console,
-                refresh_per_second=self._refresh_hz,
-                screen=False,
+                screen=True,
+                transient=True,
+                auto_refresh=False,
             ) as live:
                 try:
-                    while training_thread.is_alive():
+                    next_render = 0.0
+                    force_render = True
+                    while session.training_thread.is_alive():
+                        self._ui_hz_target = self._target_ui_hz()
                         key = raw.poll_key()
                         if key is not None:
+                            force_render = True
+                            if self._env_count_entry_active:
+                                if key.isdigit():
+                                    if len(self._env_count_entry) < 4:
+                                        self._env_count_entry += key
+                                elif key in {"\x7f", "\b"}:
+                                    self._env_count_entry = self._env_count_entry[:-1]
+                                elif key in {"\r", "\n"}:
+                                    if self._env_count_entry:
+                                        self._queue_env_restart(
+                                            int(self._env_count_entry), debounce=False
+                                        )
+                                    self._env_count_entry_active = False
+                                    self._env_count_entry = ""
+                                elif key == "\x1b":
+                                    self._env_count_entry_active = False
+                                    self._env_count_entry = ""
+                                continue
                             if key in {"q", "Q"}:
-                                self._status = "Stopping…"
+                                self._set_status("Stopping…", ttl_sec=0.0)
                                 self.control.request_stop()
                                 break
                             if key == " ":
@@ -603,24 +1081,74 @@ class RunnerDebugTUI:
                                 self.control.faster()
                             elif key == "-":
                                 self.control.slower()
-                            elif key == "0":
+                            elif key in {"m", "M"}:
                                 self.control.set_max_speed(True)
-                            elif key == "1":
-                                self.control.set_speed_x(1.0)
-                            elif key == "2":
-                                self.control.set_speed_x(2.0)
-                            elif key == "4":
-                                self.control.set_speed_x(4.0)
+                            elif key == "\t":
+                                self._cycle_env(1)
+                            elif key == "SHIFT_TAB":
+                                self._cycle_env(-1)
+                            elif key == "0":
+                                self._select_summary()
+                            elif key in {"g", "G"}:
+                                self._toggle_summary()
+                            elif key in {"[", "]"}:
+                                delta = -1 if key == "[" else 1
+                                base = (
+                                    self._pending_env_restart
+                                    if self._pending_env_restart is not None
+                                    else self._current_num_envs()
+                                )
+                                new_num_envs = max(1, int(base) + delta)
+                                self._queue_env_restart(new_num_envs, debounce=True)
+                            elif key.isdigit() and key != "0":
+                                self._set_selected_env(int(key) - 1)
                             elif key in {"r", "R"}:
                                 self.control.toggle_rng_randomize()
+                            elif key in {"e", "E"}:
+                                self._env_count_entry_active = True
+                                self._env_count_entry = ""
                             elif key in {"p", "P"}:
                                 self._show_planes = not self._show_planes
                             elif key in {"h", "H", "?"}:
                                 self._show_help = not self._show_help
-                        live.update(self._render_layout(interactive))
-                        time.sleep(1.0 / self._refresh_hz)
+                            elif key in {"\r", "\n"} and self._pending_env_restart is not None:
+                                self._pending_env_restart_at = time.monotonic()
+                            elif key == "\x1b":
+                                self._cancel_pending_restart()
+
+                        now = time.monotonic()
+                        if (
+                            self._pending_env_restart is not None
+                            and not self._env_count_entry_active
+                            and now >= float(self._pending_env_restart_at)
+                        ):
+                            new_num_envs = int(self._pending_env_restart)
+                            self._cancel_pending_restart()
+                            self._set_status(
+                                f"Restarting with num_envs={new_num_envs}…", ttl_sec=0.0
+                            )
+                            live.update(self._render_layout(interactive), refresh=True)
+                            try:
+                                session.restart(new_num_envs)
+                                self.set_env(session.env)
+                                self._set_status(
+                                    f"Restarted with num_envs={new_num_envs}", ttl_sec=2.0
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                self._set_status(f"Restart failed: {exc}", ttl_sec=0.0)
+                                raise
+                            force_render = True
+                        if force_render or now >= next_render:
+                            self._ui_hz_target = self._target_ui_hz()
+                            period = 1.0 / float(max(self._ui_hz_target, 1e-6))
+                            live.update(self._render_layout(interactive), refresh=True)
+                            next_render = time.monotonic() + period
+                            force_render = False
+
+                        sleep_sec = max(0.0, next_render - time.monotonic())
+                        time.sleep(min(0.02, sleep_sec))
                 except KeyboardInterrupt:
                     self.control.request_stop()
                 finally:
                     # One last render with stop status.
-                    live.update(self._render_layout(interactive))
+                    live.update(self._render_layout(interactive), refresh=True)

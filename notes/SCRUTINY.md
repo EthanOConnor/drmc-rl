@@ -198,6 +198,20 @@ Critical review and risk tracking. Capture concerns about correctness, performan
   - raw NES color bits (yellow=0, red=1, blue=2) in RAM/board bytes, and
   - canonical plane/policy indices (red=0, yellow=1, blue=2) used by `color_{r,y,b}` planes and policy embeddings.
 - **Risk**: If a caller mixes these conventions (e.g., treats `preview_pill.first_color` as canonical when it is raw), the agent can receive inconsistent conditioning and learning can silently degrade.
+
+---
+
+## 2025-12-20 – Runner Logdir + Curriculum TUI
+
+**R27. Default logdir now creates per-run subdirectories**
+- **Concern**: `python -m training.run` now writes to `cfg.logdir/<run_id>` by default.
+- **Risk**: Tools/scripts that assume a fixed path (e.g. `runs/smdp_ppo/metrics.jsonl`) will stop finding metrics/checkpoints automatically.
+- **Mitigation**: Use `--logdir` to opt out; keep helper tools flexible (accept a run directory and pick the newest run when appropriate).
+
+**R28. Event payload now includes nested curriculum snapshots**
+- **Concern**: `update_end` events for `ppo_smdp` include a `curriculum` dict payload for UIs.
+- **Risk**: Any downstream handler that assumes all payload values are numeric scalars could break.
+- **Mitigation**: Keep logged scalar metrics unchanged; UI handlers must treat `curriculum` as optional and type-check it before use.
 - **Mitigation**:
   - Treat UI/board-byte fields as “raw” and policy conditioning vectors as “canonical”; convert explicitly.
   - Prefer decoding policy-conditioning colors from source-of-truth RAM bytes (or from the RAM offsets spec) rather than from representation-dependent state tensors.
@@ -258,7 +272,7 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Mitigation**: Keep using Gymnasium’s default vector envs (which default to `NextStep`), and if this becomes configurable, explicitly set/validate the autoreset mode in the env factory.
 
 **R20. Curriculum match-count success detection relies on ROM clear-animation tile codes**
-- **Concern**: The synthetic curriculum stages `-10..-4` (0 viruses; terminate after N match events) detect matches by scanning the bottle RAM for the ROM’s clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`) and counting *rising edges* where `tiles_clearing` crosses the ≥4 threshold.
+- **Concern**: The synthetic curriculum stages `-15..-4` (0 viruses; terminate after N match events) detect matches by scanning the bottle RAM for the ROM’s clear-animation tile type codes (`CLEARED_TILE` / `FIELD_JUST_EMPTIED`) and counting *rising edges* where `tiles_clearing` crosses the ≥4 threshold.
 - **Risk**: If a different ROM revision/core uses different marker codes or delays updating the bottle buffer, the terminal condition could misfire or lag.
 - **Mitigation**: Require at least 4 clearing-marked tiles (`tiles_clearing >= 4`), explicitly exclude `FIELD_EMPTY == 0xFF` when matching `FIELD_JUST_EMPTIED` (empty tiles share the same high nibble `0xF0`), and gate the scan on `gameplay_active` to avoid menu/reset stale RAM. Keep the logic localized (single helper in `DrMarioRetroEnv`) so it’s easy to adapt per-ROM if needed.
 
@@ -291,3 +305,96 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: The “stable checkpoint” for ghost parity uses `waitFrames > 0` as the first post-virus-placement sync condition.
 - **Risk**: If a future ROM/core changes when `$0051` is written, the sync could stop too early (mid init) or too late (past intro), breaking parity resets.
 - **Mitigation**: Keep `start_sync_wait_frames` configurable (exact value vs first-nonzero) and cross-check with additional guards if needed (e.g., `mode==0x08` and board virus count stable).
+
+---
+
+## 2025-12-19 – State-Mode Perf Optimizations: Lazy RGB Frames
+
+**R28. Lazy RGB frame refresh can surprise internal consumers**
+- **Concern**: In state-mode, `DrMarioRetroEnv.step()` no longer refreshes `_last_frame` every frame; frames are marked dirty and refreshed in `render()` unless `obs_mode="pixel"`.
+- **Risk**: Any tooling that reads `_last_frame` directly (without calling `render()`) may see stale frames.
+- **Mitigation**: Treat `_last_frame` as internal; use `render()` (UI-driven, low Hz) or enable `obs_mode="pixel"` for frame-dependent tooling. Keep board/debug UIs RAM-derived by default.
+
+---
+
+## 2025-12-19 – Multi-Env C++ Backend: Scaling + Debug UI Risks
+
+**R29. Process explosion with `AsyncVectorEnv` + per-env engine subprocess**
+- **Concern**: Current `cpp-engine` backend uses a subprocess per env. `AsyncVectorEnv` also uses worker processes.
+- **Risk**: Large `num_envs` can create “processes × processes” overhead (scheduler contention, file descriptor limits, slower-than-linear scaling, harder failure recovery).
+- **Mitigation**: Benchmark scaling early; cap default `num_envs` conservatively; add smoke tests for clean shutdown/no SHM leaks. Long-term: consolidate to a multi-instance engine process or an in-process engine library backend (see backlog P0.4).
+
+**R30. Cross-process payload dominates async scaling**
+- **Concern**: `AsyncVectorEnv` must serialize observations and `info` across processes.
+- **Risk**: Debug-heavy fields (`raw_ram`, large plane-name maps, verbose logs) can erase the speedup of parallel stepping even if the engine is fast.
+- **Mitigation**: Provide explicit “training payload” vs “debug payload” modes (disable heavy fields by default in headless); keep observation tensors minimal (reduced bitplanes); measure IPC cost in a dedicated benchmark harness.
+
+**R31. Env-count hotkeys can leak subprocesses or corrupt rollouts if not restart-safe**
+- **Concern**: Debug TUI wants `[`/`]` to change `num_envs`.
+- **Risk**: Attempting dynamic resizing in-place risks orphaned worker processes/SHM files or PPO buffer shape mismatches; even restart logic can leak if teardown isn’t robust.
+- **Mitigation**: Make env-count changes “restart-only” and implement a controlled shutdown path (join training thread, close vec env, confirm engine subprocess exit, delete temp SHM files). Add an integration test that restarts N times and asserts no growth in live subprocesses.
+
+**R32. Multi-env accounting errors can silently break learning and scaling metrics**
+- **Concern**: Macro-step envs advance a variable number of frames (`placements/tau`).
+- **Risk**: If we compute SPS from “steps” instead of frames, or mishandle per-env terminal boundaries, reported throughput and learning curves can be misleading (and PPO updates can become numerically degenerate).
+- **Mitigation**: Treat `sum(tau_i)` as the canonical frame counter, log both frames/sec and decisions/sec, and add deterministic multi-env regression tests (num_envs=1 vs isolated num_envs>1 with fixed seeds).
+
+**R33. Multi-board debug rendering can become the bottleneck**
+- **Concern**: A grid view showing many env boards can require lots of terminal rendering work.
+- **Risk**: Debug UI FPS may collapse and distort perceived simulator throughput.
+- **Mitigation**: Keep render Hz capped (auto-downshift with env count), use compact mini-boards for summary view, avoid per-frame layout recomputation, and compute scaling metrics from training-thread counters (not from UI render loop timing).
+
+**R34. Decision-buffer wrap could corrupt per-env GAE**
+- **Concern**: SMDP-PPO now computes GAE per env using stored `env_id` sequences.
+- **Risk**: If the ring buffer wraps within a rollout, per-env temporal order could be scrambled and advantages become incorrect.
+- **Mitigation**: Keep buffer capacity > decisions_per_update + num_envs and clear after each update; add debug asserts if needed.
+
+**R35. Debug UI exits can leave orphan engine subprocesses**
+- **Concern**: The debug UI runs a separate training thread and the C++ backend spawns one subprocess per env.
+- **Risk**: If the UI exits via an exception or Ctrl+C before cleanup, engine subprocesses can survive and accumulate.
+- **Mitigation**: Ensure the debug runner always calls `session.stop()` in a `try/finally` block; continue to prefer `sync` vectorization in debug mode. Hard kills (SIGKILL) can still leak; use Activity Monitor or `pkill drmario_engine` as a last resort.
+
+**R36. Batched stepping fast path only covers a subset of per-frame reward/info**
+- **Concern**: The cpp-engine fast path in `DrMarioPlacementEnv` avoids per-frame `DrMarioRetroEnv.step()` calls and instead aggregates a macro reward from engine counters + adjacency-at-lock shaping.
+- **Risk**: Features that depend on per-frame bookkeeping (e.g., `matches_completed` edge detection via `tiles_clearing`, height-penalty deltas, action penalties, pill-place bonuses, potential shaping) won’t match the slow path; enabling those knobs could silently change learning dynamics.
+- **Mitigation**: Fast mode auto-disables when unsupported reward knobs are enabled or potential shaping is on, and can be forced off via `DRMARIO_CPP_FAST=0`. Extend support deliberately (with regression tests) before relaxing the guardrails.
+
+**R37. Engine/Python SHM protocol mismatch can hang batched runs**
+- **Concern**: Batched runs rely on matching `DrMarioState` layout and semantics between the C++ engine binary and Python `ctypes` struct.
+- **Risk**: Running an old engine with a new Python driver (or vice versa) can cause run requests to never ack, leading to timeouts/hangs and confusing perf regressions.
+- **Mitigation**: Keep `static_assert(sizeof(DrMarioState))` in C++ and `ctypes.sizeof` checks + demo parity tests in Python. Surface timeouts with engine stdout/stderr, and keep the per-frame manual-step path available as a fallback.
+
+**R38. Reset-time per-frame stepping can timeout under AsyncVectorEnv load**
+- **Concern**: `AsyncVectorEnv` autoresets call `env.reset()` in worker processes, which historically advanced to the first decision point by stepping per frame in Python.
+- **Risk**: Under high env counts, per-frame lockstep stepping can time out (engine not scheduled within the per-step timeout) and/or burn CPU, causing instability and poor scaling.
+- **Mitigation**: Use `cpp-engine.run_until_decision()` + `sync_after_backend_run()` during `DrMarioPlacementEnv.reset()` to fast-forward to the first decision without per-frame Python stepping.
+
+**R39. Backend failures in state-mode can surface as missing `_state_cache`**
+- **Concern**: The placement env relies on `DrMarioRetroEnv._state_cache` to build planner snapshots.
+- **Risk**: If a backend reset/step fails and the env silently falls back to mock dynamics, `_state_cache` can be `None`, leading to confusing crashes (especially during `AsyncVectorEnv` autoreset on the next `step()` call).
+- **Mitigation**: Record last backend error (`_backend_last_error`), retry cpp-engine resets by restarting the backend, and make `DrMarioPlacementEnv` return a truncated step (instead of raising) when state is unavailable so the vector env can recover via autoreset.
+
+**R40. Multiprocessing spawn can break non-installed imports**
+- **Concern**: On macOS, multiprocessing spawn workers may not inherit the repo root on `sys.path`.
+- **Risk**: Imports from non-installed top-level packages (e.g., `game_engine.*`) can fail only in worker processes, causing flaky multi-env behavior that’s hard to reproduce in single-env runs.
+- **Mitigation**: Keep cpp-engine driver code (SHM bindings) under installed packages (`envs.backends.*`) and add an async autoreset regression test to exercise spawn behavior.
+
+**R41. `AsyncVectorEnv.close()` can hang if a worker dies mid-message**
+- **Concern**: Gymnasium `AsyncVectorEnv` may enter a state where `_poll_pipe_envs()` reports ready but `pipe.recv()` blocks (e.g., partial IPC payload after a crash).
+- **Risk**: Training/debug sessions can become hard to stop; Ctrl+C can produce confusing shutdown traces and leave orphaned processes.
+- **Mitigation**: On close, force-terminate `AsyncVectorEnv` when it has a pending call, skipping `step_wait` and prioritizing teardown over graceful completion (`training/envs/dr_mario_vec.py`).
+
+**R42. `ln_hop_back` curriculum thresholds can become effectively “perfect or stall”**
+- **Concern**: The hop-back thresholds use `1 - exp(-k)` which approaches 1 quickly.
+- **Risk**: For larger k (and finite `window_episodes`), thresholds can become indistinguishable from 100% success and stall curriculum progress on noisy tasks.
+- **Mitigation**: Cap k (or cap threshold), reduce `window_episodes`, or switch to a slower-tightening schedule if stalls are observed. Monitor `curriculum/stage_index` in the TUI.
+
+**R43. Time/spawn task budgets depend on wrapper counters (τ + spawn consumption)**
+- **Concern**: Time-based curricula now enforce constraints via `DrMarioPlacementEnv` counters (`task/frames_used`, `task/spawns_used`) rather than ROM-native timers.
+- **Risk**: If τ accounting changes (e.g., clamping, pre-decision waits) or spawn consumption logic diverges across slow/fast paths, budgets could truncate too early/late and skew curriculum difficulty.
+- **Mitigation**: Keep budgets based on *actual* frame deltas (not clamped τ) and increment spawn counts only when a spawn is explicitly consumed; maintain parity across slow and cpp-engine fast paths; cover with unit tests (`tests/test_task_budgets.py`) and log `task/*` in episode infos for spot-checking.
+
+**R44. Confidence-based rolling windows can become very large for strict targets**
+- **Concern**: Curriculum advancement now uses a σ-level one-sided Wilson lower bound (`LB > target`) with window sizes derived from a “near-target” assumption.
+- **Risk**: For targets close to 1 (especially `ln_hop_back` with large k), computed windows can become large, making stages slow to graduate and potentially amplifying non-i.i.d. effects (policy changes over time).
+- **Mitigation**: Cap hop-back k (`ln_hop_back_max_k`), tune `confidence_sigmas`/targets, and monitor `curriculum/confidence_lower_bound` + `curriculum/window_*` in the TUI. Use `tools/report_curriculum.py --confidence-table` to sanity-check implied window sizes.

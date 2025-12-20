@@ -83,9 +83,38 @@ struct DrMarioState {
   u8 spawn_delay; // Frames before new pill can be controlled (throw animation)
   u8 reset_wait_frames; // If non-zero, `reset()` uses this as the intro waitFrames seed.
   u16 reset_framecounter_lo_plus1; // Optional: (frameCounter_lo + 1) seed for parity resets.
+
+  // ---------------------------------------------------------------------------
+  // Batched stepping (optional; used for training throughput).
+  //
+  // Drivers can request the engine to execute many frames in one go, avoiding
+  // per-frame handshakes from Python. The engine considers a request "pending"
+  // when `run_request_id != run_ack_id` and will process it with priority.
+  //
+  // Run modes:
+  //   0: idle
+  //   1: run a fixed number of frames (`run_frames`) with constant `run_buttons`
+  //   2: run until a decision point (nextAction==pillFalling) for a *new* spawn,
+  //      or until `run_frames` (max) is reached. If `run_last_spawn_id==0xFF`,
+  //      any decision point is accepted.
+  //
+  // Outputs are populated when the request completes, then `run_ack_id` is set
+  // to match `run_request_id`.
+  u32 run_request_id;
+  u32 run_ack_id;
+  u32 run_mode;
+  u32 run_frames;
+  u32 run_frames_executed;
+  u32 run_tiles_cleared_total;
+  u32 run_tiles_cleared_virus;
+  u32 run_tiles_cleared_nonvirus;
+  u8 run_buttons;
+  u8 run_last_spawn_id;
+  u8 run_reason; // 0=none, 1=done, 2=decision, 3=terminal, 4=timeout
+  u8 run_reserved;
 };
 
-static_assert(sizeof(DrMarioState) == 188,
+static_assert(sizeof(DrMarioState) == 224,
               "DrMarioState layout changed unexpectedly");
 static_assert(offsetof(DrMarioState, control_flags) == 4,
               "control_flags offset mismatch");

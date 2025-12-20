@@ -5,7 +5,7 @@ algo: ppo_smdp
 
 # Training hyperparameters
 train:
-  total_steps: 5000000
+  total_steps: 500000000
   checkpoint_interval: 100000
 
 # SMDP-PPO specific
@@ -56,7 +56,7 @@ env:
   #   - bitplane: 12ch (type-blind colors + masks + scalars)
   #   - bitplane_reduced: 6ch (colors + virus + falling + preview)
   #   - bitplane_reduced_mask: 10ch (reduced + feasibility mask planes injected by placement env)
-  state_repr: bitplane_bottle
+  state_repr: bitplane_bottle_mask
   num_envs: 16
   frame_stack: 1
   randomize_rng: true
@@ -64,12 +64,16 @@ env:
 # Scripted curriculum (synthetic negative levels: fewer viruses)
 curriculum:
   enabled: true
-  start_level: -10
+  # ln hop-back curriculum starts at easy match tasks and tightens earlier
+  # levels as we introduce harder ones.
+  mode: ln_hop_back
+  start_level: -15
   max_level: 0
-  success_threshold: 0.9
+  # Probe threshold for newly introduced levels (required success rate).
+  probe_threshold: 0.01
   window_episodes: 100
   min_episodes: 50
-  rehearsal_prob: 0.1
+  rehearsal_prob: 0.0
   
 # Logging
 logdir: "runs/smdp_ppo"

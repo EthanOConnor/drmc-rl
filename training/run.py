@@ -4,8 +4,11 @@ import argparse
 import os
 import sys
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict
+
+import uuid
 
 from envs.retro.core_utils import resolve_libretro_core
 from training.algo.base import AlgoAdapter
@@ -18,6 +21,12 @@ from training.utils.reproducibility import pick_device, set_reproducibility, wri
 
 
 DEFAULT_BASE_CFG = Path("training/configs/base.yaml")
+
+
+def _generate_run_id() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    suffix = uuid.uuid4().hex[:8]
+    return f"{timestamp}_{suffix}"
 
 
 def parse_args(argv: Any = None) -> argparse.Namespace:
@@ -212,15 +221,41 @@ def build_adapter(cfg: Any, env: Any, logger: DiagLogger, event_bus: EventBus, d
 def main(argv: Any = None) -> None:
     args = parse_args(argv)
     cfg = load_config(args)
+    # UI-driven defaults for vectorization + debug info payloads.
+    try:
+        env_cfg = getattr(cfg, "env", None)
+        env_data = env_cfg.data if hasattr(env_cfg, "data") else {}
+        if args.vectorization is None:
+            vec_mode = env_data.get("vectorization", "auto")
+            if vec_mode is None or str(vec_mode).lower() == "auto":
+                env_data["vectorization"] = "sync" if args.ui == "debug" else "async"
+        if "emit_raw_ram" not in env_data:
+            env_data["emit_raw_ram"] = bool(args.ui == "debug")
+    except Exception:
+        pass
+
+    # Ensure each run writes to its own subdirectory unless the user explicitly
+    # overrides `--logdir`.
+    if args.logdir is None:
+        base_logdir = Path(str(getattr(cfg, "logdir", "runs/auto"))).expanduser()
+        run_id = str(os.environ.get("DRMARIO_RUN_ID") or _generate_run_id())
+        cfg.run_id = run_id
+        cfg.logdir = str(base_logdir / run_id)
+    else:
+        # Best-effort: derive run id from explicit logdir for metadata/UI.
+        try:
+            cfg.run_id = str(getattr(cfg, "run_id", Path(str(getattr(cfg, "logdir"))).name))
+        except Exception:
+            pass
     ctx = set_reproducibility(int(getattr(cfg, "seed", 42)))
     device = pick_device(getattr(cfg, "device", "auto"))
 
     logger = DiagLogger(cfg)
     event_bus = EventBus()
     VideoEventHandler(event_bus, logger, Path(cfg.logdir) / "videos", interval=int(getattr(cfg, "video_interval", 5000)))
-    env = make_vec_env(cfg)
-
     metadata: Dict[str, Any] = {
+        "run_id": getattr(cfg, "run_id", None),
+        "logdir": str(getattr(cfg, "logdir", "")),
         "algo": cfg.algo,
         "engine": cfg.engine,
         "seed": ctx.seed,
@@ -233,8 +268,6 @@ def main(argv: Any = None) -> None:
         logger.log_text("run/dry_run", "Dry run completed", step=0)
         logger.flush()
         logger.close()
-        if hasattr(env, "close"):
-            env.close()
         return
 
     adapter: AlgoAdapter | None = None
@@ -243,37 +276,91 @@ def main(argv: Any = None) -> None:
             from training.envs.interactive import PlaybackControl, RateLimitedVecEnv, StopTraining
             from training.ui.runner_debug_tui import RunnerDebugTUI
 
-            control = PlaybackControl()
+            class _DebugSession:
+                def __init__(self) -> None:
+                    self.control = PlaybackControl()
+                    try:
+                        self.control.set_rng_randomize(
+                            bool(getattr(getattr(cfg, "env", object()), "randomize_rng", False))
+                        )
+                    except Exception:
+                        pass
+                    self.env: RateLimitedVecEnv | None = None
+                    self.adapter: AlgoAdapter | None = None
+                    self.training_thread: threading.Thread | None = None
+                    self.exc: list[BaseException] = []
+
+                def start(self) -> None:
+                    self.exc = []
+                    base_env = make_vec_env(cfg)
+                    self.env = RateLimitedVecEnv(base_env, self.control)
+                    self.adapter = build_adapter(cfg, self.env, logger, event_bus, device)
+
+                    def _train() -> None:
+                        try:
+                            if self.adapter is not None:
+                                self.adapter.train_forever()
+                        except StopTraining:
+                            pass
+                        except BaseException as e:  # noqa: BLE001
+                            self.exc.append(e)
+
+                    self.training_thread = threading.Thread(target=_train, name="training", daemon=True)
+                    self.training_thread.start()
+
+                def stop(self) -> None:
+                    if self.control is not None:
+                        self.control.request_stop()
+                    if self.training_thread is not None:
+                        self.training_thread.join(timeout=5.0)
+                        if self.training_thread.is_alive():
+                            # Best-effort cleanup: force-close the env even if
+                            # the training thread is stuck in a pending async step.
+                            try:
+                                if self.env is not None and hasattr(self.env, "close"):
+                                    self.env.close()
+                            except Exception:
+                                pass
+                            raise RuntimeError("Training thread did not exit after stop request.")
+                    if self.adapter is not None and hasattr(self.adapter, "close"):
+                        self.adapter.close()
+                    if self.env is not None and hasattr(self.env, "close"):
+                        self.env.close()
+                    if self.exc:
+                        raise self.exc[0]
+
+                def restart(self, num_envs: int) -> None:
+                    self.stop()
+                    try:
+                        if hasattr(self.control, "reset_for_restart"):
+                            self.control.reset_for_restart()
+                    except Exception:
+                        pass
+                    try:
+                        cfg.env.num_envs = int(num_envs)
+                        # Debug UI should default to sync vectorization + full debug info.
+                        cfg.env.vectorization = "sync"
+                        cfg.env.emit_raw_ram = True
+                    except Exception:
+                        pass
+                    self.start()
+
+            session = _DebugSession()
+            session.start()
+            if session.env is None or session.training_thread is None:
+                raise RuntimeError("Debug session failed to start.")
+
+            ui = RunnerDebugTUI(
+                env=session.env,
+                control=session.control,
+                event_bus=event_bus,
+                title=f"DrMC-RL: {cfg.algo}",
+            )
             try:
-                control.set_rng_randomize(bool(getattr(getattr(cfg, "env", object()), "randomize_rng", False)))
-            except Exception:
-                pass
-            env = RateLimitedVecEnv(env, control)
-            adapter = build_adapter(cfg, env, logger, event_bus, device)
-
-            exc: list[BaseException] = []
-
-            def _train() -> None:
-                try:
-                    adapter.train_forever()
-                except StopTraining:
-                    pass
-                except BaseException as e:  # noqa: BLE001
-                    exc.append(e)
-
-            training_thread = threading.Thread(target=_train, name="training", daemon=True)
-            training_thread.start()
-
-            ui = RunnerDebugTUI(env=env, control=control, event_bus=event_bus, title=f"DrMC-RL: {cfg.algo}")
-            ui.run(training_thread)
-
-            # Ensure training terminates if UI exits early.
-            control.request_stop()
-            training_thread.join(timeout=5.0)
-            if training_thread.is_alive():
-                raise RuntimeError("Training thread did not exit after stop request.")
-            if exc:
-                raise exc[0]
+                ui.run(session)
+            finally:
+                # Ensure training terminates if UI exits early or errors out.
+                session.stop()
         elif args.ui == "tui":
             try:
                 from training.ui.tui import TrainingTUI, RICH_AVAILABLE
@@ -287,28 +374,33 @@ def main(argv: Any = None) -> None:
                             "algo": cfg.algo,
                             "seed": ctx.seed,
                             "device": device,
+                            "run_id": getattr(cfg, "run_id", ""),
                             "total_steps": total_steps,
                         }
                     )
                     TUIEventHandler(event_bus, tui)
+                    env = make_vec_env(cfg)
                     adapter = build_adapter(cfg, env, logger, event_bus, device)
                     with tui:
                         adapter.train_forever()
                 else:
+                    env = make_vec_env(cfg)
                     adapter = build_adapter(cfg, env, logger, event_bus, device)
                     adapter.train_forever()
             except ImportError as e:
                 print(f"Warning: TUI import failed ({e}), falling back to headless mode")
+                env = make_vec_env(cfg)
                 adapter = build_adapter(cfg, env, logger, event_bus, device)
                 adapter.train_forever()
         else:
+            env = make_vec_env(cfg)
             adapter = build_adapter(cfg, env, logger, event_bus, device)
             adapter.train_forever()
     finally:
         if adapter is not None and hasattr(adapter, "close"):
             adapter.close()
         logger.close()
-        if hasattr(env, "close"):
+        if "env" in locals() and env is not None and hasattr(env, "close"):
             env.close()
 
 

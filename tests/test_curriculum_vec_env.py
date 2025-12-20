@@ -50,9 +50,8 @@ def test_curriculum_vec_env_sets_levels_and_injects_info() -> None:
         enabled=True,
         start_level=-4,
         max_level=-3,
-        success_threshold=1.0,
-        window_episodes=2,
-        min_episodes=2,
+        success_threshold=0.5,
+        confidence_sigmas=1.0,
         rehearsal_prob=0.0,
         seed=0,
     )
@@ -63,8 +62,9 @@ def test_curriculum_vec_env_sets_levels_and_injects_info() -> None:
     assert infos[0]["curriculum/env_level"] == -4
     assert infos[0]["curriculum/current_level"] == -4
 
-    # Two episodes where env0 is always successful should advance from -4 -> -3.
-    for _ in range(2):
+    # Run a few short episodes; with 2 envs contributing, the curriculum should
+    # advance quickly from -4 -> -3 under the confidence rule.
+    for _ in range(3):
         _, _, terminated, _, infos = env.step([0, 0])
         assert bool(np.asarray(terminated).all())
         assert infos[0]["curriculum/env_level"] in (-4, -3)

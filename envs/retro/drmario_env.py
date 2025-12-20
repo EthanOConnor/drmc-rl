@@ -131,6 +131,7 @@ class DrMarioRetroEnv(gym.Env):
         learner_discount: Optional[float] = None,
         state_viz_interval: Optional[int] = None,
         state_repr: Optional[str] = None,
+        emit_raw_ram: bool = True,
     ) -> None:
         super().__init__()
         assert obs_mode in {"pixel", "state"}
@@ -196,6 +197,7 @@ class DrMarioRetroEnv(gym.Env):
                     state_viz_interval = None
         self._state_viz_interval = max(1, int(state_viz_interval)) if state_viz_interval else None
         self._state_viz_last_t = -1
+        self.emit_raw_ram = bool(emit_raw_ram)
         # Potential shaping setup
         self._learner_discount = None if learner_discount is None else float(learner_discount)
         self._use_shaping = use_potential_shaping and evaluator is not None
@@ -216,6 +218,20 @@ class DrMarioRetroEnv(gym.Env):
         self._state_cache: Optional[DrMarioState] = None
         # Load RAM offsets for state-mode mapping
         self._ram_offsets = self._load_ram_offsets()
+        self._bottle_base_addr = 0x0400
+        self._bottle_stride = 8
+        try:
+            bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
+            if isinstance(bottle, dict):
+                base_hex = bottle.get("base_addr")
+                stride_val = bottle.get("stride")
+                if base_hex:
+                    self._bottle_base_addr = int(str(base_hex), 16)
+                if stride_val is not None:
+                    self._bottle_stride = int(stride_val)
+        except Exception:
+            self._bottle_base_addr = 0x0400
+            self._bottle_stride = 8
 
         # Observation space
         if obs_mode == "pixel":
@@ -257,6 +273,11 @@ class DrMarioRetroEnv(gym.Env):
         self._buttons_layout: Sequence[str] = NES_BUTTONS
         self._button_index = {name: idx for idx, name in enumerate(self._buttons_layout)}
         self._last_frame = np.zeros((240, 256, 3), dtype=np.uint8)
+        # Fetching RGB frames every step can dominate runtime in state-mode
+        # training (e.g., libretro backends often return full-frame copies).
+        # Mark frames dirty on `step()` and refresh lazily in `render()` unless
+        # pixel observations are enabled.
+        self._frame_dirty = True
         self._pix_stack: Optional[np.ndarray] = None  # (4,128,128,3)
         self._ram_cache: Optional[np.ndarray] = None
         # Hold state (used when retro is active)
@@ -285,6 +306,32 @@ class DrMarioRetroEnv(gym.Env):
         # Cached bottle buffer for canonical clear counting (occupied→empty transitions).
         self._prev_bottle_grid: Optional[np.ndarray] = None
 
+        # Diagnostics for backend stability (useful under high env counts).
+        self._backend_last_error: Optional[str] = None
+        self._backend_restart_count: int = 0
+
+    def _recreate_backend(self) -> None:
+        """Recreate a backend instance after a failure.
+
+        This is primarily used for the `cpp-engine` backend in high-throughput
+        training, where we prefer restarting the engine over silently falling
+        back to mock dynamics.
+        """
+
+        if self.backend_name == "mock":
+            self._backend = None
+            self._using_backend = False
+            return
+
+        kwargs = dict(self._backend_kwargs)
+        if self.backend_name == "cpp-engine":
+            kwargs["level"] = int(getattr(self, "level", 0) or 0)
+        backend = make_backend(self.backend_name, **kwargs)
+        backend.load()
+        self._backend = backend
+        self._using_backend = True
+        self._backend_restart_count += 1
+
     def _configure_task_from_level(self) -> None:
         """Configure synthetic task parameters derived from `self.level`.
 
@@ -293,11 +340,11 @@ class DrMarioRetroEnv(gym.Env):
           - level -1: 3 viruses
           - level -2: 2 viruses
           - level -3: 1 virus
-          - level -4..-10: 0 viruses; goal = clear N matches (4-match events)
-              - level -10: 1 match ("any match")
-              - level  -9: 2 matches
+          - level -15..-4: 0 viruses; goal = clear N matches (4-match events)
+              - level -15: 1 match ("any match")
+              - level -14: 2 matches
               ...
-              - level  -4: 7 matches
+              - level  -4: 12 matches
         """
 
         lvl = int(getattr(self, "level", 0) or 0)
@@ -311,8 +358,8 @@ class DrMarioRetroEnv(gym.Env):
                 # "Match-count" stages: clear N matches with 0 viruses.
                 self._synthetic_virus_target = 0
                 self._task_goal_mode = "matches"
-                # lvl=-10 -> 1 match, lvl=-9 -> 2, ..., lvl=-4 -> 7.
-                self._match_target = int(max(1, 11 + lvl))
+                # lvl=-15 -> 1 match, lvl=-14 -> 2, ..., lvl=-4 -> 12.
+                self._match_target = int(max(1, 16 + lvl))
             else:
                 # Virus-count stages: clear all remaining viruses.
                 target = max(0, 4 + lvl)
@@ -326,7 +373,7 @@ class DrMarioRetroEnv(gym.Env):
         reliable signal that *a 4-match has occurred*.
 
         This is used by the curriculum's synthetic match-count stages
-        (levels `-10..-4`), where episodes terminate after N clear events.
+        (levels `-15..-4`), where episodes terminate after N clear events.
         """
 
         if self._state_cache is None:
@@ -339,17 +386,8 @@ class DrMarioRetroEnv(gym.Env):
         ram_arr = self._state_cache.ram.arr
         ram_len = int(ram_arr.shape[0])
 
-        bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
-        base_hex = bottle.get("base_addr") if isinstance(bottle, dict) else None
-        stride_val = bottle.get("stride") if isinstance(bottle, dict) else None
-        try:
-            base_addr = int(base_hex, 16) if base_hex else 0x0400
-        except Exception:
-            base_addr = 0x0400
-        try:
-            stride = int(stride_val) if stride_val is not None else 8
-        except Exception:
-            stride = 8
+        base_addr = int(getattr(self, "_bottle_base_addr", 0x0400))
+        stride = int(getattr(self, "_bottle_stride", 8))
 
         H = int(getattr(ram_specs, "STATE_HEIGHT", 16))
         W = int(getattr(ram_specs, "STATE_WIDTH", 8))
@@ -357,22 +395,24 @@ class DrMarioRetroEnv(gym.Env):
         just_emptied_hi = int(getattr(ram_specs, "FIELD_JUST_EMPTIED", 0xF0))
         empty_val = int(getattr(ram_specs, "FIELD_EMPTY", 0xFF))
 
-        count = 0
-        for r in range(H):
-            row_base = int(base_addr + r * stride)
-            if row_base < 0 or (row_base + W) > ram_len:
-                continue
-            row = ram_arr[row_base : row_base + W]
-            # Note: FIELD_EMPTY is 0xFF, so its high nibble is also 0xF0. We
-            # must NOT treat empty tiles as "just emptied" when masking by
-            # high nibble.
-            row_u8 = row.astype(np.uint8, copy=False)
-            type_hi = (row_u8 & np.uint8(0xF0)).astype(np.uint8, copy=False)
-            mask = (type_hi == np.uint8(cleared_hi)) | (
-                (type_hi == np.uint8(just_emptied_hi)) & (row_u8 != np.uint8(empty_val))
-            )
-            count += int(mask.sum())
-        return int(count)
+        total = int(H * stride)
+        if base_addr < 0 or (base_addr + total) > ram_len:
+            return 0
+
+        window = ram_arr[base_addr : base_addr + total]
+        try:
+            grid = window.reshape((H, stride))[:, :W]
+        except Exception:
+            return 0
+
+        grid_u8 = grid.astype(np.uint8, copy=False)
+        # Note: FIELD_EMPTY is 0xFF, so its high nibble is also 0xF0. We must
+        # NOT treat empty tiles as "just emptied" when masking by high nibble.
+        type_hi = (grid_u8 & np.uint8(0xF0)).astype(np.uint8, copy=False)
+        mask = (type_hi == np.uint8(cleared_hi)) | (
+            (type_hi == np.uint8(just_emptied_hi)) & (grid_u8 != np.uint8(empty_val))
+        )
+        return int(mask.sum())
 
     def _read_bottle_grid_u8(self) -> Optional[np.ndarray]:
         """Return a (16,8) uint8 copy of the bottle buffer, or None if unavailable."""
@@ -382,27 +422,20 @@ class DrMarioRetroEnv(gym.Env):
         ram_arr = self._state_cache.ram.arr
         ram_len = int(ram_arr.shape[0])
 
-        bottle = self._ram_offsets.get("bottle") if isinstance(self._ram_offsets, dict) else None
-        base_hex = bottle.get("base_addr") if isinstance(bottle, dict) else None
-        stride_val = bottle.get("stride") if isinstance(bottle, dict) else None
-        try:
-            base_addr = int(base_hex, 16) if base_hex else 0x0400
-        except Exception:
-            base_addr = 0x0400
-        try:
-            stride = int(stride_val) if stride_val is not None else 8
-        except Exception:
-            stride = 8
+        base_addr = int(getattr(self, "_bottle_base_addr", 0x0400))
+        stride = int(getattr(self, "_bottle_stride", 8))
 
         H = int(getattr(ram_specs, "STATE_HEIGHT", 16))
         W = int(getattr(ram_specs, "STATE_WIDTH", 8))
-        grid = np.empty((H, W), dtype=np.uint8)
-        for r in range(H):
-            row_base = int(base_addr + r * stride)
-            if row_base < 0 or (row_base + W) > ram_len:
-                return None
-            grid[r, :] = ram_arr[row_base : row_base + W]
-        return grid
+        total = int(H * stride)
+        if base_addr < 0 or (base_addr + total) > ram_len:
+            return None
+        window = ram_arr[base_addr : base_addr + total]
+        try:
+            grid = window.reshape((H, stride))[:, :W]
+        except Exception:
+            return None
+        return np.ascontiguousarray(grid, dtype=np.uint8)
 
     @staticmethod
     def _to_bcd(value: int) -> int:
@@ -1253,13 +1286,104 @@ class DrMarioRetroEnv(gym.Env):
                     vec[idx] = 1
         return vec
 
-    def _backend_step_buttons(self, buttons: Sequence[int], repeat: int = 1) -> None:
+    def _backend_step_buttons(
+        self,
+        buttons: Sequence[int],
+        repeat: int = 1,
+        perf: Optional[Dict[str, float]] = None,
+    ) -> None:
         if not self._using_backend or self._backend is None:
             return
-        self._backend.step(list(buttons), repeat=max(1, int(repeat)))
-        self._last_frame = self._backend.get_frame()
-        self._update_pixel_stack(self._last_frame)
+        repeats = max(1, int(repeat))
+
+        t0 = perf_counter() if perf is not None else 0.0
+        self._backend.step(list(buttons), repeat=repeats)
+        if perf is not None:
+            perf["perf/env_backend_step_sec"] = float(perf_counter() - t0)
+
+        # Mark RGB output dirty; fetch a fresh frame lazily in `render()` unless
+        # pixel observations are requested.
+        self._frame_dirty = True
+
+        if self.obs_mode == "pixel":
+            t0 = perf_counter() if perf is not None else 0.0
+            self._last_frame = self._backend.get_frame()
+            self._frame_dirty = False
+            if perf is not None:
+                perf["perf/env_get_frame_sec"] = float(perf_counter() - t0)
+
+            t0 = perf_counter() if perf is not None else 0.0
+            self._update_pixel_stack(self._last_frame)
+            if perf is not None:
+                perf["perf/env_pixel_stack_sec"] = float(perf_counter() - t0)
+
+        t0 = perf_counter() if perf is not None else 0.0
         self._read_ram_array(refresh=True)
+        if perf is not None:
+            perf["perf/env_get_ram_sec"] = float(perf_counter() - t0)
+
+    def sync_after_backend_run(self, frames: int) -> None:
+        """Update cached state/observations after the backend was advanced externally.
+
+        This is used by high-throughput wrappers (e.g., placement SMDP training)
+        that let the C++ engine fast-forward many frames without calling
+        `env.step()` for each intermediate frame.
+        """
+
+        if not self._using_backend or self._backend is None:
+            raise RuntimeError("sync_after_backend_run requires an active backend.")
+
+        frames_i = int(max(0, int(frames)))
+        if frames_i == 0:
+            return
+
+        # Keep internal time in frames (this env uses `_t` as the canonical clock).
+        self._t += frames_i
+        self._elapsed_frames += frames_i
+
+        self._frame_dirty = True
+        self._read_ram_array(refresh=True)
+        ram_arr = self._read_ram_array(refresh=False)
+        if ram_arr is None:
+            raise RuntimeError("Backend did not expose RAM")
+        ram_bytes = ram_arr.tobytes()
+
+        prev_stack4 = None if self._state_cache is None else self._state_cache.stack4
+        self._state_cache = build_state(
+            ram_bytes=ram_bytes,
+            ram_offsets=self._ram_offsets,
+            prev_stack4=prev_stack4,
+            t=self._t,
+            elapsed_frames=self._elapsed_frames,
+            frame_skip=self.frame_skip,
+            last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
+        )
+        self._state_stack = self._state_cache.stack4
+
+        self._game_mode_val = self._state_cache.ram_vals.mode
+        self._gameplay_active = self._state_cache.ram_vals.gameplay_active
+        self._stage_clear_flag = self._state_cache.ram_vals.stage_clear
+        self._ending_active = self._state_cache.ram_vals.ending_active
+        self._player_count = self._state_cache.ram_vals.player_count
+        self._pill_spawn_counter = self._state_cache.ram_vals.pill_counter
+        self._frames_until_drop_val = self._state_cache.ram_vals.gravity_counter
+
+        v_now = self._state_cache.calc.viruses_remaining
+        if v_now is not None:
+            self._viruses_remaining = int(v_now)
+            self._viruses_prev = int(v_now)
+
+        obs = self._observe()
+        self.last_obs = obs
+        if self.obs_mode == "state":
+            self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
+        elif self._use_shaping:
+            self._state_prev = obs["obs"] if isinstance(obs, dict) else obs
+
+        try:
+            self._prev_bottle_grid = self._read_bottle_grid_u8()
+        except Exception:
+            pass
 
     def backend_reset(self) -> None:
         """Reset the underlying backend and mark the next env.reset as already handled."""
@@ -1600,76 +1724,134 @@ class DrMarioRetroEnv(gym.Env):
         # their reset routine runs, which is necessary for randomizing the
         # initial virus layout (level setup).
         pre_seeded = False
-        if opts.get("randomize_rng") and self._using_backend and self._backend is not None:
-            pre_seed_fn = getattr(self._backend, "set_next_reset_rng_seed_bytes", None)
-            if callable(pre_seed_fn):
-                try:
-                    if override_seq is None:
-                        rng = np.random.default_rng()
-                        override_seq = [
-                            int(v) & 0xFF
-                            for v in rng.integers(0, 256, size=2, dtype=np.uint8).tolist()
-                        ]
-                    pre_seed_fn(override_seq)
-                    self._last_rng_seed_bytes = tuple(int(v) & 0xFF for v in override_seq)  # type: ignore[assignment]
-                    pre_seeded = True
-                except Exception as exc:
-                    warnings.warn(f"Pre-reset RNG seeding failed: {exc}")
-                    pre_seeded = False
 
-        # Some backends can also accept the `waitFrames` seed for the level-intro
-        # delay *before* their reset runs. This is used by emulator parity tools
-        # to match the Python-side auto-start boundary, which can vary by a
-        # frame in the libretro pipeline.
-        if self._using_backend and self._backend is not None and "intro_wait_frames" in opts:
-            pre_wait_fn = getattr(self._backend, "set_next_reset_intro_wait_frames", None)
-            if callable(pre_wait_fn):
-                try:
-                    pre_wait_fn(int(opts.get("intro_wait_frames") or 0))
-                except Exception as exc:
-                    warnings.warn(f"Pre-reset waitFrames seeding failed: {exc}")
-
-        # Parity harnesses may also seed `frameCounter` (NMI) low byte.
-        if self._using_backend and self._backend is not None and "intro_frame_counter_lo" in opts:
-            pre_fc_fn = getattr(self._backend, "set_next_reset_intro_frame_counter_lo", None)
-            if callable(pre_fc_fn):
-                try:
-                    pre_fc_fn(int(opts.get("intro_frame_counter_lo")) & 0xFF)
-                except Exception as exc:
-                    warnings.warn(f"Pre-reset frameCounter seeding failed: {exc}")
-        if self._using_backend and self._backend is not None:
+        # If the cpp-engine backend was disabled due to a previous failure, try
+        # to recreate it on reset so state-mode training can recover.
+        if self.backend_name == "cpp-engine" and (not self._using_backend or self._backend is None):
             try:
-                if not backend_reset_pending:
-                    self._backend.reset()
-                self._last_frame = self._backend.get_frame()
-                self._update_pixel_stack(self._last_frame)
-                self._read_ram_array(refresh=True)
-
-                ram_arr = self._read_ram_array(refresh=False)
-                ram_bytes = ram_arr.tobytes()
-
-                # Freeze/update canonical state
-                self._state_cache = build_state(
-                    ram_bytes=ram_bytes,
-                    ram_offsets=self._ram_offsets,
-                    prev_stack4=None,
-                    t=self._t,
-                    elapsed_frames=self._elapsed_frames,
-                    frame_skip=self.frame_skip,
-                    last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
-                )
-                self._state_stack = self._state_cache.stack4
-
+                self._recreate_backend()
             except Exception as exc:
-                warnings.warn(f"Backend reset failed: {exc}. Falling back to mock dynamics.")
-                try:
-                    self._backend.close()
-                except Exception:
-                    pass
+                self._backend_last_error = f"backend_recreate(reset): {exc!r}"
+                warnings.warn(f"Failed to recreate backend '{self.backend_name}': {exc}. Falling back to mock dynamics.")
                 self._backend = None
                 self._using_backend = False
-            finally:
-                self._backend_reset_done = False
+
+        def _apply_pre_reset_seeds() -> bool:
+            nonlocal override_seq
+            if not self._using_backend or self._backend is None:
+                return False
+
+            seeded = False
+            if opts.get("randomize_rng"):
+                pre_seed_fn = getattr(self._backend, "set_next_reset_rng_seed_bytes", None)
+                if callable(pre_seed_fn):
+                    try:
+                        if override_seq is None:
+                            rng = np.random.default_rng()
+                            override_seq = [
+                                int(v) & 0xFF
+                                for v in rng.integers(0, 256, size=2, dtype=np.uint8).tolist()
+                            ]
+                        pre_seed_fn(override_seq)
+                        self._last_rng_seed_bytes = tuple(int(v) & 0xFF for v in override_seq)  # type: ignore[assignment]
+                        seeded = True
+                    except Exception as exc:
+                        warnings.warn(f"Pre-reset RNG seeding failed: {exc}")
+                        seeded = False
+
+            # Some backends can also accept the `waitFrames` seed for the level-intro
+            # delay *before* their reset runs. This is used by emulator parity tools
+            # to match the Python-side auto-start boundary, which can vary by a
+            # frame in the libretro pipeline.
+            if "intro_wait_frames" in opts:
+                pre_wait_fn = getattr(self._backend, "set_next_reset_intro_wait_frames", None)
+                if callable(pre_wait_fn):
+                    try:
+                        pre_wait_fn(int(opts.get("intro_wait_frames") or 0))
+                    except Exception as exc:
+                        warnings.warn(f"Pre-reset waitFrames seeding failed: {exc}")
+
+            # Parity harnesses may also seed `frameCounter` (NMI) low byte.
+            if "intro_frame_counter_lo" in opts:
+                pre_fc_fn = getattr(self._backend, "set_next_reset_intro_frame_counter_lo", None)
+                if callable(pre_fc_fn):
+                    try:
+                        pre_fc_fn(int(opts.get("intro_frame_counter_lo")) & 0xFF)
+                    except Exception as exc:
+                        warnings.warn(f"Pre-reset frameCounter seeding failed: {exc}")
+
+            return seeded
+
+        if self._using_backend and self._backend is not None:
+            retries = 0
+            if self.backend_name == "cpp-engine":
+                try:
+                    retries = max(0, int(os.environ.get("DRMARIO_CPP_RESET_RETRIES", "2")))
+                except Exception:
+                    retries = 2
+            max_attempts = int(retries) + 1
+
+            last_exc: Optional[BaseException] = None
+            for attempt in range(max_attempts):
+                try:
+                    pre_seeded = bool(_apply_pre_reset_seeds())
+                    if attempt > 0 or not backend_reset_pending:
+                        self._backend.reset()
+                    self._last_frame = self._backend.get_frame()
+                    self._update_pixel_stack(self._last_frame)
+                    self._read_ram_array(refresh=True)
+
+                    ram_arr = self._read_ram_array(refresh=False)
+                    if ram_arr is None:
+                        raise RuntimeError("Backend did not expose RAM")
+                    ram_bytes = ram_arr.tobytes()
+
+                    # Freeze/update canonical state
+                    self._state_cache = build_state(
+                        ram_bytes=ram_bytes,
+                        ram_offsets=self._ram_offsets,
+                        prev_stack4=None,
+                        t=self._t,
+                        elapsed_frames=self._elapsed_frames,
+                        frame_skip=self.frame_skip,
+                        last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
+                    )
+                    self._state_stack = self._state_cache.stack4
+
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    self._backend_last_error = f"backend_reset: {exc!r}"
+
+                    # Best-effort restart for cpp-engine; for other backends we
+                    # preserve the historical behavior (warn + fall back).
+                    try:
+                        self._backend.close()
+                    except Exception:
+                        pass
+                    self._backend = None
+                    self._using_backend = False
+
+                    will_retry = bool(self.backend_name == "cpp-engine" and attempt + 1 < max_attempts)
+                    if not will_retry:
+                        warnings.warn(f"Backend reset failed: {exc}. Falling back to mock dynamics.")
+                        break
+                    warnings.warn(
+                        f"Backend reset failed: {exc}. Restarting backend and retrying "
+                        f"({attempt + 1}/{max_attempts - 1})."
+                    )
+                    try:
+                        self._recreate_backend()
+                    except Exception as exc2:
+                        self._backend_last_error = f"backend_recreate(reset): {exc2!r}"
+                        continue
+            if last_exc is not None and self.backend_name == "cpp-engine":
+                # Surface the most recent backend reset failure to wrappers (e.g. placement)
+                # that require state-mode data. This is intentionally a warning-only here:
+                # the placement wrapper will retry/reset if needed.
+                warnings.warn(f"cpp-engine backend reset ultimately failed: {last_exc}")
+            self._backend_reset_done = False
         else:
             self._backend_reset_done = False
         if (not pre_seeded) and opts.get("randomize_rng") and self._using_backend and self._backend is not None:
@@ -1762,13 +1944,15 @@ class DrMarioRetroEnv(gym.Env):
         if getattr(self, "_match_target", None) is not None:
             info["match_target"] = int(self._match_target or 0)
         info["matches_completed"] = int(getattr(self, "_matches_completed", 0))
-        info["raw_ram"] = self._raw_ram_bytes()
+        if self.emit_raw_ram:
+            info["raw_ram"] = self._raw_ram_bytes()
         if self._last_rng_seed_bytes is not None:
             info["rng_seed"] = self._last_rng_seed_bytes
         return obs, self._augment_info(info)
 
 
     def step(self, action: int) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+        step_t0 = perf_counter()
         self._t += 1
         self._elapsed_frames += self.frame_skip
         done = False
@@ -1823,6 +2007,9 @@ class DrMarioRetroEnv(gym.Env):
 
         self._prev_move_dir = new_move_dir
 
+        env_perf: Dict[str, float] = {}
+        ram_bytes: Optional[bytes] = None
+
         if self._using_backend and self._backend is not None:
             gameplay_flag: Optional[bool] = None
             try:
@@ -1836,7 +2023,7 @@ class DrMarioRetroEnv(gym.Env):
                         )
                     except Exception:
                         pass
-                self._backend_step_buttons(buttons, repeat=self.frame_skip)
+                self._backend_step_buttons(buttons, repeat=self.frame_skip, perf=env_perf)
                 if _timing:
                     _t1 = perf_counter()
                     try:
@@ -1848,10 +2035,15 @@ class DrMarioRetroEnv(gym.Env):
                         pass
 
                 # Snapshot RAM exactly once per step
-                ram_arr = self._read_ram_array()  # existing helper; returns np.uint8 array
+                t0 = perf_counter()
+                ram_arr = self._read_ram_array(refresh=False)  # np.uint8 array cache
+                if ram_arr is None:
+                    raise RuntimeError("Backend did not expose RAM")
                 ram_bytes = ram_arr.tobytes()
+                env_perf["perf/env_ram_bytes_sec"] = float(perf_counter() - t0)
 
                 # Freeze/update canonical state
+                t0 = perf_counter()
                 self._state_cache = build_state(
                     ram_bytes=ram_bytes,
                     ram_offsets=self._ram_offsets,
@@ -1861,6 +2053,7 @@ class DrMarioRetroEnv(gym.Env):
                     frame_skip=self.frame_skip,
                     last_terminal=self._last_terminal if hasattr(self, "_last_terminal") else None,
                 )
+                env_perf["perf/env_build_state_sec"] = float(perf_counter() - t0)
                 self._state_stack = self._state_cache.stack4
 
                 mode_val = self._state_cache.ram_vals.mode
@@ -1914,10 +2107,13 @@ class DrMarioRetroEnv(gym.Env):
             delta_v = 1 if self._rng.rand() < 0.02 else 0
             self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
 
+        t0 = perf_counter()
         obs = self._observe()
+        env_perf["perf/env_observe_sec"] = float(perf_counter() - t0)
         self.last_obs = obs
 
         # New reward calculation
+        reward_t0 = perf_counter()
         r_env = 0.0
 
         state_prev_frame: Optional[np.ndarray] = None
@@ -2019,43 +2215,60 @@ class DrMarioRetroEnv(gym.Env):
             s_prev_latest_frame = state_prev_frame
             s_next_latest_frame = state_next_frame
             if not topout:
-                if adjacency_enabled:
-                    adjacency_bonus = self._compute_adjacency_bonus(s_prev_latest_frame, s_next_latest_frame)
-                if virus_adjacency_enabled:
-                    virus_adjacency_bonus = self._compute_virus_adjacency_bonus(
-                        s_prev_latest_frame, s_next_latest_frame
-                    )
+                # Most frames during capsule falling do not change the bottle.
+                # Avoid expensive adjacency/height computations unless the set
+                # of static tiles actually changed.
+                static_prev = ram_specs.get_static_mask(s_prev_latest_frame)
                 static_pills = ram_specs.get_static_mask(s_next_latest_frame)
+                static_changed = not np.array_equal(static_prev, static_pills)
+                new_static = static_pills & (~static_prev)
+
+                if (adjacency_enabled or virus_adjacency_enabled) and bool(new_static.any()):
+                    if adjacency_enabled:
+                        adjacency_bonus = self._compute_adjacency_bonus(
+                            s_prev_latest_frame, s_next_latest_frame
+                        )
+                    if virus_adjacency_enabled:
+                        virus_adjacency_bonus = self._compute_virus_adjacency_bonus(
+                            s_prev_latest_frame, s_next_latest_frame
+                        )
                 if height_penalty_enabled:
-                    if static_pills.any():
-                        board_h = static_pills.shape[0]
-                        tallest_height = 0
-                        for c in range(static_pills.shape[1]):
-                            rows = np.nonzero(static_pills[:, c])[0]
-                            if rows.size > 0:
-                                highest_row = int(rows[-1])
-                                height_from_bottom = board_h - highest_row
-                                if height_from_bottom > tallest_height:
-                                    tallest_height = height_from_bottom
-                        if tallest_height > 0:
-                            virus_mask = ram_specs.get_virus_mask(s_next_latest_frame)
-                            virus_height = 0
-                            if virus_mask.any():
-                                virus_rows = np.nonzero(virus_mask)[0]
-                                highest_virus_row = int(virus_rows.max())
-                                virus_height = board_h - highest_virus_row
-                            lines_above_virus = max(0, tallest_height - virus_height)
-                            penalty_units = min(tallest_height + 2 * lines_above_virus, 40)
-                            height_penalty_raw = -self.reward_cfg.column_height_penalty * float(penalty_units)
-                            height_penalty_delta = height_penalty_raw - self._prev_height_penalty
+                    if static_changed:
+                        if static_pills.any():
+                            board_h = static_pills.shape[0]
+                            tallest_height = 0
+                            for c in range(static_pills.shape[1]):
+                                rows = np.nonzero(static_pills[:, c])[0]
+                                if rows.size > 0:
+                                    highest_row = int(rows[-1])
+                                    height_from_bottom = board_h - highest_row
+                                    if height_from_bottom > tallest_height:
+                                        tallest_height = height_from_bottom
+                            if tallest_height > 0:
+                                virus_mask = ram_specs.get_virus_mask(s_next_latest_frame)
+                                virus_height = 0
+                                if virus_mask.any():
+                                    virus_rows = np.nonzero(virus_mask)[0]
+                                    highest_virus_row = int(virus_rows.max())
+                                    virus_height = board_h - highest_virus_row
+                                lines_above_virus = max(0, tallest_height - virus_height)
+                                penalty_units = min(tallest_height + 2 * lines_above_virus, 40)
+                                height_penalty_raw = -self.reward_cfg.column_height_penalty * float(
+                                    penalty_units
+                                )
+                                height_penalty_delta = height_penalty_raw - self._prev_height_penalty
+                                r_env += height_penalty_delta
+                                self._prev_height_penalty = height_penalty_raw
+                        else:
+                            # No static pills: decay penalty to 0 when enabled
+                            height_penalty_raw = 0.0
+                            height_penalty_delta = -self._prev_height_penalty
                             r_env += height_penalty_delta
-                            self._prev_height_penalty = height_penalty_raw
+                            self._prev_height_penalty = 0.0
                     else:
-                        # No static pills: decay penalty to 0 when enabled
-                        height_penalty_raw = 0.0
-                        height_penalty_delta = -self._prev_height_penalty
-                        r_env += height_penalty_delta
-                        self._prev_height_penalty = 0.0
+                        # Unchanged: keep last penalty without spending time recomputing it.
+                        height_penalty_raw = float(self._prev_height_penalty)
+                        height_penalty_delta = 0.0
                 else:
                     # Disabled: ensure internal state is neutral without adding reward cost
                     height_penalty_raw = 0.0
@@ -2164,7 +2377,12 @@ class DrMarioRetroEnv(gym.Env):
         if done or truncated:
             self._elapsed_frames = 0
 
+        env_perf["perf/env_reward_sec"] = float(perf_counter() - reward_t0)
         r_total = float(r_env + r_shape)
+        info_t0 = perf_counter()
+        raw_ram = None
+        if self.emit_raw_ram:
+            raw_ram = ram_bytes if ram_bytes is not None else self._raw_ram_bytes()
         base_info: Dict[str, Any] = {
             "t": self._t,
             "viruses_remaining": self._viruses_remaining,
@@ -2205,8 +2423,9 @@ class DrMarioRetroEnv(gym.Env):
             "terminal_reason": self._last_terminal,
             "level": self.level,
             "rng_randomize": bool(getattr(self, "rng_randomize", False)),
-            "raw_ram": self._raw_ram_bytes(),
         }
+        if self.emit_raw_ram:
+            base_info["raw_ram"] = raw_ram
         if self._game_mode_val is not None:
             base_info["game_mode"] = int(self._game_mode_val)
         if self._gameplay_active is not None:
@@ -2234,12 +2453,22 @@ class DrMarioRetroEnv(gym.Env):
         if not (done or truncated):
             self._last_terminal = None
         info = self._augment_info(base_info)
+        env_perf["perf/env_info_sec"] = float(perf_counter() - info_t0)
+        env_perf["perf/env_step_sec"] = float(perf_counter() - step_t0)
+        info.update(env_perf)
         return obs, r_total, done, truncated, info
 
     def render(self) -> Optional[np.ndarray]:
         # For now, return a simple mock frame
         if self.render_mode == "rgb_array":
-            if self._using_backend:
+            if self._using_backend and self._backend is not None:
+                if bool(getattr(self, "_frame_dirty", False)):
+                    try:
+                        self._last_frame = self._backend.get_frame()
+                        self._frame_dirty = False
+                    except Exception:
+                        # Rendering must never crash training loops.
+                        pass
                 return np.ascontiguousarray(self._last_frame)
             return (self._mock_obs()[0] * 255).astype(np.uint8)
         return None

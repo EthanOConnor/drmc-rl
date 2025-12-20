@@ -1,15 +1,20 @@
+from __future__ import annotations
+
 import ctypes
-import ctypes.util
 import mmap
 import os
 from pathlib import Path
 from typing import Optional, Tuple
 
-# Shared memory configuration (must match C++)
-SHM_NAME = "/drmario_shm"
-
 
 class DrMarioStatePy(ctypes.Structure):
+    """ctypes mirror of `DrMarioState` in `game_engine/GameState.h`.
+
+    This module intentionally lives under `envs.backends` so it is importable from
+    multiprocessing spawn workers (the `game_engine/` package is not installed by
+    default).
+    """
+
     _fields_ = [
         ("buttons", ctypes.c_uint8),
         ("buttons_prev", ctypes.c_uint8),
@@ -66,75 +71,28 @@ class DrMarioStatePy(ctypes.Structure):
         ("run_last_spawn_id", ctypes.c_uint8),
         ("run_reason", ctypes.c_uint8),
         ("run_reserved", ctypes.c_uint8),
-]
-
-
-def _load_libc() -> ctypes.CDLL:
-    libc_path = ctypes.util.find_library("c")
-    if not libc_path:
-        libc_path = "libc.dylib"
-    return ctypes.CDLL(libc_path, use_errno=True)
-
-
-def open_shared_memory(
-    name: str = SHM_NAME, size: Optional[int] = None
-) -> Tuple[mmap.mmap, DrMarioStatePy]:
-    if size is None:
-        size = ctypes.sizeof(DrMarioStatePy)
-    shm_file_env = os.environ.get("DRMARIO_SHM_FILE")
-    if shm_file_env:
-        fd = os.open(shm_file_env, os.O_RDWR | os.O_CREAT, 0o666)
-        current_size = os.path.getsize(shm_file_env)
-        if current_size < size:
-            os.ftruncate(fd, size)
-        mm = mmap.mmap(
-            fd, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE
-        )
-        os.close(fd)
-        state = DrMarioStatePy.from_buffer(mm)
-        return mm, state
-
-    libc = _load_libc()
-    shm_open = libc.shm_open
-    shm_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
-    shm_open.restype = ctypes.c_int
-
-    fd = shm_open(name.encode(), os.O_RDWR, 0o666)
-    if fd < 0:
-        err = ctypes.get_errno()
-        raise OSError(err, f"shm_open({name}) failed")
-
-    mm = mmap.mmap(
-        fd, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE
-    )
-    os.close(fd)
-    state = DrMarioStatePy.from_buffer(mm)
-    return mm, state
-
-
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def open_shared_memory_file(path: Path, *, size: Optional[int] = None) -> Tuple[mmap.mmap, DrMarioStatePy]:
-    """Open an engine shared-memory mapping backed by a concrete file path.
-
-    This is the preferred entry point for running multiple engine instances in
-    the same Python process, because it avoids relying on the global
-    `DRMARIO_SHM_FILE` environment variable.
-    """
-
-    if size is None:
-        size = ctypes.sizeof(DrMarioStatePy)
-    p = Path(path)
-    fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o666)
-    current_size = os.path.getsize(p)
-    if current_size < size:
-        os.ftruncate(fd, size)
-    mm = mmap.mmap(fd, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE)
-    os.close(fd)
-    state = DrMarioStatePy.from_buffer(mm)
-    return mm, state
+    ]
 
 
 SHM_SIZE = ctypes.sizeof(DrMarioStatePy)
+
+
+def open_shared_memory_file(
+    path: Path, *, size: Optional[int] = None
+) -> Tuple[mmap.mmap, DrMarioStatePy]:
+    """Open an engine shared-memory mapping backed by a concrete file path."""
+
+    if size is None:
+        size = int(SHM_SIZE)
+    p = Path(path)
+    fd = os.open(str(p), os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        current_size = os.path.getsize(p)
+        if current_size < size:
+            os.ftruncate(fd, size)
+        mm = mmap.mmap(fd, size, flags=mmap.MAP_SHARED, prot=mmap.PROT_READ | mmap.PROT_WRITE)
+    finally:
+        os.close(fd)
+    state = DrMarioStatePy.from_buffer(mm)
+    return mm, state
+

@@ -30,6 +30,7 @@ from envs.retro.drmario_env import Action
 from envs.state_core import DrMarioState
 from envs.retro.placement_planner import (
     BoardState,
+    ControllerStep,
     PillSnapshot,
     PlacementPlanner,
     PlannerError,
@@ -169,6 +170,57 @@ class _RewardBreakdown:
         self.time_reward += self._as_float(info.get("time_reward"))
 
 
+@dataclass
+class _PerfBreakdown:
+    """Accumulate per-frame timing info from the underlying per-frame env.
+
+    The placement environment executes many underlying `env.step()` calls per
+    macro decision. The base env (DrMarioRetroEnv) emits `perf/env_*_sec` keys
+    per frame; we sum them here and surface the totals on the macro step info
+    so UI-side perf accounting can attribute time correctly.
+    """
+
+    env_step_calls: int = 0
+
+    env_step_sec: float = 0.0
+    env_backend_step_sec: float = 0.0
+    env_get_frame_sec: float = 0.0
+    env_pixel_stack_sec: float = 0.0
+    env_get_ram_sec: float = 0.0
+    env_ram_bytes_sec: float = 0.0
+    env_build_state_sec: float = 0.0
+    env_observe_sec: float = 0.0
+    env_reward_sec: float = 0.0
+    env_info_sec: float = 0.0
+
+    @staticmethod
+    def _as_float(value: Any) -> float:
+        if value is None:
+            return 0.0
+        try:
+            if isinstance(value, np.ndarray):
+                value = value.item()
+        except Exception:
+            return 0.0
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    def add_frame(self, *, info: Dict[str, Any]) -> None:
+        self.env_step_calls += 1
+        self.env_step_sec += self._as_float(info.get("perf/env_step_sec"))
+        self.env_backend_step_sec += self._as_float(info.get("perf/env_backend_step_sec"))
+        self.env_get_frame_sec += self._as_float(info.get("perf/env_get_frame_sec"))
+        self.env_pixel_stack_sec += self._as_float(info.get("perf/env_pixel_stack_sec"))
+        self.env_get_ram_sec += self._as_float(info.get("perf/env_get_ram_sec"))
+        self.env_ram_bytes_sec += self._as_float(info.get("perf/env_ram_bytes_sec"))
+        self.env_build_state_sec += self._as_float(info.get("perf/env_build_state_sec"))
+        self.env_observe_sec += self._as_float(info.get("perf/env_observe_sec"))
+        self.env_reward_sec += self._as_float(info.get("perf/env_reward_sec"))
+        self.env_info_sec += self._as_float(info.get("perf/env_info_sec"))
+
+
 class DrMarioPlacementEnv(gym.Wrapper):
     """Spawn-latched placement environment (512-way macro actions)."""
 
@@ -187,6 +239,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._planner = planner or PlacementPlanner()
         self._max_wait_frames = int(max_wait_frames)
         self._debug = bool(debug)
+        # Training throughput mode: when using the C++ engine backend, allow the
+        # wrapper to fast-forward many frames internally without calling the
+        # per-frame `env.step()` loop. Disable with DRMARIO_CPP_FAST=0.
+        self._cpp_fast = self._env_flag("DRMARIO_CPP_FAST", default=True)
         self._ctx: Optional[_DecisionContext] = None
         self._pose_mismatch_count = 0
         self._pose_mismatch_log_path = self._resolve_pose_mismatch_log_path()
@@ -207,7 +263,140 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._last_obs: Any = None
         self._last_info: Dict[str, Any] = {}
 
+        # NES button bits (match C++ engine + libretro conventions).
+        self._BTN_RIGHT = 0x01
+        self._BTN_LEFT = 0x02
+        self._BTN_DOWN = 0x04
+        self._BTN_B = 0x40
+        self._BTN_A = 0x80
+
+        # C++ engine batched-run reason codes (see `game_engine/main.cpp`).
+        self._RUN_REASON_DECISION = 2
+        self._RUN_REASON_TERMINAL = 3
+        self._RUN_REASON_TIMEOUT = 4
+
+        # Optional task budgets (for time-based curricula).
+        # These are wrapper-level so curricula can set them without depending on
+        # backend-specific counters.
+        self.task_max_frames: Optional[int] = None
+        self.task_max_spawns: Optional[int] = None
+        self._task_frames_used: int = 0
+        self._task_spawns_used: int = 0
+
     # ------------------------------------------------------------------ utils
+
+    def _consume_spawn(self, spawn_id: Optional[int]) -> None:
+        """Mark a spawn as consumed and increment the episode spawn counter.
+
+        A spawn can be consumed either because the agent committed to a macro
+        action for it, or because the wrapper detected a spawn with zero feasible
+        actions and skipped it (spawn-blocked / immediate top-out).
+        """
+
+        if spawn_id is None:
+            return
+        try:
+            sid = int(spawn_id)
+        except Exception:
+            return
+        if self._consumed_spawn_id is None or int(self._consumed_spawn_id) != sid:
+            self._task_spawns_used += 1
+        self._consumed_spawn_id = sid
+
+    def _finalize_step(
+        self,
+        obs: Any,
+        reward: float,
+        terminated: bool,
+        truncated: bool,
+        info: Dict[str, Any],
+        *,
+        tau_frames: int,
+    ) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+        """Update task counters, enforce budgets, and attach task info."""
+
+        tau_i = int(max(0, int(tau_frames)))
+        self._task_frames_used += tau_i
+
+        objective_met = bool(info.get("goal_achieved", False))
+
+        max_frames_raw = getattr(self, "task_max_frames", None)
+        max_spawns_raw = getattr(self, "task_max_spawns", None)
+        try:
+            max_frames = None if max_frames_raw is None else int(max_frames_raw)
+        except Exception:
+            max_frames = None
+        try:
+            max_spawns = None if max_spawns_raw is None else int(max_spawns_raw)
+        except Exception:
+            max_spawns = None
+
+        frames_exceeded = bool(max_frames is not None and self._task_frames_used > int(max_frames))
+        spawns_exceeded = bool(max_spawns is not None and self._task_spawns_used > int(max_spawns))
+        budget_exceeded = bool(frames_exceeded or spawns_exceeded)
+        within_budget = not budget_exceeded
+        success = bool(objective_met and within_budget)
+
+        if "goal_achieved" not in info:
+            info["goal_achieved"] = False
+        if "cleared" not in info:
+            info["cleared"] = False
+
+        # If the underlying env terminated due to a clear/topout but we exceeded
+        # the curriculum budget, mark the episode as unsuccessful and strip the
+        # terminal bonus (if present) so reward semantics match `goal_achieved`.
+        if objective_met and not within_budget:
+            bonus = 0.0
+            for key in ("terminal_bonus_reward", "reward/terminal_bonus"):
+                try:
+                    bonus = float(info.get(key, 0.0) or 0.0)
+                except Exception:
+                    bonus = 0.0
+                if bonus != 0.0:
+                    break
+            if bonus != 0.0:
+                reward = float(reward) - float(bonus)
+                for key in ("r_env", "r_total", "reward/r_env", "reward/r_total", "reward/r_total"):
+                    if key in info:
+                        try:
+                            info[key] = float(info[key]) - float(bonus)
+                        except Exception:
+                            pass
+                if "reward/terminal_bonus" in info:
+                    try:
+                        info["reward/terminal_bonus"] = float(info.get("reward/terminal_bonus", 0.0)) - float(
+                            bonus
+                        )
+                    except Exception:
+                        info["reward/terminal_bonus"] = 0.0
+                info["terminal_bonus_reward"] = 0.0
+            info["goal_achieved"] = False
+            info["cleared"] = False
+
+        if budget_exceeded and not objective_met and not bool(terminated or truncated):
+            truncated = True
+            info["placements/needs_action"] = False
+
+        info["task/objective_met"] = bool(objective_met)
+        info["task/success"] = bool(success)
+        info["task/within_budget"] = bool(within_budget)
+        info["task/budget_exceeded"] = bool(budget_exceeded)
+        info["task/budget_exceeded_frames"] = bool(frames_exceeded)
+        info["task/budget_exceeded_spawns"] = bool(spawns_exceeded)
+        info["task/max_frames"] = None if max_frames is None else int(max_frames)
+        info["task/max_spawns"] = None if max_spawns is None else int(max_spawns)
+        info["task/frames_used"] = int(self._task_frames_used)
+        info["task/spawns_used"] = int(self._task_spawns_used)
+        if budget_exceeded:
+            reasons: list[str] = []
+            if frames_exceeded:
+                reasons.append("frames")
+            if spawns_exceeded:
+                reasons.append("spawns")
+            if reasons:
+                info["task/budget_reason"] = "+".join(reasons)
+
+        return obs, float(reward), bool(terminated), bool(truncated), info
 
     @staticmethod
     def _env_flag(name: str, *, default: bool) -> bool:
@@ -428,8 +617,114 @@ class DrMarioPlacementEnv(gym.Wrapper):
     def _state_cache(self) -> DrMarioState:
         state = getattr(self.env.unwrapped, "_state_cache", None)
         if state is None:
-            raise RuntimeError("Underlying env does not expose _state_cache (state mode required)")
+            base = self.env.unwrapped
+            backend = getattr(base, "backend_name", None)
+            backend_active = getattr(base, "_using_backend", None)
+            last_err = getattr(base, "_backend_last_error", None)
+            raise RuntimeError(
+                "Underlying env does not expose _state_cache (state mode required). "
+                f"backend={backend!r} backend_active={backend_active!r} last_backend_error={last_err!r}"
+            )
         return state
+
+    def _cpp_fast_backend(self) -> Optional[Any]:
+        if not bool(self._cpp_fast):
+            return None
+        base = self.env.unwrapped
+        if str(getattr(base, "backend_name", "")).lower() != "cpp-engine":
+            return None
+        # Guardrail: fast mode only supports the common training reward config.
+        # If other reward knobs are enabled, fall back to per-frame stepping.
+        reward_cfg = getattr(base, "reward_cfg", None)
+        try:
+            if reward_cfg is not None:
+                if float(getattr(reward_cfg, "pill_place_base", 0.0)) != 0.0:
+                    return None
+                if float(getattr(reward_cfg, "pill_place_growth", 0.0)) != 0.0:
+                    return None
+                if float(getattr(reward_cfg, "column_height_penalty", 0.0)) != 0.0:
+                    return None
+                if float(getattr(reward_cfg, "action_penalty_scale", 0.0)) != 0.0:
+                    return None
+                if bool(getattr(reward_cfg, "punish_high_placements", False)) and float(
+                    getattr(reward_cfg, "placement_height_penalty_multiplier", 0.0)
+                ) != 0.0:
+                    return None
+        except Exception:
+            return None
+        if bool(getattr(base, "_use_shaping", False)):
+            return None
+        backend = getattr(base, "_backend", None)
+        if backend is None:
+            return None
+        if not callable(getattr(backend, "run_frames_mask", None)):
+            return None
+        if not callable(getattr(backend, "run_until_decision", None)):
+            return None
+        if not callable(getattr(base, "sync_after_backend_run", None)):
+            return None
+        return backend
+
+    def _cpp_backend_for_fast_advance(self) -> Optional[Any]:
+        """Return a cpp-engine backend suitable for reset-time fast-forwarding.
+
+        Unlike `_cpp_fast_backend`, this does *not* gate on reward config
+        compatibility. Reset-time advance does not aggregate per-frame rewards,
+        so we can safely use the engine's internal runner just to reach a
+        decision point.
+        """
+
+        if not bool(self._cpp_fast):
+            return None
+        base = self.env.unwrapped
+        if str(getattr(base, "backend_name", "")).lower() != "cpp-engine":
+            return None
+        backend = getattr(base, "_backend", None)
+        if backend is None:
+            return None
+        if not callable(getattr(backend, "run_until_decision", None)):
+            return None
+        if not callable(getattr(base, "sync_after_backend_run", None)):
+            return None
+        return backend
+
+    def _controller_step_to_mask(self, step: "ControllerStep") -> int:
+        mask = 0
+        if step.hold_left:
+            mask |= self._BTN_LEFT
+        if step.hold_right:
+            mask |= self._BTN_RIGHT
+        if step.hold_down:
+            mask |= self._BTN_DOWN
+        if step.action == Action.ROTATE_A:
+            mask |= self._BTN_A
+        elif step.action == Action.ROTATE_B:
+            mask |= self._BTN_B
+        elif step.action == Action.BOTH_ROT:
+            mask |= self._BTN_A | self._BTN_B
+        return int(mask) & 0xFF
+
+    def _compress_controller(self, controller: list["ControllerStep"]) -> list[tuple[int, int]]:
+        """Run-length encode controller steps as (buttons_mask, frames) segments."""
+
+        runs: list[tuple[int, int]] = []
+        last_mask: Optional[int] = None
+        last_count = 0
+        for step in controller:
+            m = self._controller_step_to_mask(step)
+            if last_mask is None:
+                last_mask = m
+                last_count = 1
+                continue
+            if m == last_mask:
+                last_count += 1
+                continue
+            runs.append((int(last_mask), int(last_count)))
+            last_mask = m
+            last_count = 1
+        if last_mask is not None and last_count > 0:
+            runs.append((int(last_mask), int(last_count)))
+        return runs
 
     def _spawn_id(self, state: DrMarioState) -> Optional[int]:
         try:
@@ -669,6 +964,24 @@ class DrMarioPlacementEnv(gym.Wrapper):
             "reward/time_reward": float(breakdown.time_reward),
         }
 
+    @staticmethod
+    def _perf_breakdown_info(perf: _PerfBreakdown) -> Dict[str, Any]:
+        """Format aggregated per-frame env timings for the wrapper `info` dict."""
+
+        return {
+            "perf/env_step_calls": int(perf.env_step_calls),
+            "perf/env_step_sec": float(perf.env_step_sec),
+            "perf/env_backend_step_sec": float(perf.env_backend_step_sec),
+            "perf/env_get_frame_sec": float(perf.env_get_frame_sec),
+            "perf/env_pixel_stack_sec": float(perf.env_pixel_stack_sec),
+            "perf/env_get_ram_sec": float(perf.env_get_ram_sec),
+            "perf/env_ram_bytes_sec": float(perf.env_ram_bytes_sec),
+            "perf/env_build_state_sec": float(perf.env_build_state_sec),
+            "perf/env_observe_sec": float(perf.env_observe_sec),
+            "perf/env_reward_sec": float(perf.env_reward_sec),
+            "perf/env_info_sec": float(perf.env_info_sec),
+        }
+
     def _build_decision_context(self) -> _DecisionContext:
         state = self._state_cache()
         offsets = getattr(self.env.unwrapped, "_ram_offsets", {})
@@ -712,6 +1025,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info: Dict[str, Any],
         *,
         breakdown: Optional[_RewardBreakdown] = None,
+        perf: Optional[_PerfBreakdown] = None,
         lock_capture: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Dict[str, Any], float, bool, bool]:
         """Advance the underlying env until the next macro decision point."""
@@ -726,9 +1040,21 @@ class DrMarioPlacementEnv(gym.Wrapper):
         # per-frame env.
         self._ctx = None
         for _ in range(self._max_wait_frames):
-            state = self._state_cache()
+            try:
+                state = self._state_cache()
+            except Exception as exc:
+                out_info = dict(info or {})
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = str(exc)
+                return obs, out_info, float(total_reward), False, True
             if self._at_decision_point(state):
-                ctx = self._build_decision_context()
+                try:
+                    ctx = self._build_decision_context()
+                except Exception as exc:
+                    out_info = dict(info or {})
+                    out_info["placements/needs_action"] = False
+                    out_info["placements/backend_error"] = str(exc)
+                    return obs, out_info, float(total_reward), False, True
                 # If there are *no feasible in-bounds placements* for this spawn,
                 # there is no meaningful macro-action to request. This can happen
                 # when the spawn is immediately blocked and the capsule will lock
@@ -750,12 +1076,14 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 # Mark this spawn as consumed (no feasible actions) so we don't
                 # treat subsequent falling frames as new decisions.
                 if ctx.snapshot.spawn_id is not None:
-                    self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
+                    self._consume_spawn(ctx.snapshot.spawn_id)
 
             obs, r, terminated, truncated, info = self.env.step(int(Action.NOOP))
             total_reward += float(r)
             if breakdown is not None and isinstance(info, dict):
                 breakdown.add_frame(reward=float(r), info=info)
+            if perf is not None and isinstance(info, dict):
+                perf.add_frame(info=info)
             if lock_capture is not None and isinstance(info, dict):
                 self._update_lock_capture(lock_capture, info)
             if terminated or truncated:
@@ -770,28 +1098,163 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info["placements/wait_timeout"] = True
         return obs, out_info, float(total_reward), terminated, truncated
 
+    def _advance_until_decision_after_reset(
+        self,
+        obs: Any,
+        info: Dict[str, Any],
+    ) -> Tuple[Any, Dict[str, Any], bool, bool]:
+        """Reset-time version of `_advance_until_decision`.
+
+        If the cpp-engine backend supports batched fast-forwarding, prefer it to
+        avoid per-frame Python stepping during `AsyncVectorEnv` autoresets.
+        """
+
+        backend = self._cpp_backend_for_fast_advance()
+        if backend is None:
+            obs, out_info, _r, terminated, truncated = self._advance_until_decision(obs, info)
+            return obs, out_info, bool(terminated), bool(truncated)
+
+        base = self.env.unwrapped
+        sync_fn = getattr(base, "sync_after_backend_run", None)
+        if not callable(sync_fn):
+            obs, out_info, _r, terminated, truncated = self._advance_until_decision(obs, info)
+            return obs, out_info, bool(terminated), bool(truncated)
+
+        terminated = False
+        truncated = False
+        saw_no_feasible = False
+        last_spawn_id: Optional[int] = None
+
+        self._clear_holds()
+        self._ctx = None
+
+        remaining = int(self._max_wait_frames)
+        while remaining > 0:
+            try:
+                state = self._state_cache()
+            except Exception as exc:
+                out_info = dict(info or {})
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = str(exc)
+                return obs, out_info, False, True
+
+            if self._at_decision_point(state):
+                try:
+                    ctx = self._build_decision_context()
+                except Exception as exc:
+                    out_info = dict(info or {})
+                    out_info["placements/needs_action"] = False
+                    out_info["placements/backend_error"] = str(exc)
+                    return obs, out_info, False, True
+                if int(ctx.reach.feasible_mask.sum()) > 0:
+                    self._ctx = ctx
+                    out_info = dict(info or {})
+                    out_info.update(self._decision_info(ctx))
+                    out_info["placements/needs_action"] = True
+                    if saw_no_feasible:
+                        out_info["placements/no_feasible_actions"] = True
+                    obs_out = self._maybe_inject_feasible_mask(obs, ctx.reach.feasible_mask)
+                    return obs_out, out_info, bool(terminated), bool(truncated)
+                saw_no_feasible = True
+                if ctx.snapshot.spawn_id is not None:
+                    self._consume_spawn(ctx.snapshot.spawn_id)
+                    last_spawn_id = int(ctx.snapshot.spawn_id)
+
+            res = backend.run_until_decision(last_spawn_id=last_spawn_id, max_frames=int(remaining))
+            waited = int(res.get("frames", 0))
+            remaining -= waited
+            try:
+                sync_fn(int(waited))
+                obs = getattr(base, "last_obs", obs)
+            except Exception as exc:
+                out_info = dict(info or {})
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = str(exc)
+                return obs, out_info, False, True
+
+            reason = int(res.get("reason", 0))
+            if reason == self._RUN_REASON_TERMINAL:
+                terminated = True
+                break
+            if reason == self._RUN_REASON_TIMEOUT or remaining <= 0:
+                truncated = True
+                break
+            # Otherwise, loop and validate feasibility at the candidate decision.
+
+        out_info = dict(info or {})
+        out_info["placements/needs_action"] = False
+        if saw_no_feasible:
+            out_info["placements/no_feasible_actions"] = True
+        if self._debug and not (terminated or truncated):
+            out_info["placements/wait_timeout"] = True
+        return obs, out_info, bool(terminated), bool(truncated)
+
     # ------------------------------------------------------------------ gym api
 
     def reset(self, **kwargs):
-        obs, info = self.env.reset(**kwargs)
-        self._last_obs = obs
-        self._last_info = dict(info or {})
-        self._ctx = None
-        self._consumed_spawn_id = None
-        obs, info, _, terminated, truncated = self._advance_until_decision(obs, self._last_info)
-        self._last_obs = obs
-        self._last_info = dict(info or {})
-        self._attach_pose_mismatch_info(self._last_info)
-        out_info = dict(self._last_info)
-        if terminated or truncated:
+        max_retries = 0
+        try:
+            max_retries = max(0, int(os.environ.get("DRMARIO_PLACEMENT_RESET_RETRIES", "2")))
+        except Exception:
+            max_retries = 2
+        max_attempts = int(max_retries) + 1
+
+        last_exc: Optional[BaseException] = None
+        for attempt in range(max_attempts):
+            obs, info = self.env.reset(**kwargs)
+            self._last_obs = obs
+            self._last_info = dict(info or {})
+            self._ctx = None
+            self._consumed_spawn_id = None
+            self._task_frames_used = 0
+            self._task_spawns_used = 0
+            try:
+                obs, info, terminated, truncated = self._advance_until_decision_after_reset(obs, self._last_info)
+            except Exception as exc:
+                last_exc = exc
+                # Retry resets that fail due to backend flakiness under high env counts.
+                # This is especially important for AsyncVectorEnv autoresets, where
+                # a single reset failure would otherwise crash the whole run.
+                if attempt + 1 < max_attempts:
+                    try:
+                        base = self.env.unwrapped
+                        if callable(getattr(base, "backend_reset", None)):
+                            base.backend_reset()
+                    except Exception:
+                        pass
+                    continue
+                raise
+
+            self._last_obs = obs
+            self._last_info = dict(info or {})
+            self._attach_pose_mismatch_info(self._last_info)
+            # Start task budgets at the first decision point returned to the agent.
+            self._consumed_spawn_id = None
+            self._task_frames_used = 0
+            self._task_spawns_used = 0
+            out_info = dict(self._last_info)
+            out_info["task/max_frames"] = (
+                None if self.task_max_frames is None else int(self.task_max_frames)
+            )
+            out_info["task/max_spawns"] = (
+                None if self.task_max_spawns is None else int(self.task_max_spawns)
+            )
+            out_info["task/frames_used"] = 0
+            out_info["task/spawns_used"] = 0
+            out_info["task/budget_exceeded"] = False
+            out_info["task/within_budget"] = True
+            out_info["task/objective_met"] = False
+            out_info["task/success"] = False
             return obs, out_info
-        return obs, out_info
+
+        raise RuntimeError("DrMarioPlacementEnv.reset failed unexpectedly") from last_exc
 
     def step(self, action: int):
         frames_start_any = int(getattr(self.env.unwrapped, "_t", 0) or 0)
 
         total_reward = 0.0
         breakdown = _RewardBreakdown()
+        perf = _PerfBreakdown()
         terminated = False
         truncated = False
         # Debug/validation: capture the observed pose when the pill locks so we
@@ -817,11 +1280,34 @@ class DrMarioPlacementEnv(gym.Wrapper):
         plan_options = 0
 
         # Ensure we are at a decision point.
-        state = self._state_cache()
-        if not self._at_decision_point(state):
-            obs, info, r_wait, terminated, truncated = self._advance_until_decision(
-                self._last_obs, self._last_info, breakdown=breakdown
+        try:
+            state = self._state_cache()
+        except Exception as exc:
+            # If the underlying env reset failed (common failure mode under heavy
+            # AsyncVectorEnv loads), return a truncated step so the vector env can
+            # autoreset this worker on the next call instead of crashing.
+            out_info = dict(self._last_info)
+            out_info["placements/needs_action"] = False
+            out_info["placements/backend_error"] = str(exc)
+            self._attach_pose_mismatch_info(out_info)
+            obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                self._last_obs, 0.0, False, True, out_info, tau_frames=0
             )
+            return obs_out, r_out, term_out, trunc_out, info_out
+        if not self._at_decision_point(state):
+            try:
+                obs, info, r_wait, terminated, truncated = self._advance_until_decision(
+                    self._last_obs, self._last_info, breakdown=breakdown, perf=perf
+                )
+            except Exception as exc:
+                out_info = dict(self._last_info)
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = str(exc)
+                self._attach_pose_mismatch_info(out_info)
+                obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                    self._last_obs, 0.0, False, True, out_info, tau_frames=0
+                )
+                return obs_out, r_out, term_out, trunc_out, info_out
             total_reward += float(r_wait)
             self._last_obs, self._last_info = obs, dict(info or {})
             if terminated or truncated:
@@ -829,14 +1315,29 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 out_info = dict(self._last_info)
                 out_info["placements/tau"] = max(1, frames_end - frames_start_any)
                 out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+                out_info.update(self._perf_breakdown_info(perf))
                 self._attach_pose_mismatch_info(out_info)
-                return obs, float(total_reward), terminated, truncated, out_info
+                tau_raw = max(0, frames_end - frames_start_any)
+                obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                    obs, float(total_reward), terminated, truncated, out_info, tau_frames=tau_raw
+                )
+                return obs_out, r_out, term_out, trunc_out, info_out
 
         # Start τ after we have reached a decision for this spawn.
         frames_start = int(getattr(self.env.unwrapped, "_t", frames_start_any) or frames_start_any)
 
         if self._ctx is None:
-            self._ctx = self._build_decision_context()
+            try:
+                self._ctx = self._build_decision_context()
+            except Exception as exc:
+                out_info = dict(self._last_info)
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = str(exc)
+                self._attach_pose_mismatch_info(out_info)
+                obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                    self._last_obs, 0.0, False, True, out_info, tau_frames=0
+                )
+                return obs_out, r_out, term_out, trunc_out, info_out
 
         ctx = self._ctx
         lock_capture["spawn_id"] = getattr(ctx.snapshot, "spawn_id", None)
@@ -850,9 +1351,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             # Consume this spawn (no feasible macro actions) to avoid returning
             # repeated "decisions" while the offscreen pill locks/top-outs.
             if ctx.snapshot.spawn_id is not None:
-                self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
+                self._consume_spawn(ctx.snapshot.spawn_id)
             obs, info, r_wait, terminated, truncated = self._advance_until_decision(
-                self._last_obs, self._last_info, breakdown=breakdown
+                self._last_obs, self._last_info, breakdown=breakdown, perf=perf
             )
             total_reward += float(r_wait)
             self._last_obs, self._last_info = obs, dict(info or {})
@@ -863,8 +1364,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info["placements/tau"] = max(1, frames_end - frames_start)
             out_info["placements/needs_action"] = bool(out_info.get("placements/needs_action", False))
             out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+            out_info.update(self._perf_breakdown_info(perf))
             self._attach_pose_mismatch_info(out_info)
-            return obs, float(total_reward), terminated, truncated, out_info
+            tau_raw = max(0, frames_end - frames_start)
+            obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                obs, float(total_reward), terminated, truncated, out_info, tau_frames=tau_raw
+            )
+            return obs_out, r_out, term_out, trunc_out, info_out
         # Refresh decision context if spawn id changed.
         try:
             snap_now = PillSnapshot.from_state(self._state_cache(), getattr(self.env.unwrapped, "_ram_offsets", {}))
@@ -893,8 +1399,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
             frames_end = int(getattr(self.env.unwrapped, "_t", frames_start) or frames_start)
             out_info["placements/tau"] = max(1, frames_end - frames_start)
             out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+            out_info.update(self._perf_breakdown_info(perf))
             self._attach_pose_mismatch_info(out_info)
-            return self._last_obs, float(total_reward), False, False, out_info
+            tau_raw = max(0, frames_end - frames_start)
+            obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                self._last_obs, float(total_reward), False, False, out_info, tau_frames=tau_raw
+            )
+            return obs_out, r_out, term_out, trunc_out, info_out
 
         try:
             if plan.terminal_pose is not None:
@@ -914,11 +1425,303 @@ class DrMarioPlacementEnv(gym.Wrapper):
         # consumed so `_advance_until_decision` ignores subsequent falling frames
         # until the next pill spawns.
         if ctx.snapshot.spawn_id is not None:
-            self._consumed_spawn_id = int(ctx.snapshot.spawn_id)
+            self._consume_spawn(ctx.snapshot.spawn_id)
         # Invalidate cached ctx while we execute the plan.
         self._ctx = None
 
         # Execute the per-frame script.
+        fast_backend = self._cpp_fast_backend()
+        base = self.env.unwrapped
+        sync_fn = None
+        prev_state = None
+        if fast_backend is not None:
+            sync_fn = getattr(base, "sync_after_backend_run", None)
+            prev_state = getattr(base, "_state_cache", None)
+            # If the base env is in a bad state (e.g., backend crash under heavy
+            # AsyncVectorEnv load), fall back to per-frame stepping rather than
+            # crashing the whole run.
+            if not callable(sync_fn) or prev_state is None:
+                fast_backend = None
+
+        if fast_backend is not None:
+            assert callable(sync_fn)
+            assert prev_state is not None
+            prev_frame = prev_state.stack4[-1]
+            v_start = int(getattr(base, "_viruses_remaining", 0))
+
+            # Phase 1: execute the placement controller script via batched engine runs.
+            runs = self._compress_controller(plan.controller)
+            plan_frames_executed = 0
+            cleared_total = 0
+            cleared_nonvirus = 0
+            cleared_virus = 0
+            for mask, frames in runs:
+                if frames <= 0:
+                    continue
+                res = fast_backend.run_frames_mask(buttons_mask=int(mask), frames=int(frames))
+                plan_frames_executed += int(res.get("frames", 0))
+                cleared_total += int(res.get("tiles_cleared_total", 0))
+                cleared_virus += int(res.get("tiles_cleared_virus", 0))
+                cleared_nonvirus += int(res.get("tiles_cleared_nonvirus", 0))
+                if int(res.get("reason", 0)) == self._RUN_REASON_TERMINAL:
+                    terminated = True
+                    break
+            sync_fn(int(plan_frames_executed))
+
+            # Adjacency shaping is based on newly placed static pills (lock boundary).
+            try:
+                lock_frame = getattr(base, "_state_cache", None).stack4[-1]
+            except Exception:
+                lock_frame = prev_frame
+            reward_cfg = getattr(base, "reward_cfg", None)
+            adjacency_bonus = 0.0
+            virus_adjacency_bonus = 0.0
+            if reward_cfg is not None:
+                adjacency_enabled = (
+                    float(getattr(reward_cfg, "adjacency_pair_bonus", 0.0)) != 0.0
+                    or float(getattr(reward_cfg, "adjacency_triplet_bonus", 0.0)) != 0.0
+                )
+                virus_adj_enabled = (
+                    float(getattr(reward_cfg, "virus_adjacency_pair_bonus", 0.0)) != 0.0
+                    or float(getattr(reward_cfg, "virus_adjacency_triplet_bonus", 0.0)) != 0.0
+                )
+                if adjacency_enabled:
+                    adjacency_bonus = float(getattr(base, "_compute_adjacency_bonus")(prev_frame, lock_frame))
+                if virus_adj_enabled:
+                    virus_adjacency_bonus = float(
+                        getattr(base, "_compute_virus_adjacency_bonus")(prev_frame, lock_frame)
+                    )
+
+            # Phase 2: fast-forward until next decision point (new spawn controllable).
+            wait_frames_total = 0
+            saw_no_feasible = False
+            last_spawn_id = ctx.snapshot.spawn_id
+            obs = getattr(base, "last_obs", self._last_obs)
+            info: Dict[str, Any] = dict(self._last_info)
+
+            if not terminated:
+                remaining = int(self._max_wait_frames)
+                while remaining > 0:
+                    res = fast_backend.run_until_decision(
+                        last_spawn_id=(int(last_spawn_id) if last_spawn_id is not None else None),
+                        max_frames=int(remaining),
+                    )
+                    waited = int(res.get("frames", 0))
+                    wait_frames_total += waited
+                    remaining -= waited
+                    cleared_total += int(res.get("tiles_cleared_total", 0))
+                    cleared_virus += int(res.get("tiles_cleared_virus", 0))
+                    cleared_nonvirus += int(res.get("tiles_cleared_nonvirus", 0))
+                    sync_fn(int(waited))
+                    obs = getattr(base, "last_obs", obs)
+
+                    reason = int(res.get("reason", 0))
+                    if reason == self._RUN_REASON_TERMINAL:
+                        terminated = True
+                        break
+                    if reason == self._RUN_REASON_TIMEOUT or remaining <= 0:
+                        truncated = True
+                        break
+
+                    # We hit a candidate decision point; validate feasibility.
+                    if reason == self._RUN_REASON_DECISION:
+                        try:
+                            ctx_next = self._build_decision_context()
+                        except Exception as exc:
+                            truncated = True
+                            info = dict(info or {})
+                            info["placements/needs_action"] = False
+                            info["placements/backend_error"] = str(exc)
+                            break
+                        if int(ctx_next.reach.feasible_mask.sum()) > 0:
+                            self._ctx = ctx_next
+                            info = dict(info or {})
+                            info.update(self._decision_info(ctx_next))
+                            info["placements/needs_action"] = True
+                            if saw_no_feasible:
+                                info["placements/no_feasible_actions"] = True
+                            obs = self._maybe_inject_feasible_mask(obs, ctx_next.reach.feasible_mask)
+                            break
+                        saw_no_feasible = True
+                        if ctx_next.snapshot.spawn_id is not None:
+                            self._consume_spawn(ctx_next.snapshot.spawn_id)
+                            last_spawn_id = int(ctx_next.snapshot.spawn_id)
+                        # Keep waiting for a later controllable spawn.
+                        continue
+
+                if self._debug and not (terminated or truncated):
+                    info["placements/wait_timeout"] = True
+
+            # Aggregate macro reward terms (approximates the per-frame base env reward).
+            v_end = int(getattr(base, "_viruses_remaining", 0))
+            delta_v = int(max(0, v_start - v_end))
+
+            virus_clear_reward = 0.0
+            non_virus_bonus = 0.0
+            terminal_bonus_reward = 0.0
+            topout_penalty_reward = 0.0
+            time_reward = 0.0
+
+            r_env = 0.0
+            if reward_cfg is not None:
+                virus_clear_reward = float(getattr(reward_cfg, "virus_clear_bonus", 0.0)) * float(delta_v)
+                non_virus_bonus = float(getattr(reward_cfg, "non_virus_clear_bonus", 0.0)) * float(
+                    max(0, int(cleared_nonvirus))
+                )
+                r_env += float(virus_clear_reward + non_virus_bonus + adjacency_bonus + virus_adjacency_bonus)
+
+            can_fail, can_clear = (None, None)
+            if callable(getattr(base, "_canonical_ram_outcome", None)):
+                can_fail, can_clear = base._canonical_ram_outcome()
+
+            topout = bool(can_fail is True)
+            task_mode = str(getattr(base, "_task_goal_mode", "viruses") or "viruses")
+            goal_achieved = False
+            goal_reason: Optional[str] = None
+            match_target = getattr(base, "_match_target", None)
+            matches_completed = int(getattr(base, "_matches_completed", 0) or 0)
+            match_event = bool(int(cleared_total) >= 4)
+            if task_mode in {"matches", "any_clear"}:
+                target = int(match_target or 1)
+                if match_event:
+                    matches_completed += 1
+                try:
+                    base._matches_completed = int(matches_completed)
+                    base._prev_clearing_active = False
+                except Exception:
+                    pass
+                if matches_completed >= target:
+                    goal_achieved = True
+                    goal_reason = f"match_{matches_completed}"
+            else:
+                # Canonical RAM success is only meaningful for the standard "viruses" objective.
+                goal_achieved = bool((not topout) and (task_mode == "viruses") and (can_clear is True or v_end == 0))
+                if goal_achieved:
+                    goal_reason = "clear"
+
+            if goal_achieved:
+                terminated = True
+                if reward_cfg is not None:
+                    terminal_bonus_reward = float(getattr(reward_cfg, "terminal_clear_bonus", 0.0))
+                    r_env += terminal_bonus_reward
+                try:
+                    base._last_terminal = str(goal_reason or "clear")
+                    base._prev_terminal = str(goal_reason or "clear")
+                except Exception:
+                    pass
+            if topout:
+                terminated = True
+                if reward_cfg is not None:
+                    topout_penalty_reward = float(getattr(reward_cfg, "topout_penalty", 0.0))
+                    r_env += topout_penalty_reward
+                try:
+                    base._last_terminal = "topout"
+                    base._prev_terminal = "topout"
+                except Exception:
+                    pass
+
+            if terminated and reward_cfg is not None:
+                elapsed_seconds = float(getattr(base, "_elapsed_frames", 0)) / 60.0
+                if topout:
+                    time_reward = float(getattr(reward_cfg, "time_bonus_topout_per_60_frames", 0.0)) * elapsed_seconds
+                elif v_end == 0:
+                    time_reward = -float(getattr(reward_cfg, "time_penalty_clear_per_60_frames", 0.0)) * elapsed_seconds
+                if time_reward != 0.0:
+                    r_env += float(time_reward)
+
+            if int(getattr(base, "_t", 0) or 0) > int(getattr(base, "_t_max", 0) or 0):
+                truncated = True
+
+            if terminated or truncated:
+                try:
+                    base._elapsed_frames = 0
+                except Exception:
+                    pass
+
+            total_reward = float(r_env)
+            breakdown.r_total = float(total_reward)
+            breakdown.r_env = float(r_env)
+            breakdown.r_shape = 0.0
+            breakdown.delta_v = int(delta_v)
+            breakdown.tiles_cleared_total = int(max(0, cleared_total))
+            breakdown.tiles_cleared_non_virus = int(max(0, cleared_nonvirus))
+            breakdown.virus_clear_reward = float(virus_clear_reward)
+            breakdown.non_virus_bonus = float(non_virus_bonus)
+            breakdown.adjacency_bonus = float(adjacency_bonus)
+            breakdown.virus_adjacency_bonus = float(virus_adjacency_bonus)
+            breakdown.terminal_bonus = float(terminal_bonus_reward)
+            breakdown.topout_penalty = float(topout_penalty_reward)
+            breakdown.time_reward = float(time_reward)
+            perf.env_step_calls = 0
+
+            tau = int(max(1, int(plan_frames_executed) + int(wait_frames_total)))
+            out_info = dict(info or {})
+            out_info["t"] = int(getattr(base, "_t", 0) or 0)
+            out_info["viruses_remaining"] = int(getattr(base, "_viruses_remaining", 0))
+            out_info["delta_v"] = int(delta_v)
+            out_info["r_env"] = float(r_env)
+            out_info["r_shape"] = 0.0
+            out_info["r_total"] = float(total_reward)
+            out_info["virus_clear_reward"] = float(virus_clear_reward)
+            out_info["non_virus_bonus"] = float(non_virus_bonus)
+            out_info["adjacency_bonus"] = float(adjacency_bonus)
+            out_info["virus_adjacency_bonus"] = float(virus_adjacency_bonus)
+            out_info["terminal_bonus_reward"] = float(terminal_bonus_reward)
+            out_info["topout_penalty_reward"] = float(topout_penalty_reward)
+            out_info["time_reward"] = float(time_reward)
+            out_info["tiles_cleared_total"] = int(max(0, cleared_total))
+            out_info["tiles_cleared_non_virus"] = int(max(0, cleared_nonvirus))
+            out_info["match_event"] = bool(match_event)
+            out_info["match_target"] = None if match_target is None else int(match_target or 0)
+            out_info["matches_completed"] = int(matches_completed)
+            out_info["task_mode"] = str(task_mode)
+            out_info["goal_achieved"] = bool(goal_achieved)
+            out_info["cleared"] = bool(goal_achieved)
+            out_info["topout"] = bool(topout)
+            tiles_clearing = 0
+            if callable(getattr(base, "_count_clearing_tiles", None)):
+                try:
+                    tiles_clearing = int(base._count_clearing_tiles())
+                except Exception:
+                    tiles_clearing = 0
+            out_info["tiles_clearing"] = int(max(0, tiles_clearing))
+            out_info["clearing_active"] = bool(int(out_info["tiles_clearing"]) >= 4)
+
+            if bool(getattr(base, "emit_raw_ram", False)):
+                try:
+                    out_info["raw_ram"] = base._raw_ram_bytes()
+                except Exception:
+                    pass
+
+            if callable(getattr(base, "_augment_info", None)):
+                try:
+                    out_info = dict(base._augment_info(out_info))
+                except Exception:
+                    pass
+
+            out_info["placements/tau"] = int(tau)
+            out_info["placements/needs_action"] = bool(out_info.get("placements/needs_action", False))
+            out_info["perf/planner_plan_sec"] = float(plan_latency_sec_total)
+            out_info["placements/plan_calls"] = int(plan_calls)
+            out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
+            out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
+            out_info["placements/plan_count_last"] = float(plan_options)
+            out_info["placements/last_action"] = int(action)
+            if target_pose is not None:
+                out_info["placements/target_pose"] = tuple(int(v) for v in target_pose)
+
+            out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+            out_info.update(self._perf_breakdown_info(perf))
+            self._attach_pose_mismatch_info(out_info)
+
+            self._last_obs = obs
+            self._last_info = dict(out_info)
+            tau_raw = max(0, int(plan_frames_executed) + int(wait_frames_total))
+            obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+                obs, float(total_reward), bool(terminated), bool(truncated), out_info, tau_frames=tau_raw
+            )
+            return obs_out, r_out, term_out, trunc_out, info_out
+
         obs = self._last_obs
         info: Dict[str, Any] = dict(self._last_info)
         for step in plan.controller:
@@ -927,6 +1730,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
             total_reward += float(r)
             if isinstance(info, dict):
                 breakdown.add_frame(reward=float(r), info=info)
+                perf.add_frame(info=info)
                 self._update_lock_capture(lock_capture, info)
             if terminated or truncated:
                 break
@@ -935,7 +1739,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self._clear_holds()
         if not (terminated or truncated):
             obs, info, r_wait, terminated, truncated = self._advance_until_decision(
-                obs, info, breakdown=breakdown, lock_capture=lock_capture
+                obs, info, breakdown=breakdown, perf=perf, lock_capture=lock_capture
             )
             total_reward += float(r_wait)
 
@@ -997,8 +1801,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
                     out_info=out_info,
                 )
         out_info.update(self._reward_breakdown_info(breakdown, r_total=float(total_reward)))
+        out_info.update(self._perf_breakdown_info(perf))
         self._attach_pose_mismatch_info(out_info, mismatch_last=mismatch_last, mismatch_id=mismatch_id)
-        return obs, float(total_reward), terminated, truncated, out_info
+        tau_raw = max(0, frames_end - frames_start)
+        obs_out, r_out, term_out, trunc_out, info_out = self._finalize_step(
+            obs, float(total_reward), terminated, truncated, out_info, tau_frames=tau_raw
+        )
+        return obs_out, r_out, term_out, trunc_out, info_out
 
 
 __all__ = ["DrMarioPlacementEnv"]

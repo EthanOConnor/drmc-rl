@@ -4,6 +4,7 @@ import os
 import random
 import subprocess
 from dataclasses import dataclass
+from importlib.metadata import distributions
 from pathlib import Path
 from typing import Optional
 
@@ -70,12 +71,29 @@ def pick_device(device_pref: str | None = None) -> str:
 def write_environment_file(path: Path) -> None:
     """Record installed packages for experiment provenance."""
 
-    try:
-        import pkg_resources
-    except Exception:  # pragma: no cover - pkg_resources optional in some envs
-        return
+    def _dist_name(dist: object) -> str:
+        try:
+            name = getattr(dist, "metadata", {}).get("Name")
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        try:
+            name = getattr(dist, "name", None)
+            if name:
+                return str(name)
+        except Exception:
+            pass
+        return "unknown"
 
-    distributions = sorted(pkg_resources.working_set, key=lambda dist: dist.project_name.lower())
+    dists = sorted(distributions(), key=lambda dist: _dist_name(dist).lower())
     with path.open("w", encoding="utf-8") as fp:
-        for dist in distributions:
-            fp.write(f"{dist.project_name}=={dist.version}\n")
+        for dist in dists:
+            name = _dist_name(dist)
+            try:
+                version = str(getattr(dist, "version", ""))
+            except Exception:
+                version = ""
+            if not name or name == "unknown":
+                continue
+            fp.write(f"{name}=={version}\n")

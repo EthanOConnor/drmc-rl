@@ -6,7 +6,7 @@ actions span variable durations τ and credit assignment uses γ^τ.
 from __future__ import annotations
 
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,7 +28,7 @@ from training.algo.base import AlgoAdapter
 from training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer, DecisionStep
 from training.utils.reproducibility import git_commit
 from models.policy.placement_heads import PlacementPolicyNet
-from models.policy.placement_dist import MaskedPlacementDist, unflatten_placement
+from models.policy.placement_dist import MaskedPlacementDist
 
 import envs.specs.ram_to_state as ram_specs
 
@@ -139,6 +139,10 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.decision_step = 0  # Total decisions made
         self.total_steps = int(getattr(cfg.train, "total_steps", 5000000))
         self.checkpoint_interval = int(getattr(cfg.train, "checkpoint_interval", 100000))
+        self._episodes_total = 0
+        self._curriculum_last_level: Optional[int] = None
+        self._curriculum_last_frames: int = 0
+        self._curriculum_last_episodes: int = 0
         
         self.batch_returns: deque[float] = deque(maxlen=100)
         self.batch_lengths: deque[int] = deque(maxlen=100)
@@ -162,14 +166,12 @@ class SMDPPPOAdapter(AlgoAdapter):
     def train_forever(self) -> None:
         """Main training loop."""
         obs, info = self.env.reset(seed=getattr(self.cfg, "seed", None))
-        obs = obs.astype(np.float32)
-        
+        obs_arr = self._ensure_batched_obs(self._unwrap_obs(obs)).astype(np.float32)
+
         # Decision-level tracking per environment
-        decision_obs = obs.copy()
-        decision_info = [dict(i) for i in info] if isinstance(info, (list, tuple)) else [info.copy()]
-        decision_start_steps = np.zeros(self.env.num_envs, dtype=np.int32)
-        decision_rewards = np.zeros(self.env.num_envs, dtype=np.float32)
-        
+        decision_obs = obs_arr.copy()
+        decision_info = self._normalize_infos(info)
+
         start_time = time.time()
         
         while self.global_step < self.total_steps:
@@ -177,93 +179,112 @@ class SMDPPPOAdapter(AlgoAdapter):
             decisions_collected = 0
             
             while decisions_collected < self.hparams.decisions_per_update:
-                # Make decision for each environment
+                # Make a vectorized decision for all environments
+                (
+                    actions,
+                    log_probs,
+                    values,
+                    masks,
+                    pill_colors,
+                    preview_pill_colors,
+                ) = self._select_actions_batch(decision_obs, decision_info, deterministic=False)
+
+                # Step environment once for the full batch.
+                obs_after, rewards, terminated, truncated, info_after = self.env.step(actions)
+
+                obs_after_arr = self._ensure_batched_obs(self._unwrap_obs(obs_after)).astype(
+                    np.float32
+                )
+                info_after_list = self._normalize_infos(info_after)
+                rewards_arr = np.asarray(rewards, dtype=np.float32).reshape(self.env.num_envs)
+                terminated_arr = np.asarray(terminated, dtype=bool).reshape(self.env.num_envs)
+                truncated_arr = np.asarray(truncated, dtype=bool).reshape(self.env.num_envs)
+
+                tau_arr = np.array(
+                    [self._extract_tau(info_after_list[i]) for i in range(self.env.num_envs)],
+                    dtype=np.int32,
+                )
+
+                frames_total = int(np.sum(tau_arr))
+                self.global_step += frames_total
+                self.decision_step += int(self.env.num_envs)
+                decisions_collected += int(self.env.num_envs)
+
+                advance_from: Optional[int] = None
+                advance_to: Optional[int] = None
                 for env_idx in range(self.env.num_envs):
-                    if decisions_collected >= self.hparams.decisions_per_update:
-                        break
-                        
-                    # Extract info for this env
-                    env_obs = decision_obs[env_idx]
-                    env_info = decision_info[env_idx] if env_idx < len(decision_info) else {}
-                    
-                    # Get action mask and pill colors
-                    mask = self._extract_mask(env_info)
-                    pill_colors = self._extract_pill_colors(env_info)
-                    preview_pill_colors = self._extract_preview_pill_colors(env_info)
-                    
-                    # Policy forward
-                    with torch.no_grad():
-                        action_idx, log_prob, value = self._select_action(
-                            env_obs, mask, pill_colors, preview_pill_colors, deterministic=False
-                        )
-                        
-                    # Execute action (placement happens over τ frames)
-                    start_step = self.global_step
-                    obs_after, reward_accum, term, trunc, info_after = self._execute_placement(
-                        env_idx, action_idx
-                    )
-                    tau = self.global_step - start_step
-                    
-                    # Store decision
+                    info_i = info_after_list[env_idx] if env_idx < len(info_after_list) else {}
                     step = DecisionStep(
-                        obs=env_obs,
-                        mask=mask,
-                        pill_colors=pill_colors,
-                        preview_pill_colors=preview_pill_colors,
-                        action=action_idx,
-                        log_prob=log_prob,
-                        value=value,
-                        tau=tau,
-                        reward=reward_accum,
-                        obs_next=obs_after[env_idx],
-                        done=term[env_idx] or trunc[env_idx],
-                        info=info_after[env_idx] if env_idx < len(info_after) else {},
+                        obs=decision_obs[env_idx],
+                        mask=masks[env_idx],
+                        pill_colors=pill_colors[env_idx],
+                        preview_pill_colors=preview_pill_colors[env_idx],
+                        action=int(actions[env_idx]),
+                        log_prob=float(log_probs[env_idx]),
+                        value=float(values[env_idx]),
+                        tau=int(tau_arr[env_idx]),
+                        reward=float(rewards_arr[env_idx]),
+                        obs_next=obs_after_arr[env_idx],
+                        done=bool(terminated_arr[env_idx] or truncated_arr[env_idx]),
+                        env_id=int(env_idx),
+                        info=dict(info_i),
                     )
                     self.buffer.add(step)
-                    decisions_collected += 1
-                    self.decision_step += 1
-                    
-                    # Update decision state
-                    decision_obs[env_idx] = obs_after[env_idx]
-                    if env_idx < len(info_after):
-                        decision_info[env_idx] = info_after[env_idx]
-                        
+
                     # Track episodes
                     if step.done:
+                        self._episodes_total += 1
                         ep_info = step.info.get("episode", {})
                         drm_info = step.info.get("drm", {})
-                        
+
                         self.batch_returns.append(float(ep_info.get("r", 0.0)))
                         self.batch_lengths.append(int(ep_info.get("l", 0)))
                         self.batch_viruses.append(float(drm_info.get("viruses_cleared", 0.0)))
-                        
-                        self.event_bus.emit(
-                            "episode_end",
-                            step=self.global_step,
-                            ret=float(ep_info.get("r", 0.0)),
-                            len=int(ep_info.get("l", 0)),
-                            **{f"drm/{k}": v for k, v in drm_info.items()},
-                        )
+                        self.batch_decisions.append(int(ep_info.get("decisions", 0)))
+
+                        payload = {
+                            "step": self.global_step,
+                            "ret": float(ep_info.get("r", 0.0)),
+                            "len": int(ep_info.get("l", 0)),
+                            "env_index": int(env_idx),
+                        }
+                        if "decisions" in ep_info:
+                            payload["decisions"] = int(ep_info.get("decisions", 0))
+                        payload.update({f"drm/{k}": v for k, v in drm_info.items()})
+                        self.event_bus.emit("episode_end", **payload)
+
+                    if advance_to is None:
+                        adv_to = self._extract_int(info_i.get("curriculum/advanced_to"))
+                        if adv_to is not None:
+                            advance_to = int(adv_to)
+                            advance_from = self._extract_int(
+                                info_i.get("curriculum/advanced_from")
+                            )
+
+                if advance_to is not None:
+                    self._log_curriculum_advance(advance_from, advance_to)
+
+                # Update decision state for next batch.
+                decision_obs = obs_after_arr.copy()
+                decision_info = info_after_list
                         
             # Update policy
             update_start = time.time()
             
-            # Bootstrap value for last observation
+            # Bootstrap values for the last observation per environment.
             with torch.no_grad():
-                bootstrap_values = []
-                for env_idx in range(self.env.num_envs):
-                    env_obs = decision_obs[env_idx]
-                    env_info = decision_info[env_idx]
-                    mask = self._extract_mask(env_info)
-                    pill_colors = self._extract_pill_colors(env_info)
-                    preview_pill_colors = self._extract_preview_pill_colors(env_info)
-                    _, value_bootstrap = self._forward_policy(
-                        env_obs, mask, pill_colors, preview_pill_colors
-                    )
-                    bootstrap_values.append(value_bootstrap)
-                bootstrap = float(np.mean(bootstrap_values))
-                
-            batch = self.buffer.get_batch(bootstrap_value=bootstrap)
+                (
+                    _actions,
+                    _log_probs,
+                    bootstrap_values,
+                    _masks,
+                    _pill_colors,
+                    _preview_pill_colors,
+                ) = self._select_actions_batch(decision_obs, decision_info, deterministic=True)
+
+            batch = self.buffer.get_batch(
+                bootstrap_value=np.asarray(bootstrap_values, dtype=np.float32)
+            )
             metrics = self._update_policy(batch)
             
             self.buffer.clear()
@@ -280,8 +301,11 @@ class SMDPPPOAdapter(AlgoAdapter):
                 pass
             
             elapsed = time.time() - start_time
-            metrics["perf/sps"] = float(self.global_step / max(elapsed, 1e-6))
-            metrics["perf/dps"] = float(self.decision_step / max(elapsed, 1e-6))  # decisions/sec
+            metrics["perf/sps_frames_total"] = float(self.global_step / max(elapsed, 1e-6))
+            metrics["perf/dps_decisions_total"] = float(self.decision_step / max(elapsed, 1e-6))
+            # Backwards-compatible aliases (used by existing TUI/event handlers).
+            metrics["perf/sps"] = float(metrics["perf/sps_frames_total"])
+            metrics["perf/dps"] = float(metrics["perf/dps_decisions_total"])
 
             # Inference timing (policy forward passes outside the PPO update).
             metrics["perf/inference_calls"] = float(self._perf_inference_calls)
@@ -295,9 +319,18 @@ class SMDPPPOAdapter(AlgoAdapter):
                 metrics["perf/inference_ms_per_frame"] = (
                     float(self._perf_inference_sec_total) * 1000.0 / float(self.global_step)
                 )
+
+            curriculum_snapshot = self._extract_curriculum_snapshot(decision_info)
+            if curriculum_snapshot is not None:
+                metrics.update(self._curriculum_scalar_metrics(curriculum_snapshot))
             
             self._log_metrics(metrics)
-            self.event_bus.emit("update_end", step=self.global_step, **metrics)
+            if curriculum_snapshot is not None:
+                self.event_bus.emit(
+                    "update_end", step=self.global_step, curriculum=curriculum_snapshot, **metrics
+                )
+            else:
+                self.event_bus.emit("update_end", step=self.global_step, **metrics)
             self._maybe_checkpoint()
             self.logger.flush()
             
@@ -332,6 +365,38 @@ class SMDPPPOAdapter(AlgoAdapter):
             pass
         
         return logits_map.squeeze(0), float(value.squeeze().item())
+
+    def _forward_policy_batch(
+        self,
+        obs: np.ndarray,
+        mask: np.ndarray,
+        pill_colors: np.ndarray,
+        preview_pill_colors: np.ndarray,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass through policy network for a batch.
+
+        Returns:
+            Tuple of (logits_map [B, 4, 16, 8], values [B])
+        """
+        obs_t = torch.from_numpy(obs).to(self.device)
+        mask_t = torch.from_numpy(mask).to(self.device)
+        colors_t = torch.from_numpy(pill_colors).to(self.device)
+        preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
+
+        t0 = time.perf_counter()
+        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t)
+        dt = float(time.perf_counter() - t0)
+        batch_size = int(obs_t.shape[0])
+        self._perf_inference_calls += batch_size
+        self._perf_inference_sec_total += dt
+        self._perf_last_inference_sec = dt
+        try:
+            if hasattr(self.env, "record_inference"):
+                self.env.record_inference(dt, calls=batch_size)
+        except Exception:
+            pass
+
+        return logits_map, value.squeeze(-1)
         
     def _select_action(
         self,
@@ -355,6 +420,39 @@ class SMDPPPOAdapter(AlgoAdapter):
         action_idx, log_prob = dist.sample(deterministic=deterministic)
         
         return int(action_idx.item()), float(log_prob.item()), value
+
+    def _select_actions_batch(
+        self,
+        obs_batch: np.ndarray,
+        infos: List[Dict[str, Any]],
+        deterministic: bool = False,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Select actions for a batch of environments."""
+        num_envs = int(self.env.num_envs)
+        obs_arr = self._ensure_batched_obs(obs_batch).astype(np.float32, copy=False)
+
+        masks = np.zeros((num_envs, 4, 16, 8), dtype=bool)
+        pill_colors = np.zeros((num_envs, 2), dtype=np.int64)
+        preview_pill_colors = np.zeros((num_envs, 2), dtype=np.int64)
+        for i in range(num_envs):
+            info_i = infos[i] if i < len(infos) else {}
+            masks[i] = self._extract_mask(info_i)
+            pill_colors[i] = self._extract_pill_colors(info_i)
+            preview_pill_colors[i] = self._extract_preview_pill_colors(info_i)
+
+        logits_map, values = self._forward_policy_batch(obs_arr, masks, pill_colors, preview_pill_colors)
+        dist = MaskedPlacementDist(logits_map, torch.from_numpy(masks).to(self.device))
+        if deterministic:
+            action_idx = dist.mode()
+            log_probs = dist.log_prob(action_idx)
+        else:
+            action_idx, log_probs = dist.sample(deterministic=False)
+
+        actions_np = action_idx.detach().cpu().numpy().astype(np.int64)
+        log_probs_np = log_probs.detach().cpu().numpy().astype(np.float32)
+        values_np = values.detach().cpu().numpy().astype(np.float32)
+
+        return actions_np, log_probs_np, values_np, masks, pill_colors, preview_pill_colors
         
     def _execute_placement(
         self,
@@ -512,6 +610,44 @@ class SMDPPPOAdapter(AlgoAdapter):
                     return mask.astype(bool)
         # Fallback: all valid
         return np.ones((4, 16, 8), dtype=bool)
+
+    def _unwrap_obs(self, obs: Any) -> np.ndarray:
+        if isinstance(obs, dict) and "obs" in obs:
+            obs = obs.get("obs")
+        return np.asarray(obs)
+
+    def _ensure_batched_obs(self, obs: np.ndarray) -> np.ndarray:
+        obs_arr = np.asarray(obs)
+        if obs_arr.ndim == len(self.buffer.obs_shape):
+            return obs_arr[None, ...]
+        return obs_arr
+
+    def _normalize_infos(self, infos: Any) -> List[Dict[str, Any]]:
+        num_envs = int(self.env.num_envs)
+        if infos is None:
+            return [{} for _ in range(num_envs)]
+        if isinstance(infos, (list, tuple)):
+            out = [dict(i) if isinstance(i, dict) else {} for i in infos]
+        elif isinstance(infos, dict):
+            out = [dict(infos) for _ in range(num_envs)]
+        else:
+            out = [{} for _ in range(num_envs)]
+        if len(out) < num_envs:
+            out.extend({} for _ in range(num_envs - len(out)))
+        return out[:num_envs]
+
+    @staticmethod
+    def _extract_tau(info: Dict[str, Any]) -> int:
+        tau = info.get("placements/tau", 1)
+        if isinstance(tau, np.ndarray):
+            try:
+                tau = tau.item()
+            except Exception:
+                return 1
+        try:
+            return max(1, int(tau))
+        except Exception:
+            return 1
         
     def _extract_pill_colors(self, info: Dict) -> np.ndarray:
         """Extract current pill colors (canonical indices 0=R,1=Y,2=B) from info dict."""
@@ -562,6 +698,225 @@ class SMDPPPOAdapter(AlgoAdapter):
             return int(ram_specs.COLOR_VALUE_TO_INDEX.get(int(raw) & 0x03, 0))
 
         return np.array([_map_color(raw_left), _map_color(raw_right)], dtype=np.int64)
+
+    @staticmethod
+    def _extract_int(value: Any) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, np.ndarray):
+            try:
+                value = value.item()
+            except Exception:
+                return None
+        try:
+            return int(value)
+        except Exception:
+            return None
+
+    def _extract_curriculum_snapshot(self, infos: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Extract a compact curriculum snapshot from per-env info dicts."""
+
+        if not infos:
+            return None
+
+        source: Optional[Dict[str, Any]] = None
+        for info in infos:
+            if isinstance(info, dict) and "curriculum/current_level" in info:
+                source = info
+                break
+        if source is None:
+            return None
+
+        current_level = self._extract_int(source.get("curriculum/current_level"))
+        if current_level is None:
+            return None
+
+        def _float(key: str, default: float = 0.0) -> float:
+            val = source.get(key, default)
+            if isinstance(val, np.ndarray):
+                try:
+                    val = val.item()
+                except Exception:
+                    return float(default)
+            try:
+                return float(val)
+            except Exception:
+                return float(default)
+
+        def _int(key: str, default: int = 0) -> int:
+            val = self._extract_int(source.get(key))
+            return int(default) if val is None else int(val)
+
+        snapshot: Dict[str, Any] = {
+            "current_level": int(current_level),
+            "rate_current": _float("curriculum/rate_current", 0.0),
+            "window_n": _int("curriculum/window_n", 0),
+            "window_size": _int("curriculum/window_size", 0),
+            "episodes_current_total": _int("curriculum/episodes_current_total", 0),
+            "start_level": _int("curriculum/start_level", 0),
+            "max_level": _int("curriculum/max_level", 0),
+            "success_threshold": _float("curriculum/success_threshold", 0.0),
+            "min_episodes": _int("curriculum/min_episodes", 0),
+            "rehearsal_prob": _float("curriculum/rehearsal_prob", 0.0),
+        }
+
+        confidence_sigmas = source.get("curriculum/confidence_sigmas")
+        if confidence_sigmas is not None:
+            try:
+                snapshot["confidence_sigmas"] = float(confidence_sigmas)
+            except Exception:
+                pass
+        confidence_lb = source.get("curriculum/confidence_lower_bound")
+        if confidence_lb is not None:
+            try:
+                snapshot["confidence_lower_bound"] = float(confidence_lb)
+            except Exception:
+                pass
+        window_successes = self._extract_int(source.get("curriculum/window_successes"))
+        if window_successes is not None:
+            snapshot["window_successes"] = int(window_successes)
+
+        time_budget_frames = self._extract_int(source.get("curriculum/time_budget_frames"))
+        if time_budget_frames is not None:
+            snapshot["time_budget_frames"] = int(time_budget_frames)
+        time_mean_frames = source.get("curriculum/time_mean_frames")
+        if time_mean_frames is not None:
+            try:
+                snapshot["time_mean_frames"] = float(time_mean_frames)
+            except Exception:
+                pass
+        time_mad_frames = source.get("curriculum/time_mad_frames")
+        if time_mad_frames is not None:
+            try:
+                snapshot["time_mad_frames"] = float(time_mad_frames)
+            except Exception:
+                pass
+
+        mode = source.get("curriculum/mode")
+        if isinstance(mode, str) and mode:
+            snapshot["mode"] = str(mode)
+
+        stage_index = self._extract_int(source.get("curriculum/stage_index"))
+        if stage_index is not None:
+            snapshot["stage_index"] = int(stage_index)
+        stage_count = self._extract_int(source.get("curriculum/stage_count"))
+        if stage_count is not None:
+            snapshot["stage_count"] = int(stage_count)
+
+        probe_threshold = _float("curriculum/probe_threshold", 0.0)
+        if probe_threshold > 0.0:
+            snapshot["probe_threshold"] = float(probe_threshold)
+
+        # Distribution of active env levels.
+        env_levels: List[int] = []
+        for info in infos:
+            if not isinstance(info, dict):
+                continue
+            lvl = self._extract_int(info.get("curriculum/env_level"))
+            if lvl is not None:
+                env_levels.append(int(lvl))
+        if env_levels:
+            counts = Counter(env_levels)
+            snapshot["env_level_counts"] = {str(k): int(v) for k, v in sorted(counts.items())}
+
+        # Advancement (present only on steps that trigger it).
+        adv_from = None
+        adv_to = None
+        for info in infos:
+            if not isinstance(info, dict):
+                continue
+            adv_to = self._extract_int(info.get("curriculum/advanced_to"))
+            if adv_to is None:
+                continue
+            adv_from = self._extract_int(info.get("curriculum/advanced_from"))
+            break
+        if adv_to is not None:
+            snapshot["advanced_to"] = int(adv_to)
+            if adv_from is not None:
+                snapshot["advanced_from"] = int(adv_from)
+
+        return snapshot
+
+    @staticmethod
+    def _curriculum_scalar_metrics(snapshot: Dict[str, Any]) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        try:
+            out["curriculum/current_level"] = float(int(snapshot.get("current_level", 0)))
+            out["curriculum/rate_current"] = float(snapshot.get("rate_current", 0.0) or 0.0)
+            out["curriculum/window_n"] = float(int(snapshot.get("window_n", 0)))
+            out["curriculum/window_size"] = float(int(snapshot.get("window_size", 0)))
+            out["curriculum/episodes_current_total"] = float(int(snapshot.get("episodes_current_total", 0)))
+            out["curriculum/start_level"] = float(int(snapshot.get("start_level", 0)))
+            out["curriculum/max_level"] = float(int(snapshot.get("max_level", 0)))
+            out["curriculum/success_threshold"] = float(snapshot.get("success_threshold", 0.0) or 0.0)
+            out["curriculum/min_episodes"] = float(int(snapshot.get("min_episodes", 0)))
+            out["curriculum/rehearsal_prob"] = float(snapshot.get("rehearsal_prob", 0.0) or 0.0)
+            stage_index = snapshot.get("stage_index")
+            if stage_index is not None:
+                out["curriculum/stage_index"] = float(int(stage_index))
+            conf_sigmas = snapshot.get("confidence_sigmas")
+            if conf_sigmas is not None:
+                out["curriculum/confidence_sigmas"] = float(conf_sigmas)
+            conf_lb = snapshot.get("confidence_lower_bound")
+            if conf_lb is not None:
+                out["curriculum/confidence_lower_bound"] = float(conf_lb)
+            window_successes = snapshot.get("window_successes")
+            if window_successes is not None:
+                out["curriculum/window_successes"] = float(int(window_successes))
+            time_budget_frames = snapshot.get("time_budget_frames")
+            if time_budget_frames is not None:
+                out["curriculum/time_budget_frames"] = float(int(time_budget_frames))
+            time_mean = snapshot.get("time_mean_frames")
+            if time_mean is not None:
+                out["curriculum/time_mean_frames"] = float(time_mean)
+            time_mad = snapshot.get("time_mad_frames")
+            if time_mad is not None:
+                out["curriculum/time_mad_frames"] = float(time_mad)
+        except Exception:
+            return out
+
+        counts = snapshot.get("env_level_counts")
+        if isinstance(counts, dict) and counts:
+            try:
+                levels = [int(k) for k in counts.keys()]
+                out["curriculum/env_level_min"] = float(min(levels))
+                out["curriculum/env_level_max"] = float(max(levels))
+                out["curriculum/env_levels_unique"] = float(len(levels))
+            except Exception:
+                pass
+        return out
+
+    def _log_curriculum_advance(self, level_from: Optional[int], level_to: int) -> None:
+        if (
+            self._curriculum_last_level is not None
+            and int(level_to) <= int(self._curriculum_last_level)
+        ):
+            return
+        frames_total = int(self.global_step)
+        episodes_total = int(self._episodes_total)
+        frames_delta = frames_total - int(self._curriculum_last_frames)
+        episodes_delta = episodes_total - int(self._curriculum_last_episodes)
+
+        step = int(self.global_step)
+        if level_from is not None:
+            self.logger.log_scalar("curriculum/advanced_from", float(level_from), step)
+        self.logger.log_scalar("curriculum/advanced_to", float(level_to), step)
+        self.logger.log_scalar(
+            "curriculum/advanced_frames_total", float(frames_total), step
+        )
+        self.logger.log_scalar(
+            "curriculum/advanced_episodes_total", float(episodes_total), step
+        )
+        self.logger.log_scalar(
+            "curriculum/advanced_frames_delta", float(frames_delta), step
+        )
+        self.logger.log_scalar(
+            "curriculum/advanced_episodes_delta", float(episodes_delta), step
+        )
+
+        self._curriculum_last_level = int(level_to)
+        self._curriculum_last_frames = frames_total
+        self._curriculum_last_episodes = episodes_total
         
     def _get_entropy_coef(self) -> float:
         """Get current entropy coefficient (annealed over training)."""

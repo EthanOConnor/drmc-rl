@@ -72,13 +72,18 @@ class TUIEventHandler:
         value_loss = payload.get("loss/value")
         entropy = payload.get("policy/entropy")
         sps = payload.get("perf/sps")
-        
+
+        curriculum = payload.get("curriculum")
+        if not isinstance(curriculum, dict):
+            curriculum = None
+
         self.tui.update(
             policy_loss=policy_loss,
             value_loss=value_loss,
             entropy=entropy,
             steps_per_second=sps,
             total_steps=step,
+            curriculum=curriculum,
         )
     
     def _on_rollout_end(self, payload: Dict[str, Any]) -> None:

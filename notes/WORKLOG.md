@@ -12,6 +12,30 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Added tests and CLI tooling (`tools/ram_planes_dump.py`).
 - Documented RNG, virus placement, and state spec in `docs/`.
 
+## 2025-12-19 – Coding Agent (Codex CLI)
+
+- Fixed SMDP-PPO multi-env rollouts: batch actions per decision, per-env τ accounting, and per-env GAE with `env_id` tracking.
+- Added `emit_raw_ram` env option to trim AsyncVectorEnv IPC payloads; debug runs keep raw RAM enabled.
+- Reworked debug TUI for multi-env: grid/summary view, env selection hotkeys, restart-only env count changes.
+- Added `tools/bench_multienv.py` scaling harness (sync vs async, fps/speedup/efficiency metrics).
+
+## 2025-12-20 – Coding Agent (Codex CLI)
+
+- Normalized Gymnasium vector `info` dicts into per-env info lists inside the debug UI wrapper to avoid array→scalar conversion errors when rendering multi-env boards (`training/envs/interactive.py`).
+- Fixed nested info unbatching so dict-valued entries (like `preview_pill`) are split per-env rather than broadcast (`training/envs/dr_mario_vec.py`).
+- Added a lightweight benchmark smoke test that runs the multienv harness for a short sync run when the C++ engine binary is available (`tests/test_bench_multienv_smoke.py`).
+- Logged curriculum graduation events with frames/episodes totals and deltas in SMDP-PPO (`training/envs/curriculum.py`, `training/algo/ppo_smdp.py`).
+- Improved debug TUI restart UX (status TTL + alt-screen) and ensured debug sessions always stop/close on exit (`training/ui/runner_debug_tui.py`, `training/run.py`).
+- Added compact grid rendering for multi-env boards, auto-downshifted UI refresh with env count, and a unified timing (ms/frame) breakdown with a wider summary column for readability (`training/ui/board_viewer.py`, `training/ui/runner_debug_tui.py`).
+- Hid the per-env reward panel while in summary/grid view to keep the UI focused (`training/ui/runner_debug_tui.py`).
+- Debounced `[`/`]` env-count restarts, added a numeric env-count entry mode (`e` + digits + Enter), and expanded the footer to show pending restart state (`training/ui/runner_debug_tui.py`).
+- Added a curriculum advancement report script (`tools/report_curriculum.py`).
+- Added `tests/test_cpp_backend_multienv.py` for multi-instance C++ backend isolation.
+- Removed noisy startup warnings by (a) switching environment package capture to `importlib.metadata` (no `pkg_resources` deprecation warning) and (b) lazy-importing W&B so its pydantic warnings don’t fire unless W&B is enabled (`training/utils/reproducibility.py`, `training/diagnostics/logger.py`).
+- Defaulted `training.run` to write each invocation under a unique `run_id` subdirectory (unless `--logdir` is provided) and recorded `run_id`/`logdir` in run metadata (`training/run.py`).
+- Emitted curriculum snapshots in SMDP-PPO `update_end` events and displayed curriculum level/goal/success-window and env-level distribution in the Rich TUI (`training/algo/ppo_smdp.py`, `training/ui/tui.py`, `training/ui/event_handler.py`).
+- Added a new `ln_hop_back` curriculum mode (probe + ln-tightened hop-backs) and set it as the default for `training/configs/smdp_ppo.yaml`; extended synthetic match-count stages to `-15..-4` (1..12 matches) (`training/envs/curriculum.py`, `envs/retro/drmario_env.py`).
+
 ## 2025-11-22 – Coding Agent
 
 - Implemented C++ game engine core logic (`game_engine/GameLogic.cpp`).
@@ -218,6 +242,16 @@ Chronological log of work done. Format: date, actor, brief summary.
   - `bitplane_bottle_mask` (8ch): bottle-only + feasibility planes injected by placement env.
 - Decoded falling/preview pill metadata directly from RAM in `envs/state_core.py` (observation-repr independent), and updated intent wrapper to decode falling coords from RAM.
 - Updated the placement policy to condition on both **current** and **preview** pill colors as vectors (no longer requires `pill_to_place`/`preview_pill` planes), and extended the rollout buffer accordingly.
+
+## 2025-12-19 – Codex CLI – Env Step Profiling Breakdown
+
+- Added per-frame env timing keys (`perf/env_*_sec`) in `envs/retro/drmario_env.py` and aggregated them per macro decision in `envs/retro/placement_env.py`.
+- Extended `training/envs/interactive.py` perf snapshot to report env breakdown ms/frame and `macro_other_ms/frame`.
+- Updated `training/ui/runner_debug_tui.py` Perf panel to display the breakdown.
+- Optimized state-mode stepping by avoiding redundant RAM refreshes, reusing the RAM snapshot for `info["raw_ram"]`, and fetching RGB frames lazily in `render()` unless `obs_mode=pixel`.
+- Fixed a debug-TUI crash when `info["raw_ram"]` was present but `None` (`training/ui/board_viewer.py`), and added `ms/frame(total|accounted|unaccounted)` rows to reconcile `sps` vs per-component timings.
+- Reduced per-frame reward overhead by gating adjacency/height computations on static-tile changes and vectorizing bottle-buffer scans (`envs/retro/drmario_env.py`).
+- Reduced C++ engine backend step overhead by using a short spin-then-sleep polling loop (avoid guaranteed oversleep each frame) (`envs/backends/cpp_engine_backend.py`).
 - Added optional encoder scaling via `encoder_blocks` (extra 64-channel residual blocks) and updated debug UI to show preview pill colors.
 
 ## 2025-12-18 – Codex CLI – Debug TUI: Perf Diagnostics (Inference/Planner)
@@ -318,3 +352,37 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Added a ghosting parity harness that runs libretro and the C++ engine side-by-side and stops on first divergence (`tools/ghost_parity.py`).
 - Hardened libretro auto-start: level selection clamps (no wrap-around) and added `start_sync_wait_frames` (`waitFrames` sync) so resets land in a stable post-virus-placement checkpoint across levels (`envs/retro/drmario_env.py`, `tools/ghost_parity.py`).
 - Fixed demo recorder startup gating + transcript frame numbering so demo parity remains deterministic under the new frameCounter seeding (`tools/record_demo.py`, `tests/test_rng_randomization.py`), and updated docs (`docs/RETRO_CORE_NOTES.md`, `docs/CPP_SIM_NOTES.md`, `docs/DYNAMICS_SPEC.md`).
+
+## 2025-12-19 – Codex CLI – Multi-Env C++ Backend: Design + P0 Backlog
+
+- Wrote a multi-env scaling design doc (vectorization policy, scaling metrics, debug UI hotkeys, restart semantics) in `notes/DESIGN_MULTIENV.md`.
+- Added hierarchical “Up Next / P0” backlog items for multi-env correctness/perf/UI (including a scaling benchmark harness) in `notes/BACKLOG.md`.
+
+## 2025-12-20 – Codex CLI – C++ Batched Stepping for Multi-Env Throughput
+
+- Fixed Gymnasium `AsyncVectorEnv` worker env creation by registering Dr. Mario env ids inside each env factory (subprocess-safe) and making registration idempotent to avoid “Overriding environment …” warnings (`training/envs/dr_mario_vec.py`, `envs/retro/register_env.py`).
+- Added a shared-memory batched run protocol to the C++ engine (`run_request_id/run_ack_id`, run modes for fixed-frames and “until next decision”, plus cleared-tile counters) and surfaced it in the Python backend (`game_engine/GameState.h`, `game_engine/main.cpp`, `game_engine/GameLogic.cpp`, `game_engine/engine_shm.py`, `envs/backends/cpp_engine_backend.py`).
+- Added `DrMarioRetroEnv.sync_after_backend_run()` and a cpp-engine fast path in `DrMarioPlacementEnv` that executes the planner controller script and wait-to-next-spawn via batched runs (gated by reward config + `DRMARIO_CPP_FAST`), materially increasing decisions/sec in the scaling benchmark while preserving core training reward terms (`envs/retro/drmario_env.py`, `envs/retro/placement_env.py`).
+- Fixed an SMDP termination bug in the cpp-engine fast path: match-mode curriculum stages (0 viruses) must not end just because `viruses_remaining==0`; now termination respects `task_mode` and only ends after the configured match count or top-out (`envs/retro/placement_env.py`).
+
+## 2025-12-20 – Codex CLI – Async Scaling Stability + Fast Reset Path
+
+- Removed a multiprocessing spawn footgun: moved cpp-engine shared-memory ctypes bindings into an installable module (`envs/backends/cpp_engine_shm.py`) and updated the backend to import it, so `AsyncVectorEnv` workers no longer depend on `game_engine` being importable.
+- Hardened cpp-engine reset behavior under high env counts: `DrMarioRetroEnv.reset()` now retries by restarting the backend (instead of silently falling back to mock dynamics) and records `_backend_last_error` for downstream wrappers.
+- Eliminated per-frame stepping during autoresets: `DrMarioPlacementEnv.reset()` now uses `cpp-engine.run_until_decision()` + `sync_after_backend_run()` to reach the first decision point without calling `env.step()` in a loop, reducing timeouts and improving scaling.
+- Reduced polling overhead in `CppEngineBackend` (both single-step and batched runs) with gentler backoff to avoid CPU thrash at high env counts.
+- Added an `AsyncVectorEnv` regression test to exercise autoresets and ensure the placement env doesn’t lose `_state_cache` (`tests/test_async_vec_env_stability.py`).
+- Made shutdown robust for long async runs: `_InfoListWrapper.close()` force-terminates `AsyncVectorEnv` if it has a pending call to avoid `close()` hanging on `step_wait` (`training/envs/dr_mario_vec.py`, `training/run.py`).
+
+## 2025-12-20 – Codex CLI – Time/Spawn Budget Scaffolding (Curriculum)
+
+- Fixed the TUI “Goal” label for synthetic match-count levels (now matches the env mapping `max(1, 16 + level)` for `-15..-4`) so negative levels don’t display as “clear -3 matches” (`training/ui/tui.py`).
+- Added optional time-based task budgets (`task_max_frames`, `task_max_spawns`) plumbed via `CurriculumVecEnv.set_attr` and enforced inside `DrMarioPlacementEnv` with per-episode counters and `info` keys under `task/*` (`training/envs/curriculum.py`, `envs/retro/placement_env.py`).
+- Added unit coverage for frame/spawn budget truncation and “clear over budget strips terminal bonus” semantics (`tests/test_task_budgets.py`).
+
+## 2025-12-20 – Codex CLI – Confidence-Based Curriculum Windows + Mastery Time Budgets
+
+- Switched curriculum advancement from fixed `window_episodes/min_episodes` gating to a sigma-based one-sided Wilson lower bound check (`p > target`), with window sizes derived from a “near-target” assumption and configurable `confidence_sigmas` (default 2σ). Added a separate perfect-streak window size helper for mastery gating (`training/envs/curriculum.py`).
+- Added “time budget after mastery” plumbing: once a level hits a perfect-streak window long enough to certify mastery at `time_budget_mastery_sigmas/time_budget_mastery_target`, the curriculum begins setting a per-level `task_max_frames` that starts at mean clear time and tightens gradually with a MAD-capped drop. Exposed mean/MAD/budget via curriculum snapshots (`training/envs/curriculum.py`).
+- Surfaced curriculum Wilson LB + time budget/mean/MAD in both the Rich TUI and debug TUI, and added `tools/report_curriculum.py --confidence-table` to print expected window sizes / requirements (`training/ui/tui.py`, `training/ui/runner_debug_tui.py`, `training/algo/ppo_smdp.py`, `tools/report_curriculum.py`).
+- Hardened `DrMarioPlacementEnv` decision-context building to treat missing `_state_cache` as a backend error and return `truncated=True` (instead of raising), improving `AsyncVectorEnv` robustness under high env counts (`envs/retro/placement_env.py`).

@@ -26,6 +26,7 @@ class DecisionStep:
     reward: float  # Cumulative reward over τ frames
     obs_next: np.ndarray  # Observation after placement
     done: bool  # Episode terminated
+    env_id: int = 0  # Environment index for multi-env rollouts
     info: Dict = field(default_factory=dict)  # Additional metadata
 
 
@@ -44,6 +45,7 @@ class DecisionBatch:
     rewards: np.ndarray  # [T] - cumulative rewards
     observations_next: np.ndarray  # [T, ...]
     dones: np.ndarray  # [T]
+    env_ids: Optional[np.ndarray] = None  # [T] - environment indices
     advantages: Optional[np.ndarray] = None  # [T] - computed later
     returns: Optional[np.ndarray] = None  # [T] - computed later
     gammas: Optional[np.ndarray] = None  # [T] - γ^τ for each step
@@ -91,6 +93,7 @@ class DecisionRolloutBuffer:
         self.rewards = np.zeros(capacity, dtype=np.float32)
         self.observations_next = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self.dones = np.zeros(capacity, dtype=np.bool_)
+        self.env_ids = np.zeros(capacity, dtype=np.int32)
         
         self.ptr = 0
         self.size = 0
@@ -110,6 +113,7 @@ class DecisionRolloutBuffer:
         self.rewards[idx] = step.reward
         self.observations_next[idx] = step.obs_next
         self.dones[idx] = step.done
+        self.env_ids[idx] = int(step.env_id)
         
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
@@ -138,49 +142,50 @@ class DecisionRolloutBuffer:
         values = self.values[:T]
         dones = self.dones[:T]
         taus = self.taus[:T]
+        env_ids = self.env_ids[:T]
         
         # Compute Gamma_t = gamma^tau_t
         gammas = self.gamma ** taus.astype(np.float32)
         
-        # Initialize
         advantages = np.zeros(T, dtype=np.float32)
         returns = np.zeros(T, dtype=np.float32)
-        
-        # Bootstrap
+
+        # Normalize bootstrap values to per-env array.
         if bootstrap_value is None:
-            next_value = 0.0
-            next_return = 0.0
+            bootstrap_by_env = np.zeros(self.num_envs, dtype=np.float32)
         else:
-            next_value = float(bootstrap_value)
-            next_return = float(bootstrap_value)
-            
-        last_gae = 0.0
-        
-        # Backward pass for GAE
-        for t in reversed(range(T)):
-            if t < T - 1:
-                next_value = values[t + 1]
-                next_return = returns[t + 1]
-            elif bootstrap_value is not None:
-                next_value = float(bootstrap_value)
-                next_return = float(bootstrap_value)
+            arr = np.asarray(bootstrap_value, dtype=np.float32).reshape(-1)
+            if arr.size == 1:
+                bootstrap_by_env = np.full(self.num_envs, float(arr.item()), dtype=np.float32)
             else:
-                next_value = 0.0
-                next_return = 0.0
-                
-            # Mask for terminal states
-            mask = 1.0 - float(dones[t])
-            
-            # TD error with SMDP discount
-            delta = rewards[t] + gammas[t] * next_value * mask - values[t]
-            
-            # GAE accumulation
-            last_gae = delta + gammas[t] * self.gae_lambda * mask * last_gae
-            advantages[t] = last_gae
-            
-            # Return
-            returns[t] = rewards[t] + gammas[t] * next_return * mask
-            next_return = returns[t]
+                if arr.size != self.num_envs:
+                    raise ValueError(
+                        f"bootstrap_value size {arr.size} does not match num_envs={self.num_envs}"
+                    )
+                bootstrap_by_env = arr.astype(np.float32)
+
+        # Compute GAE separately for each environment sequence.
+        for env_idx in range(self.num_envs):
+            idxs = np.nonzero(env_ids == env_idx)[0]
+            if idxs.size == 0:
+                continue
+
+            last_gae = 0.0
+            for pos in range(idxs.size - 1, -1, -1):
+                t = int(idxs[pos])
+                if pos < idxs.size - 1:
+                    t_next = int(idxs[pos + 1])
+                    next_value = float(values[t_next])
+                    next_return = float(returns[t_next])
+                else:
+                    next_value = float(bootstrap_by_env[env_idx])
+                    next_return = float(bootstrap_by_env[env_idx])
+
+                mask = 1.0 - float(dones[t])
+                delta = rewards[t] + gammas[t] * next_value * mask - values[t]
+                last_gae = delta + gammas[t] * self.gae_lambda * mask * last_gae
+                advantages[t] = last_gae
+                returns[t] = rewards[t] + gammas[t] * next_return * mask
             
         return advantages, returns, gammas
         
@@ -196,7 +201,7 @@ class DecisionRolloutBuffer:
         T = self.size
         
         # Compute advantages
-        bootstrap = np.array([bootstrap_value]) if bootstrap_value is not None else None
+        bootstrap = None if bootstrap_value is None else np.asarray(bootstrap_value)
         advantages, returns, gammas = self.compute_advantages(bootstrap)
         
         return DecisionBatch(
@@ -211,6 +216,7 @@ class DecisionRolloutBuffer:
             rewards=self.rewards[:T].copy(),
             observations_next=self.observations_next[:T].copy(),
             dones=self.dones[:T].copy(),
+            env_ids=self.env_ids[:T].copy(),
             advantages=advantages,
             returns=returns,
             gammas=gammas,

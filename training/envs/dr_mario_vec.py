@@ -30,6 +30,7 @@ class VecEnvConfig:
     action_space: Optional[str] = None  # controller|intent|placement
     state_repr: Optional[str] = None
     vectorization: str = "auto"  # auto|sync|async
+    emit_raw_ram: bool = True
 
 
 class DummyVecEnv:
@@ -266,12 +267,6 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
     import gymnasium as gym
     from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 
-    from envs.retro.register_env import register_env_id, register_intent_env_id, register_placement_env_id
-
-    register_env_id()
-    register_intent_env_id()
-    register_placement_env_id()
-
     env_id = _resolve_real_env_id(env_cfg)
     obs_mode = _normalize_obs_mode(env_cfg.obs_mode)
 
@@ -287,6 +282,7 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
         "include_risk_tau": bool(env_cfg.include_risk_tau),
         "backend": backend,
         "rng_randomize": bool(env_cfg.randomize_rng),
+        "emit_raw_ram": bool(getattr(env_cfg, "emit_raw_ram", True)),
         # Always enable rgb_array rendering so debug UIs and video handlers can
         # call `env.render()` without needing a separate env instance.
         "render_mode": "rgb_array",
@@ -300,6 +296,18 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
 
     def make_env(rank: int):
         def _init():
+            # AsyncVectorEnv creates envs in subprocesses. Register the Dr. Mario env
+            # ids inside each worker so `gym.make()` succeeds.
+            from envs.retro.register_env import (
+                register_env_id,
+                register_intent_env_id,
+                register_placement_env_id,
+            )
+
+            register_env_id()
+            register_intent_env_id()
+            register_placement_env_id()
+
             env = gym.make(env_id, **kwargs)
             env = _wrap_last_frame_if_needed(env, frame_stack=int(env_cfg.frame_stack))
             return env
@@ -408,26 +416,81 @@ class _InfoListWrapper:
         return None
 
     def close(self) -> None:
-        if hasattr(self.env, "close"):
-            self.env.close()
+        env = getattr(self, "env", None)
+        if env is None or not hasattr(env, "close"):
+            return
+
+        # Gymnasium's AsyncVectorEnv can hang on close if a worker crashed or a
+        # pending call was interrupted mid-message. Prefer a force-terminate
+        # shutdown path for robustness under long async runs.
+        try:
+            from gymnasium.vector.async_vector_env import AsyncState, AsyncVectorEnv
+
+            if isinstance(env, AsyncVectorEnv):
+                try:
+                    if getattr(env, "_state", AsyncState.DEFAULT) != AsyncState.DEFAULT:
+                        env._state = AsyncState.DEFAULT
+                except Exception:
+                    pass
+                try:
+                    env.close(terminate=True)
+                    return
+                except TypeError:
+                    env.close()
+                    return
+        except Exception:
+            pass
+
+        try:
+            env.close()
+        except TypeError:
+            try:
+                env.close()
+            except Exception:
+                pass
 
     def _unbatch_infos(self, infos: Any) -> List[Dict[str, Any]]:
         n = self._num_envs
         if infos is None:
             return [{} for _ in range(n)]
         if isinstance(infos, (list, tuple)):
-            return [dict(i) for i in infos]
+            return [dict(i) if isinstance(i, dict) else {} for i in infos]
         if not isinstance(infos, dict):
             return [{} for _ in range(n)]
+        return self._split_info_dict(infos, n)
+
+    def _split_info_dict(self, infos: Dict[str, Any], n: int) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = [dict() for _ in range(n)]
         for key, value in infos.items():
+            if isinstance(key, str) and key.startswith("_"):
+                continue
+
+            mask = infos.get(f"_{key}") if isinstance(key, str) else None
+            has_mask = hasattr(mask, "__len__") and len(mask) == n
+
+            if isinstance(value, dict):
+                sub = self._split_info_dict(value, n)
+                if has_mask:
+                    for i, has in enumerate(mask):
+                        if bool(has):
+                            out[i][key] = sub[i]
+                else:
+                    for i in range(n):
+                        out[i][key] = sub[i]
+                continue
+
             try:
                 arr = np.asarray(value)
             except Exception:
                 arr = None
             if arr is not None and arr.shape[:1] == (n,):
-                for i in range(n):
-                    out[i][key] = value[i]
+                if has_mask:
+                    for i, has in enumerate(mask):
+                        if bool(has):
+                            out[i][key] = value[i]
+                else:
+                    for i in range(n):
+                        out[i][key] = value[i]
             else:
                 for i in range(n):
                     out[i][key] = value

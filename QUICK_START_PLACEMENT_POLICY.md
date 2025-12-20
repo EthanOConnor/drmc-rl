@@ -171,7 +171,7 @@ head_type = "factorized"
 [       0] Episode: reward=  12.3, len= 245, viruses= 4
 [    1600] Update: π_loss=0.4523, v_loss=1.2341, H=3.5678, 1234 steps/s, 45.2 dec/s
 [   10000] Episode: reward=  45.6, len= 412, viruses= 8
-[  100000] Checkpoint saved: runs/smdp_ppo/checkpoints/smdp_ppo_step100000.pt
+[  100000] Checkpoint saved: runs/smdp_ppo/<run_id>/checkpoints/smdp_ppo_step100000.pt
 ```
 
 ## Metrics to Watch

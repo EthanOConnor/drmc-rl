@@ -4,9 +4,102 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 
 ---
 
+## Up Next / P0: Multi-Env C++ Backend
+
+> See `notes/DESIGN_MULTIENV.md` for full design document.
+
+### 1. Correctness
+
+- [ ] **Verify multi-instance isolation**
+  - [ ] Test: spawn 4 `CppEngineBackend` instances in same process
+  - [ ] Assert unique `_shm_file` paths, independent stepping
+  - [ ] Add `tests/test_cpp_backend_multienv.py`
+
+- [ ] **Test vector env modes**
+  - [ ] `SyncVectorEnv` with `num_envs=4` (same process)
+  - [ ] `AsyncVectorEnv` with `num_envs=4` (worker processes)
+  - [ ] Assert clean shutdown, no SHM leaks
+
+### 2. Performance
+
+- [ ] **Direct struct→observation path** (skip synthetic RAM)
+  - [ ] Add `BitplaneBuilder.from_engine_state(state)` for C++ backend
+  - [ ] Bypass `_refresh_ram_from_state()` + `build_state()`
+  - [ ] Benchmark: expect 0.15ms → 0.03ms per step
+
+- [ ] **Batched stepping for macro actions**
+  - [ ] Add `step_frames(buttons, n)` that polls once for N frames
+  - [ ] Use for placement env (~30 frames per decision)
+
+- [ ] **Measure async scaling**
+  - [ ] `wall_time(N envs async) / wall_time(1 env)`
+  - [ ] Target: >3x speedup at num_envs=4
+
+### 3. Debug TUI Multi-Env Support
+
+- [ ] **Hotkeys for env navigation**
+  - [ ] `Tab` — cycle per-env views (env 0, 1, ..., summary)
+  - [ ] `1`-`9` — jump to env N
+  - [ ] `0` — summary view (all boards)
+
+- [ ] **Summary view** (new layout)
+  - [ ] Grid of mini-boards (4×2 for 8 envs)
+  - [ ] Aggregate stats panel
+
+- [ ] **Speed scaling metrics**
+  - [ ] `fps(total)`, `fps(per-env)`
+  - [ ] `speedup_vs_single` — ratio vs num_envs=1 baseline
+  - [ ] `efficiency` — speedup / num_envs × 100%
+
+- [ ] **Env count hotkeys** (stretch)
+  - [ ] `[` / `]` — adjust num_envs (may require restart)
+
+---
+
 ## Near-term (This Sprint)
 
 ### Critical Priority
+
+- **Up Next (P0): Multi-env training throughput + debug UI**
+  - **P0.1 Fix SMDP-PPO multi-env correctness (true vector actions)**
+    - Current SMDP-PPO rollout collection must select actions for *all* envs and call `env.step(actions)` once per decision batch (no “one env at a time” stepping).
+    - Handle per-env `placements/tau` correctly:
+      - Track `global_step_frames_total += sum(tau_i)` as the canonical “frames processed” counter.
+      - Log/emit both `perf/sps_frames_total` and `perf/dps_decisions_total` so scaling comparisons are unambiguous.
+    - Ensure episode boundaries are per-env:
+      - Emit `episode_end` events for each env independently (return, frames, decisions, terminal_reason).
+      - Reset per-env accumulators without affecting other envs.
+    - Validate with deterministic seeds:
+      - `num_envs=1` behavior must match current baselines.
+      - `num_envs>1` must produce identical results to running each env in isolation with the same seeds (modulo different action sampling).
+
+  - **P0.2 Make `cpp-engine` scale with `num_envs` (initial implementation: Gymnasium `AsyncVectorEnv`)**
+    - Default vectorization policy:
+      - `--ui debug`: use `SyncVectorEnv` (single process) for simpler inspection.
+      - Headless training: use `AsyncVectorEnv` for parallel env stepping and planner execution across CPU cores.
+    - Add a dedicated benchmark harness to quantify scaling efficiency:
+      - Compare `num_envs ∈ {1,2,4,8,16,32,...}` for `sync` vs `async` and report:
+        - `fps_total`, `fps_per_env`, `speedup`, `efficiency = fps_total/(num_envs*fps_1env)`.
+      - Keep an “env-only” bench mode that bypasses policy updates so we can isolate simulator+planner scaling.
+    - Reduce cross-process payload when training at scale:
+      - Add an env option to disable `info["raw_ram"]` (and other heavy debug-only fields) during training; keep it enabled for debug UI and parity tools.
+
+  - **P0.3 Debug TUI: multi-env boards + selection + env-count hotkeys**
+    - Add a **grid view** showing N boards at once + an aggregate stats panel (overall FPS, total frames/sec, mean/median return, curriculum distribution).
+    - Add a **focused view** for a selected env index (current behavior), with per-env perf/reward breakdown.
+    - Hotkeys:
+      - Increase/decrease active env count (UI-driven): `[`/`]` (exact keys TBD).
+      - Switch selected env: `tab`/`shift+tab`, `0-9` quick jump, and `g` to toggle grid/focus.
+    - Implementation approach (pragmatic): treat env-count changes as “restart training with new num_envs” (stop thread, rebuild vec env, restart) rather than attempting to mutate Gymnasium VectorEnv sizes in-place.
+    - Add a lightweight “scaling HUD” in debug mode:
+      - Show speedup vs 1 env and efficiency vs linear scaling, computed from the benchmark harness.
+
+  - **P0.4 Longer-term (optional, high ceiling): batch/in-process cpp-engine backend**
+    - Goal: eliminate per-env subprocess polling overhead and process explosion (AsyncVectorEnv + per-env engine process).
+    - Two candidate designs (choose one after P0.1–P0.3 are working + benchmarked):
+      - **Multi-instance engine process**: one engine binary simulates N games; shared memory exposes arrays of per-instance state; driver issues batched step requests.
+      - **In-process engine library**: build a Python extension (pybind11/ctypes) with N engine instances in memory; batched step is a single C++ call.
+    - Success criterion: demonstrate superlinear scaling vs the current “N engines in N processes” baseline and validate parity invariants per instance.
 
 - **Wire TUI into training loop** ✅
   - Connect `TrainingTUI` to `SimplePGAdapter` update callbacks.

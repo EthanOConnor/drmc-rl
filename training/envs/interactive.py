@@ -102,6 +102,15 @@ class PlaybackControl:
             self._rng_dirty = True
             self._cond.notify_all()
 
+    def reset_for_restart(self) -> None:
+        """Clear stop/pending flags so the control can drive a fresh env."""
+        with self._cond:
+            self.stop_requested = False
+            self.pending_steps = 0
+            self._timing_reset = True
+            self._rng_dirty = True
+            self._cond.notify_all()
+
     # ---------------------------- env-side helpers (thread-safe)
     def target_hz(self) -> float:
         with self._cond:
@@ -194,6 +203,50 @@ def _extract_int(value: Any) -> Optional[int]:
         return None
 
 
+def _vector_infos_to_list(infos: Any, num_envs: int) -> List[Dict[str, Any]]:
+    if isinstance(infos, (list, tuple)):
+        return list(infos)
+    if not isinstance(infos, dict):
+        return [infos]
+
+    list_info: List[Dict[str, Any]] = [dict() for _ in range(int(num_envs))]
+    if not infos or num_envs <= 0:
+        return list_info
+
+    for key, value in infos.items():
+        if isinstance(key, str) and key.startswith("_"):
+            continue
+
+        mask = infos.get(f"_{key}") if isinstance(key, str) else None
+        has_mask = hasattr(mask, "__len__") and len(mask) == num_envs
+
+        if isinstance(value, dict):
+            sub_list = _vector_infos_to_list(value, num_envs)
+            if has_mask:
+                for i, has in enumerate(mask):
+                    if bool(has):
+                        list_info[i][key] = sub_list[i]
+            else:
+                for i in range(num_envs):
+                    list_info[i][key] = sub_list[i]
+            continue
+
+        if hasattr(value, "__len__") and len(value) == num_envs:
+            if has_mask:
+                for i, has in enumerate(mask):
+                    if bool(has):
+                        list_info[i][key] = value[i]
+            else:
+                for i in range(num_envs):
+                    list_info[i][key] = value[i]
+            continue
+
+        for i in range(num_envs):
+            list_info[i][key] = value
+
+    return list_info
+
+
 class RateLimitedVecEnv:
     """Vector env wrapper that implements pause/step and frame-rate limiting."""
 
@@ -208,6 +261,7 @@ class RateLimitedVecEnv:
         self._last_infos: Optional[Sequence[Dict[str, Any]]] = None
         self._last_obs: Any = None
         self._last_tau_max: int = 1
+        self._last_tau_total: int = 1
         self._last_emu_fps: float = 0.0
         self._last_step_fps: float = 0.0
         self._step_calls_total: int = 0
@@ -272,7 +326,25 @@ class RateLimitedVecEnv:
 
         # Spawn/decision counters (macro env: one decision per pill spawn).
         self._spawns_total: int = 0
-        self._terminal_reason_last: Optional[str] = None
+        self._terminal_reason_last: List[Optional[str]] = [None for _ in range(self.num_envs)]
+
+        # Per-frame env timing breakdown (aggregated by the macro placement env).
+        self._env_perf_keys = (
+            "perf/env_step_sec",
+            "perf/env_backend_step_sec",
+            "perf/env_get_frame_sec",
+            "perf/env_pixel_stack_sec",
+            "perf/env_get_ram_sec",
+            "perf/env_ram_bytes_sec",
+            "perf/env_build_state_sec",
+            "perf/env_observe_sec",
+            "perf/env_reward_sec",
+            "perf/env_info_sec",
+        )
+        self._env_perf_sec_total: Dict[str, float] = {k: 0.0 for k in self._env_perf_keys}
+        self._last_env_perf_sec: Dict[str, float] = {k: 0.0 for k in self._env_perf_keys}
+        self._env_step_calls_total: int = 0
+        self._last_env_step_calls: int = 0
 
     # ---------------------------- snapshot access (thread-safe)
     def latest_info(self, env_index: int = 0) -> Dict[str, Any]:
@@ -287,9 +359,13 @@ class RateLimitedVecEnv:
         with self._lock:
             return self._last_obs
 
-    def perf_snapshot(self) -> Dict[str, Any]:
+    def perf_snapshot(self, env_index: int = 0) -> Dict[str, Any]:
         with self._lock:
+            idx = int(env_index)
+            if idx < 0 or idx >= self.num_envs:
+                idx = 0
             frames_total = float(self._frames_total)
+            frames_per_env = float(frames_total / float(self.num_envs)) if self.num_envs > 0 else 0.0
             spawns_total = int(self._spawns_total)
 
             inference_calls = int(self._inference_calls_total)
@@ -316,31 +392,62 @@ class RateLimitedVecEnv:
                     return 0.0
                 return float(calls) / float(spawns_total)
 
-            reward_breakdown_curr = {k: float(self._ep_reward[k][0]) for k in self._reward_keys}
-            reward_breakdown_last = {k: float(self._ep_reward_last[k][0]) for k in self._reward_keys}
-            counts_curr = {k: int(self._ep_counts[k][0]) for k in self._count_keys}
-            counts_last = {k: int(self._ep_counts_last[k][0]) for k in self._count_keys}
+            reward_breakdown_curr = {k: float(self._ep_reward[k][idx]) for k in self._reward_keys}
+            reward_breakdown_last = {k: float(self._ep_reward_last[k][idx]) for k in self._reward_keys}
+            counts_curr = {k: int(self._ep_counts[k][idx]) for k in self._count_keys}
+            counts_last = {k: int(self._ep_counts_last[k][idx]) for k in self._count_keys}
+
+            env_step_sec = float(self._env_perf_sec_total.get("perf/env_step_sec", 0.0))
+            env_backend_sec = float(self._env_perf_sec_total.get("perf/env_backend_step_sec", 0.0))
+            env_get_frame_sec = float(self._env_perf_sec_total.get("perf/env_get_frame_sec", 0.0))
+            env_pixel_stack_sec = float(self._env_perf_sec_total.get("perf/env_pixel_stack_sec", 0.0))
+            env_get_ram_sec = float(self._env_perf_sec_total.get("perf/env_get_ram_sec", 0.0))
+            env_ram_bytes_sec = float(self._env_perf_sec_total.get("perf/env_ram_bytes_sec", 0.0))
+            env_build_state_sec = float(self._env_perf_sec_total.get("perf/env_build_state_sec", 0.0))
+            env_observe_sec = float(self._env_perf_sec_total.get("perf/env_observe_sec", 0.0))
+            env_reward_sec = float(self._env_perf_sec_total.get("perf/env_reward_sec", 0.0))
+            env_info_sec = float(self._env_perf_sec_total.get("perf/env_info_sec", 0.0))
+
+            env_step_ms_per_frame = _ms_per_frame(env_step_sec)
+            step_ms_per_frame = _ms_per_frame(float(self._step_sec_total))
+            macro_other_ms_per_frame = max(
+                0.0,
+                float(step_ms_per_frame)
+                - float(env_step_ms_per_frame)
+                - float(_ms_per_frame(planner_sec)),
+            )
 
             return {
+                "num_envs": int(self.num_envs),
                 "frames_total": frames_total,
+                "frames_per_env": frames_per_env,
                 "spawns_total": int(spawns_total),
                 "tau_max": int(self._last_tau_max),
+                "tau_total": int(self._last_tau_total),
                 "emu_fps": float(self._last_emu_fps),
                 "step_fps": float(self._last_step_fps),
                 "step_calls_total": int(self._step_calls_total),
-                "step_ms_per_frame": _ms_per_frame(float(self._step_sec_total)),
-                "reward_last": float(self._last_rewards[0]) if self._last_rewards is not None else 0.0,
-                "ep_return_curr": float(self._ep_return[0]) if self._ep_return.size else 0.0,
-                "ep_frames_curr": int(self._ep_frames[0]) if self._ep_frames.size else 0,
-                "ep_decisions_curr": int(self._ep_decisions[0]) if self._ep_decisions.size else 0,
-                "ep_return_last": float(self._ep_return_last[0]) if self._ep_return_last.size else 0.0,
-                "ep_frames_last": int(self._ep_frames_last[0]) if self._ep_frames_last.size else 0,
-                "ep_decisions_last": int(self._ep_decisions_last[0]) if self._ep_decisions_last.size else 0,
+                "step_ms_per_frame": step_ms_per_frame,
+                "macro_other_ms_per_frame": float(macro_other_ms_per_frame),
+                "reward_last": float(self._last_rewards[idx]) if self._last_rewards is not None else 0.0,
+                "ep_return_curr": float(self._ep_return[idx]) if self._ep_return.size else 0.0,
+                "ep_frames_curr": int(self._ep_frames[idx]) if self._ep_frames.size else 0,
+                "ep_decisions_curr": int(self._ep_decisions[idx]) if self._ep_decisions.size else 0,
+                "ep_return_last": float(self._ep_return_last[idx]) if self._ep_return_last.size else 0.0,
+                "ep_frames_last": int(self._ep_frames_last[idx]) if self._ep_frames_last.size else 0,
+                "ep_decisions_last": int(self._ep_decisions_last[idx]) if self._ep_decisions_last.size else 0,
+                "ep_return_curr_all": self._ep_return.tolist() if self._ep_return.size else [],
+                "ep_frames_curr_all": self._ep_frames.tolist() if self._ep_frames.size else [],
+                "ep_decisions_curr_all": self._ep_decisions.tolist() if self._ep_decisions.size else [],
+                "ep_return_last_all": self._ep_return_last.tolist() if self._ep_return_last.size else [],
+                "ep_frames_last_all": self._ep_frames_last.tolist() if self._ep_frames_last.size else [],
+                "ep_decisions_last_all": self._ep_decisions_last.tolist() if self._ep_decisions_last.size else [],
                 "ep_reward_breakdown_curr": reward_breakdown_curr,
                 "ep_reward_breakdown_last": reward_breakdown_last,
                 "ep_reward_counts_curr": counts_curr,
                 "ep_reward_counts_last": counts_last,
-                "terminal_reason_last": self._terminal_reason_last or "",
+                "terminal_reason_last": self._terminal_reason_last[idx] or "",
+                "terminal_reason_last_all": [v or "" for v in self._terminal_reason_last],
 
                 "inference_calls": inference_calls,
                 "inference_per_spawn": _per_spawn(inference_calls),
@@ -361,6 +468,19 @@ class RateLimitedVecEnv:
                 "last_planner_build_ms": float(self._last_planner_build_sec) * 1000.0,
                 "last_planner_plan_ms": float(self._last_planner_plan_sec) * 1000.0,
 
+                "env_step_calls_total": int(self._env_step_calls_total),
+                "last_env_step_calls": int(self._last_env_step_calls),
+                "env_step_ms_per_frame": env_step_ms_per_frame,
+                "env_backend_ms_per_frame": _ms_per_frame(env_backend_sec),
+                "env_get_frame_ms_per_frame": _ms_per_frame(env_get_frame_sec),
+                "env_pixel_stack_ms_per_frame": _ms_per_frame(env_pixel_stack_sec),
+                "env_get_ram_ms_per_frame": _ms_per_frame(env_get_ram_sec),
+                "env_ram_bytes_ms_per_frame": _ms_per_frame(env_ram_bytes_sec),
+                "env_build_state_ms_per_frame": _ms_per_frame(env_build_state_sec),
+                "env_observe_ms_per_frame": _ms_per_frame(env_observe_sec),
+                "env_reward_ms_per_frame": _ms_per_frame(env_reward_sec),
+                "env_info_ms_per_frame": _ms_per_frame(env_info_sec),
+
                 "update_calls": int(self._update_calls_total),
                 "update_sec_last": float(self._last_update_sec),
                 "update_frames_last": int(self._last_update_frames),
@@ -377,10 +497,11 @@ class RateLimitedVecEnv:
             }
 
     # ---------------------------- external perf hooks (training thread)
-    def record_inference(self, duration_sec: float) -> None:
+    def record_inference(self, duration_sec: float, *, calls: int = 1) -> None:
         dur = float(max(0.0, duration_sec))
+        call_count = int(max(1, calls))
         with self._lock:
-            self._inference_calls_total += 1
+            self._inference_calls_total += call_count
             self._inference_sec_total += dur
             self._last_inference_sec = dur
 
@@ -397,10 +518,12 @@ class RateLimitedVecEnv:
     # ---------------------------- vector api
     def reset(self, *args: Any, **kwargs: Any):
         obs, infos = self.env.reset(*args, **kwargs)
+        infos_seq = _vector_infos_to_list(infos, self.num_envs)
         with self._lock:
             self._last_obs = obs
-            self._last_infos = infos if isinstance(infos, (list, tuple)) else [infos]
+            self._last_infos = infos_seq
             self._last_tau_max = 1
+            self._last_tau_total = 1
             self._last_emu_fps = 0.0
             self._last_step_fps = 0.0
             self._frames_total = 0.0
@@ -438,9 +561,14 @@ class RateLimitedVecEnv:
             self._last_update_sec = 0.0
             self._last_update_frames = 0
             self._spawns_total = 0
-            self._terminal_reason_last = None
+            self._terminal_reason_last = [None for _ in range(self.num_envs)]
+            for k in self._env_perf_keys:
+                self._env_perf_sec_total[k] = 0.0
+                self._last_env_perf_sec[k] = 0.0
+            self._env_step_calls_total = 0
+            self._last_env_step_calls = 0
         self._next_step_time = time.perf_counter()
-        return obs, infos
+        return obs, infos_seq
 
     def step(self, actions: Any):
         self.control.wait_until_step_allowed()
@@ -468,17 +596,17 @@ class RateLimitedVecEnv:
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
         step_end = time.perf_counter()
 
-        infos_seq: Sequence[Dict[str, Any]]
-        if isinstance(infos, (list, tuple)):
-            infos_seq = infos
-        else:
-            infos_seq = [infos]
+        infos_seq = _vector_infos_to_list(infos, self.num_envs)
 
-        tau_max = 1
+        tau_vals: List[int] = []
         try:
-            tau_max = max(1, max(_extract_tau(info) for info in infos_seq))
+            tau_vals = [int(max(1, _extract_tau(info))) for info in infos_seq]
         except Exception:
-            tau_max = 1
+            tau_vals = []
+        if not tau_vals:
+            tau_vals = [1]
+        tau_max = int(max(1, max(tau_vals)))
+        tau_total = int(max(1, sum(tau_vals)))
 
         if target_hz > 0.0:
             # Schedule next step based on the number of emulated frames this step consumed.
@@ -494,12 +622,13 @@ class RateLimitedVecEnv:
             except Exception:
                 self._last_rewards = None
             self._last_tau_max = int(tau_max)
+            self._last_tau_total = int(tau_total)
             self._step_calls_total += 1
-            self._frames_total += float(tau_max)
+            self._frames_total += float(tau_total)
             dt = float(step_end - step_start)
             self._step_sec_total += dt
             if dt > 1e-9:
-                self._last_step_fps = float(tau_max) / dt
+                self._last_step_fps = float(tau_total) / dt
             self._fps_times.append((step_end, self._frames_total))
             if len(self._fps_times) >= 2:
                 t0, f0 = self._fps_times[0]
@@ -521,6 +650,18 @@ class RateLimitedVecEnv:
                     self._planner_plan_calls_total += 1
                     self._planner_plan_sec_total += float(max(0.0, plan_sec))
                     self._last_planner_plan_sec = float(max(0.0, plan_sec))
+
+                for key in self._env_perf_keys:
+                    v = _extract_float(info.get(key))
+                    if v is None:
+                        continue
+                    self._env_perf_sec_total[key] += float(max(0.0, v))
+                    self._last_env_perf_sec[key] = float(max(0.0, v))
+
+                env_step_calls = _extract_int(info.get("perf/env_step_calls"))
+                if env_step_calls is not None:
+                    self._env_step_calls_total += int(max(0, env_step_calls))
+                    self._last_env_step_calls = int(max(0, env_step_calls))
 
             # Live per-episode stats for env0 (and friends).
             try:
@@ -606,11 +747,11 @@ class RateLimitedVecEnv:
                 self._ep_counts["clear_events"][i] += 1 if clearing_val >= 4 else 0
 
                 if bool(terminated_arr[i] or truncated_arr[i]):
-                    if i == 0 and isinstance(info_i, dict):
+                    if isinstance(info_i, dict):
                         try:
-                            self._terminal_reason_last = str(info_i.get("terminal_reason") or "")
+                            self._terminal_reason_last[i] = str(info_i.get("terminal_reason") or "")
                         except Exception:
-                            self._terminal_reason_last = ""
+                            self._terminal_reason_last[i] = ""
                     self._ep_return_last[i] = float(self._ep_return[i])
                     self._ep_frames_last[i] = int(self._ep_frames[i])
                     self._ep_decisions_last[i] = int(self._ep_decisions[i])

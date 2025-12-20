@@ -12,10 +12,7 @@ try:  # pragma: no cover - optional dependency
 except Exception:  # pragma: no cover - optional dependency
     SummaryWriter = None  # type: ignore
 
-try:  # pragma: no cover - optional dependency
-    import wandb
-except Exception:  # pragma: no cover - optional dependency
-    wandb = None  # type: ignore
+wandb = None  # type: ignore
 
 
 class DiagLogger:
@@ -29,6 +26,7 @@ class DiagLogger:
         self._jsonl = self.metrics_path.open("a", encoding="utf-8")
         self._tb: Optional[SummaryWriter] = None
         self._wandb_run = None
+        self._wandb = None
         self._video_dir = self.logdir / "videos"
         self._video_dir.mkdir(exist_ok=True, parents=True)
         self._last_flush = time.time()
@@ -38,14 +36,21 @@ class DiagLogger:
             viz = [viz]
         if SummaryWriter is not None and "tb" in viz:
             self._tb = SummaryWriter(log_dir=self.logdir / "tb")
-        if wandb is not None and "wandb" in viz:
-            wandb_kwargs = {
-                "project": getattr(cfg, "wandb_project", "drmc"),
-                "group": getattr(cfg, "wandb_group", getattr(cfg, "algo", "experiment")),
-                "name": getattr(cfg, "wandb_name", self.logdir.name),
-                "config": _extract_flattened_cfg(cfg),
-            }
-            self._wandb_run = wandb.init(**wandb_kwargs)  # type: ignore[arg-type]
+        if "wandb" in viz:
+            try:  # pragma: no cover - optional dependency
+                import wandb as _wandb  # type: ignore
+
+                self._wandb = _wandb
+                wandb_kwargs = {
+                    "project": getattr(cfg, "wandb_project", "drmc"),
+                    "group": getattr(cfg, "wandb_group", getattr(cfg, "algo", "experiment")),
+                    "name": getattr(cfg, "wandb_name", self.logdir.name),
+                    "config": _extract_flattened_cfg(cfg),
+                }
+                self._wandb_run = _wandb.init(**wandb_kwargs)  # type: ignore[arg-type]
+            except Exception:
+                self._wandb = None
+                self._wandb_run = None
 
     # ------------------------------------------------------------------ logging
     def log_scalar(self, name: str, value: float, step: int) -> None:
@@ -62,8 +67,8 @@ class DiagLogger:
         self._write_json(payload)
         if self._tb is not None:
             self._tb.add_histogram(name, data, step)
-        if self._wandb_run is not None:
-            self._wandb_run.log({name: wandb.Histogram(data) if wandb is not None else data, "global_step": step})
+        if self._wandb_run is not None and self._wandb is not None:
+            self._wandb_run.log({name: self._wandb.Histogram(data), "global_step": step})
 
     def log_text(self, name: str, text: str, step: int) -> None:
         payload = {"step": int(step), "type": "text", "name": name, "text": text}
@@ -76,8 +81,8 @@ class DiagLogger:
     def log_video(self, tag: str, mp4_path: Path, step: int) -> None:
         payload = {"step": int(step), "type": "video", "tag": tag, "path": str(mp4_path)}
         self._write_json(payload)
-        if self._wandb_run is not None and wandb is not None:
-            self._wandb_run.log({tag: wandb.Video(str(mp4_path)), "global_step": step})
+        if self._wandb_run is not None and self._wandb is not None:
+            self._wandb_run.log({tag: self._wandb.Video(str(mp4_path)), "global_step": step})
 
     # ------------------------------------------------------------------- helpers
     def flush(self) -> None:

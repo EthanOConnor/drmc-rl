@@ -56,6 +56,14 @@ def _buttons_vector_to_mask(buttons: Sequence[int]) -> int:
 class CppEngineBackend(EmulatorBackend):
     """Backend that drives the C++ engine via a file-backed shared-memory map."""
 
+    _RUN_MODE_FRAMES = 1
+    _RUN_MODE_UNTIL_DECISION = 2
+
+    _RUN_REASON_DONE = 1
+    _RUN_REASON_DECISION = 2
+    _RUN_REASON_TERMINAL = 3
+    _RUN_REASON_TIMEOUT = 4
+
     def __init__(
         self,
         *,
@@ -130,10 +138,46 @@ class CppEngineBackend(EmulatorBackend):
             raise RuntimeError("Engine backend not initialized; call load/reset first.")
         repeats = max(1, int(repeat))
         raw_mask = _buttons_vector_to_mask(buttons)
-        for _ in range(repeats):
+        if repeats > 1:
+            self._run_request(
+                mode=self._RUN_MODE_FRAMES,
+                max_frames=repeats,
+                buttons_mask=raw_mask,
+                last_spawn_id=None,
+            )
+        else:
             self._state.buttons = raw_mask
             self._step_once()
-        self._refresh_ram_from_state()
+            self._refresh_ram_from_state()
+
+    def run_until_decision(self, *, last_spawn_id: Optional[int], max_frames: int) -> dict[str, int]:
+        """Fast-forward until the next controllable pill spawn (decision point).
+
+        This avoids per-frame Python handshakes by letting the engine run many
+        frames internally and stopping when:
+          - nextAction == pillFalling, and
+          - pill_counter != last_spawn_id (unless last_spawn_id is None), and
+          - gameplay mode is active.
+
+        Returns a dict of counters for telemetry/reward aggregation.
+        """
+
+        return self._run_request(
+            mode=self._RUN_MODE_UNTIL_DECISION,
+            max_frames=int(max(1, max_frames)),
+            buttons_mask=0,
+            last_spawn_id=last_spawn_id,
+        )
+
+    def run_frames_mask(self, *, buttons_mask: int, frames: int) -> dict[str, int]:
+        """Run exactly `frames` frames with a constant raw NES button bitmask."""
+
+        return self._run_request(
+            mode=self._RUN_MODE_FRAMES,
+            max_frames=int(max(0, frames)),
+            buttons_mask=int(buttons_mask) & 0xFF,
+            last_spawn_id=None,
+        )
 
     def _step_once(self) -> None:
         if self._proc is None or self._state is None:
@@ -142,18 +186,87 @@ class CppEngineBackend(EmulatorBackend):
         expected = int(self._state.frame_count) + 1
         self._state.control_flags |= 0x04
         t0 = time.perf_counter()
+        spin_until = t0 + 0.00005  # 50µs: avoids oversleeping when the engine is fast
+        sleep_s = 0.0
+        polls = 0
         while int(self._state.frame_count) < expected:
+            now = time.perf_counter()
+            if now - t0 > self.step_timeout_sec:
+                raise TimeoutError("Timed out waiting for engine step.")
+
+            polls += 1
+            if (polls & 0x7F) == 0:  # every 128 iterations
+                if self._proc.poll() is not None:
+                    out, err = self._proc.communicate(timeout=1)
+                    raise RuntimeError(
+                        "Engine exited unexpectedly during step.\n"
+                        f"stdout:\n{out.decode(errors='replace')}\n"
+                        f"stderr:\n{err.decode(errors='replace')}\n"
+                    )
+
+            if now < spin_until:
+                continue
+
+            # Back off gently; `time.sleep` releases the GIL and helps under
+            # heavy multi-env loads (prevents spin contention with engine procs).
+            sleep_s = 0.00005 if sleep_s <= 0.0 else min(0.002, sleep_s * 1.35)
+            time.sleep(sleep_s)
+
+    def _run_request(
+        self,
+        *,
+        mode: int,
+        max_frames: int,
+        buttons_mask: int,
+        last_spawn_id: Optional[int],
+    ) -> dict[str, int]:
+        if self._proc is None or self._state is None:
+            raise RuntimeError("Engine backend not initialized.")
+
+        mode_i = int(mode)
+        max_frames_i = int(max(0, max_frames))
+        buttons_i = int(buttons_mask) & 0xFF
+        last_spawn_u8 = 0xFF if last_spawn_id is None else (int(last_spawn_id) & 0xFF)
+
+        # Bump request id (uint32 wrap).
+        req = (int(getattr(self._state, "run_request_id")) + 1) & 0xFFFFFFFF
+
+        self._state.run_mode = mode_i
+        self._state.run_frames = max_frames_i
+        self._state.run_buttons = buttons_i
+        self._state.run_last_spawn_id = last_spawn_u8
+        self._state.run_request_id = req
+
+        t0 = time.perf_counter()
+        # Conservative timeout: allow longer for large fast-forwards.
+        timeout = max(self.step_timeout_sec, float(max_frames_i) / 2000.0)
+        sleep_s = 0.0
+        while int(getattr(self._state, "run_ack_id")) != req:
+            if time.perf_counter() - t0 > timeout:
+                raise TimeoutError("Timed out waiting for engine run request.")
             if self._proc.poll() is not None:
                 out, err = self._proc.communicate(timeout=1)
                 raise RuntimeError(
-                    "Engine exited unexpectedly during step.\n"
+                    "Engine exited unexpectedly during run.\n"
                     f"stdout:\n{out.decode(errors='replace')}\n"
                     f"stderr:\n{err.decode(errors='replace')}\n"
                 )
-            if time.perf_counter() - t0 > self.step_timeout_sec:
-                raise TimeoutError("Timed out waiting for engine step.")
-            # Sleep very briefly to avoid pegging a core in training loops.
-            time.sleep(0.00005)
+            # Back off gently; `time.sleep` releases the GIL. We intentionally
+            # start with a slightly larger sleep to reduce scheduler thrash when
+            # running many envs in parallel.
+            sleep_s = 0.00005 if sleep_s <= 0.0 else min(0.005, sleep_s * 1.35)
+            time.sleep(sleep_s)
+
+        # Populate synthetic RAM view after the run completes.
+        self._refresh_ram_from_state()
+
+        return {
+            "frames": int(getattr(self._state, "run_frames_executed")),
+            "reason": int(getattr(self._state, "run_reason")) & 0xFF,
+            "tiles_cleared_total": int(getattr(self._state, "run_tiles_cleared_total")),
+            "tiles_cleared_virus": int(getattr(self._state, "run_tiles_cleared_virus")),
+            "tiles_cleared_nonvirus": int(getattr(self._state, "run_tiles_cleared_nonvirus")),
+        }
 
     # --------------------------------------------------------------------- outputs
 
@@ -239,7 +352,7 @@ class CppEngineBackend(EmulatorBackend):
     def _start_engine_process(self) -> None:
         self._shutdown()
 
-        from game_engine.engine_shm import SHM_SIZE, open_shared_memory_file
+        from envs.backends.cpp_engine_shm import SHM_SIZE, open_shared_memory_file
 
         # File-backed shm lets us run multiple engine instances without global
         # `shm_open` name collisions.

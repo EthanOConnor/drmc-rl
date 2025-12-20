@@ -951,8 +951,17 @@ void GameLogic::pillPlaced_checkHorMatch() {
       for (int k = 0; k < chain; ++k) {
         const int idx = row * BOARD_WIDTH + (col + k);
         u8 &t = state->board[idx];
-        if ((t & MASK_FIELDOBJECT_TYPE) == TILE_VIRUS) {
+        const u8 t_type = t & MASK_FIELDOBJECT_TYPE;
+        if (t_type == TILE_VIRUS) {
           maybe_virus_destroyed(state, status_row_);
+        }
+        if (state->run_request_id != state->run_ack_id && t_type != TILE_CLEARED) {
+          state->run_tiles_cleared_total++;
+          if (t_type == TILE_VIRUS) {
+            state->run_tiles_cleared_virus++;
+          } else {
+            state->run_tiles_cleared_nonvirus++;
+          }
         }
         t = static_cast<u8>(TILE_CLEARED | (t & MASK_FIELDOBJECT_COLOR));
       }
@@ -993,8 +1002,17 @@ void GameLogic::pillPlaced_checkVerMatch() {
       for (int k = 0; k < chain; ++k) {
         const int idx = (row + k) * BOARD_WIDTH + col;
         u8 &t = state->board[idx];
-        if ((t & MASK_FIELDOBJECT_TYPE) == TILE_VIRUS) {
+        const u8 t_type = t & MASK_FIELDOBJECT_TYPE;
+        if (t_type == TILE_VIRUS) {
           maybe_virus_destroyed(state, status_row_);
+        }
+        if (state->run_request_id != state->run_ack_id && t_type != TILE_CLEARED) {
+          state->run_tiles_cleared_total++;
+          if (t_type == TILE_VIRUS) {
+            state->run_tiles_cleared_virus++;
+          } else {
+            state->run_tiles_cleared_nonvirus++;
+          }
         }
         t = static_cast<u8>(TILE_CLEARED | (t & MASK_FIELDOBJECT_COLOR));
       }

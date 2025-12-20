@@ -12,6 +12,104 @@
 #include <string>
 #include <cstdlib>
 
+namespace {
+constexpr u32 RUN_MODE_NONE = 0;
+constexpr u32 RUN_MODE_FRAMES = 1;
+constexpr u32 RUN_MODE_UNTIL_DECISION = 2;
+
+constexpr u8 RUN_REASON_NONE = 0;
+constexpr u8 RUN_REASON_DONE = 1;
+constexpr u8 RUN_REASON_DECISION = 2;
+constexpr u8 RUN_REASON_TERMINAL = 3;
+constexpr u8 RUN_REASON_TIMEOUT = 4;
+
+inline bool is_terminal(const DrMarioState *state) {
+  return (state->stage_clear != 0) || (state->level_fail != 0);
+}
+
+inline bool is_decision_point(const DrMarioState *state, u8 last_spawn_id) {
+  if (state->mode != MODE_PLAYING)
+    return false;
+  if (state->next_action != 0) // NextAction::PillFalling
+    return false;
+  if (last_spawn_id == 0xFF)
+    return true;
+  return state->pill_counter != last_spawn_id;
+}
+
+void process_run_request(GameLogic &game, DrMarioState *state) {
+  const u32 req_id = state->run_request_id;
+  const u32 mode = state->run_mode;
+  const u32 max_frames = state->run_frames;
+  const u8 buttons = state->run_buttons;
+  const u8 last_spawn_id = state->run_last_spawn_id;
+
+  state->run_frames_executed = 0;
+  state->run_tiles_cleared_total = 0;
+  state->run_tiles_cleared_virus = 0;
+  state->run_tiles_cleared_nonvirus = 0;
+  state->run_reason = RUN_REASON_NONE;
+
+  if (mode == RUN_MODE_NONE) {
+    state->run_reason = RUN_REASON_DONE;
+    state->run_ack_id = req_id;
+    return;
+  }
+
+  // Apply constant input for this run.
+  state->buttons = buttons;
+
+  u32 frames_executed = 0;
+  if (mode == RUN_MODE_FRAMES) {
+    const u32 frames_target = max_frames;
+    for (; frames_executed < frames_target; ++frames_executed) {
+      game.step();
+      if (is_terminal(state)) {
+        state->run_reason = RUN_REASON_TERMINAL;
+        ++frames_executed;
+        break;
+      }
+      if (state->control_flags & 0x08) { // exit requested
+        state->run_reason = RUN_REASON_TERMINAL;
+        ++frames_executed;
+        break;
+      }
+    }
+    if (state->run_reason == RUN_REASON_NONE) {
+      state->run_reason = RUN_REASON_DONE;
+    }
+  } else if (mode == RUN_MODE_UNTIL_DECISION) {
+    const u32 frames_budget = max_frames;
+    for (; frames_executed < frames_budget; ++frames_executed) {
+      game.step();
+      if (is_terminal(state)) {
+        state->run_reason = RUN_REASON_TERMINAL;
+        ++frames_executed;
+        break;
+      }
+      if (state->control_flags & 0x08) { // exit requested
+        state->run_reason = RUN_REASON_TERMINAL;
+        ++frames_executed;
+        break;
+      }
+      if (is_decision_point(state, last_spawn_id)) {
+        state->run_reason = RUN_REASON_DECISION;
+        ++frames_executed;
+        break;
+      }
+    }
+    if (state->run_reason == RUN_REASON_NONE) {
+      state->run_reason = RUN_REASON_TIMEOUT;
+    }
+  } else {
+    state->run_reason = RUN_REASON_TIMEOUT;
+  }
+
+  state->run_frames_executed = frames_executed;
+  state->run_ack_id = req_id;
+}
+} // namespace
+
 int main(int argc, char **argv) {
   bool demo_mode = false;
   bool no_sleep = false;
@@ -135,6 +233,13 @@ int main(int argc, char **argv) {
     if (state->control_flags & 0x10) { // reset requested
       game.reset();
       state->control_flags &= static_cast<u8>(~0x10);
+      continue;
+    }
+
+    // Batched stepping requests (used by training). These have priority over
+    // per-frame manual stepping.
+    if (state->run_request_id != state->run_ack_id) {
+      process_run_request(game, state);
       continue;
     }
 

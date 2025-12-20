@@ -94,7 +94,9 @@ class BoardState:
     level: int = 0
 
 
-def parse_board_bytes(board_bytes: Union[bytes, bytearray, memoryview, np.ndarray, List[int]]) -> np.ndarray:
+def parse_board_bytes(
+    board_bytes: Union[bytes, bytearray, memoryview, np.ndarray, List[int]]
+) -> np.ndarray:
     """Parse 128-byte board data into a 16x8 array.
 
     Accepts:
@@ -157,10 +159,28 @@ def render_board_text(
         Rich Text object with colored board
     """
     text = Text()
-    
+
     # Top border
     border_style = Style(color="white", dim=True)
-    text.append("╔" + "══" * BOARD_WIDTH + "╗\n", style=border_style)
+    if compact:
+        horiz = "─"
+        corner_tl, corner_tr = "┌", "┐"
+        corner_bl, corner_br = "└", "┘"
+        tee_l, tee_r = "├", "┤"
+        vert = "│"
+        cell_empty = " "
+        cell_fill = " "
+        border_row = horiz * BOARD_WIDTH
+    else:
+        horiz = "═"
+        corner_tl, corner_tr = "╔", "╗"
+        corner_bl, corner_br = "╚", "╝"
+        tee_l, tee_r = "╠", "╣"
+        vert = "║"
+        cell_empty = "  "
+        cell_fill = "██"
+        border_row = horiz * (BOARD_WIDTH * 2)
+    text.append(f"{corner_tl}{border_row}{corner_tr}\n", style=border_style)
     
     # Preview area (2 rows above board)
     if show_preview and state.preview_color_l is not None:
@@ -184,26 +204,26 @@ def render_board_text(
             preview_cells[coords[1]] = c2
 
         for rr in range(preview_rows):
-            text.append("║", style=border_style)
+            text.append(vert, style=border_style)
             for cc in range(BOARD_WIDTH):
                 color_idx = preview_cells.get((rr, cc))
                 if color_idx is None:
-                    text.append("  ", style=Style(bgcolor=BG_EMPTY))
+                    text.append(cell_empty, style=Style(bgcolor=BG_EMPTY))
                     continue
                 color = COLORS.get(int(color_idx), "white")
                 # Fill the cell to avoid gaps from terminal glyph rendering.
-                text.append("██", style=Style(color=color, bgcolor=color))
-            text.append("║\n", style=border_style)
-        text.append("╠" + "══" * BOARD_WIDTH + "╣\n", style=border_style)
+                text.append(cell_fill, style=Style(color=color, bgcolor=color))
+            text.append(f"{vert}\n", style=border_style)
+        text.append(f"{tee_l}{border_row}{tee_r}\n", style=border_style)
     
     # Board rows
     for row in range(BOARD_HEIGHT):
-        text.append("║", style=border_style)
-        
+        text.append(vert, style=border_style)
+
         for col in range(BOARD_WIDTH):
             tile = state.board[row, col]
             char, color_idx, tile_type = decode_tile(tile)
-            
+
             # Check if this is the falling pill position
             is_falling = False
             if state.falling_row is not None and state.falling_col is not None:
@@ -212,22 +232,33 @@ def render_board_text(
                     if row == state.falling_row and col == state.falling_col:
                         is_falling = True
                         color_idx = state.falling_color_l
-                        char = CHAR_FALLING
                     elif row == state.falling_row - 1 and col == state.falling_col:
                         is_falling = True
                         color_idx = state.falling_color_r
-                        char = CHAR_FALLING
                 else:  # Horizontal
                     if row == state.falling_row and col == state.falling_col:
                         is_falling = True
                         color_idx = state.falling_color_l
-                        char = CHAR_FALLING
                     elif row == state.falling_row and col == state.falling_col + 1:
                         is_falling = True
                         color_idx = state.falling_color_r
-                        char = CHAR_FALLING
-            
-            # Style based on tile content
+
+            if compact:
+                if color_idx is not None:
+                    color = COLORS.get(int(color_idx), "white")
+                    if tile_type == "virus":
+                        style = Style(color=color, bgcolor=BG_VIRUS)
+                        cell_char = "•"
+                    else:
+                        style = Style(color=color, bgcolor=color, dim=is_falling)
+                        cell_char = cell_fill
+                else:
+                    style = Style(color="grey30", bgcolor=BG_EMPTY)
+                    cell_char = cell_empty
+                text.append(cell_char, style=style)
+                continue
+
+            # Style based on tile content (non-compact)
             if color_idx is not None:
                 color = COLORS.get(color_idx, "white")
                 if tile_type == "virus":
@@ -236,6 +267,7 @@ def render_board_text(
                     # Use background fill to avoid glyph “seams” when adjacent
                     # pill halves have different colors.
                     style = Style(color=color, bgcolor=color, bold=True)
+                    char = CHAR_FALLING
                 else:
                     # Fill the full cell with background color. This avoids a
                     # common terminal/font artifact where half-block glyphs
@@ -243,19 +275,22 @@ def render_board_text(
                     style = Style(color=color, bgcolor=color)
             else:
                 style = Style(color="grey30", bgcolor=BG_EMPTY)
-            
+
             text.append(char, style=style)
-        
-        text.append("║\n", style=border_style)
+
+        text.append(f"{vert}\n", style=border_style)
     
     # Bottom border
-    text.append("╚" + "══" * BOARD_WIDTH + "╝", style=border_style)
+    text.append(f"{corner_bl}{border_row}{corner_br}", style=border_style)
     
     # Stats line
     if show_stats:
         stats_style = Style(color="cyan", dim=True)
-        text.append(f"\n L:{state.level} V:{state.viruses_remaining} "
-                   f"P:{state.pill_count} F:{state.frame_count}", style=stats_style)
+        text.append(
+            f"\n L:{state.level} V:{state.viruses_remaining} "
+            f"P:{state.pill_count} F:{state.frame_count}",
+            style=stats_style,
+        )
     
     return text
 
@@ -263,6 +298,7 @@ def render_board_text(
 def render_board_panel(
     state: BoardState,
     title: str = "Dr. Mario",
+    show_subtitle: bool = True,
     **kwargs,
 ) -> Panel:
     """Render board state as a Rich Panel.
@@ -279,10 +315,11 @@ def render_board_panel(
     
     # Compose subtitle with game info
     subtitle = []
-    if state.viruses_remaining > 0:
-        subtitle.append(f"🦠 {state.viruses_remaining}")
-    if state.level > 0:
-        subtitle.append(f"Lv.{state.level}")
+    if show_subtitle:
+        if state.viruses_remaining > 0:
+            subtitle.append(f"🦠 {state.viruses_remaining}")
+        if state.level > 0:
+            subtitle.append(f"Lv.{state.level}")
     subtitle_str = " | ".join(subtitle) if subtitle else None
     
     return Panel(
@@ -307,8 +344,8 @@ def board_from_env_info(info: Dict[str, Any]) -> BoardState:
             board = parse_board_bytes(board_data)
     elif "raw_ram" in info:
         # Extract from RAM at offset 0x400
-        raw_ram = info["raw_ram"]
-        if len(raw_ram) >= 0x480:
+        raw_ram = info.get("raw_ram")
+        if raw_ram is not None and hasattr(raw_ram, "__len__") and len(raw_ram) >= 0x480:
             board = parse_board_bytes(raw_ram[0x400:0x480])
     
     preview_color_l = info.get("preview_color_l")

@@ -36,6 +36,41 @@ except ImportError:
 SPARKLINE_CHARS = " ▁▂▃▄▅▆▇█"
 
 
+def _curriculum_goal(level: int) -> str:
+    """Human-readable label for a synthetic curriculum level."""
+
+    lvl = int(level)
+    if lvl <= -4:
+        # Match-count stages: `envs/retro/drmario_env.py` maps `level -> match_target`
+        # as `max(1, 16 + level)` for `level -15..-4`.
+        matches = int(max(1, 16 + lvl))  # lvl=-15 -> 1 match, lvl=-4 -> 12 matches
+        plural = "" if matches == 1 else "es"
+        return f"0 viruses, clear {matches} match{plural}"
+    if lvl <= 0:
+        viruses = int(4 + lvl)  # lvl=0 -> 4 viruses, lvl=-3 -> 1 virus
+        plural = "" if viruses == 1 else "es"
+        return f"{viruses} virus{plural}"
+    return f"level {lvl}"
+
+
+def _format_env_level_counts(counts: Dict[Any, Any], *, max_items: int = 8) -> str:
+    items: List[Tuple[int, int]] = []
+    for key, value in counts.items():
+        try:
+            lvl = int(key)
+            cnt = int(value)
+        except Exception:
+            continue
+        items.append((lvl, cnt))
+    items.sort(key=lambda kv: kv[0])
+    if not items:
+        return ""
+    parts = [f"{lvl}x{cnt}" for lvl, cnt in items[:max_items]]
+    if len(items) > max_items:
+        parts.append("...")
+    return " ".join(parts)
+
+
 def _sparkline(values: List[float], width: int = 20) -> str:
     """Generate a text-based sparkline from values."""
     if not values:
@@ -79,6 +114,29 @@ class TrainingMetrics:
     
     # Hyperparameters (for display)
     hyperparams: Dict[str, Any] = field(default_factory=dict)
+
+    # Curriculum (optional)
+    curriculum_level: Optional[int] = None
+    curriculum_goal: str = ""
+    curriculum_rate: float = 0.0
+    curriculum_window_n: int = 0
+    curriculum_window_size: int = 0
+    curriculum_window_successes: Optional[int] = None
+    curriculum_confidence_sigmas: Optional[float] = None
+    curriculum_confidence_lower_bound: Optional[float] = None
+    curriculum_episodes_total: int = 0
+    curriculum_start_level: Optional[int] = None
+    curriculum_max_level: Optional[int] = None
+    curriculum_success_threshold: Optional[float] = None
+    curriculum_env_levels: str = ""
+    curriculum_advanced: str = ""
+    curriculum_mode: str = ""
+    curriculum_stage_index: Optional[int] = None
+    curriculum_stage_count: Optional[int] = None
+    curriculum_probe_threshold: Optional[float] = None
+    curriculum_time_budget_frames: Optional[int] = None
+    curriculum_time_mean_frames: Optional[float] = None
+    curriculum_time_mad_frames: Optional[float] = None
     
     def avg_reward(self, last_n: int = 100) -> float:
         """Average reward over last N episodes."""
@@ -164,6 +222,7 @@ class TrainingTUI:
         reward_components: Optional[Dict[str, float]] = None,
         steps_per_second: Optional[float] = None,
         total_steps: Optional[int] = None,
+        curriculum: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> None:
         """Update metrics and refresh display."""
@@ -186,10 +245,123 @@ class TrainingTUI:
             m.steps_per_second = steps_per_second
         if total_steps is not None:
             m.total_steps = total_steps
+
+        if curriculum is not None:
+            self._update_curriculum(curriculum)
         
         # Update live display
         if self._live:
             self._live.update(self._render())
+
+    def _update_curriculum(self, curriculum: Dict[str, Any]) -> None:
+        m = self.metrics
+
+        def _to_int(value: Any) -> Optional[int]:
+            if value is None:
+                return None
+            try:
+                return int(value)
+            except Exception:
+                return None
+
+        def _to_float(value: Any) -> Optional[float]:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except Exception:
+                return None
+
+        lvl = _to_int(curriculum.get("current_level", curriculum.get("curriculum/current_level")))
+        if lvl is not None:
+            m.curriculum_level = int(lvl)
+            m.curriculum_goal = _curriculum_goal(int(lvl))
+
+        rate = _to_float(curriculum.get("rate_current", curriculum.get("curriculum/rate_current")))
+        if rate is not None:
+            m.curriculum_rate = float(rate)
+
+        window_n = _to_int(curriculum.get("window_n", curriculum.get("curriculum/window_n")))
+        if window_n is not None:
+            m.curriculum_window_n = int(window_n)
+
+        window_size = _to_int(curriculum.get("window_size", curriculum.get("curriculum/window_size")))
+        if window_size is not None:
+            m.curriculum_window_size = int(window_size)
+
+        window_successes = _to_int(curriculum.get("window_successes", curriculum.get("curriculum/window_successes")))
+        if window_successes is not None:
+            m.curriculum_window_successes = int(window_successes)
+
+        conf_sigmas = _to_float(curriculum.get("confidence_sigmas", curriculum.get("curriculum/confidence_sigmas")))
+        if conf_sigmas is not None:
+            m.curriculum_confidence_sigmas = float(conf_sigmas)
+
+        conf_lb = _to_float(
+            curriculum.get("confidence_lower_bound", curriculum.get("curriculum/confidence_lower_bound"))
+        )
+        if conf_lb is not None:
+            m.curriculum_confidence_lower_bound = float(conf_lb)
+
+        total_eps = _to_int(
+            curriculum.get("episodes_current_total", curriculum.get("curriculum/episodes_current_total"))
+        )
+        if total_eps is not None:
+            m.curriculum_episodes_total = int(total_eps)
+
+        start_level = _to_int(curriculum.get("start_level", curriculum.get("curriculum/start_level")))
+        if start_level is not None:
+            m.curriculum_start_level = int(start_level)
+
+        max_level = _to_int(curriculum.get("max_level", curriculum.get("curriculum/max_level")))
+        if max_level is not None:
+            m.curriculum_max_level = int(max_level)
+
+        threshold = _to_float(curriculum.get("success_threshold", curriculum.get("curriculum/success_threshold")))
+        if threshold is not None:
+            m.curriculum_success_threshold = float(threshold)
+
+        mode = curriculum.get("mode", curriculum.get("curriculum/mode"))
+        if isinstance(mode, str):
+            m.curriculum_mode = str(mode)
+
+        stage_index = _to_int(curriculum.get("stage_index", curriculum.get("curriculum/stage_index")))
+        if stage_index is not None:
+            m.curriculum_stage_index = int(stage_index)
+
+        stage_count = _to_int(curriculum.get("stage_count", curriculum.get("curriculum/stage_count")))
+        if stage_count is not None:
+            m.curriculum_stage_count = int(stage_count)
+
+        probe_threshold = _to_float(
+            curriculum.get("probe_threshold", curriculum.get("curriculum/probe_threshold"))
+        )
+        if probe_threshold is not None and float(probe_threshold) > 0.0:
+            m.curriculum_probe_threshold = float(probe_threshold)
+
+        counts = curriculum.get("env_level_counts", curriculum.get("curriculum/env_level_counts"))
+        if isinstance(counts, dict):
+            m.curriculum_env_levels = _format_env_level_counts(counts)
+
+        time_budget = _to_int(curriculum.get("time_budget_frames", curriculum.get("curriculum/time_budget_frames")))
+        if time_budget is not None:
+            m.curriculum_time_budget_frames = int(time_budget)
+
+        time_mean = _to_float(curriculum.get("time_mean_frames", curriculum.get("curriculum/time_mean_frames")))
+        if time_mean is not None:
+            m.curriculum_time_mean_frames = float(time_mean)
+
+        time_mad = _to_float(curriculum.get("time_mad_frames", curriculum.get("curriculum/time_mad_frames")))
+        if time_mad is not None:
+            m.curriculum_time_mad_frames = float(time_mad)
+
+        adv_to = _to_int(curriculum.get("advanced_to", curriculum.get("curriculum/advanced_to")))
+        if adv_to is not None:
+            adv_from = _to_int(curriculum.get("advanced_from", curriculum.get("curriculum/advanced_from")))
+            if adv_from is not None:
+                m.curriculum_advanced = f"{adv_from} → {adv_to}"
+            else:
+                m.curriculum_advanced = f"→ {adv_to}"
     
     def set_hyperparams(self, hyperparams: Dict[str, Any]) -> None:
         """Set hyperparameters for display."""
@@ -306,6 +478,64 @@ class TrainingTUI:
             "Avg Length", f"{m.avg_length(100)}",
             "Total Steps", f"{m.total_steps:,}",
         )
+
+        if m.curriculum_level is not None:
+            level_label = str(int(m.curriculum_level))
+            if m.curriculum_start_level is not None and m.curriculum_max_level is not None:
+                level_label = (
+                    f"{int(m.curriculum_level)} "
+                    f"({int(m.curriculum_start_level)}→{int(m.curriculum_max_level)})"
+                )
+
+            stage_label = ""
+            if m.curriculum_stage_index is not None and m.curriculum_stage_count is not None:
+                stage_label = f"{int(m.curriculum_stage_index) + 1}/{int(m.curriculum_stage_count)}"
+            table.add_row("Curriculum", level_label, "Stage", stage_label)
+            table.add_row("Goal", m.curriculum_goal, "Mode", m.curriculum_mode)
+
+            rate_pct = float(m.curriculum_rate) * 100.0
+            threshold = m.curriculum_success_threshold
+            rate_label = f"{rate_pct:.1f}%"
+            if threshold is not None and float(threshold) > 0.0:
+                rate_label = f"{rate_pct:.1f}% / {float(threshold) * 100.0:.1f}%"
+            window_label = (
+                f"{int(m.curriculum_window_n)}/{int(m.curriculum_window_size)}"
+                if int(m.curriculum_window_size) > 0
+                else f"{int(m.curriculum_window_n)}"
+            )
+            table.add_row("Success", rate_label, "Window", window_label)
+
+            if m.curriculum_confidence_lower_bound is not None and m.curriculum_confidence_sigmas is not None:
+                lb_pct = float(m.curriculum_confidence_lower_bound) * 100.0
+                sig = float(m.curriculum_confidence_sigmas)
+                table.add_row("Wilson LB", f"{lb_pct:.1f}%", "Sigmas", f"{sig:.1f}")
+
+            if (
+                m.curriculum_time_budget_frames is not None
+                or m.curriculum_time_mean_frames is not None
+                or m.curriculum_time_mad_frames is not None
+            ):
+                budget_label = (
+                    f"{int(m.curriculum_time_budget_frames)}"
+                    if m.curriculum_time_budget_frames is not None
+                    else "-"
+                )
+                mean_label = (
+                    f"{float(m.curriculum_time_mean_frames):.0f}"
+                    if m.curriculum_time_mean_frames is not None
+                    else "-"
+                )
+                mad_label = (
+                    f"{float(m.curriculum_time_mad_frames):.0f}"
+                    if m.curriculum_time_mad_frames is not None
+                    else "-"
+                )
+                table.add_row("Time Budget", budget_label, "Mean±MAD", f"{mean_label}±{mad_label}")
+
+            env_levels = m.curriculum_env_levels or ""
+            table.add_row("Env Levels", env_levels, "Seen", f"{int(m.curriculum_episodes_total)}")
+            if m.curriculum_advanced:
+                table.add_row("Advanced", m.curriculum_advanced, "", "")
         
         # Reward components if available
         if m.reward_components:
