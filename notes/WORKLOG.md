@@ -35,6 +35,14 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Defaulted `training.run` to write each invocation under a unique `run_id` subdirectory (unless `--logdir` is provided) and recorded `run_id`/`logdir` in run metadata (`training/run.py`).
 - Emitted curriculum snapshots in SMDP-PPO `update_end` events and displayed curriculum level/goal/success-window and env-level distribution in the Rich TUI (`training/algo/ppo_smdp.py`, `training/ui/tui.py`, `training/ui/event_handler.py`).
 - Added a new `ln_hop_back` curriculum mode (probe + ln-tightened hop-backs) and set it as the default for `training/configs/smdp_ppo.yaml`; extended synthetic match-count stages to `-15..-4` (1..12 matches) (`training/envs/curriculum.py`, `envs/retro/drmario_env.py`).
+- Made task time budgets “soft”: allow play past budget exceedance and replace the terminal clear bonus with a smooth time-goal reward that’s positive under-budget and negative over-budget (`envs/retro/placement_env.py`).
+- Relaxed curriculum confidence defaults to 1-sigma (stage pass) and 2-sigma (mastery), and slowed the ln-style pass-rate ramps via `pass_ramp_exponent_multiplier=1/3` (`training/envs/curriculum.py`, `training/configs/smdp_ppo.yaml`).
+- Reworked curriculum gate stability: replaced tiny rolling windows with an EMA-based Wilson lower bound (min effective sample size) and added a `min_stage_decisions` floor; stopped SMDP-PPO rollouts immediately on curriculum advancement to keep PPO updates stage-pure (`training/envs/curriculum.py`, `training/algo/ppo_smdp.py`, `training/configs/smdp_ppo.yaml`).
+
+## 2025-12-21 – Coding Agent (Codex CLI)
+
+- Fixed a Gymnasium `AsyncVectorEnv` crash caused by returning `None` for sometimes-numeric info keys; unset optional fields are now omitted (`envs/retro/placement_env.py`).
+- Added per-run `drmario_engine` pidfile tracking and best-effort cleanup on shutdown to reduce orphaned engine processes after crashes/forced worker termination (`envs/backends/cpp_engine_backend.py`, `training/run.py`).
 
 ## 2025-11-22 – Coding Agent
 

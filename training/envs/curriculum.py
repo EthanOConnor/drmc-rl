@@ -56,6 +56,55 @@ def wilson_lower_bound(*, successes: int, n: int, sigmas: float) -> float:
     return _clamp01((center - adj) / denom)
 
 
+def wilson_lower_bound_fractional(*, successes: float, n: float, sigmas: float) -> float:
+    """One-sided Wilson score lower bound for pseudo-counts.
+
+    This is the same closed form as :func:`wilson_lower_bound` but accepts
+    non-integer (successes, n). We use this for exponentially-weighted moving
+    averages, where the effective sample size is fractional.
+    """
+
+    n_f = float(n)
+    if not math.isfinite(n_f) or n_f <= 0.0:
+        return 0.0
+    k_f = float(successes)
+    if not math.isfinite(k_f):
+        return 0.0
+    if k_f < 0.0:
+        k_f = 0.0
+    if k_f > n_f:
+        k_f = n_f
+    z = float(max(0.0, float(sigmas)))
+    if z == 0.0:
+        return _clamp01(k_f / n_f)
+
+    p_hat = float(k_f) / float(n_f)
+    z2 = z * z
+    denom = 1.0 + z2 / float(n_f)
+    center = p_hat + z2 / (2.0 * float(n_f))
+    adj = z * math.sqrt((p_hat * (1.0 - p_hat) + z2 / (4.0 * float(n_f))) / float(n_f))
+    return _clamp01((center - adj) / denom)
+
+
+def _ema_decay_from_half_life(half_life_episodes: float) -> float:
+    """Return EMA decay factor per episode for a given half-life in episodes."""
+
+    hl = float(half_life_episodes)
+    if not math.isfinite(hl) or hl <= 0.0:
+        return 0.0
+    # After `hl` updates, weight should halve: decay**hl = 0.5.
+    return float(0.5 ** (1.0 / hl))
+
+
+def _ema_n_limit(decay: float) -> float:
+    d = float(decay)
+    if not math.isfinite(d) or d <= 0.0:
+        return 1.0
+    if d >= 1.0:
+        return float("inf")
+    return float(1.0 / (1.0 - d))
+
+
 def confidence_window_size(*, target: float, sigmas: float) -> int:
     """Return a principled rolling window size for proving p > target.
 
@@ -144,18 +193,30 @@ class CurriculumConfig:
     start_level: int = -10
     max_level: int = 0
     success_threshold: float = 0.9
-    probe_threshold: float = 0.01  # used by ln_hop_back
+    probe_threshold: float = 0.16  # used by ln_hop_back
     # Confidence-based curriculum evaluation:
     # If `confidence_sigmas > 0`, window sizes are computed from
     # `confidence_window_size(target, confidence_sigmas)` and advancement
     # requires `wilson_lower_bound(...) > target` within that rolling window.
-    confidence_sigmas: float = 2.0
+    confidence_sigmas: float = 1.0
+    # Confidence gate uses an exponentially weighted moving success rate
+    # (non-stationary friendly) with a Wilson-style lower bound computed from
+    # pseudo-counts.
+    confidence_ema_half_life_episodes: float = 256.0
+    confidence_min_effective_episodes: float = 128.0
+    # For ln_hop_back, also require a minimum number of macro-decisions to be
+    # executed in a stage before the gate can advance. This helps avoid
+    # "micro-stages" that complete within a single PPO rollout batch.
+    min_stage_decisions: int = 512
     # Fallback / compatibility knobs (used only when confidence_sigmas <= 0).
     window_episodes: int = 100
     min_episodes: int = 50
     rehearsal_prob: float = 0.1
     seed: Optional[int] = None
-    ln_hop_back_max_k: int = 5  # caps 1-exp(-k) thresholds for feasibility
+    # Shared exponent multiplier applied to schedules of the form 1 - exp(-k).
+    # Smaller values slow the ramp toward 1.0.
+    pass_ramp_exponent_multiplier: float = 1.0 / 3.0
+    ln_hop_back_max_k: int = 5  # caps 1-exp(-m*k) thresholds for feasibility
     # Optional time-based constraints applied by the curriculum wrapper.
     # These are forwarded to env wrapper attributes (e.g. DrMarioPlacementEnv).
     task_max_frames: Optional[int] = None
@@ -164,7 +225,7 @@ class CurriculumConfig:
     task_max_spawns_by_level: Dict[int, int] = field(default_factory=dict)
     # Time-budget curricula (activated after mastery).
     time_budget_enabled: bool = True
-    time_budget_mastery_sigmas: float = 3.0
+    time_budget_mastery_sigmas: float = 2.0
     time_budget_mastery_target: float = 0.99
     time_budget_time_window: int = 128
     time_budget_min_frames: int = 1
@@ -216,19 +277,23 @@ class CurriculumConfig:
             start_level=int(_get("start_level", -10)),
             max_level=int(_get("max_level", 0)),
             success_threshold=float(_get("success_threshold", 0.9)),
-            probe_threshold=float(_get("probe_threshold", 0.01)),
-            confidence_sigmas=float(_get("confidence_sigmas", 2.0)),
+            probe_threshold=float(_get("probe_threshold", 0.16)),
+            confidence_sigmas=float(_get("confidence_sigmas", 1.0)),
+            confidence_ema_half_life_episodes=float(_get("confidence_ema_half_life_episodes", 256.0)),
+            confidence_min_effective_episodes=float(_get("confidence_min_effective_episodes", 128.0)),
+            min_stage_decisions=int(_get("min_stage_decisions", 512)),
             window_episodes=int(_get("window_episodes", 100)),
             min_episodes=int(_get("min_episodes", 50)),
             rehearsal_prob=float(_get("rehearsal_prob", 0.1)),
             seed=None if data.get("seed") is None else int(data["seed"]),
+            pass_ramp_exponent_multiplier=float(_get("pass_ramp_exponent_multiplier", 1.0 / 3.0)),
             ln_hop_back_max_k=int(_get("ln_hop_back_max_k", 5)),
             task_max_frames=max_frames,
             task_max_spawns=max_spawns,
             task_max_frames_by_level=max_frames_by_level,
             task_max_spawns_by_level=max_spawns_by_level,
             time_budget_enabled=bool(_get("time_budget_enabled", True)),
-            time_budget_mastery_sigmas=float(_get("time_budget_mastery_sigmas", 3.0)),
+            time_budget_mastery_sigmas=float(_get("time_budget_mastery_sigmas", 2.0)),
             time_budget_mastery_target=float(_get("time_budget_mastery_target", 0.99)),
             time_budget_time_window=int(_get("time_budget_time_window", 128)),
             time_budget_min_frames=int(_get("time_budget_min_frames", 1)),
@@ -260,6 +325,11 @@ class ScriptedCurriculum:
         self._time_k: Dict[int, int] = {}
 
         self._sigmas = float(max(0.0, float(getattr(cfg, "confidence_sigmas", 0.0) or 0.0)))
+        hl_raw = getattr(cfg, "confidence_ema_half_life_episodes", 256.0)
+        hl = float(256.0) if hl_raw is None else float(hl_raw)
+        self._ema_decay = _ema_decay_from_half_life(hl)
+        self._ema_success: Dict[int, float] = {}
+        self._ema_weight: Dict[int, float] = {}
         self._stage_window = (
             confidence_window_size(target=float(cfg.success_threshold), sigmas=self._sigmas)
             if self._sigmas > 0.0
@@ -278,7 +348,12 @@ class ScriptedCurriculum:
         self._time_window = int(max(1, int(getattr(cfg, "time_budget_time_window", 128) or 128)))
         self._time_max_k = int(max(1, int(getattr(cfg, "time_budget_max_k", 3) or 3)))
         # Max history needed to evaluate time success targets.
-        time_targets = [float(1.0 - math.exp(-float(k))) for k in range(1, self._time_max_k + 1)]
+        exp_mult_raw = getattr(cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+        exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+        exp_mult = float(max(0.0, exp_mult))
+        time_targets = [
+            float(1.0 - math.exp(-float(k) * float(exp_mult))) for k in range(1, self._time_max_k + 1)
+        ]
         if self._sigmas > 0.0:
             self._time_success_maxlen = int(
                 max(confidence_window_size(target=t, sigmas=self._sigmas) for t in time_targets)
@@ -335,6 +410,14 @@ class ScriptedCurriculum:
         hist = self._history(lvl)
         hist.append(bool(base_success))
         self._episodes_total[lvl] = int(self._episodes_total.get(lvl, 0)) + 1
+        if self._sigmas > 0.0 and float(self._ema_decay) > 0.0:
+            prev_s = float(self._ema_success.get(lvl, 0.0) or 0.0)
+            prev_w = float(self._ema_weight.get(lvl, 0.0) or 0.0)
+            d = float(self._ema_decay)
+            prev_s = d * prev_s + (1.0 if bool(base_success) else 0.0)
+            prev_w = d * prev_w + 1.0
+            self._ema_success[lvl] = float(prev_s)
+            self._ema_weight[lvl] = float(prev_w)
 
         timed_success = bool(success)
         if base_success and episode_frames is not None:
@@ -375,15 +458,28 @@ class ScriptedCurriculum:
                 return False
             return self.success_rate(int(level)) >= t
 
-        window_size = int(max(1, int(self._stage_window)))
-        hist = self._histories.get(int(level))
-        if not hist:
+        if int(self._episodes_total.get(int(level), 0)) < int(self.cfg.min_episodes):
             return False
-        tail = list(hist)[-window_size:]
-        if len(tail) < window_size:
+
+        if float(self._ema_decay) <= 0.0:
+            window_size = int(max(1, int(self._stage_window)))
+            hist = self._histories.get(int(level))
+            if not hist:
+                return False
+            tail = list(hist)[-window_size:]
+            if len(tail) < window_size:
+                return False
+            successes = int(sum(1 for x in tail if x))
+            lb = wilson_lower_bound(successes=successes, n=int(window_size), sigmas=float(self._sigmas))
+            return bool(lb > t)
+
+        eff_n = float(self._ema_weight.get(int(level), 0.0) or 0.0)
+        eff_s = float(self._ema_success.get(int(level), 0.0) or 0.0)
+        min_eff_raw = getattr(self.cfg, "confidence_min_effective_episodes", 128.0)
+        min_eff = float(128.0) if min_eff_raw is None else float(min_eff_raw)
+        if eff_n < float(min_eff):
             return False
-        successes = int(sum(1 for x in tail if x))
-        lb = wilson_lower_bound(successes=successes, n=int(window_size), sigmas=float(self._sigmas))
+        lb = wilson_lower_bound_fractional(successes=eff_s, n=eff_n, sigmas=float(self._sigmas))
         return bool(lb > t)
 
     def _maybe_update_time_budget(self, level: int) -> None:
@@ -436,7 +532,10 @@ class ScriptedCurriculum:
 
         # Tighten budgets when time-goal success exceeds the current time target.
         k = int(max(1, min(self._time_max_k, int(self._time_k.get(lvl, 1)))))
-        target = float(1.0 - math.exp(-float(k)))
+        exp_mult_raw = getattr(cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+        exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+        exp_mult = float(max(0.0, exp_mult))
+        target = float(1.0 - math.exp(-float(k) * float(exp_mult)))
         if self._sigmas <= 0.0:
             return
         n = int(confidence_window_size(target=target, sigmas=float(self._sigmas)))
@@ -499,13 +598,34 @@ class ScriptedCurriculum:
 
     def snapshot(self) -> Dict[str, Any]:
         cur = int(self.current_level)
-        hist = self._histories.get(cur)
-        window_size = int(max(1, int(self._stage_window)))
-        tail = list(hist)[-window_size:] if hist is not None else []
-        window_n = int(len(tail))
-        successes = int(sum(1 for x in tail if x))
-        rate = float(successes) / float(window_n) if window_n > 0 else 0.0
-        lb = wilson_lower_bound(successes=successes, n=window_n, sigmas=float(self._sigmas))
+        episodes_total = int(self.episodes_seen(cur))
+        if float(self._ema_decay) <= 0.0 or self._sigmas <= 0.0:
+            hist = self._histories.get(cur)
+            window_size = int(max(1, int(self._stage_window)))
+            tail = list(hist)[-window_size:] if hist is not None else []
+            window_n = int(len(tail))
+            successes = int(sum(1 for x in tail if x))
+            rate = float(successes) / float(window_n) if window_n > 0 else 0.0
+            lb = wilson_lower_bound(successes=successes, n=window_n, sigmas=float(self._sigmas))
+        else:
+            eff_n = float(self._ema_weight.get(cur, 0.0) or 0.0)
+            eff_s = float(self._ema_success.get(cur, 0.0) or 0.0)
+            n_limit = float(_ema_n_limit(float(self._ema_decay)))
+            window_size = (
+                int(max(1, int(round(n_limit))))
+                if math.isfinite(n_limit)
+                else int(max(1, int(round(eff_n))))
+            )
+            window_n = (
+                int(max(0, int(round(min(float(window_size), float(eff_n)))))) if eff_n > 0.0 else 0
+            )
+            successes = int(max(0, int(round(eff_s))))
+            rate = float(eff_s) / float(eff_n) if eff_n > 0.0 else 0.0
+            lb = (
+                wilson_lower_bound_fractional(successes=eff_s, n=eff_n, sigmas=float(self._sigmas))
+                if eff_n > 0.0
+                else 0.0
+            )
         out: Dict[str, Any] = {
             "current_level": cur,
             "rate_current": float(rate),
@@ -514,7 +634,7 @@ class ScriptedCurriculum:
             "window_successes": int(successes),
             "confidence_sigmas": float(self._sigmas),
             "confidence_lower_bound": float(lb),
-            "episodes_current_total": int(self.episodes_seen(cur)),
+            "episodes_current_total": int(episodes_total),
             "start_level": int(self.cfg.start_level),
             "max_level": int(self.cfg.max_level),
             "success_threshold": float(self.cfg.success_threshold),
@@ -529,7 +649,10 @@ class ScriptedCurriculum:
         k = self._time_k.get(cur)
         if k is not None:
             out["time_k"] = int(k)
-            out["time_target"] = float(1.0 - math.exp(-float(int(k))))
+            exp_mult_raw = getattr(self.cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+            exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+            exp_mult = float(max(0.0, exp_mult))
+            out["time_target"] = float(1.0 - math.exp(-float(int(k)) * float(exp_mult)))
         times = self._time_samples.get(cur)
         if times:
             times_list = [float(t) for t in list(times)]
@@ -554,14 +677,15 @@ class LnHopBackCurriculum:
 
     Pattern (matching the request):
       - When introducing a new frontier level L: require a small probe success rate
-        on L (e.g. 1%).
+        on L (default: 16%).
       - Then "hop back" through all previously introduced levels (start..L) with
-        thresholds: 1 - exp(-k), where k increases the further back you hop.
+        thresholds: 1 - exp(-m·k), where k increases the further back you hop and
+        m = pass_ramp_exponent_multiplier.
 
     This yields a schedule like:
-      -15@0.01, -15@0.632
-      -14@0.01, -15@0.865, -14@0.632
-      -13@0.01, -15@0.950, -14@0.865, -13@0.632
+      -15@0.16, -15@0.283
+      -14@0.16, -15@0.487, -14@0.283
+      -13@0.16, -15@0.632, -14@0.487, -13@0.283
       ...
     """
 
@@ -582,8 +706,14 @@ class LnHopBackCurriculum:
         self._time_budget_spawns: Dict[int, int] = {}
         self._time_success_histories: Dict[int, Deque[bool]] = {}
         self._time_k: Dict[int, int] = {}
+        self._stage_decisions_total: Dict[int, int] = {}
 
         self._sigmas = float(max(0.0, float(getattr(cfg, "confidence_sigmas", 0.0) or 0.0)))
+        hl_raw = getattr(cfg, "confidence_ema_half_life_episodes", 256.0)
+        hl = float(256.0) if hl_raw is None else float(hl_raw)
+        self._ema_decay = _ema_decay_from_half_life(hl)
+        self._stage_ema_success: Dict[int, float] = {}
+        self._stage_ema_weight: Dict[int, float] = {}
         if self._sigmas > 0.0:
             self._max_stage_window = int(
                 max(confidence_window_size(target=float(s.threshold), sigmas=self._sigmas) for s in self._stages)
@@ -603,7 +733,12 @@ class LnHopBackCurriculum:
         self._history_maxlen = int(max(1, self._max_stage_window, self._mastery_window))
         self._time_window = int(max(1, int(getattr(cfg, "time_budget_time_window", 128) or 128)))
         self._time_max_k = int(max(1, int(getattr(cfg, "time_budget_max_k", 3) or 3)))
-        time_targets = [float(1.0 - math.exp(-float(k))) for k in range(1, self._time_max_k + 1)]
+        exp_mult_raw = getattr(cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+        exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+        exp_mult = float(max(0.0, exp_mult))
+        time_targets = [
+            float(1.0 - math.exp(-float(k) * float(exp_mult))) for k in range(1, self._time_max_k + 1)
+        ]
         if self._sigmas > 0.0:
             self._time_success_maxlen = int(
                 max(confidence_window_size(target=t, sigmas=self._sigmas) for t in time_targets)
@@ -619,13 +754,16 @@ class LnHopBackCurriculum:
         probe = float(self.cfg.probe_threshold)
         probe = float(min(1.0, max(0.0, probe)))
         max_k = int(max(1, int(getattr(self.cfg, "ln_hop_back_max_k", 5) or 5)))
+        exp_mult_raw = getattr(self.cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+        exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+        exp_mult = float(max(0.0, exp_mult))
 
         stages: List[_LnStage] = []
         for frontier in range(start, end + 1):
             stages.append(_LnStage(level=int(frontier), threshold=probe))
             for lvl in range(start, frontier + 1):
                 k = int(min(max_k, int(frontier - lvl + 1)))
-                thr = float(1.0 - math.exp(-float(k)))
+                thr = float(1.0 - math.exp(-float(k) * float(exp_mult)))
                 stages.append(_LnStage(level=int(lvl), threshold=float(min(1.0, max(0.0, thr)))))
         return stages
 
@@ -645,6 +783,18 @@ class LnHopBackCurriculum:
         # The ln-hop-back curriculum's "stage" is the current stage index.
         del level
         return int(self._stage_idx)
+
+    def note_decisions(self, decisions: int) -> None:
+        """Record executed macro-decisions for the currently active stage."""
+
+        try:
+            d = int(decisions)
+        except Exception:
+            return
+        if d <= 0:
+            return
+        sidx = int(self._stage_idx)
+        self._stage_decisions_total[sidx] = int(self._stage_decisions_total.get(sidx, 0) or 0) + int(d)
 
     def _history(self, level: int) -> Deque[bool]:
         lvl = int(level)
@@ -712,6 +862,14 @@ class LnHopBackCurriculum:
         stage_hist = self._stage_history(stage_idx)
         stage_hist.append(bool(base_success))
         self._stage_episodes_total[stage_idx] = int(self._stage_episodes_total.get(stage_idx, 0)) + 1
+        if self._sigmas > 0.0 and float(self._ema_decay) > 0.0:
+            prev_s = float(self._stage_ema_success.get(stage_idx, 0.0) or 0.0)
+            prev_w = float(self._stage_ema_weight.get(stage_idx, 0.0) or 0.0)
+            d = float(self._ema_decay)
+            prev_s = d * prev_s + (1.0 if bool(base_success) else 0.0)
+            prev_w = d * prev_w + 1.0
+            self._stage_ema_success[stage_idx] = float(prev_s)
+            self._stage_ema_weight[stage_idx] = float(prev_w)
 
         timed_success = bool(success)
         if base_success and episode_frames is not None:
@@ -752,6 +910,11 @@ class LnHopBackCurriculum:
 
     def _meets_confidence_target(self, stage_idx: int, target: float) -> bool:
         t = float(target)
+        min_decisions = int(max(0, int(getattr(self.cfg, "min_stage_decisions", 0) or 0)))
+        if min_decisions > 0:
+            decisions_total = int(self._stage_decisions_total.get(int(stage_idx), 0) or 0)
+            if decisions_total < int(min_decisions):
+                return False
         if self._sigmas <= 0.0:
             if int(self._stage_episodes_total.get(int(stage_idx), 0)) < int(self.cfg.min_episodes):
                 return False
@@ -760,15 +923,28 @@ class LnHopBackCurriculum:
                 return False
             return (float(sum(1 for x in hist if x)) / float(len(hist))) >= t
 
-        window_size = confidence_window_size(target=t, sigmas=float(self._sigmas))
-        hist = self._stage_histories.get(int(stage_idx))
-        if not hist:
+        if int(self._stage_episodes_total.get(int(stage_idx), 0)) < int(self.cfg.min_episodes):
             return False
-        tail = list(hist)[-int(window_size):]
-        if len(tail) < int(window_size):
+
+        if float(self._ema_decay) <= 0.0:
+            window_size = confidence_window_size(target=t, sigmas=float(self._sigmas))
+            hist = self._stage_histories.get(int(stage_idx))
+            if not hist:
+                return False
+            tail = list(hist)[-int(window_size):]
+            if len(tail) < int(window_size):
+                return False
+            successes = int(sum(1 for x in tail if x))
+            lb = wilson_lower_bound(successes=successes, n=int(window_size), sigmas=float(self._sigmas))
+            return bool(lb > t)
+
+        eff_n = float(self._stage_ema_weight.get(int(stage_idx), 0.0) or 0.0)
+        eff_s = float(self._stage_ema_success.get(int(stage_idx), 0.0) or 0.0)
+        min_eff_raw = getattr(self.cfg, "confidence_min_effective_episodes", 128.0)
+        min_eff = float(128.0) if min_eff_raw is None else float(min_eff_raw)
+        if eff_n < float(min_eff):
             return False
-        successes = int(sum(1 for x in tail if x))
-        lb = wilson_lower_bound(successes=successes, n=int(window_size), sigmas=float(self._sigmas))
+        lb = wilson_lower_bound_fractional(successes=eff_s, n=eff_n, sigmas=float(self._sigmas))
         return bool(lb > t)
 
     def _maybe_update_time_budget(self, level: int) -> None:
@@ -817,7 +993,10 @@ class LnHopBackCurriculum:
             return
 
         k = int(max(1, min(self._time_max_k, int(self._time_k.get(lvl, 1)))))
-        target = float(1.0 - math.exp(-float(k)))
+        exp_mult_raw = getattr(cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+        exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+        exp_mult = float(max(0.0, exp_mult))
+        target = float(1.0 - math.exp(-float(k) * float(exp_mult)))
         if self._sigmas <= 0.0:
             return
         n = int(confidence_window_size(target=target, sigmas=float(self._sigmas)))
@@ -865,17 +1044,38 @@ class LnHopBackCurriculum:
     def snapshot(self) -> Dict[str, Any]:
         stage = self._stages[self._stage_idx]
         cur = int(stage.level)
-        hist = self._stage_histories.get(int(self._stage_idx))
-        window_size = (
-            confidence_window_size(target=float(stage.threshold), sigmas=float(self._sigmas))
-            if self._sigmas > 0.0
-            else int(max(1, int(self.cfg.window_episodes)))
-        )
-        tail = list(hist)[-int(window_size):] if hist is not None else []
-        window_n = int(len(tail))
-        successes = int(sum(1 for x in tail if x))
-        rate = float(successes) / float(window_n) if window_n > 0 else 0.0
-        lb = wilson_lower_bound(successes=successes, n=window_n, sigmas=float(self._sigmas))
+        if float(self._ema_decay) <= 0.0 or self._sigmas <= 0.0:
+            hist = self._stage_histories.get(int(self._stage_idx))
+            window_size = (
+                confidence_window_size(target=float(stage.threshold), sigmas=float(self._sigmas))
+                if self._sigmas > 0.0
+                else int(max(1, int(self.cfg.window_episodes)))
+            )
+            tail = list(hist)[-int(window_size):] if hist is not None else []
+            window_n = int(len(tail))
+            successes = int(sum(1 for x in tail if x))
+            rate = float(successes) / float(window_n) if window_n > 0 else 0.0
+            lb = wilson_lower_bound(successes=successes, n=window_n, sigmas=float(self._sigmas))
+        else:
+            sidx = int(self._stage_idx)
+            eff_n = float(self._stage_ema_weight.get(sidx, 0.0) or 0.0)
+            eff_s = float(self._stage_ema_success.get(sidx, 0.0) or 0.0)
+            n_limit = float(_ema_n_limit(float(self._ema_decay)))
+            window_size = (
+                int(max(1, int(round(n_limit))))
+                if math.isfinite(n_limit)
+                else int(max(1, int(round(eff_n))))
+            )
+            window_n = (
+                int(max(0, int(round(min(float(window_size), float(eff_n)))))) if eff_n > 0.0 else 0
+            )
+            successes = int(max(0, int(round(eff_s))))
+            rate = float(eff_s) / float(eff_n) if eff_n > 0.0 else 0.0
+            lb = (
+                wilson_lower_bound_fractional(successes=eff_s, n=eff_n, sigmas=float(self._sigmas))
+                if eff_n > 0.0
+                else 0.0
+            )
         out: Dict[str, Any] = {
             "current_level": cur,
             "rate_current": float(rate),
@@ -886,6 +1086,8 @@ class LnHopBackCurriculum:
             "confidence_sigmas": float(self._sigmas),
             "confidence_lower_bound": float(lb),
             "episodes_current_total": int(self._stage_episodes_total.get(int(self._stage_idx), 0)),
+            "decisions_current_total": int(self._stage_decisions_total.get(int(self._stage_idx), 0) or 0),
+            "min_stage_decisions": int(max(0, int(getattr(self.cfg, "min_stage_decisions", 0) or 0))),
             "start_level": int(self.cfg.start_level),
             "max_level": int(self.cfg.max_level),
             "stage_index": int(self._stage_idx),
@@ -902,7 +1104,10 @@ class LnHopBackCurriculum:
         k = self._time_k.get(cur)
         if k is not None:
             out["time_k"] = int(k)
-            out["time_target"] = float(1.0 - math.exp(-float(int(k))))
+            exp_mult_raw = getattr(self.cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
+            exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
+            exp_mult = float(max(0.0, exp_mult))
+            out["time_target"] = float(1.0 - math.exp(-float(int(k)) * float(exp_mult)))
         times = self._time_samples.get(cur)
         if times:
             times_list = [float(t) for t in list(times)]
@@ -970,6 +1175,14 @@ class CurriculumVecEnv:
     def step(self, actions: Any):
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
         infos_list = self._ensure_info_list(infos)
+
+        if self._mode == "ln_hop_back":
+            note_decisions = getattr(self._curriculum, "note_decisions", None)
+            if callable(note_decisions):
+                try:
+                    note_decisions(int(self.num_envs))
+                except Exception:
+                    pass
 
         term = np.asarray(terminated, dtype=bool).reshape(self.num_envs)
         trunc = np.asarray(truncated, dtype=bool).reshape(self.num_envs)
@@ -1168,6 +1381,8 @@ class CurriculumVecEnv:
         stage_idx = snap.get("stage_index")
         stage_count = snap.get("stage_count")
         probe_threshold = snap.get("probe_threshold")
+        decisions_current_total = snap.get("decisions_current_total")
+        min_stage_decisions = snap.get("min_stage_decisions")
         for i in range(min(len(infos), self.num_envs)):
             info = infos[i]
             if not isinstance(info, dict):
@@ -1259,6 +1474,16 @@ class CurriculumVecEnv:
             if probe_threshold is not None:
                 try:
                     info["curriculum/probe_threshold"] = float(probe_threshold)
+                except Exception:
+                    pass
+            if decisions_current_total is not None:
+                try:
+                    info["curriculum/decisions_current_total"] = int(decisions_current_total)
+                except Exception:
+                    pass
+            if min_stage_decisions is not None:
+                try:
+                    info["curriculum/min_stage_decisions"] = int(min_stage_decisions)
                 except Exception:
                     pass
             if advanced_to is not None:

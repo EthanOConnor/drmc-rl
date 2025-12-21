@@ -16,6 +16,7 @@ enters `nextAction_pillFalling` (i.e., the player can control the new pill).
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -342,40 +343,81 @@ class DrMarioPlacementEnv(gym.Wrapper):
         if "cleared" not in info:
             info["cleared"] = False
 
-        # If the underlying env terminated due to a clear/topout but we exceeded
-        # the curriculum budget, mark the episode as unsuccessful and strip the
-        # terminal bonus (if present) so reward semantics match `goal_achieved`.
-        if objective_met and not within_budget:
-            bonus = 0.0
+        # Soft task budgets:
+        # - If the agent clears over-budget, we still allow completion but
+        #   replace the terminal clear bonus with a smooth time-goal reward:
+        #     * under budget  -> positive, asymptotes to clear bonus
+        #     * over budget   -> negative, asymptotes to topout penalty
+        # - If the agent exceeds budget mid-episode, we do *not* truncate;
+        #   instead `task/success` will stay false unless they finish in-budget.
+        #
+        # This avoids throwing away trajectories that narrowly miss the goal,
+        # while still strongly incentivizing time-efficient clears.
+        if objective_met and (max_frames is not None or max_spawns is not None):
+            # Prefer frame budgets (time) if available; fall back to spawn budgets.
+            metric = "frames" if max_frames is not None else "spawns"
+            goal = int(max_frames) if max_frames is not None else int(max_spawns or 0)
+            used = int(self._task_frames_used) if metric == "frames" else int(self._task_spawns_used)
+            delta = int(goal) - int(used)  # positive == under budget
+
+            old_bonus = 0.0
             for key in ("terminal_bonus_reward", "reward/terminal_bonus"):
                 try:
-                    bonus = float(info.get(key, 0.0) or 0.0)
+                    old_bonus = float(info.get(key, 0.0) or 0.0)
                 except Exception:
-                    bonus = 0.0
-                if bonus != 0.0:
+                    old_bonus = 0.0
+                if old_bonus != 0.0:
                     break
-            if bonus != 0.0:
-                reward = float(reward) - float(bonus)
-                for key in ("r_env", "r_total", "reward/r_env", "reward/r_total", "reward/r_total"):
+
+            clear_bonus = float(old_bonus)
+            if clear_bonus == 0.0:
+                try:
+                    reward_cfg = getattr(self.env.unwrapped, "reward_cfg", None)
+                    clear_bonus = float(getattr(reward_cfg, "terminal_clear_bonus", 0.0) or 0.0)
+                except Exception:
+                    clear_bonus = 0.0
+
+            topout_penalty = -1.0
+            try:
+                reward_cfg = getattr(self.env.unwrapped, "reward_cfg", None)
+                topout_penalty = float(getattr(reward_cfg, "topout_penalty", -1.0) or -1.0)
+            except Exception:
+                topout_penalty = -1.0
+            if topout_penalty >= 0.0:
+                topout_penalty = -abs(float(topout_penalty))
+
+            # Use tanh(delta/scale) to map to (-1,1) with 0 at exactly-on-budget.
+            # Scale is a fraction of the budget to keep behavior consistent across levels.
+            scale = max(1.0, 0.5 * float(max(1, abs(int(goal)))))
+            y = math.tanh(float(delta) / float(scale))
+            new_bonus = float(y * clear_bonus) if y >= 0.0 else float(y * abs(topout_penalty))
+
+            bonus_delta = float(new_bonus) - float(old_bonus)
+            if bonus_delta != 0.0:
+                reward = float(reward) + float(bonus_delta)
+                for key in ("r_env", "r_total", "reward/r_env", "reward/r_total"):
                     if key in info:
                         try:
-                            info[key] = float(info[key]) - float(bonus)
+                            info[key] = float(info[key]) + float(bonus_delta)
                         except Exception:
                             pass
-                if "reward/terminal_bonus" in info:
-                    try:
-                        info["reward/terminal_bonus"] = float(info.get("reward/terminal_bonus", 0.0)) - float(
-                            bonus
-                        )
-                    except Exception:
-                        info["reward/terminal_bonus"] = 0.0
-                info["terminal_bonus_reward"] = 0.0
-            info["goal_achieved"] = False
-            info["cleared"] = False
 
-        if budget_exceeded and not objective_met and not bool(terminated or truncated):
-            truncated = True
-            info["placements/needs_action"] = False
+            info["task/budget_terminal_bonus_raw"] = float(old_bonus)
+            info["task/budget_terminal_bonus_shaped"] = float(new_bonus)
+            info["task/budget_metric"] = str(metric)
+            info["task/budget_delta"] = int(delta)
+            info["terminal_bonus_reward"] = float(new_bonus)
+            if "reward/terminal_bonus" in info:
+                try:
+                    info["reward/terminal_bonus"] = float(new_bonus)
+                except Exception:
+                    info["reward/terminal_bonus"] = float(new_bonus)
+
+            if not within_budget:
+                info["goal_achieved"] = False
+                info["cleared"] = False
+
+        # No truncate-on-budget-exceeded: budgets are soft constraints.
 
         info["task/objective_met"] = bool(objective_met)
         info["task/success"] = bool(success)
@@ -383,8 +425,13 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info["task/budget_exceeded"] = bool(budget_exceeded)
         info["task/budget_exceeded_frames"] = bool(frames_exceeded)
         info["task/budget_exceeded_spawns"] = bool(spawns_exceeded)
-        info["task/max_frames"] = None if max_frames is None else int(max_frames)
-        info["task/max_spawns"] = None if max_spawns is None else int(max_spawns)
+        # NOTE: Gymnasium AsyncVectorEnv cannot merge infos when a key is
+        # sometimes numeric and sometimes `None` (it builds a typed array from
+        # the first seen value). Omit unset keys instead of returning `None`.
+        if max_frames is not None:
+            info["task/max_frames"] = int(max_frames)
+        if max_spawns is not None:
+            info["task/max_spawns"] = int(max_spawns)
         info["task/frames_used"] = int(self._task_frames_used)
         info["task/spawns_used"] = int(self._task_spawns_used)
         if budget_exceeded:
@@ -1672,7 +1719,9 @@ class DrMarioPlacementEnv(gym.Wrapper):
             out_info["tiles_cleared_total"] = int(max(0, cleared_total))
             out_info["tiles_cleared_non_virus"] = int(max(0, cleared_nonvirus))
             out_info["match_event"] = bool(match_event)
-            out_info["match_target"] = None if match_target is None else int(match_target or 0)
+            # Omit when not in match-mode to keep vectorized infos type-stable.
+            if match_target is not None:
+                out_info["match_target"] = int(match_target or 0)
             out_info["matches_completed"] = int(matches_completed)
             out_info["task_mode"] = str(task_mode)
             out_info["goal_achieved"] = bool(goal_achieved)

@@ -267,6 +267,12 @@ class SMDPPPOAdapter(AlgoAdapter):
                 # Update decision state for next batch.
                 decision_obs = obs_after_arr.copy()
                 decision_info = info_after_list
+
+                # Keep PPO rollouts stage-pure: once the curriculum advances,
+                # stop collecting and update immediately so we don't mix levels
+                # within a single PPO update batch.
+                if advance_to is not None:
+                    break
                         
             # Update policy
             update_start = time.time()
@@ -831,6 +837,13 @@ class SMDPPPOAdapter(AlgoAdapter):
         if probe_threshold > 0.0:
             snapshot["probe_threshold"] = float(probe_threshold)
 
+        decisions_current_total = self._extract_int(source.get("curriculum/decisions_current_total"))
+        if decisions_current_total is not None:
+            snapshot["decisions_current_total"] = int(decisions_current_total)
+        min_stage_decisions = self._extract_int(source.get("curriculum/min_stage_decisions"))
+        if min_stage_decisions is not None:
+            snapshot["min_stage_decisions"] = int(min_stage_decisions)
+
         # Distribution of active env levels.
         env_levels: List[int] = []
         for info in infos:
@@ -870,6 +883,12 @@ class SMDPPPOAdapter(AlgoAdapter):
             out["curriculum/window_n"] = float(int(snapshot.get("window_n", 0)))
             out["curriculum/window_size"] = float(int(snapshot.get("window_size", 0)))
             out["curriculum/episodes_current_total"] = float(int(snapshot.get("episodes_current_total", 0)))
+            decisions_total = snapshot.get("decisions_current_total")
+            if decisions_total is not None:
+                out["curriculum/decisions_current_total"] = float(int(decisions_total))
+            min_stage_decisions = snapshot.get("min_stage_decisions")
+            if min_stage_decisions is not None:
+                out["curriculum/min_stage_decisions"] = float(int(min_stage_decisions))
             out["curriculum/start_level"] = float(int(snapshot.get("start_level", 0)))
             out["curriculum/max_level"] = float(int(snapshot.get("max_level", 0)))
             out["curriculum/success_threshold"] = float(snapshot.get("success_threshold", 0.0) or 0.0)

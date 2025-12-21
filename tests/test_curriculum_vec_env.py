@@ -52,6 +52,8 @@ def test_curriculum_vec_env_sets_levels_and_injects_info() -> None:
         max_level=-3,
         success_threshold=0.5,
         confidence_sigmas=1.0,
+        confidence_ema_half_life_episodes=0.0,
+        min_episodes=1,
         rehearsal_prob=0.0,
         seed=0,
     )

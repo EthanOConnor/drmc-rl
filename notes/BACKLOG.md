@@ -101,6 +101,11 @@ Technical backlog / roadmap. More detailed items than top-level docs.
       - **In-process engine library**: build a Python extension (pybind11/ctypes) with N engine instances in memory; batched step is a single C++ call.
     - Success criterion: demonstrate superlinear scaling vs the current “N engines in N processes” baseline and validate parity invariants per instance.
 
+- **P0.5 Curriculum certification gate (freeze + anytime-valid test)**
+  - Freeze policy at curriculum stage boundaries and run eval episodes (fixed seeds/registry when available).
+  - Advance using an anytime-valid sequential test (SPRT / confidence sequence) with feasibility checks (`n_max` vs target).
+  - Keep PPO batches stage-pure by running certification only between PPO updates (no cross-stage rollouts).
+
 - **Wire TUI into training loop** ✅
   - Connect `TrainingTUI` to `SimplePGAdapter` update callbacks.
   - Pass metrics from adapter → TUI via update() method.
@@ -145,6 +150,7 @@ Technical backlog / roadmap. More detailed items than top-level docs.
 - **Populate seed registry**
   - Capture savestates for 120 seeds per level in `envs/retro/seeds/`.
   - Store first 128 pills and virus grid hash per seed.
+  - Add a deterministic training option that samples only from the registry (fixed layouts + pill sequences) to reduce variance for curriculum gating and policy updates.
 
 ### Recently Completed ✅
 

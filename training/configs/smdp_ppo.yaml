@@ -69,8 +69,19 @@ curriculum:
   mode: ln_hop_back
   start_level: -15
   max_level: 0
+  # Use a 1-sigma Wilson lower bound for stage passes (less strict than 2-sigma).
+  confidence_sigmas: 1.0
+  # Use a 2-sigma Wilson lower bound for base-skill "mastery" before enabling time budgets.
+  time_budget_mastery_sigmas: 2.0
+  # Slow the 1-exp(-k) ramp to avoid requiring near-perfect rates too early.
+  pass_ramp_exponent_multiplier: 0.3333333333333333
+  # EMA-based confidence gate (stable under non-stationary learning).
+  confidence_ema_half_life_episodes: 256.0
+  confidence_min_effective_episodes: 128.0
+  # Require at least ~2 PPO rollout batches per stage before it can advance.
+  min_stage_decisions: 1024
   # Probe threshold for newly introduced levels (required success rate).
-  probe_threshold: 0.01
+  probe_threshold: 0.16
   window_episodes: 100
   min_episodes: 50
   rehearsal_prob: 0.0

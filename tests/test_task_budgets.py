@@ -129,7 +129,7 @@ class _TerminalFrameEnv(gym.Env):
         return obs, reward, terminated, truncated, info
 
 
-def test_spawn_budget_truncates_episode() -> None:
+def test_spawn_budget_marks_exceedance_without_truncation() -> None:
     base = _SpawnCounterFrameEnv(next_spawn_after_steps=3)
     env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
     env.task_max_spawns = 1
@@ -144,11 +144,11 @@ def test_spawn_budget_truncates_episode() -> None:
 
     _obs3, _r3, terminated3, truncated3, info3 = env.step(0)
     assert not terminated3
-    assert truncated3
+    assert not truncated3
     assert bool(info3.get("task/budget_exceeded_spawns", False))
 
 
-def test_frame_budget_truncates_episode() -> None:
+def test_frame_budget_marks_exceedance_without_truncation() -> None:
     base = _SpawnCounterFrameEnv(next_spawn_after_steps=5)
     env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
     env.task_max_frames = 4
@@ -156,11 +156,11 @@ def test_frame_budget_truncates_episode() -> None:
     env.reset()
     _obs2, _r2, terminated2, truncated2, info2 = env.step(0)
     assert not terminated2
-    assert truncated2
+    assert not truncated2
     assert bool(info2.get("task/budget_exceeded_frames", False))
 
 
-def test_clear_over_budget_strips_terminal_bonus() -> None:
+def test_clear_over_budget_gets_shaped_negative_terminal_bonus() -> None:
     base = _TerminalFrameEnv()
     env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
     env.task_max_frames = 0
@@ -171,8 +171,22 @@ def test_clear_over_budget_strips_terminal_bonus() -> None:
     assert not truncated2
     assert bool(info2.get("task/budget_exceeded_frames", False))
     assert not bool(info2.get("goal_achieved", True))
-    assert float(info2.get("terminal_bonus_reward", -1.0)) == 0.0
-    assert float(r2) == 0.0
+    bonus = float(info2.get("terminal_bonus_reward", 0.0) or 0.0)
+    assert bonus < 0.0
+    assert abs(float(r2) - bonus) < 1e-6
+
+
+def test_unset_optional_info_keys_are_omitted_for_async_vec_env() -> None:
+    base = _TerminalFrameEnv()
+    env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
+
+    env.reset()
+    _obs2, _r2, terminated2, truncated2, info2 = env.step(0)
+    assert terminated2
+    assert not truncated2
+    assert "task/max_frames" not in info2
+    assert "task/max_spawns" not in info2
+    assert "match_target" not in info2
 
 
 def test_curriculum_config_parses_task_budgets() -> None:
@@ -186,4 +200,3 @@ def test_curriculum_config_parses_task_budgets() -> None:
     assert cfg.task_max_frames == 1000
     assert cfg.task_max_spawns is None
     assert cfg.task_max_spawns_by_level.get(-15) == 20
-

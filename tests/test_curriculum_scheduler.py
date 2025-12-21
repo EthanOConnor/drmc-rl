@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 import numpy as np
 
-from training.envs.curriculum import CurriculumConfig, ScriptedCurriculum
+from training.envs.curriculum import CurriculumConfig, LnHopBackCurriculum, ScriptedCurriculum
 
 
 def test_curriculum_advances_on_confidence_bound() -> None:
@@ -12,6 +13,8 @@ def test_curriculum_advances_on_confidence_bound() -> None:
         max_level=-2,
         success_threshold=0.5,
         confidence_sigmas=1.0,
+        confidence_ema_half_life_episodes=0.0,
+        min_episodes=3,
         rehearsal_prob=0.0,
         seed=123,
     )
@@ -55,3 +58,24 @@ def test_curriculum_rehearsal_sampling_stays_in_range() -> None:
     rng = np.random.default_rng(0)
     samples = [cur.sample_level(rng) for _ in range(50)]
     assert all(s in (-4, -3) for s in samples)
+
+
+def test_ln_hop_back_uses_exponent_multiplier_by_default() -> None:
+    cfg = CurriculumConfig(
+        enabled=True,
+        mode="ln_hop_back",
+        start_level=-15,
+        max_level=-13,
+        probe_threshold=0.01,
+        ln_hop_back_max_k=5,
+        rehearsal_prob=0.0,
+        seed=0,
+    )
+    cur = LnHopBackCurriculum(cfg)
+
+    exp_mult = float(cfg.pass_ramp_exponent_multiplier)
+    expected = {k: float(1.0 - math.exp(-float(k) * exp_mult)) for k in (1, 2, 3)}
+
+    assert any(s.level == -15 and abs(float(s.threshold) - float(cfg.probe_threshold)) < 1e-12 for s in cur._stages)
+    for k, thr in expected.items():
+        assert any(s.level == -15 and abs(float(s.threshold) - float(thr)) < 1e-12 for s in cur._stages), k

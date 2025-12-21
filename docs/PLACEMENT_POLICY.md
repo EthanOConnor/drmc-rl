@@ -152,11 +152,16 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
 
 ### Curriculum + Time Budgets (Placement)
 
-- **Synthetic negative levels**: `-15..-4` are “0 viruses, clear N matches” (N=1..12), then `-3..0` are “clear remaining viruses” (3..4).
-- **`ln_hop_back` schedule**: each newly introduced level is probed at a low threshold (default 1%), then earlier levels are revisited with thresholds `1-exp(-k)` (k increases the further back you hop).
-- **Advancement confidence**: stage advancement uses a one-sided Wilson lower bound (`curriculum.confidence_sigmas`, default 2σ) rather than a fixed window.
-- **Time goals after mastery**: once a level is mastered (perfect streak long enough for a high-confidence mastery target), the curriculum enables `task_max_frames` / `task_max_spawns` budgets and tightens them gradually.
+- **Synthetic negative levels**:
+  - `-15..-4`: “0 viruses, clear N matches” (N=1..12).
+  - `-3..0`: “clear remaining viruses” with 1..4 viruses (`-3`=1, `-2`=2, `-1`=3, `0`=4).
+- **`ln_hop_back` schedule**: each newly introduced level is probed at a low threshold (default 16%), then earlier levels are revisited with thresholds `1-exp(-m*k)` where `m=pass_ramp_exponent_multiplier` (default `1/3`) and `k` grows as you hop back (capped by `ln_hop_back_max_k`).
+- **Advancement confidence**: stage advancement uses a one-sided Wilson-style lower bound (`curriculum.confidence_sigmas`, default 1σ) computed from an EMA pseudo-count estimate (stable under non-stationary learning). Stages also enforce a minimum sample budget via `curriculum.min_stage_decisions` (keeps PPO batches stage-pure).
+- **Time goals after mastery**: once a level is mastered (perfect streak long enough for `time_budget_mastery_sigmas/time_budget_mastery_target`), the curriculum enables `task_max_frames` / `task_max_spawns` budgets and tightens them gradually. Budgets are “soft”: over-budget clears terminate normally but don’t count as `goal_achieved` and get a negative shaped terminal bonus.
 - **Best-known times DB**: clears are recorded (best per `(level, rng_seed)`) in `data/best_times.sqlite3` (override via `DRMARIO_BEST_TIMES_DB`). Use `python tools/report_best_times.py` to inspect per-level distributions.
+
+Troubleshooting:
+- If a crash/forced termination leaves orphaned `drmario_engine` processes, `training.run` writes pidfiles under `$logdir/engine_pids` and reaps them on exit.
 
 ### Configuration
 

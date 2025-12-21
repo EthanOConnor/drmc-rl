@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import signal
+import subprocess
 import sys
 import threading
 from datetime import datetime
@@ -27,6 +29,93 @@ def _generate_run_id() -> str:
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     suffix = uuid.uuid4().hex[:8]
     return f"{timestamp}_{suffix}"
+
+
+def _cleanup_engine_pid_dir(pid_dir: Path) -> None:
+    """Best-effort cleanup for orphaned `drmario_engine` subprocesses.
+
+    The cpp-engine backend writes a pidfile per engine instance under a run-local
+    directory (see `DRMARIO_ENGINE_PID_DIR`). Under crashes or forced worker
+    termination, those processes can be orphaned; we attempt to reap them here.
+    """
+
+    try:
+        pid_dir = Path(pid_dir)
+    except Exception:
+        return
+    if not pid_dir.is_dir():
+        return
+
+    for pid_file in sorted(pid_dir.glob("*.pid")):
+        try:
+            text = pid_file.read_text(encoding="utf-8")
+        except Exception:
+            continue
+
+        pid: int | None = None
+        for line in text.splitlines():
+            if line.startswith("pid="):
+                try:
+                    pid = int(line.split("=", 1)[1].strip())
+                except Exception:
+                    pid = None
+                break
+        if pid is None or pid <= 1:
+            continue
+
+        # Skip already-dead pids.
+        try:
+            os.kill(int(pid), 0)
+        except Exception:
+            try:
+                pid_file.unlink()
+            except Exception:
+                pass
+            continue
+
+        # Guardrail: only kill processes that look like our engine binary.
+        try:
+            comm = (
+                subprocess.check_output(["ps", "-p", str(pid), "-o", "comm="], stderr=subprocess.DEVNULL)
+                .decode("utf-8", errors="replace")
+                .strip()
+            )
+        except Exception:
+            comm = ""
+        if "drmario_engine" not in comm:
+            continue
+
+        try:
+            os.kill(int(pid), signal.SIGTERM)
+        except Exception:
+            continue
+
+        # Give it a moment to exit cleanly.
+        for _ in range(20):
+            try:
+                os.kill(int(pid), 0)
+            except Exception:
+                break
+            try:
+                threading.Event().wait(0.05)
+            except Exception:
+                break
+        else:
+            try:
+                os.kill(int(pid), signal.SIGKILL)
+            except Exception:
+                pass
+
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+
+    try:
+        if not any(pid_dir.iterdir()):
+            pid_dir.rmdir()
+    except Exception:
+        pass
 
 
 def parse_args(argv: Any = None) -> argparse.Namespace:
@@ -247,6 +336,12 @@ def main(argv: Any = None) -> None:
             cfg.run_id = str(getattr(cfg, "run_id", Path(str(getattr(cfg, "logdir"))).name))
         except Exception:
             pass
+    engine_pid_dir: Path | None = None
+    try:
+        engine_pid_dir = Path(str(cfg.logdir)) / "engine_pids"
+        os.environ["DRMARIO_ENGINE_PID_DIR"] = str(engine_pid_dir)
+    except Exception:
+        engine_pid_dir = None
     ctx = set_reproducibility(int(getattr(cfg, "seed", 42)))
     device = pick_device(getattr(cfg, "device", "auto"))
 
@@ -414,6 +509,8 @@ def main(argv: Any = None) -> None:
         logger.close()
         if "env" in locals() and env is not None and hasattr(env, "close"):
             env.close()
+        if engine_pid_dir is not None:
+            _cleanup_engine_pid_dir(engine_pid_dir)
 
 
 if __name__ == "__main__":

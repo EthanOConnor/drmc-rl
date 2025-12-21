@@ -384,15 +384,37 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Training/debug sessions can become hard to stop; Ctrl+C can produce confusing shutdown traces and leave orphaned processes.
 - **Mitigation**: On close, force-terminate `AsyncVectorEnv` when it has a pending call, skipping `step_wait` and prioritizing teardown over graceful completion (`training/envs/dr_mario_vec.py`).
 
-**R42. `ln_hop_back` curriculum thresholds can become effectively “perfect or stall”**
-- **Concern**: The hop-back thresholds use `1 - exp(-k)` which approaches 1 quickly.
-- **Risk**: For larger k (and finite `window_episodes`), thresholds can become indistinguishable from 100% success and stall curriculum progress on noisy tasks.
-- **Mitigation**: Cap k (or cap threshold), reduce `window_episodes`, or switch to a slower-tightening schedule if stalls are observed. Monitor `curriculum/stage_index` in the TUI.
+**R42. `ln_hop_back` pass thresholds can still drift toward “perfect or stall”**
+- **Concern**: The hop-back thresholds use `1 - exp(-m·k)` (with `m=pass_ramp_exponent_multiplier`) and can still approach 1 as k increases.
+- **Risk**: If `m` is too large (or k too high), later hop-back stages can become indistinguishable from “must be perfect” in finite windows and stall progress on noisy tasks.
+- **Mitigation**: Cap k (`ln_hop_back_max_k`), lower `pass_ramp_exponent_multiplier`, and/or lower `confidence_sigmas`. Monitor `curriculum/stage_index`, `curriculum/success_threshold`, and `curriculum/confidence_lower_bound` in the TUI.
 
 **R43. Time/spawn task budgets depend on wrapper counters (τ + spawn consumption)**
-- **Concern**: Time-based curricula now enforce constraints via `DrMarioPlacementEnv` counters (`task/frames_used`, `task/spawns_used`) rather than ROM-native timers.
-- **Risk**: If τ accounting changes (e.g., clamping, pre-decision waits) or spawn consumption logic diverges across slow/fast paths, budgets could truncate too early/late and skew curriculum difficulty.
-- **Mitigation**: Keep budgets based on *actual* frame deltas (not clamped τ) and increment spawn counts only when a spawn is explicitly consumed; maintain parity across slow and cpp-engine fast paths; cover with unit tests (`tests/test_task_budgets.py`) and log `task/*` in episode infos for spot-checking.
+- **Concern**: Time-based curricula enforce budgets via `DrMarioPlacementEnv` counters (`task/frames_used`, `task/spawns_used`) rather than ROM-native timers.
+- **Risk**: If τ accounting changes (e.g., reset-time fast-forward, pre-decision waits) or spawn consumption logic diverges across slow/fast paths, budgets could:
+  - misclassify “success under budget” vs “over budget” (skewing curriculum signals), and/or
+  - distort the time-goal terminal reward shaping applied on clear.
+- **Mitigation**: Keep budgets based on actual frame deltas, increment spawn counts only when a spawn is explicitly consumed, and maintain parity across slow and cpp-engine fast paths. Cover with unit tests (`tests/test_task_budgets.py`) and log `task/*` in episode infos for spot-checking.
+
+**R48. Time-goal terminal reward shaping changes reward sign/scale on clears**
+- **Concern**: Clearing over-budget now yields a negative terminal component (bounded by the topout penalty), and clearing near the goal can yield a small terminal bonus.
+- **Risk**: This can interact with existing time penalties/rewards and change learning dynamics (e.g., agents preferring “safe clear later” vs “riskier fast clears”), especially when budgets are tight or noisy.
+- **Mitigation**: Monitor `task/budget_exceeded*`, `task/budget_delta`, and `task/budget_terminal_bonus_*` during training; tune budget schedules (`time_budget_*`) and ramp (`pass_ramp_exponent_multiplier`) if over-budget clears dominate or learning destabilizes.
+
+**R49. EMA + pseudo-count Wilson LB is an approximation**
+- **Concern**: The curriculum gate now uses an exponentially weighted moving average and computes a Wilson-style lower bound from fractional pseudo-counts.
+- **Risk**: The resulting “LB” is not a strict frequentist confidence bound under a true i.i.d. Bernoulli model, and may be over/under-conservative depending on non-stationarity and correlation (common in on-policy RL).
+- **Mitigation**: Treat the bound as a stable heuristic gate; tune `confidence_ema_half_life_episodes`, `confidence_min_effective_episodes`, and `min_stage_decisions` based on observed stall/flip behavior. Consider periodic fixed-seed evals as a higher-integrity certification check if needed.
+
+**R50. AsyncVectorEnv info typing can crash on `None`**
+- **Concern**: Gymnasium `AsyncVectorEnv` merges per-env infos into typed arrays.
+- **Risk**: Returning `None` for a key that is numeric in other envs (or at other times) can crash training with `TypeError: int() argument must be ... not 'NoneType'`.
+- **Mitigation**: Omit optional keys entirely when unset (instead of returning `None`) so the vector wrapper can use its presence-mask mechanism.
+
+**R51. PID-file cleanup could terminate the wrong process if pids are reused**
+- **Concern**: Run shutdown now attempts to kill leftover engine pids recorded in `$logdir/engine_pids`.
+- **Risk**: If a pidfile persists across a crash and the OS later reuses that pid for a different process, naive cleanup could kill an unrelated process.
+- **Mitigation**: Scope pidfiles to a run-local directory and verify `ps` command name contains `drmario_engine` before sending signals; keep cleanup best-effort and skip on validation failure.
 
 **R44. Confidence-based rolling windows can become very large for strict targets**
 - **Concern**: Curriculum advancement now uses a σ-level one-sided Wilson lower bound (`LB > target`) with window sizes derived from a “near-target” assumption.

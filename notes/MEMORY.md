@@ -872,12 +872,12 @@ the rotation can be recovered from the preview mask.
 **Context:** For `ppo_smdp` placement training we want a curriculum that (a) introduces harder tasks gradually, but (b) repeatedly hops back to earlier tasks with increasingly strict success thresholds to prevent forgetting.
 
 **Decision:** Add `curriculum.mode = ln_hop_back`, which generates a stage schedule that alternates:
-- a low “probe” success requirement on a newly introduced level (default 1%), then
-- hop-backs on earlier levels with thresholds `1 - exp(-k)` (k increases the further back we hop).
+- a low “probe” success requirement on a newly introduced level (default 16%), then
+- hop-backs on earlier levels with thresholds `1 - exp(-m·k)` where `k` increases the further back we hop and `m = pass_ramp_exponent_multiplier` (default `1/3`).
 
 **Why:** This yields a simple, deterministic schedule with an intuitive “tighten earlier levels over time” shape without adding per-episode level-mixing complexity.
 
-**Trade-offs:** The `1 - exp(-k)` thresholds can become very strict for large k (effectively requiring perfect windows). If this stalls progress, cap k or reduce the window size / min episodes for hop-back stages.
+**Trade-offs:** The `1 - exp(-m·k)` thresholds can still become strict for large k, but `m<1` slows the ramp. If this stalls progress, cap k (`ln_hop_back_max_k`), reduce `confidence_sigmas`, or further reduce `pass_ramp_exponent_multiplier`.
 
 ### Decision: Extend synthetic match-count levels to `-15..-4`
 
@@ -893,7 +893,10 @@ the rotation can be recovered from the preview mask.
 
 - **Decision:** Implement optional per-episode task budgets (`task_max_frames`, `task_max_spawns`) in `DrMarioPlacementEnv`, tracking `task/frames_used` via SMDP τ and `task/spawns_used` via spawn consumption (including skipped spawns with no feasible actions).
 - **Why:** Keeps budget accounting backend-agnostic (libretro vs `cpp-engine`) and avoids relying on ROM-specific pill-counter encodings (BCD vs binary).
-- **Semantics:** `info["goal_achieved"]` remains the success signal. If the underlying env clears but the budget is exceeded, the wrapper sets `goal_achieved=False` and strips `terminal_bonus_reward` so reward and curriculum success stay aligned. If the budget is exceeded before a clear/topout, the wrapper returns `truncated=True`.
+- **Semantics:** Budgets are *soft constraints*:
+  - If the underlying env clears, the wrapper replaces the terminal clear bonus with a smooth time-goal reward that is **positive under-budget** and **negative over-budget**, bounded by the clear bonus (upper) and the topout penalty (lower).
+  - If the clear is over-budget, the wrapper still sets `goal_achieved=False` so curricula treat it as a failure under the current time goal, but the episode terminates normally (no budget truncation).
+  - If the budget is exceeded mid-episode, the wrapper does not truncate; `task/success` remains false unless the agent finishes under-budget.
 - **Trade-offs:** Budget counting is wrapper-relative (decision-boundary τ) and currently applies only to the placement SMDP env; extending to per-frame controller envs would require separate counters and reset boundaries.
 
 ---
@@ -905,12 +908,12 @@ the rotation can be recovered from the preview mask.
 - **Decision:** Treat each episode as an i.i.d. Bernoulli trial (success/fail) with latent success probability `p`. For each curriculum stage target `t`, advance when the one-sided Wilson lower bound for `p` over a rolling window exceeds `t`: `LB_wilson(k,n; z) > t`, where `z` is configured in “sigmas”.
 - **Window sizing:** Use a “near-target” assumption `p_assumed = (1+t)/2` and choose `n` via the normal-approximation sample size:
   - `n ~= z^2 * p(1-p) / (p - t)^2`, which simplifies to `n ~= z^2 * (1+t)/(1-t)` for `p=(1+t)/2`.
-- **Why:** Replaces arbitrary `window_episodes/min_episodes` with a principled, target-aware notion of confidence that scales naturally across easy probe thresholds (~1%) and harder hop-back thresholds.
+- **Why:** Replaces arbitrary `window_episodes/min_episodes` with a principled, target-aware notion of confidence that scales naturally across probe thresholds (~16%) and harder hop-back thresholds.
 - **Trade-offs:** For targets near 1, `n` can become large and stall stages if thresholds are too strict. Mitigate by capping hop-back k (`ln_hop_back_max_k`) or adjusting targets/sigmas; monitor `curriculum/confidence_lower_bound` and `curriculum/window_*` in the TUI.
 
-### Decision: Start time budgets only after “mastery” (perfect streak at 3σ)
+### Decision: Start time budgets only after “mastery” (perfect streak at 2σ)
 
-- **Decision:** Once a stage achieves a *perfect* success streak long enough to certify `p > mastery_target` at `mastery_sigmas` (defaults: 0.99 at 3σ), begin applying time budgets (`task_max_frames`) for that level.
+- **Decision:** Once a stage achieves a *perfect* success streak long enough to certify `p > mastery_target` at `mastery_sigmas` (defaults: 0.99 at 2σ), begin applying time budgets (`task_max_frames`) for that level.
 - **Budget schedule:** Initialize the budget to the mean clear time over a recent window of successful clears. Tighten gradually over time, limiting each decrease to a fraction of the observed MAD (median absolute deviation) to avoid overreacting to noise/outliers.
 - **Why:** Separates “learn to succeed” from “learn to be fast” and provides a stable, outlier-robust way to reduce allowed time once success is essentially guaranteed.
 - **Trade-offs:** A high `mastery_target` at high σ can require a long no-failure streak before budgets activate; tune `time_budget_mastery_target/time_budget_mastery_sigmas` if budgets start too late.
@@ -936,3 +939,40 @@ the rotation can be recovered from the preview mask.
 - **Decision:** Add a lightweight sqlite DB (`BestTimesDB`) keyed by `(level, rng_seed)` that records the best (minimum) clear times in frames and spawns across all runs.
 - **Why:** Provides “best-known floors” per level to ground time-budget curricula (avoid tightening below anything ever observed) and enables reporting the distribution of best times across seeds for profiling/target selection.
 - **Trade-offs:** Sqlite can contend if multiple runs write to the same DB; treat writes as best-effort (ignore failures), use WAL mode, and allow overriding the path via `DRMARIO_BEST_TIMES_DB`.
+
+---
+
+## 2025-12-20 – Curriculum Gate Stability + Stage-Pure PPO Updates
+
+### Decision: Use an EMA-based confidence gate (not tiny rolling windows)
+
+- **Context:** The earlier Wilson-LB gate used a short rolling window sized from the target (e.g. 7–10 episodes for mid-range thresholds). In practice this made `curriculum/confidence_lower_bound` extremely noisy and could stall (or occasionally jump) on hop-back stages, even after many episodes.
+- **Decision:** Replace the rolling-window estimate with an **exponentially weighted moving average (EMA)** of stage success, and compute a Wilson-style lower bound from **pseudo-counts** `(S, N)` where both are decayed each episode. Require a minimum effective sample size (`confidence_min_effective_episodes`) before allowing advancement.
+- **Why:** EMA keeps the estimate responsive to learning (non-stationary p) while preventing “window smaller than a batch” noise.
+- **Trade-offs:** EMA introduces additional hyperparameters (half-life + min effective N) and changes the interpretation of `window_n/window_size` to “effective sample size” rather than literal episode count.
+
+### Decision: Enforce a minimum number of macro-decisions per stage (`min_stage_decisions`)
+
+- **Decision:** For `ln_hop_back`, require a stage to execute at least `min_stage_decisions` macro-actions before it can advance.
+- **Why:** Prevents “micro-stages” that advance within a single PPO rollout batch and improves statistical stability under variable pill sequences/layouts.
+
+### Decision: Keep PPO updates stage-pure by stopping rollouts on advancement
+
+- **Decision:** When the curriculum advances, stop rollout collection immediately and run the PPO update, so a single PPO batch never mixes transitions across curriculum stages.
+- **Why:** Avoids value/advantage contamination from changing task distribution mid-batch and makes curriculum metrics easier to interpret.
+
+---
+
+## 2025-12-21 – AsyncVectorEnv Robustness + Engine Process Cleanup
+
+### Decision: Omit unset optional info keys (never return `None`)
+
+- **Context:** Gymnasium `AsyncVectorEnv` merges per-env `info` dicts into dict-of-arrays. If a key is numeric in one env and `None` in another, the merge can crash (typed array cannot accept `None`).
+- **Decision:** For optional values like `task/max_frames`, `task/max_spawns`, and `match_target`, omit the key entirely when unset instead of returning `None`.
+- **Why:** Keeps vectorized info payloads type-stable across envs and across curriculum stage transitions.
+
+### Decision: Track engine pids per run and reap on shutdown (best-effort)
+
+- **Context:** When a training run exits due to a crash or forced worker termination, `drmario_engine` child processes can be orphaned.
+- **Decision:** Write per-engine pidfiles under a run-local directory (`$logdir/engine_pids`) and, on shutdown, kill any remaining `drmario_engine` pids recorded there.
+- **Why:** Reduces “zombie engine” accumulation in long iteration loops without requiring OS-specific parent-death signals.

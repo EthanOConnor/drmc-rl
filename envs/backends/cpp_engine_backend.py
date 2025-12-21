@@ -87,6 +87,7 @@ class CppEngineBackend(EmulatorBackend):
 
         self._proc: Optional[subprocess.Popen[bytes]] = None
         self._shm_file: Optional[Path] = None
+        self._pid_file: Optional[Path] = None
         self._mm = None
         self._state = None
 
@@ -379,6 +380,26 @@ class CppEngineBackend(EmulatorBackend):
             stderr=subprocess.PIPE,
             env=env,
         )
+        self._pid_file = None
+        pid_dir_raw = os.environ.get("DRMARIO_ENGINE_PID_DIR")
+        if pid_dir_raw:
+            try:
+                pid_dir = Path(str(pid_dir_raw)).expanduser()
+                pid_dir.mkdir(parents=True, exist_ok=True)
+                pid = int(self._proc.pid)
+                pid_file = pid_dir / f"drmario_engine_{os.getpid()}_{pid}.pid"
+                payload = "\n".join(
+                    [
+                        f"pid={pid}",
+                        f"ppid={os.getpid()}",
+                        f"engine_path={self.engine_path}",
+                        f"shm_file={shm_file}",
+                    ]
+                )
+                pid_file.write_text(payload + "\n", encoding="utf-8")
+                self._pid_file = pid_file
+            except Exception:
+                self._pid_file = None
 
         # Give the process time to mmap the file.
         time.sleep(0.05)
@@ -584,6 +605,12 @@ class CppEngineBackend(EmulatorBackend):
                 except Exception:
                     pass
             self._proc = None
+        if self._pid_file is not None:
+            try:
+                self._pid_file.unlink()
+            except Exception:
+                pass
+            self._pid_file = None
         if self._shm_file is not None:
             try:
                 self._shm_file.unlink()
