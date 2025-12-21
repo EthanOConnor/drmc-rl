@@ -429,3 +429,9 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Surfaced `speed_setting` (0/1/2) as a real env option across retro backends and `cpp-pool`, and emitted it in decision-time infos (`envs/retro/drmario_env.py`, `envs/retro/placement_env.py`, `training/envs/dr_mario_vec.py`, `training/envs/drmario_pool_vec.py`).
 - Added `drm/viruses_initial` as a backend-agnostic info key to support a scalar “clearance progress” aux feature (`envs/retro/placement_env.py`, `training/envs/drmario_pool_vec.py`).
 - Updated the default SMDP-PPO config to enable aux v1 and default to high game speed (`training/configs/smdp_ppo.yaml`).
+
+## 2025-12-21 – Codex CLI – cpp-engine Async Timeout Recovery
+
+- Prevented rare cpp-engine batched-run timeouts from crashing `AsyncVectorEnv`: placement fast-path now truncates the episode, records `placements/backend_error*`, and forces a backend restart on run-request failures (`envs/retro/placement_env.py`).
+- Made `CppEngineBackend._run_request` use a progress-based watchdog + a more forgiving total timeout (with better diagnostics) to reduce false timeouts under heavy multi-env load (`envs/backends/cpp_engine_backend.py`).
+- Added regression tests ensuring cpp-engine fast-path timeouts truncate instead of raising (`tests/test_cpp_engine_timeout_recovery.py`).

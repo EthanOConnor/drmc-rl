@@ -463,3 +463,8 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: Libretro backends set `speed_setting` via menu inputs (and optionally RAM patching) during auto-start.
 - **Risk**: If the start sequence changes, the point where RNG is seeded / the intro checkpoint is captured could drift, breaking strict parity assumptions.
 - **Mitigation**: Treat speed-setting changes as parity-relevant; validate regularly with `tools/ghost_parity.py --speed-setting` and keep the auto-start sequence deterministic and minimal.
+
+**R56. cpp-engine batched-run requests can hang/timeout in long async runs**
+- **Concern**: A `CppEngineBackend` instance can occasionally fail to ack a batched run request (scheduler starvation, IPC/shm edge cases, or a true engine stall).
+- **Risk**: Previously this raised `TimeoutError` inside an `AsyncVectorEnv` worker and crashed training; even with recovery, frequent truncations would reduce sample efficiency and could hide an underlying engine bug.
+- **Mitigation**: Placement fast-path catches backend run exceptions, truncates the episode, records `placements/backend_error_phase`, and forces a backend restart; `_run_request` uses a progress-based watchdog and emits rich diagnostics. Track the rate of backend truncations/restarts and investigate if it’s non-trivial.

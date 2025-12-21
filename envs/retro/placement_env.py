@@ -1507,6 +1507,48 @@ class DrMarioPlacementEnv(gym.Wrapper):
             prev_frame = prev_state.stack4[-1]
             v_start = int(getattr(base, "_viruses_remaining", 0))
 
+            def _abort_fast_backend(exc: BaseException, *, phase: str) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+                # Never let backend errors bubble out of a worker process under
+                # AsyncVectorEnv; truncate the episode and force a backend restart.
+                try:
+                    base._backend_last_error = f"backend_run({phase}): {exc!r}"
+                except Exception:
+                    pass
+                try:
+                    backend_obj = getattr(base, "_backend", None)
+                    if backend_obj is not None:
+                        backend_obj.close()
+                except Exception:
+                    pass
+                try:
+                    base._backend = None
+                    base._using_backend = False
+                except Exception:
+                    pass
+
+                out_info = dict(self._last_info)
+                out_info["placements/needs_action"] = False
+                out_info["placements/backend_error"] = f"{type(exc).__name__}: {exc}"
+                out_info["placements/backend_error_phase"] = str(phase)
+                out_info["placements/tau"] = 1
+                out_info["perf/planner_plan_sec"] = float(plan_latency_sec_total)
+                out_info["placements/plan_calls"] = int(plan_calls)
+                out_info["placements/plan_latency_ms_total"] = float(plan_latency_sec_total) * 1000.0
+                out_info["placements/plan_latency_ms_max"] = float(plan_latency_sec_max) * 1000.0
+                out_info.update(self._reward_breakdown_info(breakdown, r_total=0.0))
+                out_info.update(self._perf_breakdown_info(perf))
+                self._attach_pose_mismatch_info(out_info)
+
+                obs_fallback = getattr(base, "last_obs", self._last_obs)
+                return self._finalize_step(
+                    obs_fallback,
+                    0.0,
+                    False,
+                    True,
+                    out_info,
+                    tau_frames=1,
+                )
+
             # Phase 1: execute the placement controller script via batched engine runs.
             runs = self._compress_controller(plan.controller)
             plan_frames_executed = 0
@@ -1516,7 +1558,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
             for mask, frames in runs:
                 if frames <= 0:
                     continue
-                res = fast_backend.run_frames_mask(buttons_mask=int(mask), frames=int(frames))
+                try:
+                    res = fast_backend.run_frames_mask(buttons_mask=int(mask), frames=int(frames))
+                except Exception as exc:
+                    return _abort_fast_backend(exc, phase="run_frames_mask")
                 plan_frames_executed += int(res.get("frames", 0))
                 cleared_total += int(res.get("tiles_cleared_total", 0))
                 cleared_virus += int(res.get("tiles_cleared_virus", 0))
@@ -1524,7 +1569,10 @@ class DrMarioPlacementEnv(gym.Wrapper):
                 if int(res.get("reason", 0)) == self._RUN_REASON_TERMINAL:
                     terminated = True
                     break
-            sync_fn(int(plan_frames_executed))
+            try:
+                sync_fn(int(plan_frames_executed))
+            except Exception as exc:
+                return _abort_fast_backend(exc, phase="sync_after_plan")
 
             # Adjacency shaping is based on newly placed static pills (lock boundary).
             try:
@@ -1560,18 +1608,24 @@ class DrMarioPlacementEnv(gym.Wrapper):
             if not terminated:
                 remaining = int(self._max_wait_frames)
                 while remaining > 0:
-                    res = fast_backend.run_until_decision(
-                        last_spawn_id=(int(last_spawn_id) if last_spawn_id is not None else None),
-                        max_frames=int(remaining),
-                    )
+                    try:
+                        res = fast_backend.run_until_decision(
+                            last_spawn_id=(int(last_spawn_id) if last_spawn_id is not None else None),
+                            max_frames=int(remaining),
+                        )
+                    except Exception as exc:
+                        return _abort_fast_backend(exc, phase="run_until_decision")
                     waited = int(res.get("frames", 0))
                     wait_frames_total += waited
                     remaining -= waited
                     cleared_total += int(res.get("tiles_cleared_total", 0))
                     cleared_virus += int(res.get("tiles_cleared_virus", 0))
                     cleared_nonvirus += int(res.get("tiles_cleared_nonvirus", 0))
-                    sync_fn(int(waited))
-                    obs = getattr(base, "last_obs", obs)
+                    try:
+                        sync_fn(int(waited))
+                        obs = getattr(base, "last_obs", obs)
+                    except Exception as exc:
+                        return _abort_fast_backend(exc, phase="sync_after_wait")
 
                     reason = int(res.get("reason", 0))
                     if reason == self._RUN_REASON_TERMINAL:

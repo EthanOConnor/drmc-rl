@@ -239,12 +239,38 @@ class CppEngineBackend(EmulatorBackend):
         self._state.run_request_id = req
 
         t0 = time.perf_counter()
-        # Conservative timeout: allow longer for large fast-forwards.
-        timeout = max(self.step_timeout_sec, float(max_frames_i) / 2000.0)
+        frame_start = int(getattr(self._state, "frame_count"))
+        last_frame = frame_start
+        last_progress_t = t0
+
+        # Watchdog strategy:
+        # - "no progress" timeout: trigger if the engine isn't advancing frames at all.
+        # - total timeout: bounds the worst-case wait if the engine is running but
+        #   far slower than expected (e.g. severe oversubscription or a stuck loop).
+        #
+        # These are intentionally more forgiving than the legacy `max_frames/2000`
+        # heuristic; under high AsyncVectorEnv loads the engine can be delayed by
+        # OS scheduling even when it is healthy.
+        no_progress_timeout = max(float(self.step_timeout_sec) * 4.0, 2.0)
+        total_timeout = max(float(self.step_timeout_sec) * 10.0, 5.0, float(max_frames_i) / 400.0)
+
         sleep_s = 0.0
         while int(getattr(self._state, "run_ack_id")) != req:
-            if time.perf_counter() - t0 > timeout:
-                raise TimeoutError("Timed out waiting for engine run request.")
+            now = time.perf_counter()
+            frame_now = int(getattr(self._state, "frame_count"))
+            if frame_now != last_frame:
+                last_frame = frame_now
+                last_progress_t = now
+
+            if (now - last_progress_t) > no_progress_timeout or (now - t0) > total_timeout:
+                ack = int(getattr(self._state, "run_ack_id"))
+                raise TimeoutError(
+                    "Timed out waiting for engine run request. "
+                    f"mode={mode_i} max_frames={max_frames_i} buttons=0x{buttons_i:02X} "
+                    f"req={req} ack={ack} "
+                    f"frame_start={frame_start} frame_now={frame_now} "
+                    f"elapsed_sec={now - t0:.3f} no_progress_sec={now - last_progress_t:.3f}"
+                )
             if self._proc.poll() is not None:
                 out, err = self._proc.communicate(timeout=1)
                 raise RuntimeError(

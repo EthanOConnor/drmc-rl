@@ -1022,3 +1022,13 @@ the rotation can be recovered from the preview mask.
 - **Decision:** Treat Dr. Mario’s speed setting as an explicit env config (`speed_setting` in {0,1,2}) and surface it in decision-time infos as `pill/speed_setting` (and `speed_setting`).
 - **Backends:** `cpp-engine`/`cpp-pool` take the speed as a reset-time configuration; libretro/menu-based backends set speed during auto-start (with a best-effort RAM-patch fallback for robustness).
 - **Validation:** Use `tools/ghost_parity.py` with `--speed-setting` to validate emulator↔engine parity when changing default speeds.
+
+---
+
+## 2025-12-21 – cpp-engine Batched-Run Timeout Policy (AsyncVectorEnv)
+
+- **Context:** In long `AsyncVectorEnv` training runs, a single `CppEngineBackend` instance can occasionally fail to ack a batched run request within the Python timeout, which previously raised `TimeoutError` inside a worker process and crashed the entire job.
+- **Decision:** Treat cpp-engine batched-run exceptions (timeouts, unexpected backend errors) inside placement fast-path as an **episode truncation** and force a backend restart (close + recreate on next reset). Do not allow these exceptions to propagate out of `env.step()`.
+- **Backend watchdog:** `CppEngineBackend._run_request` uses a **no-progress watchdog** (frame counter not advancing) plus a more forgiving total timeout, and includes request/ack/frame diagnostics in the raised error.
+- **Why:** Training runs must be robust to rare backend stalls; truncation + restart preserves the run and keeps the failure visible via `info` keys and `_backend_last_error`.
+- **Trade-offs:** Truncated episodes reduce sample efficiency and can mask an underlying engine bug; mitigation is to log/monitor `placements/backend_error_phase` and restart counts, and investigate if the rate becomes non-trivial.
