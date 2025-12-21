@@ -32,6 +32,11 @@ smdp_ppo:
   pill_embed_dim: 32
   # Extra 64-channel residual blocks in the board encoder (0 keeps the tiny baseline).
   encoder_blocks: 0
+
+  # Optional aux vector inputs (derived from obs + info).
+  #   - none: board + pill colors only (legacy)
+  #   - v1: adds speed/virus/level/time/height/progress scalars
+  aux_spec: "v1"
   
   # Exploration
   entropy_schedule_end: 0.003
@@ -46,9 +51,9 @@ smdp_ppo:
 env:
   id: "DrMarioPlacementEnv-v0"
   obs_mode: state
-  # Default to the headless C++ engine for training throughput.
+  # Default to the in-process C++ pool backend for training throughput.
   # Override on the CLI with `--backend libretro --core quicknes --rom-path ...` for emulator runs.
-  backend: cpp-engine
+  backend: cpp-pool
   # Observation representation for state-mode:
   #   - extended: 16ch (explicit virus/static/falling + scalars)
   #   - bitplane_bottle: 4ch (bottle-only color planes + virus_mask)
@@ -60,6 +65,8 @@ env:
   num_envs: 16
   frame_stack: 1
   randomize_rng: true
+  # 0=low, 1=medium, 2=high
+  speed_setting: 2
 
 # Scripted curriculum (synthetic negative levels: fewer viruses)
 curriculum:

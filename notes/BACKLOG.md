@@ -94,7 +94,8 @@ Technical backlog / roadmap. More detailed items than top-level docs.
     - Add a lightweight “scaling HUD” in debug mode:
       - Show speedup vs 1 env and efficiency vs linear scaling, computed from the benchmark harness.
 
-  - **P0.4 Longer-term (optional, high ceiling): batch/in-process cpp-engine backend**
+  - **P0.4 Longer-term (optional, high ceiling): batch/in-process cpp-engine backend** ✅
+    - Implemented an initial in-process pool backend (`cpp-pool`): C++ shared lib owns N engines + integrated native planner; Python uses a ctypes wrapper with persistent numpy buffers.
     - Goal: eliminate per-env subprocess polling overhead and process explosion (AsyncVectorEnv + per-env engine process).
     - Two candidate designs (choose one after P0.1–P0.3 are working + benchmarked):
       - **Multi-instance engine process**: one engine binary simulates N games; shared memory exposes arrays of per-instance state; driver issues batched step requests.

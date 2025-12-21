@@ -26,6 +26,7 @@ class DecisionStep:
     reward: float  # Cumulative reward over τ frames
     obs_next: np.ndarray  # Observation after placement
     done: bool  # Episode terminated
+    aux: Optional[np.ndarray] = None  # Optional auxiliary vector [aux_dim]
     env_id: int = 0  # Environment index for multi-env rollouts
     info: Dict = field(default_factory=dict)  # Additional metadata
 
@@ -45,6 +46,7 @@ class DecisionBatch:
     rewards: np.ndarray  # [T] - cumulative rewards
     observations_next: np.ndarray  # [T, ...]
     dones: np.ndarray  # [T]
+    aux: Optional[np.ndarray] = None  # [T, aux_dim]
     env_ids: Optional[np.ndarray] = None  # [T] - environment indices
     advantages: Optional[np.ndarray] = None  # [T] - computed later
     returns: Optional[np.ndarray] = None  # [T] - computed later
@@ -65,6 +67,7 @@ class DecisionRolloutBuffer:
         num_envs: int = 1,
         gamma: float = 0.997,
         gae_lambda: float = 0.95,
+        aux_dim: int = 0,
     ):
         """Initialize decision rollout buffer.
         
@@ -80,12 +83,16 @@ class DecisionRolloutBuffer:
         self.num_envs = num_envs
         self.gamma = gamma
         self.gae_lambda = gae_lambda
+        self.aux_dim = int(max(0, int(aux_dim)))
         
         # Storage
         self.observations = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self.masks = np.zeros((capacity, 4, 16, 8), dtype=np.bool_)
         self.pill_colors = np.zeros((capacity, 2), dtype=np.int64)
         self.preview_pill_colors = np.zeros((capacity, 2), dtype=np.int64)
+        self.aux = (
+            np.zeros((capacity, self.aux_dim), dtype=np.float32) if self.aux_dim > 0 else None
+        )
         self.actions = np.zeros(capacity, dtype=np.int64)
         self.log_probs = np.zeros(capacity, dtype=np.float32)
         self.values = np.zeros(capacity, dtype=np.float32)
@@ -106,6 +113,13 @@ class DecisionRolloutBuffer:
         self.masks[idx] = step.mask
         self.pill_colors[idx] = step.pill_colors
         self.preview_pill_colors[idx] = step.preview_pill_colors
+        if self.aux is not None:
+            if step.aux is None:
+                raise ValueError("DecisionStep.aux is required when aux_dim > 0")
+            aux_arr = np.asarray(step.aux, dtype=np.float32).reshape(-1)
+            if aux_arr.shape != (self.aux_dim,):
+                raise ValueError(f"Expected aux shape ({self.aux_dim},), got {aux_arr.shape!r}")
+            self.aux[idx] = aux_arr
         self.actions[idx] = step.action
         self.log_probs[idx] = step.log_prob
         self.values[idx] = step.value
@@ -209,6 +223,7 @@ class DecisionRolloutBuffer:
             masks=self.masks[:T].copy(),
             pill_colors=self.pill_colors[:T].copy(),
             preview_pill_colors=self.preview_pill_colors[:T].copy(),
+            aux=self.aux[:T].copy() if self.aux is not None else None,
             actions=self.actions[:T].copy(),
             log_probs=self.log_probs[:T].copy(),
             values=self.values[:T].copy(),

@@ -401,9 +401,10 @@ class PlacementPolicyNet(nn.Module):
         pill_embed_dim: int = 32,
         encoder_blocks: int = 0,
         num_colors: int = 3,
+        aux_dim: int = 0,
     ):
         super().__init__()
-        
+
         self.encoder = DrMarioBoardEncoder(in_ch=in_channels, res_blocks=int(encoder_blocks))
         self.pill_embedding = UnorderedPillEmbedding(
             num_colors=num_colors,
@@ -419,6 +420,24 @@ class PlacementPolicyNet(nn.Module):
             nn.Linear(pill_embed_dim * 2, pill_embed_dim),
             nn.ReLU(inplace=True),
         )
+
+        self.aux_dim = int(max(0, int(aux_dim)))
+        self.aux_encoder: Optional[nn.Module]
+        self.cond_fusion: Optional[nn.Module]
+        if self.aux_dim > 0:
+            self.aux_encoder = nn.Sequential(
+                nn.Linear(self.aux_dim, pill_embed_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(pill_embed_dim, pill_embed_dim),
+                nn.ReLU(inplace=True),
+            )
+            self.cond_fusion = nn.Sequential(
+                nn.Linear(pill_embed_dim * 2, pill_embed_dim),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            self.aux_encoder = None
+            self.cond_fusion = None
         
         # Select head
         head_type = head_type.lower()
@@ -431,14 +450,15 @@ class PlacementPolicyNet(nn.Module):
         else:
             raise ValueError(f"Unknown head type: {head_type}")
             
-        # Value head: global average pool → MLP
+        # Value head: global average pool → MLP (optionally conditioned on aux).
+        value_in = 64 + (pill_embed_dim if self.aux_dim > 0 else 0)
         self.value_head = nn.Sequential(
-            nn.Linear(64, 128),
+            nn.Linear(value_in, 128),
             nn.ReLU(inplace=True),
             nn.Linear(128, 1),
         )
         
-    def forward(self, board, pill_colors, preview_pill_colors, mask):
+    def forward(self, board, pill_colors, preview_pill_colors, mask, aux=None):
         """Forward pass.
         
         Args:
@@ -446,6 +466,7 @@ class PlacementPolicyNet(nn.Module):
             pill_colors: Current pill color indices [B, 2]
             preview_pill_colors: Next (preview) pill color indices [B, 2]
             mask: Feasibility mask [B, 4, 16, 8]
+            aux: Optional aux vector [B, aux_dim]
             
         Returns:
             Tuple (logits_map [B, 4, 16, 8], value [B, 1])
@@ -457,13 +478,29 @@ class PlacementPolicyNet(nn.Module):
         p_curr = self.pill_embedding(pill_colors)  # [B, P]
         p_prev = self.preview_embedding(preview_pill_colors)  # [B, P]
         p_embed = self.pill_fusion(torch.cat([p_curr, p_prev], dim=-1))  # [B, P]
+
+        cond = p_embed
+        if self.aux_dim > 0:
+            if aux is None:
+                raise ValueError("aux input is required when aux_dim > 0")
+            aux_t = aux
+            if aux_t.ndim != 2 or int(aux_t.shape[-1]) != int(self.aux_dim):
+                raise ValueError(
+                    f"Expected aux shape [B,{self.aux_dim}], got {tuple(aux_t.shape)!r}"
+                )
+            aux_embed = self.aux_encoder(aux_t)  # type: ignore[misc]
+            cond = self.cond_fusion(torch.cat([p_embed, aux_embed], dim=-1))  # type: ignore[misc]
         
         # Generate placement logits
-        logits_map = self.head(F, p_embed, mask)  # [B, 4, 16, 8]
+        logits_map = self.head(F, cond, mask)  # [B, 4, 16, 8]
         
         # Value estimate
         F_gap = F.mean(dim=(2, 3))  # [B, 64]
-        value = self.value_head(F_gap)  # [B, 1]
+        if self.aux_dim > 0:
+            value_in = torch.cat([F_gap, cond], dim=-1)
+        else:
+            value_in = F_gap
+        value = self.value_head(value_in)  # [B, 1]
         
         return logits_map, value
 

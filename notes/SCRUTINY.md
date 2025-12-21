@@ -364,6 +364,11 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Risk**: Running an old engine with a new Python driver (or vice versa) can cause run requests to never ack, leading to timeouts/hangs and confusing perf regressions.
 - **Mitigation**: Keep `static_assert(sizeof(DrMarioState))` in C++ and `ctypes.sizeof` checks + demo parity tests in Python. Surface timeouts with engine stdout/stderr, and keep the per-frame manual-step path available as a fallback.
 
+**R52. Native reachability BFS is not thread-safe (global context)**
+- **Concern**: `reach_native/drm_reach_full.c` uses a global `static ReachCtx g_ctx` reused across calls.
+- **Risk**: If the in-process pool backend parallelizes per-env planning across threads, concurrent BFS calls can race/corrupt internal state, yielding incorrect masks/scripts or crashing Python.
+- **Mitigation**: Keep the pool single-threaded until reachability is made thread-safe (e.g., per-thread ctx via TLS or passing a ctx pointer). Add regression tests that run with threads>1 and validate deterministic masks/costs on a fixed corpus.
+
 **R38. Reset-time per-frame stepping can timeout under AsyncVectorEnv load**
 - **Concern**: `AsyncVectorEnv` autoresets call `env.reset()` in worker processes, which historically advanced to the first decision point by stepping per frame in Python.
 - **Risk**: Under high env counts, per-frame lockstep stepping can time out (engine not scheduled within the per-step timeout) and/or burn CPU, causing instability and poor scaling.
@@ -435,3 +440,26 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: When applying dynamic budgets, the wrapper clamps `task_max_frames/task_max_spawns` to be ≥ best-known per-level floors from the DB.
 - **Risk**: Once budgets reach the current best-known value, additional speed improvements become incidental rather than explicitly required by the curriculum.
 - **Mitigation**: Consider making the clamp optional (or switching to a quantile floor like p10), and track/report top-K per-seed distributions to tune targets deliberately instead of binding to the absolute minimum.
+
+---
+
+## 2025-12-21 – Digital Twin / Vision Shadow Mode: New Risks
+
+**R53. Twin lock and timebase drift are failure-prone without explicit quality signals**
+- **Concern**: Shadow mode needs continuous estimation of drift/latency and reconciliation between predicted game state and partially noisy observations.
+- **Risk**: Without explicit “quality flags” and desync handling, subtle mis-locks can silently poison training/eval (policy learns against a wrong internal state) or lead to sporadic hard failures that are hard to reproduce.
+- **Mitigation**: Make twin quality first-class: expose per-step `quality_flags` + drift/latency estimates; gate learning updates on “locked” status; emit telemetry on inconsistencies and define a deterministic resync/abort policy (`DESYNC` terminal reason).
+
+---
+
+## 2025-12-21 – SMDP-PPO Aux Inputs + Speed Setting: New Risks
+
+**R54. Aux feature vectors depend on stable `info` key contracts**
+- **Concern**: `aux_spec=v1` is computed from both observation planes (bitplanes) and per-step `info` keys (`task/*`, `drm/viruses_initial`, `placements/options`, etc.).
+- **Risk**: A backend or wrapper change that renames/omits keys (or changes when they’re emitted) can silently alter aux semantics, hurting reproducibility or learning stability.
+- **Mitigation**: Keep aux specs versioned (`aux_spec=v1`), validate shapes when enabled (raise if aux missing), and add small regression tests that build aux from representative info dicts.
+
+**R55. Speed-setting alignment in emulator backends can interact with reset-time seeding**
+- **Concern**: Libretro backends set `speed_setting` via menu inputs (and optionally RAM patching) during auto-start.
+- **Risk**: If the start sequence changes, the point where RNG is seeded / the intro checkpoint is captured could drift, breaking strict parity assumptions.
+- **Mitigation**: Treat speed-setting changes as parity-relevant; validate regularly with `tools/ghost_parity.py --speed-setting` and keep the auto-start sequence deterministic and minimal.

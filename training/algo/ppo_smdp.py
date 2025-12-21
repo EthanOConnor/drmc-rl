@@ -32,6 +32,28 @@ from models.policy.placement_dist import MaskedPlacementDist
 
 import envs.specs.ram_to_state as ram_specs
 
+_AUX_SPEC_NONE = "none"
+_AUX_SPEC_V1 = "v1"
+
+_AUX_V1_LEVEL_MIN = -15
+_AUX_V1_LEVEL_MAX = 20
+_AUX_V1_LEVEL_DIM = _AUX_V1_LEVEL_MAX - _AUX_V1_LEVEL_MIN + 1  # 36
+_AUX_V1_VIRUS_NORM = 84.0  # Max viruses at level 20: (20+1)*4 = 84
+
+# v1 feature layout (float32, [B, 57]):
+#   speed_onehot[3]
+#   virus_total/84
+#   virus_by_color/84 [3] (R,Y,B)
+#   level_onehot[36] for levels [-15..20] (out-of-range => all zeros)
+#   frame_count_norm [1] (task/frames_used normalized)
+#   max_height/16 [1]
+#   col_heights/16 [8]
+#   clearance_progress [1] (matches or viruses)
+#   feasible_fraction [1] (placements/options / 512)
+#   occupancy_fraction [1] (occupied tiles / 128)
+#   virus_max_height/16 [1]
+_AUX_V1_DIM = 3 + 1 + 3 + _AUX_V1_LEVEL_DIM + 1 + 1 + 8 + 1 + 1 + 1 + 1  # 57
+
 @dataclass(slots=True)
 class SMDPPPOConfig:
     """Configuration for SMDP-PPO."""
@@ -56,6 +78,9 @@ class SMDPPPOConfig:
     head_type: str = "dense"  # dense, shift_score, or factorized
     pill_embed_dim: int = 32
     encoder_blocks: int = 0
+
+    # Optional auxiliary vector inputs (derived from obs + info).
+    aux_spec: str = "none"  # none|v1
     
     # Exploration
     entropy_schedule_end: float = 0.003
@@ -102,12 +127,19 @@ class SMDPPPOAdapter(AlgoAdapter):
             head_type=str(ppo_cfg_dict.get("head_type", "dense")),
             pill_embed_dim=int(ppo_cfg_dict.get("pill_embed_dim", 32)),
             encoder_blocks=int(ppo_cfg_dict.get("encoder_blocks", 0)),
+            aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
             entropy_schedule_steps=int(ppo_cfg_dict.get("entropy_schedule_steps", 1000000)),
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
         )
+
+        aux_spec_norm = str(self.hparams.aux_spec or "none").strip().lower()
+        if aux_spec_norm not in {_AUX_SPEC_NONE, _AUX_SPEC_V1}:
+            raise ValueError(f"Unknown smdp_ppo.aux_spec: {self.hparams.aux_spec!r}")
+        self.aux_spec = aux_spec_norm
+        self.aux_dim = int(_AUX_V1_DIM) if self.aux_spec == _AUX_SPEC_V1 else 0
         
         # Environment info
         obs_space = getattr(env, "single_observation_space", env.observation_space)
@@ -121,6 +153,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             pill_embed_dim=self.hparams.pill_embed_dim,
             encoder_blocks=self.hparams.encoder_blocks,
             num_colors=3,
+            aux_dim=self.aux_dim,
         ).to(self.device)
         
         self.optimizer = optim.Adam(self.net.parameters(), lr=self.hparams.lr)
@@ -132,6 +165,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             num_envs=env.num_envs,
             gamma=self.hparams.gamma,
             gae_lambda=self.hparams.gae_lambda,
+            aux_dim=self.aux_dim,
         )
         
         # Tracking
@@ -187,6 +221,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                     masks,
                     pill_colors,
                     preview_pill_colors,
+                    aux_batch,
                 ) = self._select_actions_batch(decision_obs, decision_info, deterministic=False)
 
                 # Step environment once for the full batch.
@@ -219,6 +254,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                         mask=masks[env_idx],
                         pill_colors=pill_colors[env_idx],
                         preview_pill_colors=preview_pill_colors[env_idx],
+                        aux=None if aux_batch is None else aux_batch[env_idx],
                         action=int(actions[env_idx]),
                         log_prob=float(log_probs[env_idx]),
                         value=float(values[env_idx]),
@@ -286,6 +322,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                     _masks,
                     _pill_colors,
                     _preview_pill_colors,
+                    _aux_batch,
                 ) = self._select_actions_batch(decision_obs, decision_info, deterministic=True)
 
             batch = self.buffer.get_batch(
@@ -347,6 +384,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask: np.ndarray,
         pill_colors: np.ndarray,
         preview_pill_colors: np.ndarray,
+        aux: Optional[np.ndarray],
     ) -> Tuple[torch.Tensor, float]:
         """Forward pass through policy network.
         
@@ -357,9 +395,10 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask_t = torch.from_numpy(mask).unsqueeze(0).to(self.device)
         colors_t = torch.from_numpy(pill_colors).unsqueeze(0).to(self.device)
         preview_t = torch.from_numpy(preview_pill_colors).unsqueeze(0).to(self.device)
+        aux_t = None if aux is None else torch.from_numpy(aux).unsqueeze(0).to(self.device)
         
         t0 = time.perf_counter()
-        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t)
+        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t, aux=aux_t)
         dt = float(time.perf_counter() - t0)
         self._perf_inference_calls += 1
         self._perf_inference_sec_total += dt
@@ -378,6 +417,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask: np.ndarray,
         pill_colors: np.ndarray,
         preview_pill_colors: np.ndarray,
+        aux: Optional[np.ndarray],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Forward pass through policy network for a batch.
 
@@ -388,9 +428,10 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask_t = torch.from_numpy(mask).to(self.device)
         colors_t = torch.from_numpy(pill_colors).to(self.device)
         preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
+        aux_t = None if aux is None else torch.from_numpy(aux).to(self.device)
 
         t0 = time.perf_counter()
-        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t)
+        logits_map, value = self.net(obs_t, colors_t, preview_t, mask_t, aux=aux_t)
         dt = float(time.perf_counter() - t0)
         batch_size = int(obs_t.shape[0])
         self._perf_inference_calls += batch_size
@@ -410,6 +451,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         mask: np.ndarray,
         pill_colors: np.ndarray,
         preview_pill_colors: np.ndarray,
+        aux: Optional[np.ndarray] = None,
         deterministic: bool = False,
     ) -> Tuple[int, float, float]:
         """Select action using masked policy.
@@ -417,7 +459,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         Returns:
             Tuple of (action_idx, log_prob, value)
         """
-        logits_map, value = self._forward_policy(obs, mask, pill_colors, preview_pill_colors)
+        logits_map, value = self._forward_policy(obs, mask, pill_colors, preview_pill_colors, aux)
         
         # Create masked distribution
         dist = MaskedPlacementDist(logits_map, torch.from_numpy(mask).to(self.device))
@@ -432,7 +474,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs_batch: np.ndarray,
         infos: List[Dict[str, Any]],
         deterministic: bool = False,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]:
         """Select actions for a batch of environments."""
         num_envs = int(self.env.num_envs)
         obs_arr = self._ensure_batched_obs(obs_batch).astype(np.float32, copy=False)
@@ -440,13 +482,20 @@ class SMDPPPOAdapter(AlgoAdapter):
         masks = np.zeros((num_envs, 4, 16, 8), dtype=bool)
         pill_colors = np.zeros((num_envs, 2), dtype=np.int64)
         preview_pill_colors = np.zeros((num_envs, 2), dtype=np.int64)
+        aux_batch: Optional[np.ndarray] = None
+        if self.aux_dim > 0:
+            aux_batch = np.zeros((num_envs, self.aux_dim), dtype=np.float32)
         for i in range(num_envs):
             info_i = infos[i] if i < len(infos) else {}
             masks[i] = self._extract_mask(info_i)
             pill_colors[i] = self._extract_pill_colors(info_i)
             preview_pill_colors[i] = self._extract_preview_pill_colors(info_i)
+            if aux_batch is not None:
+                aux_batch[i] = self._build_aux(obs_arr[i], info_i)
 
-        logits_map, values = self._forward_policy_batch(obs_arr, masks, pill_colors, preview_pill_colors)
+        logits_map, values = self._forward_policy_batch(
+            obs_arr, masks, pill_colors, preview_pill_colors, aux_batch
+        )
         dist = MaskedPlacementDist(logits_map, torch.from_numpy(masks).to(self.device))
         if deterministic:
             action_idx = dist.mode()
@@ -458,7 +507,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         log_probs_np = log_probs.detach().cpu().numpy().astype(np.float32)
         values_np = values.detach().cpu().numpy().astype(np.float32)
 
-        return actions_np, log_probs_np, values_np, masks, pill_colors, preview_pill_colors
+        return actions_np, log_probs_np, values_np, masks, pill_colors, preview_pill_colors, aux_batch
         
     def _execute_placement(
         self,
@@ -503,6 +552,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         masks = torch.from_numpy(batch.masks).to(self.device)
         pill_colors = torch.from_numpy(batch.pill_colors).to(self.device)
         preview_pill_colors = torch.from_numpy(batch.preview_pill_colors).to(self.device)
+        aux = None if batch.aux is None else torch.from_numpy(batch.aux).to(self.device)
         actions = torch.from_numpy(batch.actions).to(self.device)
         log_probs_old = torch.from_numpy(batch.log_probs).to(self.device)
         returns = torch.from_numpy(batch.returns).to(self.device)
@@ -537,13 +587,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                 mb_masks = masks[mb_indices]
                 mb_colors = pill_colors[mb_indices]
                 mb_preview = preview_pill_colors[mb_indices]
+                mb_aux = None if aux is None else aux[mb_indices]
                 mb_actions = actions[mb_indices]
                 mb_log_probs_old = log_probs_old[mb_indices]
                 mb_returns = returns[mb_indices]
                 mb_advantages = advantages[mb_indices]
                 
                 # Forward pass
-                logits_map, values = self.net(mb_obs, mb_colors, mb_preview, mb_masks)
+                logits_map, values = self.net(mb_obs, mb_colors, mb_preview, mb_masks, aux=mb_aux)
                 
                 # Compute log probs and entropy
                 dist = MaskedPlacementDist(logits_map, mb_masks)
@@ -718,6 +769,138 @@ class SMDPPPOAdapter(AlgoAdapter):
             return int(value)
         except Exception:
             return None
+
+    def _build_aux(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        if self.aux_spec == _AUX_SPEC_V1:
+            return self._build_aux_v1(obs, info)
+        raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
+
+    @staticmethod
+    def _column_heights(mask: np.ndarray) -> np.ndarray:
+        occ = np.asarray(mask, dtype=bool)
+        if occ.shape != (16, 8):
+            raise ValueError(f"Expected mask shape (16,8), got {occ.shape!r}")
+        heights = np.zeros((8,), dtype=np.int32)
+        for c in range(8):
+            rows = np.nonzero(occ[:, c])[0]
+            if rows.size == 0:
+                heights[c] = 0
+            else:
+                heights[c] = int(16 - int(rows.min()))
+        return heights
+
+    def _build_aux_v1(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        if self.aux_dim != _AUX_V1_DIM:
+            raise ValueError(f"aux_dim mismatch: expected {_AUX_V1_DIM}, got {self.aux_dim}")
+        frame = np.asarray(obs, dtype=np.float32)
+        if frame.ndim == 4 and frame.shape[-2:] == (16, 8):
+            # Allow passing a fixed frame stack (T,C,16,8); use the latest frame.
+            frame = frame[-1]
+        if frame.ndim != 3 or frame.shape[1:] != (16, 8):
+            raise ValueError(f"Expected obs shape (C,16,8), got {frame.shape!r}")
+
+        out = np.zeros((_AUX_V1_DIM,), dtype=np.float32)
+        k = 0
+
+        # speed_onehot[3]
+        speed = self._extract_int(info.get("pill/speed_setting"))
+        if speed is None:
+            speed = self._extract_int(info.get("speed_setting"))
+        if speed is None:
+            speed = 2
+        speed = int(max(0, min(int(speed), 2)))
+        out[k + speed] = 1.0
+        k += 3
+
+        # Virus counts from the bottle planes.
+        virus_mask = ram_specs.get_virus_mask(frame)
+        virus_total = int(virus_mask.sum())
+        out[k] = float(np.clip(float(virus_total) / float(_AUX_V1_VIRUS_NORM), 0.0, 1.0))
+        k += 1
+
+        virus_planes = ram_specs.get_virus_color_planes(frame)
+        if virus_planes.shape[0] != 3:
+            raise ValueError(f"Expected 3 virus color planes, got {virus_planes.shape!r}")
+        for c in range(3):
+            out[k + c] = float(
+                np.clip(float((virus_planes[c] > 0.5).sum()) / float(_AUX_V1_VIRUS_NORM), 0.0, 1.0)
+            )
+        k += 3
+
+        # level_onehot[36] for [-15..20]
+        lvl = self._extract_int(info.get("curriculum/env_level"))
+        if lvl is None:
+            lvl = self._extract_int(info.get("curriculum_level"))
+        if lvl is None:
+            lvl = self._extract_int(info.get("level"))
+        if lvl is None:
+            lvl = 0
+        lvl_i = int(lvl)
+        if _AUX_V1_LEVEL_MIN <= lvl_i <= _AUX_V1_LEVEL_MAX:
+            out[k + (lvl_i - _AUX_V1_LEVEL_MIN)] = 1.0
+        k += _AUX_V1_LEVEL_DIM
+
+        # frame_count_norm (task timer; normalized to [0,1])
+        frames_used = self._extract_int(info.get("task/frames_used"))
+        if frames_used is None:
+            frames_used = 0
+        max_frames = self._extract_int(info.get("task/max_frames"))
+        if max_frames is not None and int(max_frames) > 0:
+            out[k] = float(np.clip(float(frames_used) / float(max_frames), 0.0, 1.0))
+        else:
+            out[k] = float(np.tanh(float(frames_used) / 8000.0))
+        k += 1
+
+        # heights from occupancy mask (bottle-only for bitplane_bottle*).
+        occ = ram_specs.get_occupancy_mask(frame)
+        heights = self._column_heights(occ)
+        max_h = int(heights.max())
+        out[k] = float(np.clip(float(max_h) / 16.0, 0.0, 1.0))
+        k += 1
+
+        out[k : k + 8] = np.clip(heights.astype(np.float32) / 16.0, 0.0, 1.0)
+        k += 8
+
+        # clearance_progress (matches or viruses)
+        task_mode = str(info.get("task_mode") or "viruses").strip().lower()
+        progress = 0.0
+        if task_mode in {"matches", "any_clear"}:
+            mc = self._extract_int(info.get("matches_completed")) or 0
+            target = self._extract_int(info.get("match_target")) or 0
+            if target > 0:
+                progress = float(mc) / float(max(1, target))
+        else:
+            v0 = self._extract_int(info.get("drm/viruses_initial"))
+            if v0 is None:
+                v0 = self._extract_int(info.get("viruses_initial"))
+            v_now = self._extract_int(info.get("viruses_remaining"))
+            if v_now is None:
+                v_now = virus_total
+            if v0 is not None and int(v0) > 0:
+                progress = float(int(v0) - int(v_now)) / float(int(v0))
+        out[k] = float(np.clip(progress, 0.0, 1.0))
+        k += 1
+
+        # feasible_fraction (placements/options / 512)
+        options = self._extract_int(info.get("placements/options"))
+        if options is None:
+            options = 0
+        out[k] = float(np.clip(float(options) / 512.0, 0.0, 1.0))
+        k += 1
+
+        # occupancy_fraction (occupied / 128)
+        out[k] = float(np.clip(float(occ.sum()) / 128.0, 0.0, 1.0))
+        k += 1
+
+        # virus_max_height/16
+        virus_heights = self._column_heights(virus_mask)
+        virus_max_h = int(virus_heights.max())
+        out[k] = float(np.clip(float(virus_max_h) / 16.0, 0.0, 1.0))
+        k += 1
+
+        if k != _AUX_V1_DIM:
+            raise RuntimeError(f"aux_v1 packing mismatch: k={k} dim={_AUX_V1_DIM}")
+        return out
 
     def _extract_curriculum_snapshot(self, infos: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """Extract a compact curriculum snapshot from per-env info dicts."""

@@ -24,6 +24,7 @@ data/datasets/
 data/states/
 data/best_times.sqlite3*
 data/pose_mismatches*.jsonl
+data/ghost_parity_divergences*.jsonl
 retro-data/
 retro/"*"
 !retro/README.md

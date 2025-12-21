@@ -283,6 +283,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         self.task_max_spawns: Optional[int] = None
         self._task_frames_used: int = 0
         self._task_spawns_used: int = 0
+        self._viruses_initial: Optional[int] = None
 
     # ------------------------------------------------------------------ utils
 
@@ -434,6 +435,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
             info["task/max_spawns"] = int(max_spawns)
         info["task/frames_used"] = int(self._task_frames_used)
         info["task/spawns_used"] = int(self._task_spawns_used)
+        if self._viruses_initial is not None:
+            info["drm/viruses_initial"] = int(self._viruses_initial)
         if budget_exceeded:
             reasons: list[str] = []
             if frames_exceeded:
@@ -841,6 +844,8 @@ class DrMarioPlacementEnv(gym.Wrapper):
         info["pill/base_row"] = int(snap.base_row)
         info["pill/base_col"] = int(snap.base_col)
         info["pill/rot"] = int(snap.rot)
+        info["pill/speed_setting"] = int(snap.speed_setting)
+        info["speed_setting"] = int(snap.speed_setting)
         info["pill/speed_counter"] = int(snap.speed_counter)
         info["pill/speed_threshold"] = int(snap.speed_threshold)
         info["pill/hor_velocity"] = int(snap.hor_velocity)
@@ -1280,18 +1285,24 @@ class DrMarioPlacementEnv(gym.Wrapper):
             self._task_frames_used = 0
             self._task_spawns_used = 0
             out_info = dict(self._last_info)
-            out_info["task/max_frames"] = (
-                None if self.task_max_frames is None else int(self.task_max_frames)
-            )
-            out_info["task/max_spawns"] = (
-                None if self.task_max_spawns is None else int(self.task_max_spawns)
-            )
+            # NOTE: Gymnasium AsyncVectorEnv cannot merge infos when a key is
+            # sometimes numeric and sometimes `None` (it builds a typed array from
+            # the first seen value). Omit unset keys instead of returning `None`.
+            if self.task_max_frames is not None:
+                out_info["task/max_frames"] = int(self.task_max_frames)
+            if self.task_max_spawns is not None:
+                out_info["task/max_spawns"] = int(self.task_max_spawns)
             out_info["task/frames_used"] = 0
             out_info["task/spawns_used"] = 0
             out_info["task/budget_exceeded"] = False
             out_info["task/within_budget"] = True
             out_info["task/objective_met"] = False
             out_info["task/success"] = False
+            try:
+                self._viruses_initial = int(out_info.get("viruses_remaining", 0) or 0)
+            except Exception:
+                self._viruses_initial = 0
+            out_info["drm/viruses_initial"] = int(self._viruses_initial or 0)
             return obs, out_info
 
         raise RuntimeError("DrMarioPlacementEnv.reset failed unexpectedly") from last_exc

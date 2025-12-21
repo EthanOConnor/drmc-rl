@@ -43,6 +43,10 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 - Fixed a Gymnasium `AsyncVectorEnv` crash caused by returning `None` for sometimes-numeric info keys; unset optional fields are now omitted (`envs/retro/placement_env.py`).
 - Added per-run `drmario_engine` pidfile tracking and best-effort cleanup on shutdown to reduce orphaned engine processes after crashes/forced worker termination (`envs/backends/cpp_engine_backend.py`, `training/run.py`).
+- Implemented an in-process batched C++ pool backend (`game_engine/libdrmario_pool`) that owns N engine instances, integrates the native reachability planner, and emits decision-time masks/obs plus step-time events/counters.
+- Added a `cpp-pool` training backend (ctypes wrapper + lightweight vector env) and wired it into the real env factory (`envs/backends/drmario_pool.py`, `training/envs/drmario_pool_vec.py`, `training/envs/dr_mario_vec.py`).
+- Added `python -m tools.build_drmario_pool` and a pytest smoke test for the pool backend (`tools/build_drmario_pool.py`, `tests/test_cpp_pool_smoke.py`).
+- Updated the SMDP-PPO config to default to `backend: cpp-pool` (`training/configs/smdp_ppo.yaml`).
 
 ## 2025-11-22 – Coding Agent
 
@@ -408,3 +412,20 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 - Updated README + placement-policy docs to reflect fast `cpp-engine` multi-env training (`--vectorization async`) and new reporting tools (`tools/bench_multienv.py`, `tools/report_curriculum.py`, `tools/report_best_times.py`).
 - Refreshed `notes/BACKLOG.md` to mark completed multi-env items and add next steps for best-times/time-goal iteration.
+
+## 2025-12-21 – Codex CLI – Engine/Digital-Twin Interface Design Notes
+
+- Added a design document specifying the engine/digital-twin/planner boundary and the decision-vs-telemetry channel split, grounded in the existing `libdrmario_pool` ABI (`notes/DESIGN_ENGINE_TWIN_PROTOCOL.md`).
+- Updated `notes/MEMORY.md` with the architectural decision to keep board internals behind the decision-boundary ABI and co-locate planning with the timing model.
+- Added a new scrutiny item for vision shadow-mode desync/drift risks and the need for explicit twin quality signals (`notes/SCRUTINY.md`).
+
+## 2025-12-21 – Codex CLI – Fix VectorEnv Info Merge Crash (Task Budgets)
+
+- Fixed `DrMarioPlacementEnv.reset()` to omit unset `task/max_frames` and `task/max_spawns` keys (instead of returning `None`), matching `step()` behavior and preventing Gymnasium VectorEnv dtype crashes. Added a SyncVectorEnv regression test (`envs/retro/placement_env.py`, `tests/test_task_budgets.py`).
+
+## 2025-12-21 – Codex CLI – SMDP-PPO Aux Inputs (v1) + Speed Setting
+
+- Added `smdp_ppo.aux_spec` (`none|v1`) and plumbed a 57-dim aux vector into the placement policy net + rollout buffer (speed/viruses/level/time/heights/clear-progress + a few cheap extras) (`training/algo/ppo_smdp.py`, `models/policy/placement_heads.py`, `training/rollout/decision_buffer.py`).
+- Surfaced `speed_setting` (0/1/2) as a real env option across retro backends and `cpp-pool`, and emitted it in decision-time infos (`envs/retro/drmario_env.py`, `envs/retro/placement_env.py`, `training/envs/dr_mario_vec.py`, `training/envs/drmario_pool_vec.py`).
+- Added `drm/viruses_initial` as a backend-agnostic info key to support a scalar “clearance progress” aux feature (`envs/retro/placement_env.py`, `training/envs/drmario_pool_vec.py`).
+- Updated the default SMDP-PPO config to enable aux v1 and default to high game speed (`training/configs/smdp_ppo.yaml`).

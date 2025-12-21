@@ -25,6 +25,7 @@ class VecEnvConfig:
     rom_path: Optional[str] = None
     backend: Optional[str] = None
     level: int = 0
+    speed_setting: int = 2
     risk_tau: float = 1.0
     include_risk_tau: bool = False
     action_space: Optional[str] = None  # controller|intent|placement
@@ -275,9 +276,26 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
         obs_mode = "state"
 
     backend = str(env_cfg.backend) if env_cfg.backend else None
+
+    # In-process C++ pool backend: bypass Gymnasium VectorEnv wrappers entirely.
+    if env_id in {"DrMarioPlacementEnv-v0", "DrMario-Placement-v0"} and backend in {"cpp-pool", "cpp_pool"}:
+        from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+
+        return DrMarioPoolVecEnv(
+            num_envs=int(max(1, env_cfg.num_envs)),
+            state_repr=str(env_cfg.state_repr or "bitplane_bottle_mask"),
+            level=int(env_cfg.level),
+            speed_setting=int(env_cfg.speed_setting),
+            randomize_rng=bool(env_cfg.randomize_rng),
+            include_risk_tau=bool(env_cfg.include_risk_tau),
+            risk_tau=float(env_cfg.risk_tau),
+            emit_board=bool(getattr(env_cfg, "emit_raw_ram", False)),
+        )
+
     kwargs: Dict[str, Any] = {
         "obs_mode": obs_mode,
         "level": int(env_cfg.level),
+        "speed_setting": int(env_cfg.speed_setting),
         "risk_tau": float(env_cfg.risk_tau),
         "include_risk_tau": bool(env_cfg.include_risk_tau),
         "backend": backend,

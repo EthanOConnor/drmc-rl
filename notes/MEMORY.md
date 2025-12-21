@@ -976,3 +976,49 @@ the rotation can be recovered from the preview mask.
 - **Context:** When a training run exits due to a crash or forced worker termination, `drmario_engine` child processes can be orphaned.
 - **Decision:** Write per-engine pidfiles under a run-local directory (`$logdir/engine_pids`) and, on shutdown, kill any remaining `drmario_engine` pids recorded there.
 - **Why:** Reduces “zombie engine” accumulation in long iteration loops without requiring OS-specific parent-death signals.
+
+---
+
+## 2025-12-21 – In-Process Batched Pool Backend (`cpp-pool`)
+
+- **Decision:** Add an in-process native “engine pool” shared library (`game_engine/libdrmario_pool`) that owns N Dr. Mario engine instances and the integrated reachability planner, and expose a batched C ABI consumed via `ctypes`.
+- **Contract:** Python ↔ C++ speaks **SMDP-at-decision-boundaries**: one `step(actions[N])` executes the chosen macro placement and runs until the next controllable spawn (or terminal), returning τ frames plus compact events/stats.
+- **ABI stability:** Public structs include `protocol_version` and/or `struct_size` so Python can hard-fail on mismatches rather than silently corrupt buffers.
+- **Compatibility:** The pool `step()` supports a per-env `reset_mask` to mimic Gymnasium VectorEnv `autoreset_mode="NEXT_STEP"` (reset on the next `step`, ignore the action), keeping `CurriculumVecEnv` behavior unchanged.
+- **Trade-offs:** This is the fastest path (zero IPC, one batched call), but crashes can segfault Python; debug board bytes are optional and off the hot path.
+
+---
+
+## 2025-12-21 – Engine/Digital-Twin ABI: Keep Boards Internal, Co-Locate Planner + Timing Model
+
+- **Decision:** Treat the **decision-boundary engine ABI** as the canonical interface for training, evaluation, and future “play against humans” integrations. The ABI returns feasibility/costs/τ plus compact events/stats; raw boards remain internal (debug-only).
+- **Why:** Performance and correctness: the engine/twin has direct access to the canonical state and timing, so it can compute derived signals (clear events, virus clears, heights, progress bars) without Python-side board scans or extra copies.
+- **Shadow mode:** A vision/hardware backend should “shadow” the same World Kernel using a digital twin that locks to external clocks/latency and validates observations against rules, but the coordinator still sees the same ABI contract.
+- **Planner placement:** Keep reachability/planning inside the kernel (or tightly coupled) because it shares representation + timing semantics with the simulator/twin.
+- **Reference:** Full system/components/data-flow/control-flow spec in `notes/DESIGN_ENGINE_TWIN_PROTOCOL.md`.
+
+---
+
+## 2025-12-21 – SMDP-PPO Optional Aux Vector Inputs (`aux_spec=v1`)
+
+- **Decision:** Add an optional auxiliary vector input to the placement policy network and SMDP-PPO rollout buffer, controlled by `smdp_ppo.aux_spec` (`none|v1`).
+- **v1 layout:** `float32[57]` packed as:
+  - `speed_onehot[3]` (0=low, 1=medium, 2=high)
+  - `virus_total/84` (scalar, clipped to [0,1])
+  - `virus_by_color/84[3]` (R,Y,B, clipped)
+  - `level_onehot[36]` for curriculum/env levels in `[-15..20]` (out-of-range => all zeros)
+  - `frame_count_norm` (scalar): `task/frames_used / task/max_frames` if available else `tanh(frames_used/8000)`
+  - `max_height/16` (scalar): max occupied column height
+  - `col_heights/16[8]` (column heights)
+  - `clearance_progress` (scalar): fraction of the active clear target achieved (matches or viruses)
+  - Extras (cheap + useful): `feasible_fraction`, `occupancy_fraction`, `virus_max_height/16`
+- **Why:** These features are nearly free to compute at decision points, but hard/slow for a CNN over sparse bitplanes to infer reliably (especially progress/targets).
+- **Trade-offs:** Aux vectors couple learning to `info` key contracts; keeping the spec versioned (`aux_spec=v1`) makes future changes explicit and reproducible.
+
+---
+
+## 2025-12-21 – Speed Setting as a First-Class Env Parameter
+
+- **Decision:** Treat Dr. Mario’s speed setting as an explicit env config (`speed_setting` in {0,1,2}) and surface it in decision-time infos as `pill/speed_setting` (and `speed_setting`).
+- **Backends:** `cpp-engine`/`cpp-pool` take the speed as a reset-time configuration; libretro/menu-based backends set speed during auto-start (with a best-effort RAM-patch fallback for robustness).
+- **Validation:** Use `tools/ghost_parity.py` with `--speed-setting` to validate emulator↔engine parity when changing default speeds.

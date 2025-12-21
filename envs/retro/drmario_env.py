@@ -121,6 +121,7 @@ class DrMarioRetroEnv(gym.Env):
         backend_kwargs: Optional[Dict[str, Any]] = None,
         render_mode: Optional[str] = None,
         level: int = 0,
+        speed_setting: int = 1,
         auto_start: bool = True,
         rng_randomize: bool = False,
         # Evaluator-based shaping controls
@@ -154,6 +155,7 @@ class DrMarioRetroEnv(gym.Env):
         self.rom_path = Path(rom_path).expanduser() if rom_path is not None else None
         self.render_mode = render_mode
         self.level = level
+        self.speed_setting = int(max(0, min(int(speed_setting), 2)))
         # "Curriculum level" is an extension used by scripted curricula. For
         # non-negative levels, it matches the ROM level selection. For negative
         # levels, we interpret it as a synthetic difficulty stage (e.g., fewer
@@ -175,6 +177,7 @@ class DrMarioRetroEnv(gym.Env):
             # Keep the same convention as the emulator curriculum: negative levels
             # clamp to 0 for ROM level selection.
             self._backend_kwargs.setdefault("level", int(self.level))
+            self._backend_kwargs.setdefault("speed_setting", int(self.speed_setting))
         self.auto_start = auto_start
         # Default RNG randomization policy for `reset()` when options do not specify.
         # Stored on the env so Gymnasium vector autoresets (which call `reset()`
@@ -1415,6 +1418,8 @@ class DrMarioRetroEnv(gym.Env):
         start_vec = self._button_vector(["START"])
         left_vec = self._button_vector(["LEFT"])
         right_vec = self._button_vector(["RIGHT"])
+        down_vec = self._button_vector(["DOWN"])
+        up_vec = self._button_vector(["UP"])
 
         rng_applied = False
         seeded_on_init_boundary = False
@@ -1492,14 +1497,63 @@ class DrMarioRetroEnv(gym.Env):
                 self._backend_step_buttons(vec, repeat=1)
                 self._backend_step_buttons(noop, repeat=1)
 
+        def _read_speed_setting() -> Optional[int]:
+            # p1_speedSetting at $030B, mirrored in ZP at $008B.
+            cur = self._read_ram_value(0x030B)
+            if cur is None:
+                cur = self._read_ram_value(0x008B)
+            if cur is None:
+                return None
+            return int(cur) & 0x03
+
+        def align_speed() -> None:
+            desired = int(max(0, min(int(getattr(self, "speed_setting", 1)), 2)))
+            # Options menu: move cursor from LEVEL -> SPEED.
+            self._backend_step_buttons(down_vec, repeat=1)
+            self._backend_step_buttons(noop, repeat=1)
+
+            cur = _read_speed_setting()
+            if cur is None:
+                # Restore cursor before returning.
+                self._backend_step_buttons(up_vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
+                return
+            if cur == desired:
+                # Restore cursor and exit.
+                self._backend_step_buttons(up_vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
+                return
+
+            # Try to reach the desired value with a bounded tap search (robust
+            # to either clamping or wrap-around behavior).
+            for _ in range(4):
+                cur = _read_speed_setting()
+                if cur is not None and cur == desired:
+                    break
+                self._backend_step_buttons(right_vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
+            for _ in range(4):
+                cur = _read_speed_setting()
+                if cur is not None and cur == desired:
+                    break
+                self._backend_step_buttons(left_vec, repeat=1)
+                self._backend_step_buttons(noop, repeat=1)
+
+            # Restore cursor to LEVEL (parity with legacy behavior; safest if
+            # callers assume the LEVEL field is selected next).
+            self._backend_step_buttons(up_vec, repeat=1)
+            self._backend_step_buttons(noop, repeat=1)
+
         if from_topout:
             presses = max(2, presses)
             press_start()  # leave game-over screen
             align_level()
+            align_speed()
             for i in range(presses - 1):
                 press_start(seed_on_init_boundary=(i == 0))
         elif presses == 1:
             align_level()
+            align_speed()
             press_start(seed_on_init_boundary=True)
         else:
             # Libretro cold resets land on the title/intro sequence. Empirically,
@@ -1514,6 +1568,7 @@ class DrMarioRetroEnv(gym.Env):
             if presses >= 2:
                 press_start()
             align_level()
+            align_speed()
             for i in range(max(0, presses - 2)):
                 press_start(seed_on_init_boundary=(i == 0))
 
@@ -1570,6 +1625,35 @@ class DrMarioRetroEnv(gym.Env):
         vcount = self._extract_virus_count()
         if vcount is not None and vcount > 0:
             self._in_game = True
+        self._maybe_patch_speed_setting()
+
+    def _maybe_patch_speed_setting(self) -> None:
+        """Best-effort: force speed setting in emulator RAM after auto-start.
+
+        The C++ engine backend takes speed as an out-of-band config, but
+        libretro/stable-retro runs through menus where speed is usually
+        "medium" by default. For training parity, we patch the in-game
+        speedSetting mirrors after gameplay begins.
+        """
+
+        if not self._using_backend or self._backend is None:
+            return
+        if str(getattr(self, "backend_name", "")).lower() in {"cpp-engine"}:
+            return
+        write_fn = getattr(self._backend, "write_ram", None)
+        if not callable(write_fn):
+            return
+        desired = int(max(0, min(int(getattr(self, "speed_setting", 1)), 2))) & 0xFF
+        try:
+            # p1_speedSetting at $030B, mirrored in ZP at $008B.
+            write_fn(0x030B, [desired])
+            write_fn(0x008B, [desired])
+        except Exception:
+            return
+        try:
+            self._read_ram_array(refresh=True)
+        except Exception:
+            return
 
 
     def _maybe_auto_start(self, options: Optional[Dict[str, Any]]) -> None:

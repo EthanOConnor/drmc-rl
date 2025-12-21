@@ -133,6 +133,7 @@ def _make_env(
     core: Optional[str],
     engine_path: Optional[Path],
     level: int,
+    speed_setting: int,
 ) -> "gymnasium.Env":
     import gymnasium as gym
 
@@ -140,6 +141,7 @@ def _make_env(
         "obs_mode": "state",
         "backend": backend,
         "level": int(level),
+        "speed_setting": int(speed_setting),
         # We want parity on raw game logic, not shaping.
         "use_potential_shaping": False,
         "auto_start": True,
@@ -164,6 +166,7 @@ def main() -> None:
     ap.add_argument("--episodes", type=int, default=1)
     ap.add_argument("--steps", type=int, default=5000)
     ap.add_argument("--level", type=int, default=0)
+    ap.add_argument("--speed-setting", type=int, default=2, help="0=low, 1=med, 2=high")
     ap.add_argument("--core", type=str, default="quicknes")
     ap.add_argument("--rom-path", type=Path, default=None)
     ap.add_argument("--engine", type=Path, default=Path("game_engine/drmario_engine"))
@@ -213,6 +216,7 @@ def main() -> None:
         core=args.core,
         engine_path=None,
         level=int(args.level),
+        speed_setting=int(args.speed_setting),
     )
     env_eng = _make_env(
         backend="cpp-engine",
@@ -220,6 +224,7 @@ def main() -> None:
         core=None,
         engine_path=args.engine,
         level=int(args.level),
+        speed_setting=int(args.speed_setting),
     )
 
     divergences: List[Divergence] = []

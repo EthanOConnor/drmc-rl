@@ -180,13 +180,37 @@ def test_unset_optional_info_keys_are_omitted_for_async_vec_env() -> None:
     base = _TerminalFrameEnv()
     env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
 
-    env.reset()
+    _obs, info = env.reset()
+    assert "task/max_frames" not in info
+    assert "task/max_spawns" not in info
+    assert "match_target" not in info
     _obs2, _r2, terminated2, truncated2, info2 = env.step(0)
     assert terminated2
     assert not truncated2
     assert "task/max_frames" not in info2
     assert "task/max_spawns" not in info2
     assert "match_target" not in info2
+
+
+def test_sync_vector_env_reset_does_not_crash_with_mixed_task_budgets() -> None:
+    def _make_budgeted_env() -> DrMarioPlacementEnv:
+        base = _TerminalFrameEnv()
+        env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
+        env.task_max_frames = 123
+        return env
+
+    def _make_unbudgeted_env() -> DrMarioPlacementEnv:
+        base = _TerminalFrameEnv()
+        env = DrMarioPlacementEnv(base, planner=_TrivialPlanner(), max_wait_frames=50)
+        env.task_max_frames = None
+        return env
+
+    vec = gym.vector.SyncVectorEnv([_make_budgeted_env, _make_unbudgeted_env])
+    try:
+        vec.reset()
+        vec.step(np.array([0, 0], dtype=np.int64))
+    finally:
+        vec.close()
 
 
 def test_curriculum_config_parses_task_budgets() -> None:
