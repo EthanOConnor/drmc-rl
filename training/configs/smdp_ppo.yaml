@@ -12,7 +12,7 @@ train:
 smdp_ppo:
   # Learning
   lr: 3.0e-4
-  gamma: 0.995
+  gamma: 0.997
   gae_lambda: 0.95
   
   # PPO parameters
@@ -29,9 +29,9 @@ smdp_ppo:
   # Policy head architecture
   # Options: "dense" (recommended), "shift_score", "factorized"
   head_type: "dense"
-  pill_embed_dim: 32
+  pill_embed_dim: 128
   # Extra 64-channel residual blocks in the board encoder (0 keeps the tiny baseline).
-  encoder_blocks: 0
+  encoder_blocks: 32
 
   # Optional aux vector inputs (derived from obs + info).
   #   - none: board + pill colors only (legacy)
@@ -39,13 +39,13 @@ smdp_ppo:
   aux_spec: "v1"
   
   # Exploration
-  entropy_schedule_end: 0.003
-  entropy_schedule_steps: 1000000
+  entropy_schedule_end: 0.005
+  entropy_schedule_steps: 100000000
   use_gumbel_topk: false
   gumbel_k: 2
   
   # Loss
-  value_loss_type: "mse"  # "mse" or "huber"
+  value_loss_type: "huber"  # "mse" or "huber"
 
 # Environment
 env:
@@ -81,14 +81,14 @@ curriculum:
   # Use a 2-sigma Wilson lower bound for base-skill "mastery" before enabling time budgets.
   time_budget_mastery_sigmas: 2.0
   # Slow the 1-exp(-k) ramp to avoid requiring near-perfect rates too early.
-  pass_ramp_exponent_multiplier: 0.3333333333333333
+  pass_ramp_exponent_multiplier: 0.6
   # EMA-based confidence gate (stable under non-stationary learning).
   confidence_ema_half_life_episodes: 256.0
   confidence_min_effective_episodes: 128.0
-  # Require at least ~2 PPO rollout batches per stage before it can advance.
-  min_stage_decisions: 1024
+  # Require at least ~1 PPO rollout batches per stage before it can advance.
+  min_stage_decisions: 512
   # Probe threshold for newly introduced levels (required success rate).
-  probe_threshold: 0.16
+  probe_threshold: 0.25
   window_episodes: 100
   min_episodes: 50
   rehearsal_prob: 0.0

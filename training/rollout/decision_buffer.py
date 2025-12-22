@@ -26,6 +26,7 @@ class DecisionStep:
     reward: float  # Cumulative reward over τ frames
     obs_next: np.ndarray  # Observation after placement
     done: bool  # Episode terminated
+    cost_to_lock: Optional[np.ndarray] = None  # [4, 16, 8] float32; frames-to-lock (planner output)
     aux: Optional[np.ndarray] = None  # Optional auxiliary vector [aux_dim]
     env_id: int = 0  # Environment index for multi-env rollouts
     info: Dict = field(default_factory=dict)  # Additional metadata
@@ -46,6 +47,7 @@ class DecisionBatch:
     rewards: np.ndarray  # [T] - cumulative rewards
     observations_next: np.ndarray  # [T, ...]
     dones: np.ndarray  # [T]
+    costs_to_lock: Optional[np.ndarray] = None  # [T, 4, 16, 8] float32
     aux: Optional[np.ndarray] = None  # [T, aux_dim]
     env_ids: Optional[np.ndarray] = None  # [T] - environment indices
     advantages: Optional[np.ndarray] = None  # [T] - computed later
@@ -68,6 +70,7 @@ class DecisionRolloutBuffer:
         gamma: float = 0.997,
         gae_lambda: float = 0.95,
         aux_dim: int = 0,
+        store_costs_to_lock: bool = False,
     ):
         """Initialize decision rollout buffer.
         
@@ -84,10 +87,14 @@ class DecisionRolloutBuffer:
         self.gamma = gamma
         self.gae_lambda = gae_lambda
         self.aux_dim = int(max(0, int(aux_dim)))
+        self._store_costs_to_lock = bool(store_costs_to_lock)
         
         # Storage
         self.observations = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self.masks = np.zeros((capacity, 4, 16, 8), dtype=np.bool_)
+        self.costs_to_lock = (
+            np.zeros((capacity, 4, 16, 8), dtype=np.float32) if self._store_costs_to_lock else None
+        )
         self.pill_colors = np.zeros((capacity, 2), dtype=np.int64)
         self.preview_pill_colors = np.zeros((capacity, 2), dtype=np.int64)
         self.aux = (
@@ -111,6 +118,13 @@ class DecisionRolloutBuffer:
         
         self.observations[idx] = step.obs
         self.masks[idx] = step.mask
+        if self.costs_to_lock is not None:
+            if step.cost_to_lock is None:
+                raise ValueError("DecisionStep.cost_to_lock is required when store_costs_to_lock=True")
+            cost_arr = np.asarray(step.cost_to_lock, dtype=np.float32)
+            if cost_arr.shape != (4, 16, 8):
+                raise ValueError(f"Expected cost_to_lock shape (4,16,8), got {cost_arr.shape!r}")
+            self.costs_to_lock[idx] = cost_arr
         self.pill_colors[idx] = step.pill_colors
         self.preview_pill_colors[idx] = step.preview_pill_colors
         if self.aux is not None:
@@ -221,6 +235,7 @@ class DecisionRolloutBuffer:
         return DecisionBatch(
             observations=self.observations[:T].copy(),
             masks=self.masks[:T].copy(),
+            costs_to_lock=self.costs_to_lock[:T].copy() if self.costs_to_lock is not None else None,
             pill_colors=self.pill_colors[:T].copy(),
             preview_pill_colors=self.preview_pill_colors[:T].copy(),
             aux=self.aux[:T].copy() if self.aux is not None else None,

@@ -48,6 +48,7 @@ private:
   uint32_t obs_channels_ = 0;
   uint32_t max_lock_frames_ = 2048;
   uint32_t max_wait_frames_ = 6000;
+  uint32_t worker_count_ = 1;
 
   std::vector<DrMarioState> states_;
   std::vector<GameLogic> games_;

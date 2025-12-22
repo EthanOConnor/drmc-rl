@@ -2363,7 +2363,13 @@ class DrMarioRetroEnv(gym.Env):
         if virus_adjacency_bonus > 0.0:
             r_env += virus_adjacency_bonus
 
-        virus_clear_reward = self.reward_cfg.virus_clear_bonus * float(delta_v)
+        virus_clear_reward = 0.0
+        if delta_v > 0 and float(self.reward_cfg.virus_clear_bonus) != 0.0:
+            v0 = int(self._viruses_initial)
+            if v0 > 0:
+                virus_clear_reward = (
+                    float(self.reward_cfg.virus_clear_bonus) * float(delta_v) / float(v0)
+                )
         r_env += virus_clear_reward
 
         # Clear animation tiles in the bottle (4-match detection).

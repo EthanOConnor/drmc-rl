@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import json
 import time
 from pathlib import Path
@@ -22,8 +23,10 @@ class DiagLogger:
         self.cfg = cfg
         self.logdir = Path(getattr(cfg, "logdir", "runs/auto")).expanduser().resolve()
         self.logdir.mkdir(parents=True, exist_ok=True)
-        self.metrics_path = self.logdir / "metrics.jsonl"
-        self._jsonl = self.metrics_path.open("a", encoding="utf-8")
+        self.metrics_path = self.logdir / "metrics.jsonl.gz"
+        self._jsonl = gzip.open(
+            self.metrics_path, mode="at", encoding="utf-8", compresslevel=9
+        )
         self._tb: Optional[SummaryWriter] = None
         self._wandb_run = None
         self._wandb = None

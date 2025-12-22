@@ -1,0 +1,127 @@
+# SMDP-PPO config for candidate-scoring placement policy training.                         # Consumed by `python -m training.run --cfg ...` via `training/utils/cfg.py:load_yaml()`.
+#                                                                                         # Code cross-references below point at the *current* implementation (mainly `training/algo/ppo_smdp.py`).
+#                                                                                         # NOTE: Comments are intentionally verbose to serve as living documentation for experiments.
+
+algo:
+  ppo_smdp # `training/run.py:build_adapter()` selects `training/algo/ppo_smdp.py:SMDPPPOAdapter` when this is set.
+  # Valid today: simple_pg | ppo/appo (SampleFactory) | ppo_smdp (builtin decision-SMDP PPO).
+
+train: # Generic run budget / checkpointing (read by `SMDPPPOAdapter.__init__`).
+  total_steps:
+    1000000000 # Total *frames* budget (not decisions). `SMDPPPOAdapter.train_forever()` increments `global_step += sum(tau)`.
+    # Sensible values: start with 5e6–5e7 for iteration; 5e8 is a long run (days) unless you’re at very high FPS.
+  checkpoint_interval:
+    100000 # Frames between checkpoints (`SMDPPPOAdapter._maybe_checkpoint()`); saves `logdir/checkpoints/smdp_ppo_step{global_step}.pt.gz`.
+    # Sensible values: 1e5 is frequent (good for safety); 5e5–5e6 is common once stable (reduces disk churn).
+
+smdp_ppo: # Parsed into `training/algo/ppo_smdp.py:SMDPPPOConfig` (with defaults for unspecified keys).
+  # Learning
+  lr: 3.0e-4 # Adam LR (`optim.Adam(self.net.parameters(), lr=...)`). Sensible: ~1e-4–3e-4 for these small nets; tune w/ KL + entropy.
+  gamma:
+    0.998 # Per-*frame* discount γ. In SMDP we use Γ_t = γ^τ_t (see `training/rollout/decision_buffer.py:compute_gae_smdp()`).
+    # Sensible: 0.995–0.999. Higher γ helps long-horizon (clear vs topout) credit; too high can destabilize value learning.
+  gae_lambda: 0.95 # GAE λ for SMDP (`compute_gae_smdp`). Sensible: 0.90–0.97 (lower=more bias, higher=more variance).
+
+  # PPO
+  clip_epsilon: 0.2 # PPO ratio clip ε in `SMDPPPOAdapter._update_policy()`. Sensible: 0.1–0.2; smaller is stabler but slower.
+  value_coef: 0.5 # Value loss weight in total loss. Sensible: 0.25–1.0; watch value loss vs policy loss scale.
+  entropy_coef: 0.01 # Initial entropy bonus (then annealed). Sensible: 0.003–0.02; too high can prevent exploiting planner signal.
+  max_grad_norm: 0.7 # Gradient clip norm. Sensible: 0.5–1.0; helpful for occasional big-adv updates.
+
+  # Rollout
+  decisions_per_update:
+    512 # Decision transitions per PPO update batch (T). With `env.num_envs=16`, collection proceeds in chunks of 16 decisions.
+    # Sensible: 256–2048. Bigger T improves advantage stats / stability but increases update walltime and stale-policy lag.
+  num_epochs: 4 # PPO epochs per update (replays same T with shuffling). Sensible: 2–8; higher risks overfitting a batch.
+  minibatch_size: 128 # Minibatch size inside PPO update loop. Must be <= decisions_per_update. Sensible: 64–256; keep >=32 for stable stats.
+
+  # Policy selection
+  policy_type:
+    candidate # Switch inside `SMDPPPOAdapter`: `candidate` -> CandidatePlacementPolicyNet + packed candidates; else -> PlacementPolicyNet heatmap.
+    # If you set `policy_type: heatmap`, all `candidate_*` keys below are ignored and `head_type` (default "dense") matters instead.
+
+  # Conditioning / aux inputs
+  pill_embed_dim:
+    128 # Width of the fused conditioning vector for (current pill, preview pill, + optional aux).
+    # Used by BOTH candidate + heatmap policies: `models/policy/candidate_policy.py` and `models/policy/placement_heads.py`.
+    # What it’s embedding: two 2-color pills (each 9 ordered combos; 81 joint) + `aux_spec=v1` (57 floats). Sensible: 32–128.
+    # Bigger mainly increases capacity/params (and may help aux fusion), but won’t fix data/contract issues (e.g. wrong pill-half semantics).
+  pill_embed_type: ordered_pair # `unordered` (DeepSets) or `ordered_onehot`/`ordered_pair` (9-way ordered-pair embedding; preserves half0/half1). Parsed by `training/algo/ppo_smdp.py` and consumed by both policy nets.
+  aux_spec:
+    v1 # Aux feature set built in `SMDPPPOAdapter._build_aux()` (see `training/algo/ppo_smdp.py`, `_AUX_V1_DIM = 57`).
+    # Set to `none` to disable; `v1` adds speed/level/virus stats/heights/progress/feasible_frac/occupancy_frac/etc.
+
+  # Candidate packing + scoring (policy_type=candidate only)
+  # The env provides a full `[4,16,8]` feasible mask + cost-to-lock; we pack feasible actions into Kmax slots then score those slots only.
+  candidate_max_candidates:
+    128 # Kmax for `pack_feasible_candidates(...)` (`models/policy/candidate_packing.py`), used in action selection + PPO updates.
+    # Sensible: 64–256. Too small truncates options (see logged `candidate/truncation_frac`); too big slows inference/updates linearly in Kmax.
+  candidate_d_model:
+    128 # Trunk/channel width D for CandidatePlacementPolicyNet (board trunk output + per-candidate embedding dim).
+    # Sensible: 64–256. Larger increases compute in transformer blocks + candidate MLP; 128 is plenty for 16×8.
+  candidate_pos_embed_dim:
+    32 # Size of (row+col+orient) embedding used per candidate (`CandidatePlacementPolicyNet.row/col/orient_embed`).
+    # Sensible: 16–64. Too small can bottleneck positional specificity; too large is usually wasted.
+  candidate_cost_embed_dim:
+    32 # Size of learned embedding for normalized cost-to-lock (`CandidatePlacementPolicyNet.cost_mlp`).
+    # Sensible: 16–64. Cost is 1 scalar; this is mostly a small MLP to let the net learn non-linear “time is bad/good” tradeoffs.
+  candidate_hidden_dim:
+    256 # Hidden size in the per-candidate MLP before projecting to D (`CandidatePlacementPolicyNet.cand_mlp`).
+    # Sensible: 128–512. If you raise Kmax a lot, prefer keeping this modest for throughput.
+  candidate_patch_kernel:
+    3 # Local raw-bitplane patch size k×k around BOTH landing cells (anchor + partner), from first 4 bottle planes.
+    # k=3 => radius 1; k=7 => radius 3 (enough to “see” 4-in-a-row patterns locally). Used by BOTH cnn + col_transformer variants.
+
+  # Board encoder (policy_type=candidate only)
+  # Options: cnn | col_transformer  (implemented in `models/policy/candidate_policy.py` as `_BoardCNN` vs `_BoardColumnTransformer`).
+  candidate_board_encoder:
+    col_transformer # `cnn` -> 2D conv trunk over [16×8]; `col_transformer` -> 8 column tokens with self-attention across columns.
+    # Practical note: col-token trunks can under-emphasize row-local horizontal structure unless `candidate_patch_kernel`/pos embeds carry it.
+  candidate_transformer_layers:
+    4 # Only used when board_encoder is col_transformer (ignored for cnn). Each layer is LN + MHA + FF (`_TxBlock`).
+    # Sensible: 2–6. Too deep is slow; too shallow may underfit global cross-column interactions.
+  candidate_transformer_heads:
+    4 # Only used for col_transformer. Must divide `candidate_d_model` (PyTorch MultiheadAttention constraint).
+    # Sensible: 2–8. For D=128, 4 or 8 are common; odd choices can break init if not divisible.
+  candidate_transformer_ff_mult: 4 # Only used for col_transformer. FF dim = max(D, ff_mult*D). Sensible: 2–4.
+
+  # Exploration
+  entropy_schedule_end:
+    0.005 # Final entropy coef after linear anneal (`SMDPPPOAdapter._get_entropy_coef()`).
+    # Sensible: 0.0–0.01. If the policy becomes too deterministic early, raise end or slow anneal.
+  entropy_schedule_steps: 250000000 # Anneal duration in *frames* (same units as `global_step`). Often set to ~0.5–1.0× `train.total_steps`.
+  use_gumbel_topk: false # Parsed but currently UNUSED in `training/algo/ppo_smdp.py` (no callsite); leftover for future exploration plumbing.
+  gumbel_k: 2 # Parsed but currently UNUSED; would matter only if `use_gumbel_topk` is wired into action selection.
+
+  # Loss
+  value_loss_type: huber # `mse` or `huber` for value loss (`SMDPPPOAdapter._update_policy()`). Huber is usually stabler with occasional outliers.
+
+env: # Parsed by `training/envs/dr_mario_vec.py:make_vec_env()` into `VecEnvConfig`, then constructed in `_make_real_vec_env()`.
+  id: "DrMarioPlacementEnv-v0" # Env id. With `backend: cpp-pool`, this routes to `training/envs/drmario_pool_vec.py:DrMarioPoolVecEnv`.
+  obs_mode: state # NOTE: For placement envs, obs_mode is forced to "state" anyway (`_make_real_vec_env`), so this is mostly documentary.
+  backend: cpp-pool # Chooses the in-process native pool backend (fast path) for placement envs; avoids Gymnasium AsyncVectorEnv IPC overhead.
+  state_repr: bitplane_bottle_mask # Pool backend supports only `bitplane_bottle` (4ch) or `bitplane_bottle_mask` (8ch) (`DrMarioPoolVecEnv.__init__`).
+  num_envs: 16 # Parallel env instances inside the pool. Sensible: 8–64 depending on CPU cores and planner threads.
+  frame_stack: 1 # Mostly UNUSED for cpp-pool (obs is already [C,16,8]); relevant for libretro pixel/state envs that emit stacks.
+  randomize_rng: true # Randomize RNG per reset/episode (`DrMarioPoolVecEnv.rng_randomize`). Use false for strict reproducibility/parity.
+  speed_setting: 2 # 0=low,1=med,2=high (clamped in pool env). Training usually uses high for speed; consider mixing later for robustness.
+
+curriculum: # Applied by `training/envs/dr_mario_vec.py` via `training/envs/curriculum.py:CurriculumVecEnv`.
+  enabled: true # If true and the env supports `set_attr`, wrapper drives env level/task constraints each episode.
+  mode: ln_hop_back # `linear` or `ln_hop_back` (`training/envs/curriculum.py`). ln_hop_back alternates probe stages + ln-tightened hop-backs.
+  start_level: -8 # Synthetic negative levels: -15..-4 => 0-virus boards w/ match-count goals; -3..0 => 1..4-virus boards (see module docstring).
+  max_level: 20 # Highest curriculum level to reach (inclusive). 0 corresponds to “4-virus vanilla” in this synthetic scheme.
+  confidence_sigmas: 1.0 # Wilson lower-bound z-score used for advancement gates. 1.0 is permissive; 2.0 is stricter but slower (more samples needed).
+  time_budget_mastery_sigmas: 2.0 # For time-budget tightening/mastery checks (see CurriculumConfig). 2.0 means “need a strong win streak” before tightening.
+  pass_ramp_exponent_multiplier: 0.6 # m in thresholds `1-exp(-m*k)` for hop-back targets + time-goal targets. Larger => ramps tighten faster; smaller => gentler.
+  confidence_ema_half_life_episodes: 256.0 # EMA half-life for success-rate tracking in both linear + ln_hop_back curricula (non-stationary friendly).
+  confidence_min_effective_episodes: 128.0 # Require at least this much EMA “effective n” before trusting the confidence gate; prevents early noisy flips.
+  min_stage_decisions: 512 # ln_hop_back only: require at least this many macro-decisions in a stage before allowing advancement (avoids micro-stages).
+  probe_threshold: 0.25 # ln_hop_back only: success-rate target for probing a new frontier level before hop-backs. Sensible: 0.10–0.35.
+  window_episodes: 100 # Mostly UNUSED when `confidence_sigmas>0` (window size is computed analytically). Kept for compatibility / sigmas<=0 fallback.
+  min_episodes: 50 # Minimum episodes before any stage can advance (used even in EMA mode). Sensible: 20–200; prevents “lucky streak” promotion.
+  rehearsal_prob: 0.05 # Probability of sampling a random lower level once progressed (helps retention). Sensible: 0.0–0.2; start near 0 for clean ablations.
+
+logdir: "runs/smdp_ppo_candidate" # Base log dir; `training/run.py` appends a unique `run_id/` subdir unless `--logdir` is provided.
+video_interval: 10000 # Video cadence in frames; used by `training/diagnostics/video.py:VideoEventHandler` wired in `training/run.py`.
+log_interval: 100 # NOTE: Currently UNUSED by `training.run` + `SMDPPPOAdapter` (DiagLogger logs whenever called). Kept for older scripts.

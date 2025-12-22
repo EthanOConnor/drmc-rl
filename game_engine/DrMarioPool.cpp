@@ -1,8 +1,12 @@
 #include "DrMarioPool.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 namespace {
 constexpr uint8_t TILE_EMPTY = 0xFF;
@@ -21,6 +25,61 @@ constexpr uint8_t BTN_A = 0x80;
 
 constexpr int GRID_W = 8;
 constexpr int GRID_H = 16;
+
+extern "C" void drm_reach_free_thread_ctx(void);
+
+
+uint32_t parse_worker_override() {
+  const char* env = std::getenv("DRMARIO_POOL_WORKERS");
+  if (!env || env[0] == '\0')
+    return 0u;
+  char* end = nullptr;
+  const long raw = std::strtol(env, &end, 10);
+  if (end == env)
+    return 0u;
+  if (raw <= 0)
+    return 1u;
+  return static_cast<uint32_t>(raw);
+}
+
+template <typename Fn>
+void parallel_for_envs(uint32_t n, uint32_t workers, Fn&& fn) {
+  if (n == 0)
+    return;
+  if (workers <= 1 || n <= 1) {
+    for (uint32_t i = 0; i < n; ++i) {
+      fn(i);
+    }
+    return;
+  }
+  if (workers > n)
+    workers = n;
+
+  std::atomic<uint32_t> next{0u};
+  std::vector<std::thread> threads;
+  threads.reserve(static_cast<size_t>(workers - 1));
+
+  auto worker_loop = [&]() {
+    while (true) {
+      const uint32_t i = next.fetch_add(1u, std::memory_order_relaxed);
+      if (i >= n)
+        break;
+      fn(i);
+    }
+  };
+  auto worker_thread = [&]() {
+    worker_loop();
+    drm_reach_free_thread_ctx();
+  };
+
+  for (uint32_t t = 1; t < workers; ++t) {
+    threads.emplace_back(worker_thread);
+  }
+  worker_loop();
+  for (auto& th : threads) {
+    th.join();
+  }
+}
 
 // Native BFS helper (reach_native/drm_reach_full.c).
 extern "C" int drm_reach_bfs_full(
@@ -106,6 +165,15 @@ DrMarioPool::DrMarioPool(const DrmPoolConfig& cfg) {
   obs_spec_ = cfg.obs_spec;
   max_lock_frames_ = (cfg.max_lock_frames > 0) ? cfg.max_lock_frames : 2048;
   max_wait_frames_ = (cfg.max_wait_frames > 0) ? cfg.max_wait_frames : 6000;
+  uint32_t workers = parse_worker_override();
+  if (workers == 0u) {
+    workers = std::thread::hardware_concurrency();
+    if (workers == 0u)
+      workers = 1u;
+  }
+  if (workers > num_envs_)
+    workers = num_envs_;
+  worker_count_ = std::max<uint32_t>(1u, workers);
 
   if (obs_spec_ == DRM_POOL_OBS_BITPLANE_BOTTLE) {
     obs_channels_ = 4;
@@ -850,12 +918,23 @@ int DrMarioPool::reset(const uint8_t* reset_mask, const DrmResetSpec* reset_spec
   if (out == nullptr || out->struct_size != sizeof(DrmPoolOutputs))
     return -1;
 
+  bool any_reset = false;
   for (uint32_t i = 0; i < num_envs_; ++i) {
     const bool do_reset = (reset_mask == nullptr) ? true : (reset_mask[i] != 0);
     if (!do_reset)
       continue;
+    any_reset = true;
     if (reset_specs == nullptr || reset_specs[i].struct_size != sizeof(DrmResetSpec))
       return -2;
+  }
+
+  if (!any_reset)
+    return 0;
+
+  parallel_for_envs(num_envs_, worker_count_, [&](uint32_t i) {
+    const bool do_reset = (reset_mask == nullptr) ? true : (reset_mask[i] != 0);
+    if (!do_reset)
+      return;
 
     apply_reset_spec(i, reset_specs[i]);
 
@@ -869,7 +948,7 @@ int DrMarioPool::reset(const uint8_t* reset_mask, const DrmResetSpec* reset_spec
 
     // Reset-time: we expect not to be terminal. If we are, just surface outputs.
     update_decision_outputs(i, out);
-  }
+  });
   return 0;
 }
 
@@ -878,11 +957,18 @@ int DrMarioPool::step(const int32_t* actions, const uint8_t* reset_mask, const D
   if (actions == nullptr || out == nullptr || out->struct_size != sizeof(DrmPoolOutputs))
     return -1;
 
-  for (uint32_t i = 0; i < num_envs_; ++i) {
-    const bool do_reset = (reset_mask != nullptr && reset_mask[i] != 0);
-    if (do_reset) {
+  if (reset_mask != nullptr) {
+    for (uint32_t i = 0; i < num_envs_; ++i) {
+      if (reset_mask[i] == 0)
+        continue;
       if (reset_specs == nullptr || reset_specs[i].struct_size != sizeof(DrmResetSpec))
         return -2;
+    }
+  }
+
+  parallel_for_envs(num_envs_, worker_count_, [&](uint32_t i) {
+    const bool do_reset = (reset_mask != nullptr && reset_mask[i] != 0);
+    if (do_reset) {
       apply_reset_spec(i, reset_specs[i]);
       // Run to first decision (no tau reported).
       uint32_t tau = 0;
@@ -927,7 +1013,7 @@ int DrMarioPool::step(const int32_t* actions, const uint8_t* reset_mask, const D
         out->lock_rot[i] = -1;
 
       update_decision_outputs(i, out);
-      continue;
+      return;
     }
 
     DrMarioState& s = states_[i];
@@ -977,7 +1063,7 @@ int DrMarioPool::step(const int32_t* actions, const uint8_t* reset_mask, const D
 
       // Re-emit the same decision context.
       update_decision_outputs(i, out);
-      continue;
+      return;
     }
 
     if (out->invalid_action)
@@ -1123,7 +1209,7 @@ int DrMarioPool::step(const int32_t* actions, const uint8_t* reset_mask, const D
 
     // Decision outputs: if terminal/truncated, still emit observation; masks are zeroed.
     update_decision_outputs(i, out);
-  }
+  });
 
   return 0;
 }

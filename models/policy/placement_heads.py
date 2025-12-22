@@ -7,6 +7,7 @@ Implements three policy head architectures for the 4×16×8 placement grid:
 
 All heads share the same interface and produce [B, 4, 16, 8] logit maps.
 """
+
 from __future__ import annotations
 
 from typing import Optional, Tuple
@@ -26,34 +27,25 @@ except ImportError:
 # CoordConv helper
 class CoordConv2d(nn.Module):
     """2D convolution with coordinate channels appended."""
-    
+
     def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int = 3,
-        padding: int = 1,
-        **kwargs
+        self, in_channels: int, out_channels: int, kernel_size: int = 3, padding: int = 1, **kwargs
     ):
         super().__init__()
         # +2 for (i, j) coordinate channels
         self.conv = nn.Conv2d(
-            in_channels + 2,
-            out_channels,
-            kernel_size=kernel_size,
-            padding=padding,
-            **kwargs
+            in_channels + 2, out_channels, kernel_size=kernel_size, padding=padding, **kwargs
         )
-        
+
     def forward(self, x):
         # x: [B, C, H, W]
         B, C, H, W = x.shape
         device = x.device
-        
+
         # Create coordinate grids in [0, 1]
         i_coords = torch.linspace(0, 1, H, device=device).view(1, 1, H, 1).expand(B, 1, H, W)
         j_coords = torch.linspace(0, 1, W, device=device).view(1, 1, 1, W).expand(B, 1, H, W)
-        
+
         # Concatenate
         x_with_coords = torch.cat([x, i_coords, j_coords], dim=1)
         return self.conv(x_with_coords)
@@ -61,10 +53,10 @@ class CoordConv2d(nn.Module):
 
 class DrMarioBoardEncoder(nn.Module):
     """Tiny CNN encoder for 16×8 board state with coordinate awareness.
-    
+
     Takes multi-channel board state and produces spatial features [B, 64, 16, 8].
     """
-    
+
     def __init__(self, in_ch: int = 12, *, res_blocks: int = 0):
         super().__init__()
         # Small, efficient encoder
@@ -73,13 +65,13 @@ class DrMarioBoardEncoder(nn.Module):
         self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.res_blocks = nn.Sequential(*[_ResBlock64() for _ in range(int(max(0, res_blocks)))])
         self.act = nn.ReLU(inplace=True)
-        
+
     def forward(self, x):
         """Encode board state.
-        
+
         Args:
             x: Board tensor [B, C, 16, 8] with C channels
-            
+
         Returns:
             Feature map [B, 64, 16, 8]
         """
@@ -107,11 +99,11 @@ class _ResBlock64(nn.Module):
 
 class UnorderedPillEmbedding(nn.Module):
     """Deep-Sets style embedding for unordered next-pill colors.
-    
+
     Ensures that (c1, c2) and (c2, c1) produce identical embeddings
     via symmetric sum and element-wise product pooling.
     """
-    
+
     def __init__(self, num_colors: int = 3, embedding_dim: int = 16, output_dim: int = 32):
         super().__init__()
         self.color_embed = nn.Embedding(num_colors, embedding_dim)
@@ -120,45 +112,73 @@ class UnorderedPillEmbedding(nn.Module):
             nn.Linear(embedding_dim * 2, output_dim),
             nn.ReLU(inplace=True),
         )
-        
+
     def forward(self, colors):
         """Embed unordered color pair.
-        
+
         Args:
             colors: Tensor [B, 2] with color indices in {0, 1, 2}
-            
+
         Returns:
             Embedding [B, output_dim]
         """
         # colors: [B, 2]
         c1 = self.color_embed(colors[:, 0])  # [B, D]
         c2 = self.color_embed(colors[:, 1])  # [B, D]
-        
+
         # Symmetric pooling
         p_sum = c1 + c2
         p_mul = c1 * c2
-        
+
         # Concatenate and map
         combined = torch.cat([p_sum, p_mul], dim=-1)  # [B, 2D]
         return self.mlp(combined)
 
 
+class OrderedPairEmbedding(nn.Module):
+    """Embedding for ordered capsule halves via a single lookup over ordered pairs.
+
+    For 3 colors, there are 9 ordered pairs. This representation preserves half
+    identity without any swap-invariance, and avoids `one_hot` allocations.
+    """
+
+    def __init__(self, num_colors: int = 3, output_dim: int = 32) -> None:
+        super().__init__()
+        self.num_colors = int(num_colors)
+        if self.num_colors <= 0:
+            raise ValueError(f"num_colors must be > 0, got {num_colors!r}")
+        self.emb = nn.Embedding(self.num_colors * self.num_colors, int(output_dim))
+
+    def forward(self, colors: "torch.Tensor") -> "torch.Tensor":
+        if colors.ndim != 2 or int(colors.shape[1]) != 2:
+            raise ValueError(f"Expected colors shape [B,2], got {tuple(colors.shape)!r}")
+
+        c0 = colors[:, 0].to(torch.long)
+        c1 = colors[:, 1].to(torch.long)
+        invalid = (c0 < 0) | (c0 >= self.num_colors) | (c1 < 0) | (c1 >= self.num_colors)
+        if bool(invalid.any().item()):
+            raise ValueError(f"Invalid color index for num_colors={self.num_colors}")
+
+        pair_id = c0 * self.num_colors + c1  # 0..(num_colors^2-1)
+        return self.emb(pair_id)
+
+
 class ShiftAndScoreHead(nn.Module):
     """Shift-and-Score placement head.
-    
+
     For each (o, i, j):
     - Compute features at anchor (i, j)
     - Compute features at partner cell shifted by orientation o
     - Concatenate with pill embedding
     - Score with tiny 1×1 MLP
-    
+
     All operations are parallel (no loops over actions).
     """
-    
+
     def __init__(self, P: int = 32):
         super().__init__()
         self.P = P
-        
+
         # Scorer: (64 anchor + 64 partner + P pill) → 1
         # Use 1×1 convs for efficiency
         self.scorer = nn.Sequential(
@@ -166,221 +186,221 @@ class ShiftAndScoreHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Conv2d(96, 4, kernel_size=1),  # 4 orientation channels
         )
-        
+
     def forward(self, F, p_embed, mask):
         """Compute placement logits.
-        
+
         Args:
             F: Spatial features [B, 64, 16, 8]
             p_embed: Pill embedding [B, P]
             mask: Feasibility mask [B, 4, 16, 8]
-            
+
         Returns:
             Tuple (logits_map [B, 4, 16, 8], value [B, 1])
         """
         B, C, H, W = F.shape
-        
+
         # Precompute partner-shifted features for each orientation
         # o=0: horizontal+, partner at (i, j+1)
         # o=1: vertical+, partner at (i+1, j)
         # o=2: horizontal−, partner at (i, j-1)
         # o=3: vertical−, partner at (i-1, j)
-        
+
         G = torch.zeros(B, 4, C, H, W, device=F.device, dtype=F.dtype)
-        
+
         # o=0: shift left (partner is to the right)
         G[:, 0, :, :, :-1] = F[:, :, :, 1:]
-        
+
         # o=1: shift up (partner is below)
         G[:, 1, :, :-1, :] = F[:, :, 1:, :]
-        
+
         # o=2: shift right (partner is to the left)
         G[:, 2, :, :, 1:] = F[:, :, :, :-1]
-        
+
         # o=3: shift down (partner is above)
         G[:, 3, :, 1:, :] = F[:, :, :-1, :]
-        
+
         # Broadcast anchor features and pill embedding spatially
         F4 = F.unsqueeze(1).expand(B, 4, C, H, W)  # [B, 4, 64, 16, 8]
         P_spatial = p_embed.view(B, self.P, 1, 1).expand(B, self.P, H, W)  # [B, P, 16, 8]
         P4 = P_spatial.unsqueeze(1).expand(B, 4, self.P, H, W)  # [B, 4, P, 16, 8]
-        
+
         # Concatenate anchor, partner, pill
         X = torch.cat([F4, G, P4], dim=2)  # [B, 4, 64+64+P, 16, 8]
-        
+
         # Reshape for conv: [B*4, C', 16, 8]
         X_flat = X.reshape(B * 4, 64 + 64 + self.P, H, W)
-        
+
         # Score: [B*4, 4, 16, 8] - wait, this produces 4 channels per orientation?
         # We want 1 channel per orientation. Fix:
         # Actually the scorer should output 1 channel, then we reshape.
         # Let me reconsider the architecture.
-        
+
         # Actually, let's make scorer output 1 channel:
         # Then reshape [B*4, 1, 16, 8] → [B, 4, 16, 8]
-        
+
         # ERROR in my design above. Let me fix:
         pass  # Will be corrected in replacement below
 
 
 class ShiftAndScoreHeadCorrected(nn.Module):
     """Shift-and-Score placement head (corrected version)."""
-    
+
     def __init__(self, P: int = 32):
         super().__init__()
         self.P = P
-        
+
         # Scorer: (64 anchor + 64 partner + P pill) → 1 score per location
         self.scorer = nn.Sequential(
             nn.Conv2d(64 + 64 + P, 96, kernel_size=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(96, 1, kernel_size=1),  # 1 score channel
         )
-        
+
     def forward(self, F, p_embed, mask):
         """Compute placement logits.
-        
+
         Args:
             F: Spatial features [B, 64, 16, 8]
             p_embed: Pill embedding [B, P]
             mask: Feasibility mask [B, 4, 16, 8]
-            
+
         Returns:
             logits_map [B, 4, 16, 8]
         """
         B, C, H, W = F.shape
-        
+
         # Partner shifts
         G = torch.zeros(B, 4, C, H, W, device=F.device, dtype=F.dtype)
-        G[:, 0, :, :, :-1] = F[:, :, :, 1:]   # o=0: H+
-        G[:, 1, :, :-1, :] = F[:, :, 1:, :]   # o=1: V+
-        G[:, 2, :, :, 1:] = F[:, :, :, :-1]   # o=2: H−
-        G[:, 3, :, 1:, :] = F[:, :, :-1, :]   # o=3: V−
-        
+        G[:, 0, :, :, :-1] = F[:, :, :, 1:]  # o=0: H+
+        G[:, 1, :, :-1, :] = F[:, :, 1:, :]  # o=1: V+
+        G[:, 2, :, :, 1:] = F[:, :, :, :-1]  # o=2: H−
+        G[:, 3, :, 1:, :] = F[:, :, :-1, :]  # o=3: V−
+
         # Broadcast
         F4 = F.unsqueeze(1).expand(B, 4, C, H, W)
         P_spatial = p_embed.view(B, self.P, 1, 1).expand(B, self.P, H, W)
         P4 = P_spatial.unsqueeze(1).expand(B, 4, self.P, H, W)
-        
+
         # Concatenate
         X = torch.cat([F4, G, P4], dim=2)  # [B, 4, 128+P, 16, 8]
-        
+
         # Reshape and score
         X_flat = X.reshape(B * 4, 64 + 64 + self.P, H, W)
         scores_flat = self.scorer(X_flat)  # [B*4, 1, 16, 8]
-        
+
         # Reshape back
         logits_map = scores_flat.reshape(B, 4, H, W)
-        
+
         return logits_map
 
 
 class DenseConvHead(nn.Module):
     """Dense convolutional heatmap head with FiLM conditioning."""
-    
+
     def __init__(self, P: int = 32):
         super().__init__()
         self.P = P
-        
+
         # FiLM: generate scale and shift for 64 channels from pill embedding
         self.film_scale = nn.Linear(P, 64)
         self.film_shift = nn.Linear(P, 64)
-        
+
         # Neck: 64 → 4 orientation heatmaps
         self.neck = nn.Sequential(
             nn.Conv2d(64, 64, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
             nn.Conv2d(64, 4, kernel_size=1),
         )
-        
+
     def forward(self, F, p_embed, mask):
         """Compute placement logits.
-        
+
         Args:
             F: Spatial features [B, 64, 16, 8]
             p_embed: Pill embedding [B, P]
             mask: Feasibility mask [B, 4, 16, 8]
-            
+
         Returns:
             logits_map [B, 4, 16, 8]
         """
         B, C, H, W = F.shape
-        
+
         # FiLM modulation
         scale = self.film_scale(p_embed).view(B, C, 1, 1)  # [B, 64, 1, 1]
         shift = self.film_shift(p_embed).view(B, C, 1, 1)
-        
+
         F_modulated = F * (1.0 + scale) + shift
-        
+
         # Generate heatmaps
         logits_map = self.neck(F_modulated)  # [B, 4, 16, 8]
-        
+
         return logits_map
 
 
 class FactorizedHead(nn.Module):
     """Factorized placement head: anchor→orientation.
-    
+
     First samples anchor cell (i, j), then orientation o | (i, j).
     """
-    
+
     def __init__(self, P: int = 32):
         super().__init__()
         self.P = P
-        
+
         # Anchor heatmap: 64 → 1
         self.anchor_head = nn.Conv2d(64, 1, kernel_size=1)
-        
+
         # Orientation scorer: (64 anchor + GAP(64) + P pill) → 4
         self.orient_mlp = nn.Sequential(
             nn.Linear(64 + 64 + P, 128),
             nn.ReLU(inplace=True),
             nn.Linear(128, 4),
         )
-        
+
     def forward(self, F, p_embed, mask):
         """Compute placement logits (factorized).
-        
+
         Note: For training, we still produce a joint [B, 4, 16, 8] logit map
         by combining anchor and orientation logits. At inference, this can be
         sampled hierarchically.
-        
+
         Args:
             F: Spatial features [B, 64, 16, 8]
             p_embed: Pill embedding [B, P]
             mask: Feasibility mask [B, 4, 16, 8]
-            
+
         Returns:
             logits_map [B, 4, 16, 8]
         """
         B, C, H, W = F.shape
-        
+
         # Anchor logits: [B, 1, 16, 8]
         anchor_logits = self.anchor_head(F)
-        
+
         # Global context
         F_gap = F.mean(dim=(2, 3))  # [B, 64]
-        
+
         # For each spatial location, compute orientation scores
         # Reshape F: [B, 64, 16, 8] → [B, 16, 8, 64]
         F_spatial = F.permute(0, 2, 3, 1)  # [B, 16, 8, 64]
-        
+
         # Concatenate per-location features with global and pill
         # Broadcast F_gap and p_embed
         F_gap_bc = F_gap.unsqueeze(1).unsqueeze(1).expand(B, H, W, 64)  # [B, 16, 8, 64]
         p_embed_bc = p_embed.unsqueeze(1).unsqueeze(1).expand(B, H, W, self.P)
-        
+
         features_concat = torch.cat([F_spatial, F_gap_bc, p_embed_bc], dim=-1)  # [B, 16, 8, 128+P]
-        
+
         # Reshape and apply MLP
         features_flat = features_concat.reshape(B * H * W, 64 + 64 + self.P)
         orient_logits_flat = self.orient_mlp(features_flat)  # [B*16*8, 4]
         orient_logits = orient_logits_flat.reshape(B, H, W, 4).permute(0, 3, 1, 2)  # [B, 4, 16, 8]
-        
+
         # Combine: broadcast anchor logits across orientations and add
         anchor_bc = anchor_logits.expand(B, 4, H, W)
         logits_map = anchor_bc + orient_logits
-        
+
         return logits_map
 
 
@@ -390,15 +410,16 @@ ShiftAndScoreHead = ShiftAndScoreHeadCorrected
 
 class PlacementPolicyNet(nn.Module):
     """Complete placement policy network.
-    
+
     Combines encoder, pill embedding, policy head, and value head.
     """
-    
+
     def __init__(
         self,
         in_channels: int = 12,
         head_type: str = "dense",
         pill_embed_dim: int = 32,
+        pill_embed_type: str = "unordered",
         encoder_blocks: int = 0,
         num_colors: int = 3,
         aux_dim: int = 0,
@@ -406,16 +427,29 @@ class PlacementPolicyNet(nn.Module):
         super().__init__()
 
         self.encoder = DrMarioBoardEncoder(in_ch=in_channels, res_blocks=int(encoder_blocks))
-        self.pill_embedding = UnorderedPillEmbedding(
-            num_colors=num_colors,
-            embedding_dim=16,
-            output_dim=pill_embed_dim,
-        )
-        self.preview_embedding = UnorderedPillEmbedding(
-            num_colors=num_colors,
-            embedding_dim=16,
-            output_dim=pill_embed_dim,
-        )
+        pill_embed_type_norm = str(pill_embed_type or "").strip().lower()
+        if pill_embed_type_norm in {"unordered", "deepsets", "unordered_embed"}:
+            self.pill_embedding = UnorderedPillEmbedding(
+                num_colors=num_colors,
+                embedding_dim=16,
+                output_dim=pill_embed_dim,
+            )
+            self.preview_embedding = UnorderedPillEmbedding(
+                num_colors=num_colors,
+                embedding_dim=16,
+                output_dim=pill_embed_dim,
+            )
+        elif pill_embed_type_norm in {"ordered_onehot", "ordered", "onehot", "ordered_pair"}:
+            self.pill_embedding = OrderedPairEmbedding(
+                num_colors=num_colors,
+                output_dim=pill_embed_dim,
+            )
+            self.preview_embedding = OrderedPairEmbedding(
+                num_colors=num_colors,
+                output_dim=pill_embed_dim,
+            )
+        else:
+            raise ValueError(f"Unknown pill_embed_type: {pill_embed_type!r}")
         self.pill_fusion = nn.Sequential(
             nn.Linear(pill_embed_dim * 2, pill_embed_dim),
             nn.ReLU(inplace=True),
@@ -438,7 +472,7 @@ class PlacementPolicyNet(nn.Module):
         else:
             self.aux_encoder = None
             self.cond_fusion = None
-        
+
         # Select head
         head_type = head_type.lower()
         if head_type == "shift_score":
@@ -449,7 +483,7 @@ class PlacementPolicyNet(nn.Module):
             self.head = FactorizedHead(P=pill_embed_dim)
         else:
             raise ValueError(f"Unknown head type: {head_type}")
-            
+
         # Value head: global average pool → MLP (optionally conditioned on aux).
         value_in = 64 + (pill_embed_dim if self.aux_dim > 0 else 0)
         self.value_head = nn.Sequential(
@@ -457,23 +491,23 @@ class PlacementPolicyNet(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(128, 1),
         )
-        
+
     def forward(self, board, pill_colors, preview_pill_colors, mask, aux=None):
         """Forward pass.
-        
+
         Args:
             board: Board state [B, C, 16, 8]
             pill_colors: Current pill color indices [B, 2]
             preview_pill_colors: Next (preview) pill color indices [B, 2]
             mask: Feasibility mask [B, 4, 16, 8]
             aux: Optional aux vector [B, aux_dim]
-            
+
         Returns:
             Tuple (logits_map [B, 4, 16, 8], value [B, 1])
         """
         # Encode board
         F = self.encoder(board)  # [B, 64, 16, 8]
-        
+
         # Embed current + preview pills and fuse to a single conditioning vector.
         p_curr = self.pill_embedding(pill_colors)  # [B, P]
         p_prev = self.preview_embedding(preview_pill_colors)  # [B, P]
@@ -490,10 +524,10 @@ class PlacementPolicyNet(nn.Module):
                 )
             aux_embed = self.aux_encoder(aux_t)  # type: ignore[misc]
             cond = self.cond_fusion(torch.cat([p_embed, aux_embed], dim=-1))  # type: ignore[misc]
-        
+
         # Generate placement logits
         logits_map = self.head(F, cond, mask)  # [B, 4, 16, 8]
-        
+
         # Value estimate
         F_gap = F.mean(dim=(2, 3))  # [B, 64]
         if self.aux_dim > 0:
@@ -501,13 +535,14 @@ class PlacementPolicyNet(nn.Module):
         else:
             value_in = F_gap
         value = self.value_head(value_in)  # [B, 1]
-        
+
         return logits_map, value
 
 
 __all__ = [
     "DrMarioBoardEncoder",
     "UnorderedPillEmbedding",
+    "OrderedPairEmbedding",
     "ShiftAndScoreHead",
     "DenseConvHead",
     "FactorizedHead",

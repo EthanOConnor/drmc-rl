@@ -26,7 +26,7 @@ Key terms in `r_env` (see `envs/retro/drmario_env.py`):
   `pill_place_base` with quadratic growth `pill_place_growth`.
   Optionally adjusted by a “high placement” heuristic:
   `punish_high_placements`, `placement_height_threshold`, `placement_height_penalty_multiplier`.
-- **Virus clear reward**: `virus_clear_bonus * delta_v` where `delta_v` is viruses cleared this frame.
+- **Virus clear reward**: `(virus_clear_bonus / viruses_initial) * delta_v` so clearing all starting viruses yields `virus_clear_bonus` (0 if `viruses_initial` is 0).
 - **Non-virus clear reward**: `non_virus_clear_bonus * tiles_cleared_non_virus`, counted canonically from the
   bottle buffer as occupied→non-occupied tile transitions (state-mode only).
 - **Adjacency shaping** (optional): `adjacency_pair_bonus` / `adjacency_triplet_bonus`.

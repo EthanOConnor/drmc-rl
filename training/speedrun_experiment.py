@@ -13,6 +13,7 @@ real learner; the scaffolding (monitor, viewer, reward logging) remains useful.
 from __future__ import annotations
 
 import argparse
+import gzip
 import math
 import multiprocessing as mp
 import numbers
@@ -3538,7 +3539,10 @@ def main() -> None:
         "--reward-config", type=str, default=None, help="Path to reward config override (JSON)."
     )
     ap.add_argument(
-        "--checkpoint-path", type=str, default=None, help="File to save checkpoints between runs."
+        "--checkpoint-path",
+        type=str,
+        default=None,
+        help="File to save checkpoints between runs (supports .gz).",
     )
     ap.add_argument(
         "--checkpoint-interval",
@@ -4268,8 +4272,13 @@ def main() -> None:
             return
         try:
             target_path.parent.mkdir(parents=True, exist_ok=True)
-            with target_path.open("wb") as f:
-                pickle.dump(build_checkpoint_payload(next_run), f)
+            payload = build_checkpoint_payload(next_run)
+            if target_path.suffix == ".gz":
+                with gzip.open(target_path, "wb", compresslevel=9) as f:
+                    pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+            else:
+                with target_path.open("wb") as f:
+                    pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:
             print(f"Failed to save checkpoint: {exc}", file=sys.stderr)
 
@@ -4278,6 +4287,9 @@ def main() -> None:
         if target_path is None or not target_path.is_file():
             return None
         try:
+            if target_path.suffix == ".gz":
+                with gzip.open(target_path, "rb") as f:
+                    return pickle.load(f)
             with target_path.open("rb") as f:
                 return pickle.load(f)
         except Exception as exc:

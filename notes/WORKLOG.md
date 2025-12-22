@@ -43,10 +43,32 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 - Fixed a Gymnasium `AsyncVectorEnv` crash caused by returning `None` for sometimes-numeric info keys; unset optional fields are now omitted (`envs/retro/placement_env.py`).
 - Added per-run `drmario_engine` pidfile tracking and best-effort cleanup on shutdown to reduce orphaned engine processes after crashes/forced worker termination (`envs/backends/cpp_engine_backend.py`, `training/run.py`).
+- Normalized virus-clear rewards so the total per-episode virus-clear reward is constant across levels; updated reward config + docs.
+- Updated `tools/plot_success_by_level.py` to default to confidence-lower-bound plots and skip the first 10 episodes; added a metric selector for alternate plots.
+- Freed thread-local reachability BFS buffers for cpp-pool worker threads to prevent per-step memory leaks during parallel planning (`reach_native/drm_reach_full.c`, `game_engine/DrMarioPool.cpp`).
+- Added SMDP-PPO checkpoint warm-start support via `train.init_checkpoint` (with optional optimizer/step restore) for extending runs with new curricula (`training/algo/ppo_smdp.py`).
+- Fixed SMDP-PPO resume throughput stats to use steps since resume, and hardened checkpoint IO (atomic saves + clearer load errors) to avoid corrupted resumes (`training/algo/ppo_smdp.py`).
 - Implemented an in-process batched C++ pool backend (`game_engine/libdrmario_pool`) that owns N engine instances, integrates the native reachability planner, and emits decision-time masks/obs plus step-time events/counters.
 - Added a `cpp-pool` training backend (ctypes wrapper + lightweight vector env) and wired it into the real env factory (`envs/backends/drmario_pool.py`, `training/envs/drmario_pool_vec.py`, `training/envs/dr_mario_vec.py`).
 - Added `python -m tools.build_drmario_pool` and a pytest smoke test for the pool backend (`tools/build_drmario_pool.py`, `tests/test_cpp_pool_smoke.py`).
 - Updated the SMDP-PPO config to default to `backend: cpp-pool` (`training/configs/smdp_ppo.yaml`).
+- Parallelized cpp-pool planner/step work across envs, made the native reachability helper thread-local, and added `DRMARIO_POOL_WORKERS`/`-pthread` support for tuning worker count (`game_engine/DrMarioPool.cpp`, `reach_native/drm_reach_full.c`, `game_engine/Makefile`).
+- Added a candidate-scoring placement policy (packed feasible actions + explicit cost-to-lock feature) and wired it into SMDP-PPO (`models/policy/candidate_policy.py`, `models/policy/candidate_packing.py`, `training/algo/ppo_smdp.py`).
+- Added a candidate-policy config + tests (`training/configs/smdp_ppo_candidate.yaml`, `tests/test_candidate_policy.py`).
+- Added a cpp-engine integration smoke test for the candidate policy (skips if `game_engine/drmario_engine` is unavailable) (`tests/test_candidate_policy_cpp_engine_smoke.py`).
+- Reconciled candidate-policy implementation with the existing docs/config/tests (restored missing modules + ensured interfaces match SMDP-PPO candidate mode); `pytest -q` passes.
+- Suppressed Ctrl+C shutdown tracebacks in debug runs by catching `KeyboardInterrupt` during session/env teardown (`training/run.py`, `training/envs/dr_mario_vec.py`).
+- Strengthened candidate-policy correctness + signal: deterministic packing tie-breaks, PPO update asserts repacked candidates contain the chosen macro action, and candidate-local patches now include color+virus planes (not just occupancy) (`models/policy/candidate_packing.py`, `training/algo/ppo_smdp.py`, `models/policy/candidate_policy.py`).
+- Improved candidate-policy throughput: precomputed patch offsets to avoid per-forward allocations, prepacked candidates once per PPO update (no per-minibatch repacking), sanitized NaN costs, lowered default candidate `Kmax` to 128, and added targeted tests (`models/policy/candidate_policy.py`, `models/policy/candidate_packing.py`, `training/algo/ppo_smdp.py`, `training/configs/smdp_ppo_candidate.yaml`, `tests/test_candidate_policy.py`).
+- Added a plotting utility to select a run log and plot `curriculum/rate_current` vs steps per curriculum level, breaking lines across gaps when a level is not active (`tools/plot_success_by_level.py`).
+- Strengthened candidate scoring with spatial trunk context: gather CNN feature-map features (or column-token features) at the candidate’s two landing cells/columns and feed them to the per-candidate MLP (`models/policy/candidate_policy.py`, `tests/test_candidate_policy.py`).
+- Pruned `runs/` to reclaim disk space (kept newest 3 runs under `runs/smdp_ppo_candidate/` and removed older run artifacts under `runs/smdp_ppo/` + `runs/ppo_example/`).
+- Tweaked `ln_hop_back` curriculum defaults: skip immediate full hop-backs when a new probe stage is already above the k=1 pass target, hop back to the 3rd-highest mastered hop-back level (not always `start_level`), and add a configurable bailout (fraction of run `total_steps`) for stuck probe stages (`training/envs/curriculum.py`, `training/envs/dr_mario_vec.py`, `tests/test_curriculum_scheduler.py`).
+
+## 2025-12-22 – Coding Agent (Codex CLI)
+
+- Added line-by-line inline documentation to `training/configs/smdp_ppo_candidate.yaml`, cross-referencing the current SMDP-PPO + cpp-pool code paths and flagging unused/ignored knobs in the default experimental setup.
+- Logged a new scrutiny item about unordered pill embeddings vs directed macro-action semantics (`notes/SCRUTINY.md`).
 
 ## 2025-11-22 – Coding Agent
 
@@ -335,7 +357,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 ## 2025-12-19 – Codex CLI – Pose Mismatch Logging
 
-- Added persistent pose mismatch counters (`placements/pose_mismatch_*`) and JSONL logging for rare planner/executor divergences, dumping snapshot + board + feasibility + plan + observed lock pose into `data/pose_mismatches.jsonl` (override/disable via `DRMARIO_POSE_MISMATCH_LOG`). Optional per-frame trace capture is gated by `DRMARIO_POSE_MISMATCH_TRACE` (`envs/retro/placement_env.py`, `training/ui/runner_debug_tui.py`).
+- Added persistent pose mismatch counters (`placements/pose_mismatch_*`) and JSONL logging for rare planner/executor divergences, dumping snapshot + board + feasibility + plan + observed lock pose into `data/pose_mismatches.jsonl(.gz)` (override/disable via `DRMARIO_POSE_MISMATCH_LOG`). Optional per-frame trace capture is gated by `DRMARIO_POSE_MISMATCH_TRACE` (`envs/retro/placement_env.py`, `training/ui/runner_debug_tui.py`).
 
 ## 2025-12-19 – Codex CLI – Rotation Edge Semantics + Reward Config Safety
 
@@ -435,3 +457,15 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Prevented rare cpp-engine batched-run timeouts from crashing `AsyncVectorEnv`: placement fast-path now truncates the episode, records `placements/backend_error*`, and forces a backend restart on run-request failures (`envs/retro/placement_env.py`).
 - Made `CppEngineBackend._run_request` use a progress-based watchdog + a more forgiving total timeout (with better diagnostics) to reduce false timeouts under heavy multi-env load (`envs/backends/cpp_engine_backend.py`).
 - Added regression tests ensuring cpp-engine fast-path timeouts truncate instead of raising (`tests/test_cpp_engine_timeout_recovery.py`).
+
+## 2025-12-22 – Coding Agent (Codex CLI) – Ordered Pill Pair Embedding
+
+- Added `pill_embed_type` (`unordered` vs `ordered_onehot`/`ordered_pair`) and implemented an ordered 9-way pair embedding to preserve half identity for mixed-color pills in directed macro action spaces (`models/policy/placement_heads.py`, `models/policy/candidate_policy.py`, `training/algo/ppo_smdp.py`).
+- Updated the candidate-policy training config to enable the ordered embedding (`training/configs/smdp_ppo_candidate.yaml`).
+- Added unit tests for order sensitivity + selection wiring (`tests/test_placement_policy.py`, `tests/test_candidate_policy.py`).
+
+## 2025-12-22 – Coding Agent (Codex CLI) – Compressed Artifacts + Checkpoint Scanner
+
+- Defaulted run artifacts to gzip-compressed, streamable files: `metrics.jsonl.gz`, `env.txt.gz`, and `*.pt.gz` checkpoints; updated readers/tools to accept `.gz` (e.g., `tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `training/utils/reproducibility.py`, `training/run.py`, `tests/test_adapters.py`).
+- Added gzip-aware logging for pose mismatch and ghost-parity JSONL outputs and updated docs to match the new defaults (`envs/retro/placement_env.py`, `tools/ghost_parity.py`, `QUICK_START_PLACEMENT_POLICY.md`).
+- Added a checkpoint validation tool to scan for corrupt checkpoint files and optionally delete them (`tools/check_checkpoints.py`).

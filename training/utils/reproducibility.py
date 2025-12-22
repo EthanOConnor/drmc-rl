@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 import os
 import random
 import subprocess
@@ -87,7 +88,11 @@ def write_environment_file(path: Path) -> None:
         return "unknown"
 
     dists = sorted(distributions(), key=lambda dist: _dist_name(dist).lower())
-    with path.open("w", encoding="utf-8") as fp:
+    if path.suffix == ".gz":
+        fp_ctx = gzip.open(path, "wt", encoding="utf-8", compresslevel=9)
+    else:
+        fp_ctx = path.open("w", encoding="utf-8")
+    with fp_ctx as fp:
         for dist in dists:
             name = _dist_name(dist)
             try:

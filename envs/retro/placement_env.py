@@ -15,6 +15,7 @@ enters `nextAction_pillFalling` (i.e., the player can control the new pill).
 
 from __future__ import annotations
 
+import gzip
 import json
 import math
 import os
@@ -472,7 +473,7 @@ class DrMarioPlacementEnv(gym.Wrapper):
         raw = os.environ.get("DRMARIO_POSE_MISMATCH_LOG")
         if raw is None:
             # Default to a git-ignored location for diagnostics.
-            return Path("data") / "pose_mismatches.jsonl"
+            return Path("data") / "pose_mismatches.jsonl.gz"
         normalized = str(raw).strip()
         if normalized.lower() in {"", "0", "false", "no", "off", "none"}:
             return None
@@ -497,7 +498,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
     def _append_jsonl(self, path: Path, payload: Dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
+        if path.suffix == ".gz":
+            fp_ctx = gzip.open(path, "at", encoding="utf-8", compresslevel=9)
+        else:
+            fp_ctx = path.open("a", encoding="utf-8")
+        with fp_ctx as f:
             json.dump(payload, f)
             f.write("\n")
 
@@ -1676,7 +1681,11 @@ class DrMarioPlacementEnv(gym.Wrapper):
 
             r_env = 0.0
             if reward_cfg is not None:
-                virus_clear_reward = float(getattr(reward_cfg, "virus_clear_bonus", 0.0)) * float(delta_v)
+                virus_bonus = float(getattr(reward_cfg, "virus_clear_bonus", 0.0))
+                if delta_v > 0 and virus_bonus != 0.0:
+                    v0 = int(getattr(base, "_viruses_initial", 0))
+                    if v0 > 0:
+                        virus_clear_reward = virus_bonus * float(delta_v) / float(v0)
                 non_virus_bonus = float(getattr(reward_cfg, "non_virus_clear_bonus", 0.0)) * float(
                     max(0, int(cleared_nonvirus))
                 )

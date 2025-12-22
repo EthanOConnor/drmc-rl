@@ -210,7 +210,7 @@ and it eliminates cumulative drift.
 ### Decision: Unique per-run log subdirectory (default)
 
 **Context:** Training runs (notably `ppo_smdp`) defaulted to a constant `logdir`
-like `runs/smdp_ppo`, causing checkpoints and `metrics.jsonl` to collide across
+like `runs/smdp_ppo`, causing checkpoints and `metrics.jsonl(.gz)` to collide across
 invocations and making it easy to overwrite/append runs unintentionally.
 
 **Decision:** `python -m training.run` now creates a unique `run_id` and writes
@@ -221,7 +221,7 @@ The `run_id` and resolved `logdir` are recorded in run metadata.
 grouped and attributable.
 
 **Trade-offs:** Existing scripts that assume a fixed path (e.g.
-`runs/smdp_ppo/metrics.jsonl`) must select a run directory; mitigated by the
+`runs/smdp_ppo/metrics.jsonl(.gz)`) must select a run directory; mitigated by the
 `--logdir` override and tooling that can pick the newest run automatically.
 
 ### Key parity facts captured in code
@@ -595,7 +595,7 @@ the decision snapshot, board/bottle bytes, feasibility masks/costs, the chosen
 macro action + controller script, and the observed `lock_pose`/`lock_reason`.
 
 **Defaults & controls:**
-- Default log path: `data/pose_mismatches.jsonl` (git-ignored)
+- Default log path: `data/pose_mismatches.jsonl.gz` (git-ignored)
 - Disable/override via `DRMARIO_POSE_MISMATCH_LOG` (`0/off/false/none` disables)
 - Optional per-frame trace capture via `DRMARIO_POSE_MISMATCH_TRACE=1`
 
@@ -887,6 +887,26 @@ the rotation can be recovered from the preview mask.
 
 ---
 
+## 2025-12-21 – `ln_hop_back` Fast-Skip + Shallow Hop-Back + Bailout
+
+### Decision: Skip full hop-backs when the probe is already above the pass target
+
+- **Decision:** When a probe stage (new frontier) passes and the same stage’s stats already meet the k=1 “pass target” (`1 - exp(-m)`), skip the rest of that frontier’s hop-back chain and jump directly to the next frontier probe.
+- **Why:** Avoid immediately re-running the early ladder when the current policy is already comfortably above the minimum pass bar on the new level (common when a single PPO update boosts multiple stages).
+- **Trade-offs:** Skipping reduces rehearsal coverage for intermediate levels in that frontier’s hop-back block; if this causes regressions/forgetting, reduce skipping by tightening targets (`pass_ramp_exponent_multiplier`), raising `probe_threshold`, or disabling via a code tweak.
+
+### Decision: Start hop-backs at the 3rd-highest mastered hop-back level
+
+- **Decision:** When entering a hop-back chain, jump to the hop-back stage for the 3rd-highest **mastered** level (where “mastered” means having passed a hop-back stage, not just a probe), rather than always returning to `start_level`.
+- **Why:** Cuts redundant time spent replaying very early stages once they are already stable, while still keeping some backward rehearsal.
+- **Trade-offs:** The “3rd-highest” heuristic is blunt; if it’s too shallow/deep, tune `ln_hop_back_hop_back_mastered_rank`.
+
+### Decision: Bail out of stuck probe stages using a fraction of the run budget
+
+- **Decision:** If a probe stage hasn’t passed after `ln_hop_back_bailout_fraction` of the run’s total step/frame budget, jump into the hop-back chain at the 3rd-highest mastered level.
+- **Why:** Prevents spending a large chunk of the run stalled on a new frontier when a remediation loop (practice easier mastered tasks, then work forward again) is more productive.
+- **Implementation note:** The env factory passes `cfg.train.total_steps` into the curriculum as `run_total_steps` so the curriculum can compute the bailout threshold.
+
 ## 2025-12-20 – Time-Based Task Budgets (Scaffolding)
 
 ### Decision: Enforce frame/spawn budgets in the placement wrapper
@@ -1032,3 +1052,57 @@ the rotation can be recovered from the preview mask.
 - **Backend watchdog:** `CppEngineBackend._run_request` uses a **no-progress watchdog** (frame counter not advancing) plus a more forgiving total timeout, and includes request/ack/frame diagnostics in the raised error.
 - **Why:** Training runs must be robust to rare backend stalls; truncation + restart preserves the run and keeps the failure visible via `info` keys and `_backend_last_error`.
 - **Trade-offs:** Truncated episodes reduce sample efficiency and can mask an underlying engine bug; mitigation is to log/monitor `placements/backend_error_phase` and restart counts, and investigate if the rate becomes non-trivial.
+
+---
+
+## 2025-12-21 – cpp-pool Planner Parallelism
+
+- **Decision:** Parallelize cpp-pool reset/step loops across envs and make the native reachability BFS workspace thread-local to allow concurrent planner calls.
+- **Why:** Planner BFS dominates cpp-pool time at decision points; inference is already batched once per spawn, so throughput scales with per-env parallelism.
+- **Trade-offs:** Thread-local BFS workspaces increase memory per worker. Provide `DRMARIO_POOL_WORKERS` to cap concurrency and default to hardware threads clamped by env count.
+
+---
+
+## 2025-12-21 – Candidate-Scoring Placement Policy (Packed Feasible Actions)
+
+- **Decision:** Add an alternative placement policy that scores a **packed list of planner-feasible macro actions** instead of producing a dense 4×16×8 (512-way) logit map.
+- **Interface:** At each decision point, pack the env’s `placements/feasible_mask` + frames-to-lock (`placements/cost_to_lock` for `cpp-pool`, `placements/costs` for emulator wrapper) into fixed-size arrays:
+  - `cand_actions[Kmax]` (flat macro action indices)
+  - `cand_mask[Kmax]` (valid slots)
+  - `cand_cost[Kmax]` (explicit cost-to-lock feature)
+- **Packing order:** Sort candidates by `(cost_to_lock, macro_action_id)` so equal-cost ties are deterministic across runs.
+- **Model:** `CandidatePlacementPolicyNet` = global board+pill embedding `g` plus per-candidate embedding `e_i` (pose + local patches + cost), with logits via dot-product `g·e_i`. Includes two board encoders:
+  - `cnn` (CoordConv-style conv stem + residual blocks → feature map; global pool for `g` and gather per-cell trunk features per candidate)
+  - `col_transformer` (8 column tokens + tiny Transformer; global pool for `g` and gather per-column trunk features per candidate)
+- **Local context:** Candidate features include (a) gathered trunk features at the two landing cells/columns and (b) raw local patches from bottle bitplanes (colors + virus) around both landing cells (kernel `k×k`), avoiding feasibility-mask plane leakage.
+- **Perf notes:** Patch offsets are precomputed as buffers (avoid per-forward allocations), and PPO updates prepack candidate arrays once per update batch (avoid per-minibatch repacking).
+- **Why:** Avoids allocating parameters to a 512-output head that is mostly invalid each step, and makes the reachability cost a first-class feature so the policy can explicitly trade off board outcome vs execution time (speedrunning).
+- **Trade-offs:** Requires storing per-step `cost_to_lock` in the rollout buffer for PPO updates; candidate truncation (if `Kmax` < feasible count) can bias the action set, so keep `candidate/*` truncation telemetry on and bump `Kmax` if it shows up. PPO update asserts that the chosen macro action is present in the repacked candidate list (crash-loudly on mismatch).
+
+---
+
+## 2025-12-21 – Virus-Clear Reward Normalization
+
+- **Decision:** Treat `virus_clear_bonus` as the total per-episode reward for clearing all starting viruses; each virus clear earns `virus_clear_bonus / viruses_initial` (0 if `viruses_initial` is 0).
+- **Rationale:** Keep reward scale consistent across levels with 1-84 viruses so training dynamics are less sensitive to level-specific virus counts.
+- **Trade-offs:** Per-virus reward is larger on low-virus levels; zero-virus curriculum stages receive no virus-clear reward signal.
+
+---
+
+## 2025-12-22 – Pill Conditioning: Ordered vs Unordered Color Embeddings
+
+- **Decision:** Make pill conditioning embedding **configurable** via `smdp_ppo.pill_embed_type` with options:
+  - `unordered` (default): swap-invariant (DeepSets-style) for pill colors.
+  - `ordered_onehot` / `ordered_pair`: preserves half identity by embedding the 9 ordered color pairs (for 3 colors) for each pill (current + preview).
+- **Why:** The macro action space is directed/anchored to a specific half/cell; swap-invariant pill embeddings can erase the distinction between `(a,b)` and `(b,a)` on mixed-color pills, causing ~50% plateaus on tasks where choosing the correct half-to-anchor is pivotal (e.g., some 1-virus clears).
+- **Trade-offs:** Ordered conditioning increases the effective input entropy (distinguishes 6 mixed pairs instead of 3 unordered pairs), which can slightly increase sample needs but avoids representational bottlenecks.
+- **Notes:** Rotation is intentionally not included in the conditioning yet; if spawn rotation varies by backend/ROM, add a small `rot_onehot[4]` later behind a versioned aux/conditioning spec.
+
+---
+
+## 2025-12-22 – Compressed Run Artifacts (gzip)
+
+- **Decision:** Default run artifacts use gzip-compressed, streamable files: `metrics.jsonl.gz`, `env.txt.gz`, and checkpoints as `*.pt.gz`.
+- **Checkpoint format note:** Gzipped checkpoints use PyTorch’s legacy (non-zip) serialization so they remain stream-friendly and avoid zipfile seek requirements.
+- **Why:** Significantly reduces disk usage while keeping reads stream-friendly and dependency-free (gzip is in the stdlib).
+- **Trade-offs:** Tooling must accept both compressed/uncompressed extensions, and checkpoint/log scans pay a small CPU decompression cost.

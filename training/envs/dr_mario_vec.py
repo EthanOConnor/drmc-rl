@@ -201,7 +201,23 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
         if enabled and hasattr(env, "set_attr"):
             from training.envs.curriculum import CurriculumConfig, CurriculumVecEnv
 
-            env = CurriculumVecEnv(env, CurriculumConfig.from_cfg(curriculum_cfg))
+            cur_cfg = CurriculumConfig.from_cfg(curriculum_cfg)
+            # Best-effort: pass the run's total step/frame budget to the curriculum
+            # so ln_hop_back can derive bailout thresholds.
+            try:
+                total_steps = None
+                train_cfg = getattr(cfg, "train", None)
+                if train_cfg is not None:
+                    total_steps = getattr(train_cfg, "total_steps", None)
+                if total_steps is None and isinstance(cfg, dict):
+                    train_dict = cfg.get("train")
+                    if isinstance(train_dict, dict):
+                        total_steps = train_dict.get("total_steps")
+                if total_steps is not None:
+                    cur_cfg.run_total_steps = int(total_steps)
+            except Exception:
+                pass
+            env = CurriculumVecEnv(env, cur_cfg)
 
     return env
 
@@ -453,6 +469,10 @@ class _InfoListWrapper:
                 try:
                     env.close(terminate=True)
                     return
+                except KeyboardInterrupt:
+                    # User requested abort during shutdown. Suppress the traceback
+                    # and allow the parent process cleanup hooks to run.
+                    return
                 except TypeError:
                     env.close()
                     return
@@ -461,6 +481,8 @@ class _InfoListWrapper:
 
         try:
             env.close()
+        except KeyboardInterrupt:
+            return
         except TypeError:
             try:
                 env.close()

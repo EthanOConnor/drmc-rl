@@ -201,11 +201,29 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ---
 
+## 2025-12-21 – Reward Normalization
+
+**R27. Virus-clear reward depends on initial virus count**
+- **Concern**: Per-virus reward scales by `viruses_initial`; if the initial count is missing or zero (e.g., match-only curriculum), the signal changes or is suppressed.
+- **Risk**: Inconsistent shaping across backends/episodes or division-by-zero if the guard is removed later.
+- **Mitigation**: Guard for `viruses_initial <= 0` (reward 0), rely on reset-time capture, and keep `viruses_initial` in info for debugging.
+ 
+---
+
+## 2025-12-21 – cpp-pool Parallel Planner
+
+**R27. Thread-local BFS workspace memory scaling**
+- **Concern**: The native reachability helper now uses per-thread BFS workspaces to enable concurrent planner calls.
+- **Risk**: Memory usage scales with `DRMARIO_POOL_WORKERS`; large worker counts on high `speed_threshold` settings can add hundreds of MB of RSS.
+- **Mitigation**: Clamp default workers to hardware threads and env count; expose `DRMARIO_POOL_WORKERS` for manual caps; consider pooling/reuse strategies if memory pressure shows up in profiling.
+
+---
+
 ## 2025-12-20 – Runner Logdir + Curriculum TUI
 
 **R27. Default logdir now creates per-run subdirectories**
 - **Concern**: `python -m training.run` now writes to `cfg.logdir/<run_id>` by default.
-- **Risk**: Tools/scripts that assume a fixed path (e.g. `runs/smdp_ppo/metrics.jsonl`) will stop finding metrics/checkpoints automatically.
+- **Risk**: Tools/scripts that assume a fixed path (e.g. `runs/smdp_ppo/metrics.jsonl(.gz)`) will stop finding metrics/checkpoints automatically.
 - **Mitigation**: Use `--logdir` to opt out; keep helper tools flexible (accept a run directory and pick the newest run when appropriate).
 
 **R28. Event payload now includes nested curriculum snapshots**
@@ -387,12 +405,17 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 **R41. `AsyncVectorEnv.close()` can hang if a worker dies mid-message**
 - **Concern**: Gymnasium `AsyncVectorEnv` may enter a state where `_poll_pipe_envs()` reports ready but `pipe.recv()` blocks (e.g., partial IPC payload after a crash).
 - **Risk**: Training/debug sessions can become hard to stop; Ctrl+C can produce confusing shutdown traces and leave orphaned processes.
-- **Mitigation**: On close, force-terminate `AsyncVectorEnv` when it has a pending call, skipping `step_wait` and prioritizing teardown over graceful completion (`training/envs/dr_mario_vec.py`).
+- **Mitigation**: On close, force-terminate `AsyncVectorEnv` when it has a pending call, skipping `step_wait` and prioritizing teardown over graceful completion (`training/envs/dr_mario_vec.py`); suppress Ctrl+C tracebacks during teardown in the runner (`training/run.py`).
 
 **R42. `ln_hop_back` pass thresholds can still drift toward “perfect or stall”**
 - **Concern**: The hop-back thresholds use `1 - exp(-m·k)` (with `m=pass_ramp_exponent_multiplier`) and can still approach 1 as k increases.
 - **Risk**: If `m` is too large (or k too high), later hop-back stages can become indistinguishable from “must be perfect” in finite windows and stall progress on noisy tasks.
 - **Mitigation**: Cap k (`ln_hop_back_max_k`), lower `pass_ramp_exponent_multiplier`, and/or lower `confidence_sigmas`. Monitor `curriculum/stage_index`, `curriculum/success_threshold`, and `curriculum/confidence_lower_bound` in the TUI.
+
+**R54. `ln_hop_back` fast-skip + shallow hop-backs may under-rehearse early stages**
+- **Concern**: Skipping hop-back blocks when a probe is already above the k=1 pass target, plus starting hop-backs from the Nth-highest mastered level, reduces time spent rehearsing the earliest levels.
+- **Risk**: If the “already above pass target” signal is noisy (or the environment is non-stationary), this can increase forgetting/instability and make later stages appear brittle.
+- **Mitigation**: Tune `ln_hop_back_hop_back_mastered_rank` (deeper hop-backs) and/or lower/disable `ln_hop_back_bailout_fraction`/skip behavior; monitor curriculum success traces per level (e.g., `tools/report_curriculum.py`) and consider periodic fixed-seed evals as a certification gate.
 
 **R43. Time/spawn task budgets depend on wrapper counters (τ + spawn consumption)**
 - **Concern**: Time-based curricula enforce budgets via `DrMarioPlacementEnv` counters (`task/frames_used`, `task/spawns_used`) rather than ROM-native timers.
@@ -468,3 +491,34 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: A `CppEngineBackend` instance can occasionally fail to ack a batched run request (scheduler starvation, IPC/shm edge cases, or a true engine stall).
 - **Risk**: Previously this raised `TimeoutError` inside an `AsyncVectorEnv` worker and crashed training; even with recovery, frequent truncations would reduce sample efficiency and could hide an underlying engine bug.
 - **Mitigation**: Placement fast-path catches backend run exceptions, truncates the episode, records `placements/backend_error_phase`, and forces a backend restart; `_run_request` uses a progress-based watchdog and emits rich diagnostics. Track the rate of backend truncations/restarts and investigate if it’s non-trivial.
+
+**R57. Candidate packing truncation can bias the action set**
+- **Concern**: Candidate-scoring policies pack feasible macro actions into a fixed `Kmax` list. If the feasible count exceeds `Kmax`, truncation removes some reachable placements.
+- **Risk**: Systematic bias (especially if sorting by cost) can prevent the policy from ever selecting slower-but-better placements; learning/inference behavior becomes dependent on packing heuristics.
+- **Mitigation**: Default `candidate_max_candidates=128` (based on observed feasible-count distribution) and monitor truncation telemetry; bump `Kmax` if `candidate/truncation_frac` becomes non-trivial. If deliberate truncation is needed, consider stratified selection by cost buckets instead of pure top-K-by-cost.
+  - Log feasible-count stats and truncation rate (`candidate/feasible_*`, `candidate/truncation_frac`) so truncation correlates can be spotted quickly.
+
+**R58. Candidate policy assumes bottle bitplanes are the first 4 channels**
+- **Concern**: `CandidatePlacementPolicyNet` (by default) encodes only the first 4 channels for its board encoder and local patches (intended for `bitplane_bottle*` reprs).
+- **Risk**: Using the candidate policy with a different `state_repr` where the first 4 channels are not bottle planes can silently degrade performance or break invariants.
+- **Mitigation**: Keep candidate configs pinned to `state_repr: bitplane_bottle_mask` (or `bitplane_bottle`), and add explicit validation/erroring if `state_repr` is incompatible when we broaden usage.
+
+**R59. Candidate local-patch padding semantics may matter at the borders**
+- **Concern**: Candidate local patches are extracted from raw bottle bitplanes (colors + virus) and currently use **zero padding** out-of-bounds.
+- **Risk**: If we need explicit “wall/boundary” context beyond what row/col embeddings provide, pure zero padding could hide edge effects (especially for side-wall placements).
+- **Mitigation**: Keep `candidate_patch_kernel` as an ablation knob; if needed, add an explicit boundary plane (or directional padding) rather than encoding walls as fake colors/viruses.
+
+**R60. Candidate trunk-feature gathering assumes consistent (row,col) conventions**
+- **Concern**: The candidate policy now gathers learned trunk features at `(row,col)` and the partner cell `(row2,col2)` (CNN feature map) or at `col`/`col2` (column-token transformer).
+- **Risk**: If macro action decoding, mask packing, or board-plane indexing ever disagree on coordinate conventions (e.g., top-vs-bottom row index), the model can receive misleading “local” features. If a bug allows out-of-bounds partner cells into the packed candidates, token/map gathering will raise runtime index errors.
+- **Mitigation**: Keep coordinate contracts centralized (`macro_action_id` encoding + mask layout + board tensor indexing), and rely on crash-loudly semantics for out-of-bounds indices. Add/keep unit coverage that exercises both `cnn` and `col_transformer` candidate forwards and validates patch-gather correctness against a naive reference.
+
+**R61. Unordered pill-color embeddings may erase half-identity required by directed macro actions**
+- **Concern**: Swap-invariant pill embeddings (e.g., `pill_embed_type: unordered`) make `(c1,c2)` indistinguishable from `(c2,c1)` on mixed-color pills.
+- **Risk**: Our macro action space is *directed* and anchored to the NES “first half” (`envs/retro/placement_space.py`), so mixed-color pills can require choosing different directed actions depending on which color lands in the anchor cell. If the network cannot represent that distinction, it may plateau around ~50% on tasks where “swap the halves” is pivotal (e.g., 1-virus clears with mixed-color pills).
+- **Mitigation**: Implemented an *ordered* pill embedding option (`pill_embed_type: ordered_onehot` / `ordered_pair`) that preserves half identity for both current + preview pills. Keep the other options (explicit swap bit or action-semantic canonicalization) as fallbacks if half-ordering proves ambiguous across backends. Validate by logging placed colors-at-cells vs chosen macro action for mixed-color pills and checking whether failure cases correlate with wrong-half placement.
+
+**R62. Compressed run artifacts can break ad-hoc tooling or slow scans**
+- **Concern**: Checkpoints/logs now default to `.gz` artifacts (streamable compression).
+- **Risk**: Scripts that assume `.pt`/`.jsonl` extensions may miss files; large-scale scans may spend extra CPU on decompression (especially when validating many checkpoints).
+- **Mitigation**: Keep readers tolerant of `.pt` + `.pt.gz` and `.jsonl` + `.jsonl.gz`. Provide a dedicated checkpoint scanner (`tools/check_checkpoints.py`) and use extension-agnostic helpers (`training/utils/checkpoint_io.py`). If scanning cost becomes high, add lightweight header checks or parallelize validation.

@@ -1,8 +1,12 @@
 CXX ?= g++
 CC ?= clang
+THREAD_FLAGS ?= -pthread
 CXXFLAGS ?= -std=c++17 -Wall -O2
 CFLAGS ?= -std=c11 -O3 -DNDEBUG
 LDFLAGS ?=
+
+CXXFLAGS += $(THREAD_FLAGS)
+LDFLAGS += $(THREAD_FLAGS)
 
 TARGET = drmario_engine
 MONITOR = monitor

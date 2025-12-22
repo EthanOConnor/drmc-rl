@@ -38,7 +38,7 @@ If the debug UI shows `pose_ok=no`, the macro env writes a single diagnostic JSO
 containing the board, feasibility masks/costs, chosen macro action, controller script, and
 observed lock pose:
 
-- Default: `data/pose_mismatches.jsonl` (git-ignored)
+- Default: `data/pose_mismatches.jsonl.gz` (git-ignored)
 - Disable or redirect: `DRMARIO_POSE_MISMATCH_LOG=0` (or set a custom path)
 - Optional per-frame trace: `DRMARIO_POSE_MISMATCH_TRACE=1`
 - Optional cap: `DRMARIO_POSE_MISMATCH_LOG_MAX=25`

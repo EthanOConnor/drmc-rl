@@ -18,6 +18,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import time
 from dataclasses import asdict, dataclass
@@ -200,7 +201,7 @@ def main() -> None:
         default=2000,
         help="Max frames to search for the start-sync waitFrames condition.",
     )
-    ap.add_argument("--out", type=Path, default=Path("data/ghost_parity_divergences.jsonl"))
+    ap.add_argument("--out", type=Path, default=Path("data/ghost_parity_divergences.jsonl.gz"))
     ap.add_argument("--stop-on-first", action="store_true", default=True)
     args = ap.parse_args()
 
@@ -357,7 +358,11 @@ def main() -> None:
 
     elapsed = time.perf_counter() - t0
     # Write JSONL divergences (one per line).
-    with out_path.open("w", encoding="utf-8") as f:
+    if out_path.suffix == ".gz":
+        fp_ctx = gzip.open(out_path, "wt", encoding="utf-8", compresslevel=9)
+    else:
+        fp_ctx = out_path.open("w", encoding="utf-8")
+    with fp_ctx as f:
         for div in divergences:
             payload = asdict(div)
             payload["addr_hex"] = "TERM" if div.addr < 0 else _hex(div.addr)

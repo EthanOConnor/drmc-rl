@@ -42,11 +42,37 @@ head_type = "factorized"
 - Smallest parameter count
 - Slightly more complex credit assignment
 
-All heads:
+#### D. Candidate-Scoring (packed feasible actions)
+
+This variant avoids a fixed 512-way output head by scoring only a packed list of
+planner-feasible macro actions and using the planner’s frames-to-lock as an
+explicit per-candidate feature.
+
+Config:
+```yaml
+smdp_ppo:
+  policy_type: candidate
+  candidate_board_encoder: col_transformer  # or cnn
+  # Typical feasible counts are far smaller than 512; keep Kmax modest for speed.
+  candidate_max_candidates: 128
+```
+
+Implementation:
+- `models/policy/candidate_packing.py` packs `placements/feasible_mask` +
+  `placements/cost_to_lock`/`placements/costs` into fixed-size candidate arrays.
+- `models/policy/candidate_policy.py` scores candidates and outputs `[B, K]` logits.
+
+Heatmap heads (dense / shift_score / factorized):
 - Accept `[B, C, 16, 8]` board state
 - Embed current + preview pill colors via Deep-Sets (order-invariant per pill)
 - Apply CoordConv for spatial awareness
 - Output `[B, 4, 16, 8]` logit maps + value estimates
+
+Candidate-scoring head:
+- Accept `[B, C, 16, 8]` board state + packed candidates
+- Uses per-candidate cost-to-lock as an explicit feature
+- Combines raw local patches with learned trunk features gathered at candidate landing cells/columns
+- Output `[B, Kmax]` logits + value estimates
 
 ### 2. Masked Distribution
 

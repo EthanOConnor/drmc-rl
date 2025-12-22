@@ -357,7 +357,7 @@ def main(argv: Any = None) -> None:
         "device": device,
     }
     logger.write_metadata(metadata)
-    write_environment_file(Path(cfg.logdir) / "env.txt")
+    write_environment_file(Path(cfg.logdir) / "env.txt.gz")
 
     if cfg.dry_run:
         logger.log_text("run/dry_run", "Dry run completed", step=0)
@@ -404,25 +404,30 @@ def main(argv: Any = None) -> None:
                     self.training_thread.start()
 
                 def stop(self) -> None:
-                    if self.control is not None:
-                        self.control.request_stop()
-                    if self.training_thread is not None:
-                        self.training_thread.join(timeout=5.0)
-                        if self.training_thread.is_alive():
-                            # Best-effort cleanup: force-close the env even if
-                            # the training thread is stuck in a pending async step.
-                            try:
-                                if self.env is not None and hasattr(self.env, "close"):
-                                    self.env.close()
-                            except Exception:
-                                pass
-                            raise RuntimeError("Training thread did not exit after stop request.")
-                    if self.adapter is not None and hasattr(self.adapter, "close"):
-                        self.adapter.close()
-                    if self.env is not None and hasattr(self.env, "close"):
-                        self.env.close()
-                    if self.exc:
-                        raise self.exc[0]
+                    try:
+                        if self.control is not None:
+                            self.control.request_stop()
+                        if self.training_thread is not None:
+                            self.training_thread.join(timeout=5.0)
+                            if self.training_thread.is_alive():
+                                # Best-effort cleanup: force-close the env even if
+                                # the training thread is stuck in a pending async step.
+                                try:
+                                    if self.env is not None and hasattr(self.env, "close"):
+                                        self.env.close()
+                                except Exception:
+                                    pass
+                                raise RuntimeError("Training thread did not exit after stop request.")
+                        if self.adapter is not None and hasattr(self.adapter, "close"):
+                            self.adapter.close()
+                        if self.env is not None and hasattr(self.env, "close"):
+                            self.env.close()
+                        if self.exc:
+                            raise self.exc[0]
+                    except KeyboardInterrupt:
+                        # If the user Ctrl-C's during shutdown (common when AsyncVectorEnv is
+                        # joining worker processes), suppress the traceback and exit cleanly.
+                        return
 
                 def restart(self, num_envs: int) -> None:
                     self.stop()
@@ -455,7 +460,10 @@ def main(argv: Any = None) -> None:
                 ui.run(session)
             finally:
                 # Ensure training terminates if UI exits early or errors out.
-                session.stop()
+                try:
+                    session.stop()
+                except KeyboardInterrupt:
+                    pass
         elif args.ui == "tui":
             try:
                 from training.ui.tui import TrainingTUI, RICH_AVAILABLE
@@ -504,11 +512,20 @@ def main(argv: Any = None) -> None:
             except KeyboardInterrupt:
                 pass
     finally:
-        if adapter is not None and hasattr(adapter, "close"):
-            adapter.close()
-        logger.close()
-        if "env" in locals() and env is not None and hasattr(env, "close"):
-            env.close()
+        try:
+            if adapter is not None and hasattr(adapter, "close"):
+                adapter.close()
+        except KeyboardInterrupt:
+            pass
+        try:
+            logger.close()
+        except KeyboardInterrupt:
+            pass
+        try:
+            if "env" in locals() and env is not None and hasattr(env, "close"):
+                env.close()
+        except KeyboardInterrupt:
+            pass
         if engine_pid_dir is not None:
             _cleanup_engine_pid_dir(engine_pid_dir)
 

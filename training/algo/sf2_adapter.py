@@ -9,6 +9,7 @@ from typing import Any, Deque, Dict, List, Tuple
 import numpy as np
 
 from .base import AlgoAdapter
+from training.utils.checkpoint_io import checkpoint_path, save_checkpoint
 from training.utils.reproducibility import git_commit
 from training.utils.spec import RolloutBatch
 
@@ -362,7 +363,7 @@ class SampleFactoryAdapter(AlgoAdapter):
             "step": self.global_step,
             "sha": git_commit(),
         }
-        path = self.checkpoint_dir / f"ppo_step{self.global_step}.pt"
-        torch.save(payload, path)
+        path = checkpoint_path(self.checkpoint_dir, "ppo", self.global_step, compress=True)
+        save_checkpoint(payload, path)
         self.event_bus.emit("checkpoint", step=self.global_step, path=str(path), walltime=time.time())
         self._next_checkpoint += self.checkpoint_interval

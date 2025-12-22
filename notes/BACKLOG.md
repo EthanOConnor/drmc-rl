@@ -185,6 +185,11 @@ Technical backlog / roadmap. More detailed items than top-level docs.
   - Compute r_shape = γΦ(s') − Φ(s).
   - Log r_env, r_shape, r_total.
 
+- **Policy horizon improvements (still human-visible inputs)**
+  - Add recurrence over decision steps (GRU/LSTM or small Transformer) to carry longer-term context across placements.
+  - Add explicit 1–2 step lookahead using the planner + value/evaluator scoring (choose best candidate sequence).
+  - Compare `candidate_board_encoder=cnn` vs `col_transformer` for horizontal structure sensitivity.
+
 - **Complete pixel2state translator**
   - Implement UNet/ViT-tiny in `models/pixel2state/`.
   - Train on emulator frames + RAM labels.

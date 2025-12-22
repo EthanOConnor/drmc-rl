@@ -354,7 +354,12 @@ class DrMarioPoolVecEnv:
             # Reward components.
             r_env = 0.0
             delta_v = int(max(0, v_prev - v_i)) if v_prev >= 0 else 0
-            virus_clear_reward = float(self._reward_cfg.virus_clear_bonus) * float(delta_v)
+            virus_clear_reward = 0.0
+            virus_bonus = float(self._reward_cfg.virus_clear_bonus)
+            if delta_v > 0 and virus_bonus != 0.0:
+                v0 = int(self._viruses_initial[i])
+                if v0 > 0:
+                    virus_clear_reward = virus_bonus * float(delta_v) / float(v0)
             nonvirus_bonus = float(self._reward_cfg.non_virus_clear_bonus) * float(
                 int(self._runner.buffers.tiles_cleared_nonvirus[i])
             )

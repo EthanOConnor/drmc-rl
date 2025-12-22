@@ -11,6 +11,7 @@ from training.diagnostics.logger import DiagLogger
 from training.diagnostics.video import VideoEventHandler
 from training.envs import make_vec_env
 from training.utils.cfg import load_and_merge_cfg, to_config_node
+from training.utils.checkpoint_io import is_checkpoint_path
 
 try:  # pragma: no cover - optional dependency for smoke tests
     import torch
@@ -49,7 +50,11 @@ def test_simple_pg_smoke(tmp_path) -> None:
     metrics = updates[-1]
     assert "loss/policy" in metrics
     assert "adv/mean" in metrics
-    checkpoints = list((Path(cfg.logdir) / "checkpoints").glob("*.pt"))
+    checkpoints = [
+        p
+        for p in (Path(cfg.logdir) / "checkpoints").iterdir()
+        if p.is_file() and is_checkpoint_path(p)
+    ]
     assert checkpoints, "Expected checkpoint artifact to be created"
 
 
@@ -87,5 +92,9 @@ def test_sf2_smoke_train(tmp_path) -> None:
     assert updates, "Adapter failed to emit update_end events"
     metrics = updates[-1]
     assert "loss/policy" in metrics
-    checkpoints = list((Path(cfg.logdir) / "checkpoints").glob("*.pt"))
+    checkpoints = [
+        p
+        for p in (Path(cfg.logdir) / "checkpoints").iterdir()
+        if p.is_file() and is_checkpoint_path(p)
+    ]
     assert checkpoints, "Expected checkpoint artifact to be created"

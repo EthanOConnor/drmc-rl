@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import gzip
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -120,24 +121,29 @@ def _print_confidence_table(*, targets: List[float], sigmas_list: List[float]) -
             )
 
 
-def _load_advancement_events(metrics_path: Path) -> List[Dict[str, Any]]:
-    events_by_step: Dict[int, Dict[str, Any]] = {}
-    with metrics_path.open("r", encoding="utf-8") as f:
+def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
+    opener = gzip.open if path.suffix == ".gz" else Path.open
+    with opener(path, "rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
             try:
-                rec = json.loads(line)
+                yield json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if rec.get("type") != "scalar":
-                continue
-            name = rec.get("name")
-            if not isinstance(name, str) or not name.startswith("curriculum/advanced"):
-                continue
-            step = _to_int(rec.get("step")) or 0
-            events_by_step.setdefault(step, {})[name] = rec.get("value")
+
+
+def _load_advancement_events(metrics_path: Path) -> List[Dict[str, Any]]:
+    events_by_step: Dict[int, Dict[str, Any]] = {}
+    for rec in _iter_jsonl(metrics_path):
+        if rec.get("type") != "scalar":
+            continue
+        name = rec.get("name")
+        if not isinstance(name, str) or not name.startswith("curriculum/advanced"):
+            continue
+        step = _to_int(rec.get("step")) or 0
+        events_by_step.setdefault(step, {})[name] = rec.get("value")
 
     events: List[Dict[str, Any]] = []
     for step in sorted(events_by_step):
@@ -213,7 +219,7 @@ def main() -> None:
         "--metrics",
         type=str,
         default="runs/smdp_ppo",
-        help="Path to metrics.jsonl or a run directory (default: runs/smdp_ppo)",
+        help="Path to metrics.jsonl(.gz) or a run directory (default: runs/smdp_ppo)",
     )
     args = parser.parse_args()
 
@@ -226,22 +232,28 @@ def main() -> None:
     metrics_input = Path(args.metrics).expanduser()
     metrics_path = metrics_input
     if metrics_input.is_dir():
+        direct_gz = metrics_input / "metrics.jsonl.gz"
         direct = metrics_input / "metrics.jsonl"
-        if direct.is_file():
+        if direct_gz.is_file():
+            metrics_path = direct_gz
+        elif direct.is_file():
             metrics_path = direct
         else:
             candidates = []
             for child in metrics_input.iterdir():
                 if not child.is_dir():
                     continue
+                candidate_gz = child / "metrics.jsonl.gz"
                 candidate = child / "metrics.jsonl"
-                if candidate.is_file():
+                if candidate_gz.is_file():
+                    candidates.append(candidate_gz)
+                elif candidate.is_file():
                     candidates.append(candidate)
             if not candidates:
-                raise FileNotFoundError(f"No metrics.jsonl found under {metrics_input}")
+                raise FileNotFoundError(f"No metrics.jsonl(.gz) found under {metrics_input}")
             metrics_path = max(candidates, key=lambda p: p.stat().st_mtime)
     if not metrics_path.is_file():
-        raise FileNotFoundError(f"metrics.jsonl not found at {metrics_path}")
+        raise FileNotFoundError(f"metrics.jsonl(.gz) not found at {metrics_path}")
     events = _load_advancement_events(metrics_path)
     _print_table(events)
 

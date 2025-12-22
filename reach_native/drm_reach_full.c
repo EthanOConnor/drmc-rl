@@ -89,8 +89,8 @@ typedef struct {
     uint16_t found_wanted;     // how many of those were found
 } DrmReachStats;
 
-static DrmReachStats g_last_stats;
-static int g_stats_enabled = -1;
+static _Thread_local DrmReachStats g_last_stats;
+static _Thread_local int g_stats_enabled = -1;
 
 static inline int stats_enabled(void) {
     if (g_stats_enabled >= 0) return g_stats_enabled;
@@ -336,7 +336,36 @@ typedef struct {
     uint8_t* parent_action;
 } ReachCtx;
 
-static ReachCtx g_ctx = {0};
+static _Thread_local ReachCtx g_ctx = {0};
+
+void drm_reach_free_thread_ctx(void) {
+    if (
+        g_ctx.visited_xmask == NULL
+        && g_ctx.next_xmask == NULL
+        && g_ctx.frontier_a == NULL
+        && g_ctx.frontier_b == NULL
+        && g_ctx.parent == NULL
+        && g_ctx.parent_action == NULL
+    ) {
+        g_ctx.cap_keys = 0;
+        g_ctx.cap_states = 0;
+        return;
+    }
+    free(g_ctx.visited_xmask);
+    free(g_ctx.next_xmask);
+    free(g_ctx.frontier_a);
+    free(g_ctx.frontier_b);
+    free(g_ctx.parent);
+    free(g_ctx.parent_action);
+    g_ctx.visited_xmask = NULL;
+    g_ctx.next_xmask = NULL;
+    g_ctx.frontier_a = NULL;
+    g_ctx.frontier_b = NULL;
+    g_ctx.parent = NULL;
+    g_ctx.parent_action = NULL;
+    g_ctx.cap_keys = 0;
+    g_ctx.cap_states = 0;
+}
 
 static int ensure_ctx(uint32_t nkeys) {
     if (nkeys == 0) return -2;

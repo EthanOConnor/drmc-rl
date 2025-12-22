@@ -217,6 +217,14 @@ class CurriculumConfig:
     # Smaller values slow the ramp toward 1.0.
     pass_ramp_exponent_multiplier: float = 1.0 / 3.0
     ln_hop_back_max_k: int = 5  # caps 1-exp(-m*k) thresholds for feasibility
+    # ln_hop_back hop-back behavior:
+    # - Hop back to the Nth-highest mastered level (default: 3rd-highest).
+    ln_hop_back_hop_back_mastered_rank: int = 3
+    # - Bail out of a stuck probe stage after this fraction of the run's total
+    #   steps/frames budget (0 disables). Requires `run_total_steps`.
+    ln_hop_back_bailout_fraction: float = 0.01
+    # Populated by the training runner/env factory (used for bailout thresholds).
+    run_total_steps: Optional[int] = None
     # Optional time-based constraints applied by the curriculum wrapper.
     # These are forwarded to env wrapper attributes (e.g. DrMarioPlacementEnv).
     task_max_frames: Optional[int] = None
@@ -288,6 +296,9 @@ class CurriculumConfig:
             seed=None if data.get("seed") is None else int(data["seed"]),
             pass_ramp_exponent_multiplier=float(_get("pass_ramp_exponent_multiplier", 1.0 / 3.0)),
             ln_hop_back_max_k=int(_get("ln_hop_back_max_k", 5)),
+            ln_hop_back_hop_back_mastered_rank=int(_get("ln_hop_back_hop_back_mastered_rank", 3)),
+            ln_hop_back_bailout_fraction=float(_get("ln_hop_back_bailout_fraction", 0.01)),
+            run_total_steps=None if data.get("run_total_steps") is None else int(data["run_total_steps"]),
             task_max_frames=max_frames,
             task_max_spawns=max_spawns,
             task_max_frames_by_level=max_frames_by_level,
@@ -670,6 +681,8 @@ class ScriptedCurriculum:
 class _LnStage:
     level: int
     threshold: float
+    frontier: int
+    is_probe: bool
 
 
 class LnHopBackCurriculum:
@@ -698,8 +711,15 @@ class LnHopBackCurriculum:
         # different threshold).
         self._stage_histories: Dict[int, Deque[bool]] = {}
         self._stage_episodes_total: Dict[int, int] = {}
+        self._stage_frames_total: Dict[int, int] = {}
+        self._probe_idx_by_frontier: Dict[int, int] = {}
+        self._hop_idx_by_frontier_level: Dict[tuple[int, int], int] = {}
         self._stages: List[_LnStage] = self._build_stages()
         self._stage_idx = 0
+        # For ln_hop_back, "mastery" is defined as passing a hop-back stage
+        # (not just probing a new frontier). This list is used to choose a
+        # shallower hop-back start point.
+        self._mastered_levels: set[int] = set()
         self._time_samples: Dict[int, Deque[int]] = {}
         self._time_samples_spawns: Dict[int, Deque[int]] = {}
         self._time_budget_frames: Dict[int, int] = {}
@@ -707,6 +727,33 @@ class LnHopBackCurriculum:
         self._time_success_histories: Dict[int, Deque[bool]] = {}
         self._time_k: Dict[int, int] = {}
         self._stage_decisions_total: Dict[int, int] = {}
+
+        # Bailout: if we can't pass a probe stage within a fraction of the total
+        # run budget, hop back to a mastered level.
+        bailout_frac_raw = getattr(cfg, "ln_hop_back_bailout_fraction", 0.01)
+        bailout_frac = float(0.01) if bailout_frac_raw is None else float(bailout_frac_raw)
+        bailout_frac = float(max(0.0, bailout_frac))
+        run_total_raw = getattr(cfg, "run_total_steps", None)
+        self._bailout_frames: Optional[int]
+        if run_total_raw is None:
+            self._bailout_frames = None
+        else:
+            try:
+                run_total = int(run_total_raw)
+            except Exception:
+                run_total = 0
+            self._bailout_frames = (
+                int(max(1, int(round(float(run_total) * float(bailout_frac)))))
+                if run_total > 0 and bailout_frac > 0.0
+                else None
+            )
+
+        hop_rank_raw = getattr(cfg, "ln_hop_back_hop_back_mastered_rank", 3)
+        try:
+            hop_rank = int(hop_rank_raw) if hop_rank_raw is not None else 3
+        except Exception:
+            hop_rank = 3
+        self._hop_back_rank = int(max(1, hop_rank))
 
         self._sigmas = float(max(0.0, float(getattr(cfg, "confidence_sigmas", 0.0) or 0.0)))
         hl_raw = getattr(cfg, "confidence_ema_half_life_episodes", 256.0)
@@ -736,6 +783,9 @@ class LnHopBackCurriculum:
         exp_mult_raw = getattr(cfg, "pass_ramp_exponent_multiplier", 1.0 / 3.0)
         exp_mult = float(1.0 / 3.0) if exp_mult_raw is None else float(exp_mult_raw)
         exp_mult = float(max(0.0, exp_mult))
+        # "Pass target" used to decide whether to skip the hop-back chain after
+        # probing a new frontier.
+        self._pass_target_k1 = float(1.0 - math.exp(-1.0 * float(exp_mult)))
         time_targets = [
             float(1.0 - math.exp(-float(k) * float(exp_mult))) for k in range(1, self._time_max_k + 1)
         ]
@@ -760,11 +810,29 @@ class LnHopBackCurriculum:
 
         stages: List[_LnStage] = []
         for frontier in range(start, end + 1):
-            stages.append(_LnStage(level=int(frontier), threshold=probe))
+            probe_idx = int(len(stages))
+            self._probe_idx_by_frontier[int(frontier)] = int(probe_idx)
+            stages.append(
+                _LnStage(
+                    level=int(frontier),
+                    threshold=float(probe),
+                    frontier=int(frontier),
+                    is_probe=True,
+                )
+            )
             for lvl in range(start, frontier + 1):
                 k = int(min(max_k, int(frontier - lvl + 1)))
                 thr = float(1.0 - math.exp(-float(k) * float(exp_mult)))
-                stages.append(_LnStage(level=int(lvl), threshold=float(min(1.0, max(0.0, thr)))))
+                hop_idx = int(len(stages))
+                self._hop_idx_by_frontier_level[(int(frontier), int(lvl))] = int(hop_idx)
+                stages.append(
+                    _LnStage(
+                        level=int(lvl),
+                        threshold=float(min(1.0, max(0.0, thr))),
+                        frontier=int(frontier),
+                        is_probe=False,
+                    )
+                )
         return stages
 
     @property
@@ -795,6 +863,27 @@ class LnHopBackCurriculum:
             return
         sidx = int(self._stage_idx)
         self._stage_decisions_total[sidx] = int(self._stage_decisions_total.get(sidx, 0) or 0) + int(d)
+
+    def _hop_back_start_level(self, *, frontier: int) -> int:
+        """Return the level to start a hop-back from (Nth-highest mastered)."""
+
+        f = int(frontier)
+        mastered = sorted(int(lvl) for lvl in self._mastered_levels if int(lvl) < f)
+        if len(mastered) >= int(self._hop_back_rank):
+            return int(mastered[-int(self._hop_back_rank)])
+        return int(self.cfg.start_level)
+
+    def _hop_back_start_stage_idx(self, *, frontier: int) -> Optional[int]:
+        """Return the stage index to jump to when hopping back within a frontier block."""
+
+        f = int(frontier)
+        start = int(self.cfg.start_level)
+        target_level = int(self._hop_back_start_level(frontier=f))
+        target_level = int(max(start, min(target_level, f)))
+        idx = self._hop_idx_by_frontier_level.get((f, target_level))
+        if idx is None:
+            idx = self._hop_idx_by_frontier_level.get((f, start))
+        return None if idx is None else int(idx)
 
     def _history(self, level: int) -> Deque[bool]:
         lvl = int(level)
@@ -859,6 +948,15 @@ class LnHopBackCurriculum:
                 stage_idx = int(stage_token)  # type: ignore[arg-type]
             except Exception:
                 stage_idx = int(self._stage_idx)
+        if episode_frames is not None:
+            try:
+                frames_i = int(episode_frames)
+            except Exception:
+                frames_i = 0
+            if frames_i > 0:
+                self._stage_frames_total[stage_idx] = int(
+                    self._stage_frames_total.get(stage_idx, 0) or 0
+                ) + int(frames_i)
         stage_hist = self._stage_history(stage_idx)
         stage_hist.append(bool(base_success))
         self._stage_episodes_total[stage_idx] = int(self._stage_episodes_total.get(stage_idx, 0)) + 1
@@ -903,10 +1001,40 @@ class LnHopBackCurriculum:
             return False
 
         stage = self._stages[self._stage_idx]
-        if self._meets_confidence_target(int(stage_idx), float(stage.threshold)):
+        passed = bool(self._meets_confidence_target(int(stage_idx), float(stage.threshold)))
+        if not passed:
+            # Bail out of a stuck probe stage by jumping into the hop-back chain.
+            if bool(stage.is_probe) and self._bailout_frames is not None:
+                frames_total = int(self._stage_frames_total.get(int(stage_idx), 0) or 0)
+                if frames_total >= int(self._bailout_frames):
+                    hop_idx = self._hop_back_start_stage_idx(frontier=int(stage.frontier))
+                    if hop_idx is not None and int(hop_idx) != int(self._stage_idx):
+                        self._stage_idx = int(hop_idx)
+                        return True
+            return False
+
+        # Stage passed: advance or jump depending on whether this is a probe stage.
+        if not bool(stage.is_probe):
+            self._mastered_levels.add(int(stage.level))
             self._stage_idx += 1
             return True
-        return False
+
+        # Probe stage passed. If we're already confidently above the pass target
+        # for this frontier, skip the hop-back chain and move to the next frontier.
+        next_frontier = int(stage.frontier) + 1
+        next_probe_idx = self._probe_idx_by_frontier.get(int(next_frontier))
+        if next_probe_idx is not None and self._meets_confidence_target(int(stage_idx), float(self._pass_target_k1)):
+            self._stage_idx = int(next_probe_idx)
+            return True
+
+        # Otherwise, start hop-back at the Nth-highest mastered level instead of
+        # always returning to the curriculum start.
+        hop_idx = self._hop_back_start_stage_idx(frontier=int(stage.frontier))
+        if hop_idx is not None:
+            self._stage_idx = int(hop_idx)
+        else:
+            self._stage_idx += 1
+        return True
 
     def _meets_confidence_target(self, stage_idx: int, target: float) -> bool:
         t = float(target)

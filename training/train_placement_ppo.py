@@ -20,6 +20,7 @@ import torch
 from models.policy.placement_heads import PlacementPolicyNet
 from models.policy.placement_dist import MaskedPlacementDist
 from training.rollout.decision_buffer import DecisionRolloutBuffer, DecisionStep
+from training.utils.checkpoint_io import checkpoint_path, save_checkpoint
 
 # Import environment registration
 from envs.retro.register_env import register_placement_env_id
@@ -269,25 +270,31 @@ def main():
                       
         # Save checkpoint
         if decision_count % args.save_interval == 0 and decision_count > 0:
-            checkpoint_path = checkpoint_dir / f"policy_step{decision_count}.pt"
-            torch.save({
-                "policy": policy.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "decision_count": decision_count,
-                "update_count": update_count,
-                "args": vars(args),
-            }, checkpoint_path)
-            print(f"Checkpoint saved: {checkpoint_path}")
+            ckpt_path = checkpoint_path(checkpoint_dir, "policy", decision_count, compress=True)
+            save_checkpoint(
+                {
+                    "policy": policy.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "decision_count": decision_count,
+                    "update_count": update_count,
+                    "args": vars(args),
+                },
+                ckpt_path,
+            )
+            print(f"Checkpoint saved: {ckpt_path}")
             
     # Final save
-    final_path = checkpoint_dir / f"policy_final_{decision_count}.pt"
-    torch.save({
-        "policy": policy.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "decision_count": decision_count,
-        "update_count": update_count,
-        "args": vars(args),
-    }, final_path)
+    final_path = checkpoint_dir / f"policy_final_{decision_count}.pt.gz"
+    save_checkpoint(
+        {
+            "policy": policy.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "decision_count": decision_count,
+            "update_count": update_count,
+            "args": vars(args),
+        },
+        final_path,
+    )
     
     print(f"\\nTraining complete! Final checkpoint: {final_path}")
     env.close()
