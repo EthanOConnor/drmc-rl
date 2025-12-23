@@ -5,10 +5,10 @@
 - `envs/pettingzoo/` 2‑player ParallelEnv wrapper (skeleton).
 - `envs/specs/` RAM map placeholders and specs.
 - `models/` Policy nets, evaluator heads, pixel→state (skeletons).
-- `training/` Sample Factory configs and launches.
+- `training/` In-repo RL configs and launches.
 - `eval/` Evaluation harness and plots.
 - `sim-envpool/` Rules‑exact C++ env (later).
-- `re/` Reverse‑engineering artifacts (no ROMs).
+- `dr-mario-disassembly/` Disassembly + annotations submodule (no ROMs).
 - `docs/` DESIGN, RNG, CONTRIBUTING. Data lives in `data/` (git‑ignored).
 - `notes/` Inter-session, inter-agent coordination and memory (see below).
 
@@ -48,7 +48,7 @@
 - Install: `pip install -e .` (then add extras as needed)
 - Demo env: `python -m envs.retro.demo --obs-mode pixel --steps 200`
 - Eval harness: `python -m eval.harness.run_eval --episodes 100 --obs-mode state`
-- Train (SF): `python -m sample_factory.launcher.run --cfg training/sf_configs/state_baseline.yaml`
+- Train: `python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui --env-id DrMarioPlacementEnv-v0 --num_envs 16 --backend cpp-pool`
 - Lint/format (optional): `ruff .` and `black .`
 
 ## Coding Style & Naming Conventions

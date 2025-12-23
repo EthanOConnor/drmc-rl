@@ -28,16 +28,16 @@
 
 ## Linux (training)
 1. Install CUDA 12.x drivers/toolkit and create a Python env.
-2. PyTorch CUDA wheels, Sample Factory, TorchRL:
+2. PyTorch CUDA wheels (+ optional TorchRL helpers):
    ```bash
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   pip install sample-factory torchrl[atari] gymnasium
+   pip install -e ".[rl]"
    ```
 3. Install Stable-Retro and a libretro NES core. Set `DRMARIO_CORE_PATH` and `DRMARIO_ROM_PATH`, then import ROMs if you plan to use the Stable-Retro backend.
 4. Register env id and launch:
    ```bash
    python -c "from envs.retro.register_env import register_env_id; register_env_id(); print('OK')"
-   python training/run_sf.py --cfg training/sf_configs/state_baseline.yaml
+   python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui --env-id DrMarioPlacementEnv-v0 --backend cpp-pool --num_envs 16
    ```
 
 Notes

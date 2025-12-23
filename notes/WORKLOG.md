@@ -83,9 +83,9 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Implemented 3 policy heads: dense, shift_score, factorized.
 - Created `MaskedPlacementDist` for action masking.
 - Added `DecisionRolloutBuffer` with SMDP discounting (Γ=γ^τ).
-- Created training launcher (`training/launches/train_placement_smdp_ppo.py`).
+- Created a one-off training launcher (later removed; canonical entrypoint is `python -m training.run`).
 - All 12 unit tests passing.
-- Documented in `PLACEMENT_POLICY_IMPLEMENTATION.md` and `IMPLEMENTATION_COMPLETE.md`.
+- Documented in `notes/archive/root_docs/PLACEMENT_POLICY_IMPLEMENTATION.md` and `notes/archive/root_docs/IMPLEMENTATION_COMPLETE.md`.
 
 ## 2025-12-16 – Coding Agent (Antigravity)
 
@@ -99,7 +99,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 - Deleted stub directories: io-bridge/, streaming/, sim-envpool/, retro/
 - Deleted orphan files: patches, package.json, Screenshot
-- Archived drmarioai/ Java bot to archive/ (reference only)
+- Dropped the vendored drmarioai Java bot snapshot (kept external link + summarized notes only)
 - Updated .gitignore: added cores/, checkpoints/, .venv-*/
 - Updated docs/REFERENCES.md with drmarioai, Rich, Textual, WandB
 - Created training/ui/tui.py: Rich-based TUI with sparklines (replaces Tkinter)
@@ -191,7 +191,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Kept `envs/retro/placement_wrapper.py` as a small compatibility shim for older scripts.
 - Restored training/docs ergonomics:
   - `envs/retro/register_env.py` registers both `DrMarioPlacementEnv-v0` and legacy `DrMario-Placement-v0`.
-  - Updated `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, and `QUICK_START_PLACEMENT_POLICY.md` to match the new wrapper.
+  - Updated `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, and `notes/archive/root_docs/QUICK_START_PLACEMENT_POLICY.md` to match the new wrapper.
 - Added QuickNES update utility (`tools/update_quicknes_core.py`) and documented it in `docs/RETRO_CORE_NOTES.md`.
 - Fixed regressions uncovered by unit tests:
   - Corrected τ=1 bootstrap semantics in `tests/test_placement_policy.py`.
@@ -213,7 +213,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Runner/config polish:
   - `training/run.py` now defaults `--algo/--engine` from the config file when not provided on the CLI (with `smdp_ppo` → `ppo_smdp` aliasing).
   - `training/configs/smdp_ppo.yaml` updated to `algo: ppo_smdp` and `env.id` (matches the unified runner + env factory).
-  - Placement docs (`docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`, `IMPLEMENTATION_COMPLETE.md`, `PLACEMENT_POLICY_IMPLEMENTATION.md`) now recommend `python -m training.run` over bespoke launch scripts.
+  - Placement docs (`docs/PLACEMENT_POLICY.md`, `notes/archive/root_docs/QUICK_START_PLACEMENT_POLICY.md`, `notes/archive/root_docs/IMPLEMENTATION_COMPLETE.md`, `notes/archive/root_docs/PLACEMENT_POLICY_IMPLEMENTATION.md`) now recommend `python -m training.run` over bespoke launch scripts.
 - Fixed a reset-time state mismatch in `envs/retro/drmario_env.py`:
   - Rebuild `_state_cache` after the auto-start sequence so `reset()` returns observations consistent with the post-start `raw_ram` snapshot.
   - `viruses_remaining` now prefers the raw RAM counter during startup (avoids stale `_state_cache` during reset/start sequences).
@@ -229,7 +229,7 @@ Chronological log of work done. Format: date, actor, brief summary.
   - Bench harness: `python -m tools.bench_reachability`
 - Integrated native backend into `envs/retro/placement_planner.py` (`reach_backend=auto|native|python`) while keeping `envs/retro/fast_reach.py` as the oracle.
 - Surfaced the active planner backend in env `info` as `placements/reach_backend` and displayed it in the debug TUI stats panel.
-- Updated docs: `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`.
+- Updated docs: `docs/PLACEMENT_PLANNER.md`, `docs/PLACEMENT_POLICY.md`, `notes/archive/root_docs/QUICK_START_PLACEMENT_POLICY.md`.
 
 ## 2025-12-18 – Coding Agent (Codex CLI) – SMDP-PPO Minibatch KL Bugfix
 
@@ -321,7 +321,7 @@ Chronological log of work done. Format: date, actor, brief summary.
   - `DrMarioRetroEnv` interprets `level < 0` as a curriculum stage and patches the bottle RAM at reset time to reduce virus count (`-4..-1`), with `-4` using “any 4-match” (first clear event) as the success condition.
   - Added `training/envs/curriculum.py` (`CurriculumVecEnv`) to schedule levels based on rolling clear rate and optional rehearsal of lower levels.
   - Enabled the curriculum in `training/configs/smdp_ppo.yaml` and surfaced curriculum stats in `RunnerDebugTUI`.
-- Updated docs to reflect implemented curriculum (`docs/PLACEMENT_POLICY.md`, `QUICK_START_PLACEMENT_POLICY.md`, `PLACEMENT_POLICY_IMPLEMENTATION.md`).
+- Updated docs to reflect implemented curriculum (`docs/PLACEMENT_POLICY.md`, `notes/archive/root_docs/QUICK_START_PLACEMENT_POLICY.md`, `notes/archive/root_docs/PLACEMENT_POLICY_IMPLEMENTATION.md`).
 
 ## 2025-12-18 – Codex CLI – Curriculum Clear Detection + Reward Breakdown Debugging
 
@@ -467,7 +467,7 @@ Chronological log of work done. Format: date, actor, brief summary.
 ## 2025-12-22 – Coding Agent (Codex CLI) – Compressed Artifacts + Checkpoint Scanner
 
 - Defaulted run artifacts to gzip-compressed, streamable files: `metrics.jsonl.gz`, `env.txt.gz`, and `*.pt.gz` checkpoints; updated readers/tools to accept `.gz` (e.g., `tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `training/utils/reproducibility.py`, `training/run.py`, `tests/test_adapters.py`).
-- Added gzip-aware logging for pose mismatch and ghost-parity JSONL outputs and updated docs to match the new defaults (`envs/retro/placement_env.py`, `tools/ghost_parity.py`, `QUICK_START_PLACEMENT_POLICY.md`).
+- Added gzip-aware logging for pose mismatch and ghost-parity JSONL outputs and updated docs to match the new defaults (`envs/retro/placement_env.py`, `tools/ghost_parity.py`, `notes/archive/root_docs/QUICK_START_PLACEMENT_POLICY.md`).
 - Added a checkpoint validation tool to scan for corrupt checkpoint files and optionally delete them (`tools/check_checkpoints.py`).
 - Added a live-updating curriculum plotter with an in-window chart selector that reuses the existing JSONL parser and avoids background threads (`tools/plot_success_live.py`).
 - Fixed a startup ordering bug in the live plotter (status label initialized before trace callback).
@@ -476,3 +476,18 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Made the live picker use the main Tk window (no hidden root) to avoid invisible/off-screen dialogs on macOS, and relaxed file filters so `.gz` isn’t hidden (`tools/plot_success_live.py`).
 - Made `.jsonl.gz` readers tolerant of in-progress gzip streams so live plots work while training is still writing logs (`tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `tools/plot_success_live.py`).
 - Resized the live plot window after selection so it doesn’t inherit the small picker geometry (`tools/plot_success_live.py`).
+
+## 2025-12-23 – Coding Agent (Codex CLI) – Remove External Trainer Integration
+
+- Removed all external trainer integration points (runner, configs, adapters/callbacks) and the third-party dependency; simplified `training.run` to only support in-repo algorithms (`simple_pg`, `ppo_smdp`) and updated docs/notes accordingly.
+- Deleted leftover trainer-integration directories and `__pycache__` artifacts so no named vestiges remain in the tree.
+
+## 2025-12-23 – Repo Hygiene: Archive Root Docs + Remove Root Artifacts
+
+- Moved root-level historical Markdown docs into `notes/archive/root_docs/` and added `notes/archive/README.md` explaining that archived content is non-authoritative.
+- Updated docs to use the `notes/` system (instead of root discussion/worklog files) and documented pose mismatch diagnostics in `docs/PLACEMENT_POLICY.md`.
+- Removed tracked root artifacts (`archive/`, `writeup/`, `commandlines.txt`) and added root-only `.gitignore` rules to prevent reintroduction.
+- Standardized on a single local venv (`.venv`) by removing `.venv-py313*` variants.
+- Removed redundant legacy training entrypoints (`training/train_placement_ppo.py`, `training/launches/*`) and their unused helper modules.
+- Removed the `re/` reverse-engineering workspace and RE automation scripts (`tools/automation/`), relying on `dr-mario-disassembly/` as the canonical disassembly source; updated docs/tools accordingly.
+- Fixed a race in the engine demo reset parity test by waiting for a post-reset sentinel instead of using `frame_count` as a readiness signal (`tests/test_game_engine_demo.py`).

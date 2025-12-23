@@ -2,7 +2,6 @@
 
 ## Core Libraries
 - Stable-Retro (Farama): https://github.com/Farama-Foundation/stable-retro
-- Sample Factory 2.x: https://github.com/alex-petrenko/sample-factory
 - TorchRL: https://github.com/pytorch/rl
 - PettingZoo (Parallel API): https://pettingzoo.farama.org/
 - EnvPool: https://github.com/sail-sg/envpool
@@ -21,7 +20,6 @@
 ## Dr. Mario Specific
 - **Dr. Mario AI (meatfighter)**: https://meatfighter.com/drmarioai/
   - Java bot for Nintaco emulator
-  - Source archived in `archive/drmarioai/`
   - Notable: `Searcher.java` (BFS reachability), `DefaultEvaluator.java` (heuristic scoring)
   - Note: Uses memory writes for fast mode (not controller input)
 - Dr. Mario Disassembly: submodule at `dr-mario-disassembly/`

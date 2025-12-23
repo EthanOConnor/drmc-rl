@@ -25,7 +25,7 @@ This document captures the concrete environment spec, training stack, evaluator 
 ## Training Stack
 
 - Stable‑Retro + Libretro (Mesen/Nestopia) for emulator fidelity and savestate control
-- Sample Factory (PPO with IMPALA CNN + optional LSTM) for high‑throughput actor‑learner
+- In-repo `ppo_smdp` (PPO-style, decision/SMDP) for training placement policies
 - TorchRL utilities optional for distributional losses
 - PettingZoo wrapper later for 2‑player vs. mode
 - EnvPool C++ re‑implementation later for 10–100× FPS, with golden parity vs emulator
@@ -75,22 +75,22 @@ This document captures the concrete environment spec, training stack, evaluator 
   - `brew install cmake pkg-config lua@5.1`
   - `uv venv && source .venv/bin/activate`
   - `pip install torch torchvision torchaudio`
-  - `pip install stable-retro sample-factory gymnasium numpy opencv-python rich`
+  - `pip install stable-retro gymnasium numpy opencv-python rich`
   - Place NES libretro core (`mesen_libretro.dylib` or `nestopia_libretro.dylib`)
   - `python -m retro.import ~/ROMs/NES`
   - `python -m envs.retro.demo --obs-mode pixel`
 - Linux (training)
-  - Install CUDA 12.x; use PyTorch CUDA wheels; install Sample Factory
+  - Install CUDA 12.x; use PyTorch CUDA wheels; run the in-repo trainer (`python -m training.run ...`)
 - Windows
   - Supported for dev; prefer Linux for large CUDA training runs
 
 ## Open Questions
 
-Record decisions in `DESIGN_DISCUSSIONS.md` (see end of that file for the Q&A section). Key items:
+Record decisions in `notes/MEMORY.md` and track open questions in `notes/CHAT.md` / `notes/SCRUTINY.md`
+(see `AGENTS.md` for the notes workflow). Key items:
 - Final observation channel semantics for state‑tensor (exact planes and scaling)
 - Action macro timing (hold durations, repeats, release rules)
 - Reward shaping coefficients (α, β, γ) and terminal bonus C by level
 - T_max policy and evaluation thresholds per level
 - Seed cataloging (frame windows, savestate directories) and naming convention
 - Policy input format for risk conditioning across pixel/state modes
-- SF config defaults for actor count and rollout size on target hardware

@@ -4,14 +4,14 @@
 
 algo:
   ppo_smdp # `training/run.py:build_adapter()` selects `training/algo/ppo_smdp.py:SMDPPPOAdapter` when this is set.
-  # Valid today: simple_pg | ppo/appo (SampleFactory) | ppo_smdp (builtin decision-SMDP PPO).
+  # Valid today: simple_pg | ppo_smdp (builtin decision-SMDP PPO).
 
 train: # Generic run budget / checkpointing (read by `SMDPPPOAdapter.__init__`).
   total_steps:
-    1000000000 # Total *frames* budget (not decisions). `SMDPPPOAdapter.train_forever()` increments `global_step += sum(tau)`.
+    10000000000 # Total *frames* budget (not decisions). `SMDPPPOAdapter.train_forever()` increments `global_step += sum(tau)`.
     # Sensible values: start with 5e6–5e7 for iteration; 5e8 is a long run (days) unless you’re at very high FPS.
   checkpoint_interval:
-    100000 # Frames between checkpoints (`SMDPPPOAdapter._maybe_checkpoint()`); saves `logdir/checkpoints/smdp_ppo_step{global_step}.pt.gz`.
+    1000000 # Frames between checkpoints (`SMDPPPOAdapter._maybe_checkpoint()`); saves `logdir/checkpoints/smdp_ppo_step{global_step}.pt.gz`.
     # Sensible values: 1e5 is frequent (good for safety); 5e5–5e6 is common once stable (reduces disk churn).
 
 smdp_ppo: # Parsed into `training/algo/ppo_smdp.py:SMDPPPOConfig` (with defaults for unspecified keys).
@@ -69,7 +69,7 @@ smdp_ppo: # Parsed into `training/algo/ppo_smdp.py:SMDPPPOConfig` (with defaults
     256 # Hidden size in the per-candidate MLP before projecting to D (`CandidatePlacementPolicyNet.cand_mlp`).
     # Sensible: 128–512. If you raise Kmax a lot, prefer keeping this modest for throughput.
   candidate_patch_kernel:
-    3 # Local raw-bitplane patch size k×k around BOTH landing cells (anchor + partner), from first 4 bottle planes.
+    9 # Local raw-bitplane patch size k×k around BOTH landing cells (anchor + partner), from first 4 bottle planes.
     # k=3 => radius 1; k=7 => radius 3 (enough to “see” 4-in-a-row patterns locally). Used by BOTH cnn + col_transformer variants.
 
   # Board encoder (policy_type=candidate only)
@@ -108,19 +108,19 @@ env: # Parsed by `training/envs/dr_mario_vec.py:make_vec_env()` into `VecEnvConf
 
 curriculum: # Applied by `training/envs/dr_mario_vec.py` via `training/envs/curriculum.py:CurriculumVecEnv`.
   enabled: true # If true and the env supports `set_attr`, wrapper drives env level/task constraints each episode.
-  mode: ln_hop_back # `linear` or `ln_hop_back` (`training/envs/curriculum.py`). ln_hop_back alternates probe stages + ln-tightened hop-backs.
-  start_level: -8 # Synthetic negative levels: -15..-4 => 0-virus boards w/ match-count goals; -3..0 => 1..4-virus boards (see module docstring).
+  mode: linear # `linear` or `ln_hop_back` (`training/envs/curriculum.py`). ln_hop_back alternates probe stages + ln-tightened hop-backs.
+  start_level: -15 # Synthetic negative levels: -15..-4 => 0-virus boards w/ match-count goals; -3..0 => 1..4-virus boards (see module docstring).
   max_level: 20 # Highest curriculum level to reach (inclusive). 0 corresponds to “4-virus vanilla” in this synthetic scheme.
-  confidence_sigmas: 1.0 # Wilson lower-bound z-score used for advancement gates. 1.0 is permissive; 2.0 is stricter but slower (more samples needed).
-  time_budget_mastery_sigmas: 2.0 # For time-budget tightening/mastery checks (see CurriculumConfig). 2.0 means “need a strong win streak” before tightening.
-  pass_ramp_exponent_multiplier: 0.6 # m in thresholds `1-exp(-m*k)` for hop-back targets + time-goal targets. Larger => ramps tighten faster; smaller => gentler.
+  confidence_sigmas: 0.3 # Wilson lower-bound z-score used for advancement gates. 1.0 is permissive; 2.0 is stricter but slower (more samples needed).
+  time_budget_mastery_sigmas: 1.5 # For time-budget tightening/mastery checks (see CurriculumConfig). 2.0 means “need a strong win streak” before tightening.
+  pass_ramp_exponent_multiplier: 0.4 # m in thresholds `1-exp(-m*k)` for hop-back targets + time-goal targets. Larger => ramps tighten faster; smaller => gentler.
   confidence_ema_half_life_episodes: 256.0 # EMA half-life for success-rate tracking in both linear + ln_hop_back curricula (non-stationary friendly).
   confidence_min_effective_episodes: 128.0 # Require at least this much EMA “effective n” before trusting the confidence gate; prevents early noisy flips.
   min_stage_decisions: 512 # ln_hop_back only: require at least this many macro-decisions in a stage before allowing advancement (avoids micro-stages).
   probe_threshold: 0.25 # ln_hop_back only: success-rate target for probing a new frontier level before hop-backs. Sensible: 0.10–0.35.
   window_episodes: 100 # Mostly UNUSED when `confidence_sigmas>0` (window size is computed analytically). Kept for compatibility / sigmas<=0 fallback.
   min_episodes: 50 # Minimum episodes before any stage can advance (used even in EMA mode). Sensible: 20–200; prevents “lucky streak” promotion.
-  rehearsal_prob: 0.05 # Probability of sampling a random lower level once progressed (helps retention). Sensible: 0.0–0.2; start near 0 for clean ablations.
+  rehearsal_prob: 0.1 # Probability of sampling a random lower level once progressed (helps retention). Sensible: 0.0–0.2; start near 0 for clean ablations.
 
 logdir: "runs/smdp_ppo_candidate" # Base log dir; `training/run.py` appends a unique `run_id/` subdir unless `--logdir` is provided.
 video_interval: 10000 # Video cadence in frames; used by `training/diagnostics/video.py:VideoEventHandler` wired in `training/run.py`.

@@ -1,1 +1,0 @@
-# Pill RNG & Preview Hunt\n\n(steps/snippets to trace RNG update and preview writes; confirm seeding)\n

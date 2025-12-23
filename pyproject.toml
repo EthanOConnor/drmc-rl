@@ -41,7 +41,6 @@ rl = [
     "torchvision",
     "torchaudio",
     "torchrl",
-    "sample-factory",
     "pettingzoo",
     "wandb",          # Experiment tracking (free tier available)
 ]

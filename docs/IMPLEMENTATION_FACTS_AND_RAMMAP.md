@@ -29,7 +29,7 @@
 - Potential shaping: r_shape = γ·Φ(s′) − Φ(s), **Φ(terminal)=0**. Evaluator Φ is distributional ETC; scale with `potential_kappa` (≈250).
 
 ### 1.4 Evaluator
-- Distributional (QR/IQN). Quantiles → mean/τ-quantiles/CVaR. TorchScript runtime; optional bootstrap into APPO.
+- Distributional (QR/IQN). Quantiles → mean/τ-quantiles/CVaR. TorchScript runtime; optional bootstrap into PPO-style value targets.
 
 ### 1.5 Seeds/determinism
 - Seeds by **level-select + frame offset**; catalog under `envs/retro/seeds/`. Eval harness computes E[T], Var[T], CVaR.
@@ -83,17 +83,15 @@ RNG and init:
 1) Virus placement → break on bottle writes; trace ±2K ops (addresses in “RNG & Placement” below).
 2) Pill RNG/preview → break on preview writes; backtrack RNG to seed moment (see “RNG & Placement”).
 3) Game step → input poll, gravity, lock, clear/settle (see “Core Routines”).
-4) RAM map → complete `re/out/ram_map.json`; generate constants:
-```
-python re/tools/emit_ram_map_py.py --in re/out/ram_map.json --out envs/specs/ram_map.py
-```
+4) RAM map → validate against `dr-mario-disassembly/` and update:
+   - `envs/specs/ram_offsets.json`
+   - `envs/specs/ram_map.py`
 
 ---
 ## 5) Acceptance
 - Vectors resolved; mapper writes annotated.
-- `ram_map.json` complete; `envs/specs/ram_map.py` generated.
-- 4 routine JSONs present with bank+addr.
-- Pseudocode filled; parity fixtures (grids + 128 previews × ≥3 seeds).
+- `envs/specs/ram_offsets.json` updated; `envs/specs/ram_map.py` updated.
+- Engine demo parity fixture captured in `data/nes_demo.json` and guarded by unit tests.
 
 ---
 ## 6) References (external — for validation)

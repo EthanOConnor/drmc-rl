@@ -102,9 +102,12 @@ def test_demo_reset_matches_disassembly(engine_proc, demo_data):
     mm, state = open_shared_memory()
     state.control_flags = 1  # release wait-start gate
     state.buttons = 0
-    # Ensure we read right after start
-    while state.frame_count == 0:
-        pass
+    # Wait for the post-gate `reset()` to finish populating the demo board.
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        if state.frame_count != 0 and state.board[0] == 0xFF:
+            break
+        time.sleep(0.001)
     try:
         # After reset, engine should be in demo mode with demo field copied.
         assert list(state.board) == demo_data["field"]
@@ -121,7 +124,15 @@ def test_demo_reset_matches_disassembly(engine_proc, demo_data):
         assert state.preview_pill_color_r == COLOR_COMBO_RIGHT[pill1]
     finally:
         del state
-        mm.close()
+        try:
+            mm.close()
+        except BufferError:
+            # pytest can keep references alive for assertion introspection; force
+            # a collection so the mmap can be closed cleanly.
+            import gc
+
+            gc.collect()
+            mm.close()
 
 
 def test_demo_trace_matches_nes_ground_truth():

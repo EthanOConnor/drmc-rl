@@ -84,7 +84,7 @@ placement wrapper at true decision points and match `info["placements/feasible_m
 
 Implementation
 - Code: `envs/specs/ram_to_state.py:1` implements the decoder using the above masks and addresses.
-- Offsets source: `envs/specs/ram_offsets.json:1` for the current ROM; `re/out/ram_map.json:1` contains an expanded spec including inputs/timers/RNG for reference.
+- Offsets source: `envs/specs/ram_offsets.json:1` for the current ROM; `envs/specs/ram_map.py:1` contains the expanded spec (derived from `dr-mario-disassembly/`).
 
 Termination (state mode)
 - The environment uses canonical game flags to end episodes when running with RAM access:

@@ -84,15 +84,14 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 ### Low Priority / Notes
 
 **L1. Multiple Python venv directories**
-- **Observation**: `.venv`, `.venv-py313`, `.venv-py313t` all exist.
-- **Impact**: None if gitignored, but could confuse contributors.
-- **Note**: Document which venv to use in AGENTS.md.
+- **Observation**: Historically, multiple venvs existed (`.venv-py313`, `.venv-py313t`).
+- **Impact**: Confusing for contributors if left around.
+- **Status**: Resolved — removed extra venv dirs; `.venv` is canonical (see `AGENTS.md`).
 
 **L2. Screenshot in repo root**
-- **Location**: `Screenshot 2025-11-04 at 15.31.35.png` (401KB)
-- **Issue**: Large binary file in repo root.
-- **Impact**: Minor repo bloat.
-- **Mitigation**: Move to `docs/` or remove if unused.
+- **Observation**: There was a large screenshot checked into the repo root.
+- **Impact**: Minor repo bloat + noise.
+- **Status**: Resolved — removed as part of repo decruftification.
 
 ---
 
@@ -128,6 +127,11 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: The repo currently tracks `game_engine/drmario_engine` and `game_engine/*.o` alongside the C++ sources.
 - **Risk**: If sources change without rebuilding (or rebuild artifacts aren’t updated in git), tools/tests that execute the shipped binary can appear to “hang” (e.g., manual-step timeouts / demo stalls) in ways that look like a logic regression.
 - **Mitigation**: Keep build artifacts updated when changing engine sources (or, longer-term, stop tracking build outputs and build in CI / on demand). When debugging “engine step timed out”, first run `make -C game_engine clean && make -C game_engine`.
+
+**R5. Demo start gating: `frame_count` is not a “reset complete” signal**
+- **Concern**: In demo mode, `GameLogic::reset()` sets `state.frame_count` to a non-zero value early (for transcript alignment) before `setupLevel()` copies the demo field into `state.board`.
+- **Risk**: Drivers/tests that treat `frame_count != 0` as “ready” can read a zeroed/incomplete board right after releasing `--wait-start`.
+- **Mitigation**: Gate on a post-reset sentinel (e.g., `state.board[0] == 0xFF` and/or `preview_pill_size == 2`), or add an explicit `reset_complete` flag to the shared memory protocol if we need a stable readiness contract.
 
 ### Placement Policy Correctness
 
@@ -522,3 +526,8 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: Checkpoints/logs now default to `.gz` artifacts (streamable compression).
 - **Risk**: Scripts that assume `.pt`/`.jsonl` extensions may miss files; large-scale scans may spend extra CPU on decompression (especially when validating many checkpoints).
 - **Mitigation**: Keep readers tolerant of `.pt` + `.pt.gz` and `.jsonl` + `.jsonl.gz`. Provide a dedicated checkpoint scanner (`tools/check_checkpoints.py`) and use extension-agnostic helpers (`training/utils/checkpoint_io.py`). If scanning cost becomes high, add lightweight header checks or parallelize validation.
+
+**R63. Removing external trainer integration shifts scaling burden onto our stack**
+- **Concern**: With external trainer integration removed, all throughput/scaling features must be supported by our in-repo runner + env backends.
+- **Risk**: If we outgrow single-host scaling, we may be tempted to re-introduce a second training stack ad-hoc, re-creating drift and inconsistent checkpoint/log semantics.
+- **Mitigation**: Treat `training.run` + `ppo_smdp` as the only supported training path; if multi-host becomes necessary, add a deliberate, minimal distributed layer (or external orchestrator) that preserves our checkpoint/log contracts rather than forking algorithm code.

@@ -1106,3 +1106,27 @@ the rotation can be recovered from the preview mask.
 - **Checkpoint format note:** Gzipped checkpoints use PyTorch’s legacy (non-zip) serialization so they remain stream-friendly and avoid zipfile seek requirements.
 - **Why:** Significantly reduces disk usage while keeping reads stream-friendly and dependency-free (gzip is in the stdlib).
 - **Trade-offs:** Tooling must accept both compressed/uncompressed extensions, and checkpoint/log scans pay a small CPU decompression cost.
+
+---
+
+## 2025-12-23 – Training Stack: No External Trainer Integration
+
+- **Decision:** Remove all external trainer integration and keep the canonical RL/training stack fully in-repo (`python -m training.run` with `ppo_smdp` / `simple_pg`).
+- **Why:** Reduce dependency surface area and eliminate “two training stacks” drift; keep resume/checkpoint/logging semantics under our control and aligned with our env contracts.
+- **Trade-offs:** We give up a mature distributed actor/learner infrastructure; if we need multi-machine scale later, add it behind a clean adapter boundary (not as a second, semi-maintained training path).
+
+---
+
+## 2025-12-23 – Repo Hygiene: Canonical Docs + Notes Archive
+
+- **Decision:** Keep the repo root minimal (primarily `README.md` + `AGENTS.md`), and treat `docs/` + `notes/` as the canonical places for documentation and decisions. Move historical one-off writeups into `notes/archive/` and avoid keeping tracked scratch artifacts (plots, commandlines, vendored reference code) at the root.
+- **Why:** Reduce “stale doc” drift and cognitive load; make it obvious where to look for current instructions vs historical context.
+- **Trade-offs:** Some old filenames/paths stop existing; mitigation is to keep archived originals under `notes/archive/` and update current docs/notes to point there only when needed.
+
+---
+
+## 2025-12-23 – Reverse Engineering: Use Disassembly Submodule
+
+- **Decision:** Remove the in-repo `re/` reverse-engineering workspace and rely on the `dr-mario-disassembly/` submodule for annotated disassembly. Keep only the derived, runtime-relevant artifacts in-repo (e.g. `envs/specs/ram_map.py`, `envs/specs/ram_offsets.json`, and tracked parity fixtures like `data/nes_demo.json`).
+- **Why:** Avoid duplicating the disassembly/annotation effort and reduce repo bloat; keep the codebase focused on env/training/eval rather than RE pipelines.
+- **Trade-offs:** We lose the local RE automation scripts and intermediate outputs; if we need to redo ROM verification on a new revision, recreate minimal tooling under `tools/` (without reintroducing a separate `re/` tree).

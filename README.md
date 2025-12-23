@@ -40,7 +40,6 @@ Legal: You must use your own legally‑obtained ROM. ROMs are not included or di
   - `--placement-debug-log` prints a compact 16×8 board occupancy and pill snapshot when the planner returns zero feasible options, plus planner search stats.
   - Off by default. Intended for development; emits to stdout only on meaningful changes to avoid spam.
   - QuickNES ships with a muted palette; for faithful colors switch to the Mesen core (`mesen_libretro.dylib`).
-- Kick off Sample Factory: `python -m sample_factory.launcher.run --cfg training/sf_configs/pixel_baseline.yaml --override env.backend=libretro env.auto_start=true`
 
 ### Backend selection
 
@@ -68,14 +67,11 @@ If you need me to fetch docs or install packages, I can request elevated network
 - `models/policy/` PPO networks (IMPALA CNN/LSTM) with risk conditioning (skeleton)
 - `models/evaluator/` Distributional evaluator heads (QR/IQN) + training (skeleton)
 - `models/pixel2state/` Pixel→state translator (skeleton)
-- `training/sf_configs/` Sample Factory configurations (skeleton)
-- `training/launches/` Launch helpers (skeleton)
+- `training/configs/` Training configs (in-repo algorithms)
 - `data/states/` Savestates seeds (not tracked)
 - `data/datasets/` Parquet playouts, labeled frames (not tracked)
 - `eval/harness/` Evaluation harness and plotting (skeleton)
-- `sim-envpool/` Rules‑exact C++ env (later)
-- `re/` Reverse‑engineering projects (Ghidra/ca65), CDL files
-- `io-bridge/` Microcontroller scripts for controller out (later)
+- `dr-mario-disassembly/` Disassembly + annotations submodule (no ROMs)
 - `docs/` DESIGN, RNG, CONTRIBUTING and discussions
 
 ## Status
@@ -102,4 +98,7 @@ If you need me to fetch docs or install packages, I can request elevated network
 
 ## References
 
-See `docs/DESIGN.md`, `docs/RNG.md`, `DESIGN_DISCUSSIONS.md`, `docs/REWARD_SHAPING.md`, `docs/TASKS_NEXT.md`, `docs/ENV_STANDUP_MAC_LINUX.md`, `docs/RAM_TO_STATE.md`, and `docs/REFERENCES.md` for details and links.
+See `docs/DESIGN.md`, `docs/RNG.md`, `docs/REWARD_SHAPING.md`, `docs/TASKS_NEXT.md`,
+`docs/ENV_STANDUP_MAC_LINUX.md`, `docs/RAM_TO_STATE.md`, and `docs/REFERENCES.md` for details and links.
+Project decisions and work history live under `notes/`.
+Older non-authoritative artifacts are archived under `notes/archive/` (read only if needed).

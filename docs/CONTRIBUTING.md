@@ -11,13 +11,13 @@ Thanks for helping build Dr. Mario RL. Please read AGENTS.md at the repo root fo
 ## Setup
 - macOS: `brew install cmake pkg-config lua@5.1`
 - Python: `uv venv && source .venv/bin/activate` (or `python -m venv venv`)
-- Install `torch`, `stable-retro`, `sample-factory`, `gymnasium`, `numpy`, `opencv-python` when network is available.
+- Install `torch`, `stable-retro`, `gymnasium`, `numpy`, `opencv-python` when network is available.
 
 ## Development Areas
 - `envs/retro/`: Stable‑Retro wrappers; state extraction; seed registry utilities
 - `models/`: policy nets, evaluator heads, pixel→state
 - `eval/`: evaluation harness and plots
-- `re/`: reverse‑engineering artifacts; do not commit ROMs
+- `dr-mario-disassembly/`: disassembly + annotations (no ROMs)
 - `sim-envpool/`: rules‑exact high‑FPS simulator (later)
 
 ## Testing
@@ -27,4 +27,4 @@ Thanks for helping build Dr. Mario RL. Please read AGENTS.md at the repo root fo
 
 ## Documentation
 - Update `docs/DESIGN.md` and `docs/RNG.md` when changing specs or RNG understanding.
-- Record decisions and open questions in `DESIGN_DISCUSSIONS.md`.
+- Record decisions in `notes/MEMORY.md` and open questions/risks in `notes/CHAT.md` / `notes/SCRUTINY.md`.

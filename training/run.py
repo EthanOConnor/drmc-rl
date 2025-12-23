@@ -126,21 +126,14 @@ def parse_args(argv: Any = None) -> argparse.Namespace:
 Examples:
   python -m training.run --algo simple_pg --ui tui
   python -m training.run --algo ppo_smdp --ui debug --env-id DrMarioPlacementEnv-v0 --core quicknes --rom-path legal_ROMs/DrMario.nes
-  python -m training.run --algo ppo --cfg training/configs/ppo.yaml
   python -m training.run --algo simple_pg --wandb --total_steps 1e6
 """,
     )
     parser.add_argument(
         "--algo",
-        choices=["simple_pg", "ppo", "appo", "ppo_smdp"],
+        choices=["simple_pg", "ppo_smdp", "smdp_ppo"],
         default=None,
         help="Algorithm to run (defaults to cfg.algo or 'simple_pg').",
-    )
-    parser.add_argument(
-        "--engine",
-        choices=["builtin", "sf2"],
-        default=None,
-        help="Training engine ('builtin' or 'sf2'); defaults to cfg.engine or algo-based default.",
     )
     parser.add_argument("--cfg", type=str, default=str(DEFAULT_BASE_CFG))
     parser.add_argument("--override", type=str, default=None, help="Comma separated key=value overrides")
@@ -192,9 +185,6 @@ Examples:
         help="Randomize the ROM RNG state on each env reset (episode).",
     )
 
-    # Compatibility knobs retained from historical scripts
-    parser.add_argument("--timeout", type=int, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--state-viz-interval", type=int, default=None, help=argparse.SUPPRESS)
     return parser.parse_args(argv)
 
 
@@ -206,14 +196,6 @@ def load_config(args: argparse.Namespace) -> Any:
         algo = "ppo_smdp"
     cfg_dict["algo"] = algo
 
-    if args.engine:
-        cfg_dict["engine"] = args.engine
-    else:
-        cfg_engine = cfg_dict.get("engine")
-        if cfg_engine:
-            cfg_dict["engine"] = cfg_engine
-        else:
-            cfg_dict["engine"] = "builtin" if algo in {"simple_pg", "ppo_smdp"} else "sf2"
     if args.viz is not None:
         cfg_dict["viz"] = args.viz if isinstance(args.viz, list) else [args.viz]
     if args.wandb:
@@ -298,8 +280,6 @@ def load_config(args: argparse.Namespace) -> Any:
 def build_adapter(cfg: Any, env: Any, logger: DiagLogger, event_bus: EventBus, device: str) -> AlgoAdapter:
     if cfg.algo == "simple_pg":
         from training.algo.simple_pg import SimplePGAdapter as Adapter
-    elif cfg.algo in {"ppo", "appo"}:
-        from training.algo.sf2_adapter import SampleFactoryAdapter as Adapter
     elif cfg.algo == "ppo_smdp":
         from training.algo.ppo_smdp import SMDPPPOAdapter as Adapter
     else:  # pragma: no cover - guardrail
@@ -352,7 +332,7 @@ def main(argv: Any = None) -> None:
         "run_id": getattr(cfg, "run_id", None),
         "logdir": str(getattr(cfg, "logdir", "")),
         "algo": cfg.algo,
-        "engine": cfg.engine,
+        "env_backend": getattr(getattr(cfg, "env", object()), "backend", None),
         "seed": ctx.seed,
         "device": device,
     }

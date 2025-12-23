@@ -2,7 +2,7 @@
 """Capture parity fixtures (RAM + planes) over seeds for later simulator tests.
 
 Usage:
-  python tools/capture_parity.py --episodes 3 --steps 256 --out re/out/parity --mode state \
+  python tools/capture_parity.py --episodes 3 --steps 256 --out data/parity --mode state \
       [--frame-offset 0]
 
 Notes:
@@ -24,7 +24,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--episodes', type=int, default=3)
     ap.add_argument('--steps', type=int, default=256)
-    ap.add_argument('--out', type=str, default='re/out/parity')
+    ap.add_argument('--out', type=str, default='data/parity')
     ap.add_argument('--mode', choices=['state', 'pixel'], default='state')
     ap.add_argument('--frame-offset', type=int, default=0)
     args = ap.parse_args()
@@ -62,4 +62,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

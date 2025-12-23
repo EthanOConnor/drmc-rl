@@ -418,8 +418,6 @@ dev = [
 ]
 rl = [
     { name = "pettingzoo" },
-    { name = "sample-factory", version = "1.123.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "sample-factory", version = "2.0.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.11.*'" },
     { name = "torch" },
     { name = "torchaudio" },
     { name = "torchrl" },
@@ -446,7 +444,6 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "sample-factory", marker = "extra == 'rl'" },
     { name = "torch", marker = "extra == 'rl'" },
     { name = "torchaudio", marker = "extra == 'rl'" },
     { name = "torchrl", marker = "extra == 'rl'" },
@@ -2069,71 +2066,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/12/0d/15cc82da5d83f27a3c6b04f3a232d61bc8c50d38a6cd8da79228e5f8b8d6/ruff-0.14.9-py3-none-win32.whl", hash = "sha256:df0937f30aaabe83da172adaf8937003ff28172f59ca9f17883b4213783df197", size = 13202651, upload-time = "2025-12-11T21:39:26.628Z" },
     { url = "https://files.pythonhosted.org/packages/32/f7/c78b060388eefe0304d9d42e68fab8cffd049128ec466456cef9b8d4f06f/ruff-0.14.9-py3-none-win_amd64.whl", hash = "sha256:c0b53a10e61df15a42ed711ec0bda0c582039cf6c754c49c020084c55b5b0bc2", size = 14702079, upload-time = "2025-12-11T21:39:11.954Z" },
     { url = "https://files.pythonhosted.org/packages/26/09/7a9520315decd2334afa65ed258fed438f070e31f05a2e43dd480a5e5911/ruff-0.14.9-py3-none-win_arm64.whl", hash = "sha256:8e821c366517a074046d92f0e9213ed1c13dbc5b37a7fc20b07f79b64d62cc84", size = 13744730, upload-time = "2025-12-11T21:39:29.659Z" },
-]
-
-[[package]]
-name = "sample-factory"
-version = "1.123.0"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version == '3.11.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version == '3.11.*' and platform_machine != 'aarch64' and sys_platform == 'linux'",
-    "python_full_version == '3.11.*' and sys_platform == 'darwin'",
-    "python_full_version == '3.11.*' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
-dependencies = [
-    { name = "colorlog", marker = "python_full_version == '3.11.*'" },
-    { name = "faster-fifo", marker = "python_full_version == '3.11.*'" },
-    { name = "filelock", marker = "python_full_version == '3.11.*'" },
-    { name = "gym", marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "opencv-python", marker = "python_full_version == '3.11.*'" },
-    { name = "psutil", marker = "python_full_version == '3.11.*'" },
-    { name = "tensorboard", marker = "python_full_version == '3.11.*'" },
-    { name = "tensorboardx", marker = "python_full_version == '3.11.*'" },
-    { name = "threadpoolctl", marker = "python_full_version == '3.11.*'" },
-    { name = "torch", marker = "python_full_version == '3.11.*'" },
-    { name = "wandb", marker = "python_full_version == '3.11.*'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/1a/34/bb29087792c8316a10b9e96e97572454cd28eefa5dc5f3f5fc46a8d2ad34/sample-factory-1.123.0.tar.gz", hash = "sha256:2657b50f26b517b677f0c6d848db5dfcc2a98cff95a5e97b59a2f61d92c74d68", size = 8859592, upload-time = "2022-04-12T06:39:23.758Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/f6/f0b491352d04550e2e80c2c45cd1ed7a675267f32efdb8ab465225c176ba/sample_factory-1.123.0-py3-none-any.whl", hash = "sha256:eb78175200db07047c3f97c5674322389f7a9dd58c0008ac250163ee4b0d331e", size = 8970500, upload-time = "2022-04-12T06:39:15.304Z" },
-]
-
-[[package]]
-name = "sample-factory"
-version = "2.0.3"
-source = { registry = "https://pypi.org/simple" }
-resolution-markers = [
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux'",
-    "python_full_version >= '3.12' and sys_platform == 'darwin'",
-    "python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux'",
-    "python_full_version < '3.11' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version < '3.11' and platform_machine != 'aarch64' and sys_platform == 'linux'",
-    "python_full_version < '3.11' and sys_platform == 'darwin'",
-    "python_full_version < '3.11' and sys_platform != 'darwin' and sys_platform != 'linux'",
-]
-dependencies = [
-    { name = "colorlog", marker = "python_full_version != '3.11.*'" },
-    { name = "faster-fifo", marker = "python_full_version != '3.11.*'" },
-    { name = "filelock", marker = "python_full_version != '3.11.*'" },
-    { name = "gym", marker = "python_full_version != '3.11.*'" },
-    { name = "huggingface-hub", marker = "python_full_version != '3.11.*'" },
-    { name = "numpy", version = "1.26.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version != '3.11.*'" },
-    { name = "opencv-python", marker = "python_full_version != '3.11.*'" },
-    { name = "psutil", marker = "python_full_version != '3.11.*'" },
-    { name = "pyglet", marker = "python_full_version != '3.11.*'" },
-    { name = "signal-slot-mp", marker = "python_full_version != '3.11.*'" },
-    { name = "tensorboard", marker = "python_full_version != '3.11.*'" },
-    { name = "tensorboardx", marker = "python_full_version != '3.11.*'" },
-    { name = "threadpoolctl", marker = "python_full_version != '3.11.*'" },
-    { name = "torch", marker = "python_full_version != '3.11.*'" },
-    { name = "wandb", marker = "python_full_version != '3.11.*'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/80/b24ebb87f403b3022e981b8f06fc0eefa6b3b4020a9a523045036db9e1d7/sample-factory-2.0.3.tar.gz", hash = "sha256:23de99b6980ddecda7050101fbe78ec407a69556b2a35b251e2ba2b183a94c53", size = 8960500, upload-time = "2023-02-09T10:47:48.456Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/09/30/69a76430570efffbef4e80ad11bf5fd6f432a15ec100bdff975ad189db74/sample_factory-2.0.3-py3-none-any.whl", hash = "sha256:992a01da6633cd045925b13607cb9cb8c3e529e6bcfa7547e734b282a2324607", size = 9013165, upload-time = "2023-02-09T10:47:37.886Z" },
 ]
 
 [[package]]

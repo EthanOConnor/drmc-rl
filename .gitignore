@@ -24,7 +24,10 @@ data/datasets/
 data/states/
 data/best_times.sqlite3*
 data/pose_mismatches*.jsonl
+data/pose_mismatches*.jsonl.gz
 data/ghost_parity_divergences*.jsonl
+data/ghost_parity_divergences*.jsonl.gz
+data/parity/
 retro-data/
 retro/"*"
 !retro/README.md
@@ -37,3 +40,7 @@ cores/
 checkpoints/
 notes/human_notes/
 tests/user_testing/
+/archive/
+/writeup/
+/commandlines*.txt
+/re/

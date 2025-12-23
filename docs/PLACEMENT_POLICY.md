@@ -358,6 +358,20 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --override curriculu
 **Symptom**: Sampled invalid actions
 **Fix**: Check wrapper mask generation, verify masking logic
 
+### Pose Mismatches (Macro Environment)
+**Symptom**: Debug UI shows `placements/pose_ok=no` or `placements/pose_mismatch_count` increases.
+
+**What it means**: The macro planner predicted a lock pose for the chosen placement action, but the
+observed lock pose disagreed (usually indicates a contract mismatch between reachability/planner,
+controller script timing, or the backend).
+
+**Diagnostics**:
+- By default, mismatches are logged (JSONL) to `data/pose_mismatches.jsonl.gz` (git-ignored).
+- Control via env vars:
+  - `DRMARIO_POSE_MISMATCH_LOG=0` to disable (or set a custom path).
+  - `DRMARIO_POSE_MISMATCH_TRACE=1` to include a per-step lock trace payload (larger logs).
+  - `DRMARIO_POSE_MISMATCH_LOG_MAX=25` to cap the number of logged mismatches per run.
+
 ### Slow Training
 **Symptom**: Low decisions/sec
 **Fix**:
