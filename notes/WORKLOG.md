@@ -475,3 +475,4 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Reworked the live picker flow to offer explicit file/dir buttons and centered the chooser to avoid off-screen dialogs (`tools/plot_success_live.py`).
 - Made the live picker use the main Tk window (no hidden root) to avoid invisible/off-screen dialogs on macOS, and relaxed file filters so `.gz` isn’t hidden (`tools/plot_success_live.py`).
 - Made `.jsonl.gz` readers tolerant of in-progress gzip streams so live plots work while training is still writing logs (`tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `tools/plot_success_live.py`).
+- Resized the live plot window after selection so it doesn’t inherit the small picker geometry (`tools/plot_success_live.py`).

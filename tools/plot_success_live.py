@@ -169,6 +169,14 @@ class LivePlotApp:
         self._closing = False
 
         root.title("Curriculum plot")
+        try:
+            root.resizable(True, True)
+            root.minsize(900, 520)
+            root.geometry("1200x700")
+            root.update_idletasks()
+            _center_window(root, width=1200, height=700)
+        except Exception:
+            pass
 
         top = ttk.Frame(root, padding=(10, 8))
         top.pack(side="top", fill="x")
