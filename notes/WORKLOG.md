@@ -469,3 +469,9 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Defaulted run artifacts to gzip-compressed, streamable files: `metrics.jsonl.gz`, `env.txt.gz`, and `*.pt.gz` checkpoints; updated readers/tools to accept `.gz` (e.g., `tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `training/utils/reproducibility.py`, `training/run.py`, `tests/test_adapters.py`).
 - Added gzip-aware logging for pose mismatch and ghost-parity JSONL outputs and updated docs to match the new defaults (`envs/retro/placement_env.py`, `tools/ghost_parity.py`, `QUICK_START_PLACEMENT_POLICY.md`).
 - Added a checkpoint validation tool to scan for corrupt checkpoint files and optionally delete them (`tools/check_checkpoints.py`).
+- Added a live-updating curriculum plotter with an in-window chart selector that reuses the existing JSONL parser and avoids background threads (`tools/plot_success_live.py`).
+- Fixed a startup ordering bug in the live plotter (status label initialized before trace callback).
+- Tweaked live + static plot pickers to show `*.jsonl.gz` files in the file filter (`tools/plot_success_live.py`, `tools/plot_success_by_level.py`).
+- Reworked the live picker flow to offer explicit file/dir buttons and centered the chooser to avoid off-screen dialogs (`tools/plot_success_live.py`).
+- Made the live picker use the main Tk window (no hidden root) to avoid invisible/off-screen dialogs on macOS, and relaxed file filters so `.gz` isn’t hidden (`tools/plot_success_live.py`).
+- Made `.jsonl.gz` readers tolerant of in-progress gzip streams so live plots work while training is still writing logs (`tools/plot_success_by_level.py`, `tools/report_curriculum.py`, `tools/plot_success_live.py`).

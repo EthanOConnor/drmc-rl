@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import io
 import json
 import math
 from pathlib import Path
@@ -122,8 +123,27 @@ def _print_confidence_table(*, targets: List[float], sigmas_list: List[float]) -
 
 
 def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
-    opener = gzip.open if path.suffix == ".gz" else Path.open
-    with opener(path, "rt", encoding="utf-8") as f:
+    if path.suffix == ".gz":
+        with path.open("rb") as raw:
+            with gzip.GzipFile(fileobj=raw, mode="rb") as gz:
+                with io.TextIOWrapper(gz, encoding="utf-8") as f:
+                    while True:
+                        try:
+                            line = f.readline()
+                        except (EOFError, OSError):
+                            break
+                        if not line:
+                            break
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            yield json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+        return
+
+    with path.open("rt", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
