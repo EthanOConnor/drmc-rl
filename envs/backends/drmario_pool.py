@@ -17,7 +17,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
@@ -97,6 +97,17 @@ class _DrmResetSpec(C.Structure):
         ("synthetic_patch_counter", C.c_uint8),
         ("_reserved1", C.c_uint8 * 3),
         ("synthetic_seed", C.c_uint32),
+        ("checkpoint_enabled", C.c_uint8),
+        ("checkpoint_board", C.c_uint8 * 128),
+        ("checkpoint_falling_colors", C.c_uint8 * 2),
+        ("checkpoint_preview_colors", C.c_uint8 * 2),
+        ("checkpoint_pill_counter", C.c_uint8),
+        ("checkpoint_pill_counter_total", C.c_uint16),
+        ("checkpoint_speed_ups", C.c_uint8),
+        ("checkpoint_speed_counter", C.c_uint8),
+        ("checkpoint_hor_velocity", C.c_uint8),
+        ("checkpoint_frame_parity", C.c_uint8),
+        ("_reserved2", C.c_uint8 * 1),
     ]
 
 
@@ -454,6 +465,16 @@ def build_reset_spec(
     synthetic_virus_target: int = -1,
     synthetic_patch_counter: bool = False,
     synthetic_seed: int = 0,
+    checkpoint_enabled: bool = False,
+    checkpoint_board: Sequence[int] | np.ndarray | None = None,
+    checkpoint_falling_colors: tuple[int, int] = (0xFF, 0xFF),
+    checkpoint_preview_colors: tuple[int, int] = (0xFF, 0xFF),
+    checkpoint_pill_counter: int = 0,
+    checkpoint_pill_counter_total: int = 0,
+    checkpoint_speed_ups: int = 0,
+    checkpoint_speed_counter: int = 0,
+    checkpoint_hor_velocity: int = 0,
+    checkpoint_frame_parity: int = 0xFF,
 ) -> _DrmResetSpec:
     spec = _DrmResetSpec()
     spec.struct_size = C.sizeof(_DrmResetSpec)
@@ -468,4 +489,24 @@ def build_reset_spec(
     spec.synthetic_virus_target = int(synthetic_virus_target)
     spec.synthetic_patch_counter = 1 if bool(synthetic_patch_counter) else 0
     spec.synthetic_seed = int(synthetic_seed) & 0xFFFFFFFF
+    spec.checkpoint_enabled = 1 if bool(checkpoint_enabled) else 0
+    board = (
+        np.full((128,), 0xFF, dtype=np.uint8)
+        if checkpoint_board is None
+        else np.asarray(checkpoint_board, dtype=np.uint8).reshape(-1)
+    )
+    if board.size != 128:
+        raise ValueError(f"checkpoint_board must have 128 entries, got {board.size}")
+    for idx, value in enumerate(board.tolist()):
+        spec.checkpoint_board[idx] = int(value) & 0xFF
+    spec.checkpoint_falling_colors[0] = int(checkpoint_falling_colors[0]) & 0xFF
+    spec.checkpoint_falling_colors[1] = int(checkpoint_falling_colors[1]) & 0xFF
+    spec.checkpoint_preview_colors[0] = int(checkpoint_preview_colors[0]) & 0xFF
+    spec.checkpoint_preview_colors[1] = int(checkpoint_preview_colors[1]) & 0xFF
+    spec.checkpoint_pill_counter = int(checkpoint_pill_counter) & 0xFF
+    spec.checkpoint_pill_counter_total = int(checkpoint_pill_counter_total) & 0xFFFF
+    spec.checkpoint_speed_ups = int(checkpoint_speed_ups) & 0xFF
+    spec.checkpoint_speed_counter = int(checkpoint_speed_counter) & 0xFF
+    spec.checkpoint_hor_velocity = int(checkpoint_hor_velocity) & 0xFF
+    spec.checkpoint_frame_parity = int(checkpoint_frame_parity) & 0xFF
     return spec
