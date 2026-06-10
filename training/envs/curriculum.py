@@ -1311,6 +1311,7 @@ class UniformMixtureCurriculum:
         mean_success = float(np.mean(list(self._ema.values()))) if self._ema else 0.0
         return {
             "mode": "uniform_mixture",
+            "current_level": self._max_level,
             "start_level": self._min_level,
             "max_level": self._max_level,
             "episodes_current_total": self._episodes_total,
