@@ -92,3 +92,4 @@ Sequenced plan toward beating strong humans (speedrun + VS):
   import shims, targeted tests, and docs updates in the same change.
 - Keep future 2P, pixel-to-state, and EnvPool references out of current docs
   unless they become active scope again.
+- Curriculum state is not saved in checkpoints; resume restarts the ladder (fast with a strong policy, but wasteful). Persist curriculum stage/stats in the checkpoint payload.
