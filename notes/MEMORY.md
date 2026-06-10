@@ -5,6 +5,65 @@ Format: short entries, timestamped, with rationale and trade-offs (ADR-lite).
 
 ---
 
+## 2026-06-09 – Planner v4 (gated exact BFS) + Pool Warp Execution
+
+- **Decision**: The production reachability planner is `drm_reach_bfs_v4`
+  (costs-only): greedy simulated witnesses provide per-pose upper bounds,
+  an admissible lower-bound gate (vertical descent rate + per-pose backward
+  geometric BFS over composite single-frame moves) prunes states that cannot
+  strictly improve any unresolved pose, and unresolved poses finalize at their
+  witness UB. `drm_reach_bfs_full` (v1) remains the oracle for fuzz parity and
+  for script generation.
+- **Decision**: `cpp-pool` no longer replays controller scripts. The planner
+  cost is an exact frame count, the board is static during a fall, so
+  `GameLogic::warp_fall` advances frame/status-row counters analytically and
+  enters PillPlaced exactly as a failed gravity drop would. Post-lock frames
+  (clear/settle/spawn) still run the real per-frame state machine.
+  `DRMARIO_POOL_WARP=0` restores the replay path.
+- **Why**: Profiling showed 99.7% of pool time inside the v1 BFS
+  (~750k states/spawn). Exact state-space facts exploited: `hor_velocity` is
+  semantically dead under neutral hold (edge presses reset it before any read);
+  parity is a function of depth; DAS/wall-tuck timing only matters inside held
+  runs. Greedy witnesses make the gate tight on real boards.
+- **Trade-offs**: v4 keeps worst-case exactness by running the gated BFS to
+  closure when witnesses are loose (sparse floating-virus boards with deep
+  tucks, ~4–9 ms). A bit-sliced (x×sc) "v3" was built, verified, and measured
+  *slower* (per-depth re-expansion of shifted sc bits); kept in-tree as a
+  documented dead end.
+- **Validation**: fuzz exact-equality vs v1 on in-bounds poses (structured +
+  random boards × thresholds × spawn micro-states), plus byte-identical
+  300-step pool trajectories warp-vs-replay. Offscreen poses may differ at the
+  early-exit depth; the macro env never reads them.
+
+---
+
+## 2026-05-07 - Forward-Facing Architecture Reset
+
+- **Decision**: Treat `cpp-pool` placement-SMDP training as the default project
+  architecture in root docs, setup docs, and agent guidance.
+- **Why**: The repo has moved past Stable-Retro-first setup, EnvPool planning,
+  and `cpp-engine` as the recommended throughput path. Keeping those as default
+  onboarding instructions sends future agents into obsolete commands and mental
+  models.
+- **Trade-off**: Emulator-backed code remains important for parity/debugging, and
+  placement planner code still lives under the historical `envs/retro/` package
+  name. The cleanup narrows default guidance without deleting active parity or
+  planner surfaces.
+
+## 2026-05-08 - Connection-Edge Bottle Observations
+
+- **Decision**: Make `bitplane_bottle_conn_mask` the forward-facing placement
+  observation: RGB bottle colors + virus mask + `connected_{up,down,left,right}`
+  + four feasible-placement planes.
+- **Why**: The placement task needs to reason about whether a colored cell is a
+  virus, a singleton half, or part of a locked capsule. Connection edges expose
+  the physical capsule graph directly without reintroducing falling-pill or
+  preview projections into the board tensor.
+- **Trade-off**: The default observation grows from 8 to 12 channels. Candidate
+  policy trunks consume the first 8 non-feasibility channels by default, while
+  local raw patches still use the first four color/virus planes. The old
+  `bitplane_bottle_mask` mode remains available as a no-edge ablation.
+
 ## 2025-10-17 – Initial Architecture Decisions
 
 ### Environment Design

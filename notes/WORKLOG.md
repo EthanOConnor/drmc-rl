@@ -4,6 +4,87 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 ---
 
+## 2026-06-09 – Coding Agent (Claude)
+
+- Profiled the `cpp-pool` training path end to end. `sample` on a single-env
+  bench shows **99.7% of wall time inside `drm_reach_bfs_full`** (the planner
+  BFS); engine frame simulation, script replay, and Python overhead are noise.
+- Isolated BFS cost with `DRMARIO_REACH_STATS=1`: a real top-of-board spawn
+  visits ~750k–900k states and evaluates 7–9M transitions per spawn
+  (**11–13 ms**), even though early-exit triggers at depth ~30–34. Baseline
+  pool throughput: 8.7 ms/decision single env; ~43k FPS / 956 dec/s at 16 envs.
+- Root-cause analysis of the state-space blowup (basis for planner v2):
+  - `hor_velocity` is semantically dead whenever `hold_dir == NEUTRAL`
+    (any future press edge-resets it to 0 before it is read), but the BFS keys
+    on it anyway → up to ×16 redundant states for neutral-hold states.
+    Collapsing it is exact, not an approximation.
+  - `frame parity` is a pure function of BFS depth (p = (p0 + depth) & 1) and
+    never branches within a depth; keying on it wastes ×2 memory.
+  - Long same-direction lateral holds only matter through DAS (hv ≥ 16).
+    DAS repeat (6 frames) is strictly slower than tap repeat (2 frames), and
+    a single DAS auto-tuck at frame t is replicable by an edge press timed at
+    t for equal cost. Capping modeled hold-run length (keeping exact hv
+    tracking only inside short runs) should preserve exact minimal costs;
+    verify empirically vs the existing BFS as oracle.
+  - Parent-pointer/script bookkeeping writes ~5 bytes per visited state into
+    ~50 MB arrays (random access). Training only needs feasibility + costs;
+    scripts can be reconstructed on demand (or skipped entirely once the pool
+    warps to the lock pose instead of replaying controller scripts).
+- Plan reordered accordingly: planner v2 first (exact-equivalence-tested),
+  then pool warp-execution, then training-stack modernization.
+- **Planner rewrite landed** (`reach_native/drm_reach_full.c`):
+  - `drm_reach_bfs_v2`: exact hv-collapse for neutral hold_dir (hv is dead
+    there — every lateral input from neutral is an edge press that resets it),
+    optional costs-only mode. Verified exact vs v1 on 1k fuzz cases. ~2×.
+  - `drm_reach_bfs_v3`: bit-sliced (x × speed_counter) blocks. Correct but
+    SLOW — sc bits shift every frame so every key re-enters the frontier every
+    depth, and 128-byte block ops lose to v1's scalar loop. Kept as a
+    documented dead end; do not resurrect without fixing re-expansion.
+  - `drm_reach_bfs_v4` (production): greedy-witness upper bounds (pattern
+    plans + shaft-descent/rotate-at-bottom tucks + gradient-follow on a
+    composite-frame geometric distance field) + admissible lower-bound gate
+    (vertical descent rate ⊔ per-pose backward geometric BFS) folded into a
+    per-depth 16×4×8 allowance bitmask. Exact (same fuzz harness), 4× on the
+    worst sparse-board cases, up to ~60× on open/mid-game boards.
+- **Pool warp execution** (`game_engine`): `GameLogic::warp_fall` jumps the
+  engine to the lock pose (frame counter += cost, status-row countdown advance,
+  sc=0, confirmPlacement, PillPlaced) instead of replaying controller scripts;
+  `DrMarioPool` plans with v4 costs-only and skips per-env 1 MB script buffers.
+  `DRMARIO_POOL_WARP=0` restores the legacy replay+v1 path. A 300-step
+  4-env trajectory comparison (levels 0/5/10/18, speeds 0–2, resets included)
+  is byte-identical across tau/boards/masks/costs/adjacency/locks.
+- **End-to-end**: bench_multienv random-action: 1 env 19.4k FPS (was ~5k);
+  64 envs 182k FPS / 3.1k decisions/s (was ~40k / ~680). Worst remaining
+  planner cases are sparse low-virus boards with deep tuck poses (~4–9 ms);
+  mid-game boards ~0.5 ms.
+
+- Rewrote the forward-facing docs and backlog around the current `cpp-pool`
+  placement-SMDP architecture, keeping emulator/libretro/Stable-Retro material
+  in a parity/debug lane instead of the default onboarding path.
+- Added `docs/PROJECT_DEEP_DIVE_2026-05-07.md`, a current-state audit covering checkout status, actual training/backend architecture, metaproject reference layout, verification results, documentation drift, and future agent entry points.
+- Added the sourced Karpathy-inspired behavior principles bridge in `CLAUDE.md` and expanded `AGENTS.md` / `docs/REFERENCES.md` with the local `/Users/ethan/dev/drmario/` umbrella workspace convention.
+- Verified the local `cpp-pool` smoke path without pytest: `training.run --dry_run`, pool library presence, default/candidate config env resets, a two-env pool step, and a candidate-policy forward pass.
+- During completion audit, refreshed `docs/IMPLEMENTATION_FACTS_AND_RAMMAP.md`
+  as a RAM-map reference rather than the live architecture source, and marked
+  `docs/CPP_SIM_NOTES.md` as parity/core-rules notes.
+
+## 2026-05-08 – Coding Agent (Codex)
+
+- Repaired the local editable install from this checkout with `.[dev,rl,viz]`;
+  pytest is now available, NumPy/OpenCV are on the newer compatible line
+  (`numpy==2.4.4`, `opencv-python==4.13.0.92`), and `pip check` is clean.
+- Expanded `tools/bench_multienv.py` with repeat statistics, component timings,
+  machine-readable JSON/CSV output, action-selection modes, and bounded batch
+  runs for tests.
+- Added `tools/bench_policy.py` for policy/network benchmarking, including
+  parameter counts, forward latency, candidate-packing overhead, and decisions
+  per second.
+- Made candidate scoring the default policy in `training/configs/smdp_ppo.yaml`,
+  added `training/configs/smdp_ppo_heatmap.yaml` as a controlled baseline, and
+  recorded benchmark results in `docs/BENCHMARKS_2026-05-08.md`.
+- Made optional MLX imports lazy in `training/speedrun_experiment.py` so
+  torch-only tests and training paths do not import MLX during collection.
+
 ## 2026-03-26 – Coding Agent (Codex CLI)
 
 - Extracted the native C++ Dr. Mario engine from the tracked `game_engine/` directory into a standalone repo at `EthanOConnor/drmario-native`.
@@ -498,3 +579,10 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Removed redundant legacy training entrypoints (`training/train_placement_ppo.py`, `training/launches/*`) and their unused helper modules.
 - Removed the `re/` reverse-engineering workspace and RE automation scripts (`tools/automation/`), relying on `dr-mario-disassembly/` as the canonical disassembly source; updated docs/tools accordingly.
 - Fixed a race in the engine demo reset parity test by waiting for a post-reset sentinel instead of using `frame_count` as a readiness signal (`tests/test_game_engine_demo.py`).
+
+## 2026-05-08 – Coding Agent – Capsule Connection-Edge Observations
+
+- Added `bitplane_bottle_conn` and `bitplane_bottle_conn_mask` state representations with explicit `connected_{up,down,left,right}` channels for ordinary locked pill halves; viruses, singles, and legacy middle-half tile codes emit no connection edges.
+- Extended the native `cpp-pool` observation ABI to protocol v2 with connection-edge observation specs, and made `bitplane_bottle_conn_mask` the forward-facing default for placement-SMDP training, benchmarking, and docs.
+- Updated candidate PPO wiring so the board trunk consumes non-feasibility bottle channels (`candidate_board_channels: 8`) while local raw patches stay on the first four color/virus planes; added validation to reject feasible-mask planes in the board trunk.
+- Added focused unit/smoke coverage for RAM decoder edge planes, plane-name/channel ordering, feasibility injection, candidate forward passes with 12-channel observations, and cpp-pool reset/step behavior for both old and new bottle-mask representations.

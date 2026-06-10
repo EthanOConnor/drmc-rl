@@ -4,6 +4,57 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ---
 
+## 2026-06-09 – Planner v4 + Warp Execution
+
+**M1. Demo-parity tests fail from pre-existing engine drift (NOT the training path)**
+- **Location**: `tests/test_game_engine_demo.py`, `game_engine/drmario_engine`
+- **Issue**: `test_demo_trace_matches_nes_ground_truth` diverges at frame 148 with
+  warp-era changes stashed, and rebuilding `drmario_engine` from the
+  submodule's committed sources also fails `test_demo_reset_matches_disassembly`.
+  The previously working binary was evidently built from a source state not in
+  the submodule (the long-standing `game_engine` vs `../drmario-native` drift).
+- **Impact**: Emulator-parity lane is unverified until the source of the working
+  demo binary is recovered. Training path is unaffected and is parity-checked
+  separately (see below).
+- **Mitigation**: Re-validate against `../drmario-native` history when touching
+  parity tooling; keep this failing test as a tripwire, do not delete it.
+
+**M1. v4 planner exactness rests on fuzz + trajectory equivalence, not proof**
+- **Location**: `reach_native/drm_reach_full.c` (`drm_reach_bfs_v4`)
+- **Issue**: v4's pruning gate is argued admissible (greedy UBs are simulated
+  witnesses; LBs are vertical-rate and composite-frame geometric bounds), and
+  v2's hv-collapse is argued exact, but the guarantees are enforced empirically:
+  1k+ fuzz cases of exact in-bounds cost equality vs `drm_reach_bfs_full`, plus
+  a 300-step pool trajectory equivalence run (warp+v4 vs replay+v1) across
+  levels/speeds.
+- **Impact**: A semantics bug outside the fuzz distribution would silently skew
+  feasibility/costs for training.
+- **Mitigation**: Keep `drm_reach_bfs_full` as the oracle; add a pytest fuzz
+  parity test; offscreen poses at the early-exit depth may legitimately differ
+  between planners (macro env never consumes them).
+
+**M2. Warp mode changes semantically-dead state bytes**
+- **Location**: `game_engine/GameLogic.cpp` (`warp_fall`), `DrMarioPool.cpp`
+- **Issue**: Warp sets `hor_velocity=0` and neutral buttons at lock, whereas
+  script replay leaves whatever the final script frame held. These are
+  behaviorally dead (any later press edge-resets hv; buttons are zeroed during
+  the post-lock wait) but state-dump comparisons must not assume byte equality.
+- **Mitigation**: Trajectory parity compares behavioral outputs (boards, tau,
+  masks, costs, events), which match exactly. `DRMARIO_POOL_WARP=0` restores
+  the replay path for byte-level archaeology.
+
+---
+
+## 2026-05-07 – Deep-Dive Audit Findings
+
+**M0. Environment and documentation drift can mislead returning agents**
+- **Location**: `.venv`, `pyproject.toml`, `README.md`, `docs/DESIGN.md`, `docs/PLACEMENT_POLICY.md`, `docs/ENV_STANDUP_MAC_LINUX.md`, `docs/TASKS_NEXT.md`
+- **Issue**: The current code path is `ppo_smdp` over `cpp-pool`, but several docs still described older `stable-retro` / `cpp-engine` / skeleton-era flows. During the first audit, the local editable install pointed at missing `/Users/ethan/dev/drmc-rl`, and the `.venv` lacked `pytest` despite the dev extra declaring it.
+- **Impact**: Agents can run stale commands, import the wrong thing outside the repo root, skip the active `cpp-pool` path, or report test health from old notes instead of current verification.
+- **Mitigation**: Top-level docs, setup docs, backlog, and the stale RAM-map architecture summary have been refreshed around the `cpp-pool` default. The local venv was reinstalled from this checkout on 2026-05-08 with pytest available and `pip check` clean. Use `docs/PROJECT_DEEP_DIVE_2026-05-07.md` as a dated audit, not as a replacement for current docs.
+
+---
+
 ## 2026-03-26 – Engine Submodule Split
 
 **M0. `game_engine/` now depends on submodule initialization**
@@ -512,10 +563,18 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Mitigation**: Default `candidate_max_candidates=128` (based on observed feasible-count distribution) and monitor truncation telemetry; bump `Kmax` if `candidate/truncation_frac` becomes non-trivial. If deliberate truncation is needed, consider stratified selection by cost buckets instead of pure top-K-by-cost.
   - Log feasible-count stats and truncation rate (`candidate/feasible_*`, `candidate/truncation_frac`) so truncation correlates can be spotted quickly.
 
-**R58. Candidate policy assumes bottle bitplanes are the first 4 channels**
-- **Concern**: `CandidatePlacementPolicyNet` (by default) encodes only the first 4 channels for its board encoder and local patches (intended for `bitplane_bottle*` reprs).
-- **Risk**: Using the candidate policy with a different `state_repr` where the first 4 channels are not bottle planes can silently degrade performance or break invariants.
-- **Mitigation**: Keep candidate configs pinned to `state_repr: bitplane_bottle_mask` (or `bitplane_bottle`), and add explicit validation/erroring if `state_repr` is incompatible when we broaden usage.
+**R58. Candidate policy depends on stable bottle-channel ordering**
+- **Concern**: `CandidatePlacementPolicyNet` expects the first channels to be
+  bottle facts in the order documented by `ram_to_state` (`color_*`,
+  `virus_mask`, then optional connection edges before feasible-mask planes).
+- **Risk**: Using the candidate policy with a different `state_repr` where the
+  first four channels are not bottle color/virus planes, or where feasible-mask
+  planes are fed into the board trunk, can silently degrade performance.
+- **Mitigation**: Candidate setup now validates the first four plane names and
+  auto-selects board-trunk channels up to the first `feasible_*` plane. Current
+  configs pin `state_repr: bitplane_bottle_conn_mask` and
+  `candidate_board_channels: 8`; use `bitplane_bottle_mask` as the no-edge
+  ablation.
 
 **R59. Candidate local-patch padding semantics may matter at the borders**
 - **Concern**: Candidate local patches are extracted from raw bottle bitplanes (colors + virus) and currently use **zero padding** out-of-bounds.
