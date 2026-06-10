@@ -66,7 +66,7 @@ smdp_ppo:
   aux_spec: "v1"
   
   # Exploration
-  entropy_schedule_end: 0.005
+  entropy_schedule_end: 0.008
   entropy_schedule_steps: 100000000
   use_gumbel_topk: false
   gumbel_k: 2
@@ -109,7 +109,7 @@ curriculum:
   # Use a 2-sigma Wilson lower bound for base-skill "mastery" before enabling time budgets.
   time_budget_mastery_sigmas: 2.0
   # Slow the 1-exp(-k) ramp to avoid requiring near-perfect rates too early.
-  pass_ramp_exponent_multiplier: 0.6
+  pass_ramp_exponent_multiplier: 0.3
   # EMA-based confidence gate (stable under non-stationary learning).
   confidence_ema_half_life_episodes: 256.0
   confidence_min_effective_episodes: 128.0
@@ -119,7 +119,7 @@ curriculum:
   probe_threshold: 0.25
   window_episodes: 100
   min_episodes: 50
-  rehearsal_prob: 0.1
+  rehearsal_prob: 0.25
   
 # Logging
 logdir: "runs/smdp_ppo_big"
