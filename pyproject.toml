@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.10,<3.15"
 dependencies = [
     "gymnasium",
-    "numpy",
+    "numpy>=2.2,<3; python_version < '3.11'",
+    "numpy>=2.4,<3; python_version >= '3.11'",
     "rich>=13.0", # TUI and progress bars
 ]
 
@@ -15,6 +16,8 @@ line-length = 100
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint]
 select = ["E", "F", "I"]
 ignore = []
 
@@ -22,16 +25,13 @@ ignore = []
 # Explicitly control package discovery to avoid bundling non-packages (e.g., 're', 'retro')
 
 [tool.setuptools.packages.find]
-include = ["envs*", "models*", "eval*", "training*"]
+include = ["envs*", "models*", "eval*", "training*", "tools*"]
 exclude = [
     "re*",
     "retro*",
     "data*",
     "legal_ROMs*",
-    "tools*",
-    "streaming*",
     "docs*",
-    "sim-envpool*",
     "dr-mario-disassembly*",
 ]
 
@@ -44,7 +44,7 @@ rl = [
     "pettingzoo",
     "wandb",          # Experiment tracking (free tier available)
 ]
-viz = ["opencv-python-headless", "pillow"]
+viz = ["opencv-python>=4.13.0.92", "pillow"]
 apple = ["mlx"]
 dev = ["black", "ruff", "pytest", "pandas", "pyarrow", "matplotlib"]
 

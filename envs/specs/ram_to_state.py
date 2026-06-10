@@ -6,9 +6,14 @@ Representations (all emit a `(C, 16, 8)` float32 tensor):
    fixed/falling pills, orientation, scalar broadcasts, and preview metadata.
 2. ``bitplane``: 12-channel tensor of mostly binary masks (type-blind color
    planes, entity masks, preview positions) plus scalar broadcasts.
-3. ``bitplane_reduced``: 6-channel tensor containing only decision-relevant
+3. ``bitplane_bottle`` / ``bitplane_bottle_mask``: bottle-only colors/virus,
+   optionally with decision-time feasibility planes.
+4. ``bitplane_bottle_conn`` / ``bitplane_bottle_conn_mask``: bottle-only
+   colors/virus plus optional feasibility planes and physical capsule
+   connection edges (up/down/left/right).
+5. ``bitplane_reduced``: 6-channel tensor containing only decision-relevant
    bitplanes (type-blind colors + virus + current pill + preview pill).
-4. ``bitplane_reduced_mask``: ``bitplane_reduced`` plus 4 additional channels
+6. ``bitplane_reduced_mask``: ``bitplane_reduced`` plus 4 additional channels
    reserved for a feasibility mask (filled by the placement SMDP wrapper).
 
 Use :func:`set_state_representation` to switch modes at runtime. The change
@@ -25,8 +30,23 @@ STATE_HEIGHT = 16
 STATE_WIDTH = 8
 
 # Tile/type codes (matches disassembly constants).
+T_TOP = 0x40
+T_BOTTOM = 0x50
+T_LEFT = 0x60
+T_RIGHT = 0x70
+T_SINGLE = 0x80
+T_MIDDLE_VER = 0x90
+T_MIDDLE_HOR = 0xA0
 T_VIRUS = 0xD0
-PILL_TYPES = (0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0)
+PILL_TYPES = (
+    T_TOP,
+    T_BOTTOM,
+    T_LEFT,
+    T_RIGHT,
+    T_SINGLE,
+    T_MIDDLE_VER,
+    T_MIDDLE_HOR,
+)
 CLEARED_TILE = 0xB0
 FIELD_JUST_EMPTIED = 0xF0
 FIELD_EMPTY = 0xFF
@@ -51,6 +71,8 @@ def _normalize_mode(mode: Optional[str]) -> str:
         "bitplane",
         "bitplane_bottle",
         "bitplane_bottle_mask",
+        "bitplane_bottle_conn",
+        "bitplane_bottle_conn_mask",
         "bitplane_reduced",
         "bitplane_reduced_mask",
         "policy_v1",
@@ -187,6 +209,34 @@ def _build_state_index_bitplane_bottle_mask() -> SimpleNamespace:
     return base
 
 
+def _build_state_index_bitplane_bottle_conn() -> SimpleNamespace:
+    """8-channel bottle-only bitplane representation with connection edges.
+
+    Channels:
+      0..2: color_{red,yellow,blue}  (type-blind; bottle contents only)
+         3: virus_mask
+         4: connected_up
+         5: connected_down
+         6: connected_left
+         7: connected_right
+    """
+
+    base = _build_state_index_bitplane_bottle()
+    base.connected_up = 4
+    base.connected_down = 5
+    base.connected_left = 6
+    base.connected_right = 7
+    return base
+
+
+def _build_state_index_bitplane_bottle_conn_mask() -> SimpleNamespace:
+    """12-channel bottle representation with connection edges and mask slots."""
+
+    base = _build_state_index_bitplane_bottle_conn()
+    base.feasible_mask_channels = (8, 9, 10, 11)
+    return base
+
+
 def _build_state_index_policy_v1() -> SimpleNamespace:
     return SimpleNamespace(
         color_channels=None,
@@ -258,6 +308,32 @@ _PLANE_NAMES_BY_REPR: Dict[str, Tuple[str, ...]] = {
         "color_yellow",
         "color_blue",
         "virus_mask",
+        "feasible_o0",
+        "feasible_o1",
+        "feasible_o2",
+        "feasible_o3",
+    ),
+    # 8 channels (see `_build_state_index_bitplane_bottle_conn`).
+    "bitplane_bottle_conn": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "connected_up",
+        "connected_down",
+        "connected_left",
+        "connected_right",
+    ),
+    # 12 channels (see `_build_state_index_bitplane_bottle_conn_mask`).
+    "bitplane_bottle_conn_mask": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "connected_up",
+        "connected_down",
+        "connected_left",
+        "connected_right",
         "feasible_o0",
         "feasible_o1",
         "feasible_o2",
@@ -343,6 +419,18 @@ def _configure_state_representation(mode: str) -> None:
         STATE_USE_BITPLANES = True
         STATE_CHANNELS = 8
         STATE_IDX = _build_state_index_bitplane_bottle_mask()
+        STATE_DECODER = _ram_to_state_bitplane_bottle
+    elif mode_norm == "bitplane_bottle_conn":
+        STATE_REPR = "bitplane_bottle_conn"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 8
+        STATE_IDX = _build_state_index_bitplane_bottle_conn()
+        STATE_DECODER = _ram_to_state_bitplane_bottle
+    elif mode_norm == "bitplane_bottle_conn_mask":
+        STATE_REPR = "bitplane_bottle_conn_mask"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 12
+        STATE_IDX = _build_state_index_bitplane_bottle_conn_mask()
         STATE_DECODER = _ram_to_state_bitplane_bottle
     elif mode_norm == "bitplane_reduced":
         STATE_REPR = "bitplane_reduced"
@@ -692,6 +780,32 @@ def _ram_to_state_bitplane_reduced(
     return state
 
 
+def _fill_connection_edge_planes(state: np.ndarray, type_hi: np.ndarray) -> None:
+    """Fill physical capsule-connection edge planes when the representation has them.
+
+    Retail capsules are two-piece objects, so only the normal half-tile codes
+    create edges. The middle-half codes are intentionally not exposed as a
+    concept here; they are treated as no-edge legacy/transitional tile codes.
+    """
+
+    connected_up = getattr(STATE_IDX, "connected_up", None)
+    connected_down = getattr(STATE_IDX, "connected_down", None)
+    connected_left = getattr(STATE_IDX, "connected_left", None)
+    connected_right = getattr(STATE_IDX, "connected_right", None)
+    if (
+        connected_up is None
+        or connected_down is None
+        or connected_left is None
+        or connected_right is None
+    ):
+        return
+
+    state[int(connected_up)] = (type_hi == T_BOTTOM).astype(np.float32)
+    state[int(connected_down)] = (type_hi == T_TOP).astype(np.float32)
+    state[int(connected_left)] = (type_hi == T_RIGHT).astype(np.float32)
+    state[int(connected_right)] = (type_hi == T_LEFT).astype(np.float32)
+
+
 def _ram_to_state_bitplane_bottle(
     ram: bytes,
     offsets: Dict,
@@ -725,6 +839,8 @@ def _ram_to_state_bitplane_bottle(
 
     virus_mask = type_hi == T_VIRUS
     state[STATE_IDX.virus_mask] = virus_mask.astype(np.float32)
+
+    _fill_connection_edge_planes(state, type_hi)
 
     # Feasible mask channels (if configured) are filled by the placement wrapper.
     return state

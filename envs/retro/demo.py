@@ -697,7 +697,12 @@ def main():
     ap.add_argument('--start-level-taps', type=int, default=None, help='Number of LEFT taps on level select before starting (default 12)')
     ap.add_argument('--start-settle-frames', type=int, default=None, help='Frames to run NOOP after auto-start before gameplay (default 180)')
     ap.add_argument('--start-wait-frames', type=int, default=None, help='Additional NOOP frames while waiting for virus count to become positive (default 600)')
-    ap.add_argument('--backend', type=str, default=None, help='libretro (default), stable-retro, or mock')
+    ap.add_argument(
+        '--backend',
+        type=str,
+        default=None,
+        help='Emulator demo backend: libretro (demo default), stable-retro, cpp-engine, or mock',
+    )
     ap.add_argument('--core-path', type=str, default=None, help='Override DRMARIO_CORE_PATH for libretro backend')
     ap.add_argument('--rom-path', type=str, default=None, help='Override DRMARIO_ROM_PATH for libretro backend')
     ap.add_argument('--no-auto-start', action='store_true', help='Disable automatic START presses at reset')

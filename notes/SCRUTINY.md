@@ -4,6 +4,16 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ---
 
+## 2026-03-26 – Engine Submodule Split
+
+**M0. `game_engine/` now depends on submodule initialization**
+- **Location**: `.gitmodules`, `README.md`, `game_engine/`
+- **Issue**: Fresh clones that skip `git submodule update --init --recursive` will not have the native engine sources/build tree present.
+- **Impact**: `cpp-engine` and `cpp-pool` workflows fail in a way that can look like a missing build artifact rather than a missing dependency checkout.
+- **Mitigation**: Document the submodule requirement prominently, keep the mount point at `game_engine/` so code paths remain unchanged, and treat submodule SHA bumps as part of engine changes.
+
+---
+
 ## 2025-12-16 – Codebase Review Findings
 
 ### Critical Priority

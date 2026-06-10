@@ -152,10 +152,19 @@ class DrMarioPoolVecEnv:
             obs_spec = 2  # DRM_POOL_OBS_BITPLANE_BOTTLE_MASK
             obs_channels = 8
             ram_specs.set_state_representation("bitplane_bottle_mask")
+        elif state_repr_norm in {"bitplane_bottle_conn", "bitplane-bottle-conn"}:
+            obs_spec = 3  # DRM_POOL_OBS_BITPLANE_BOTTLE_CONN
+            obs_channels = 8
+            ram_specs.set_state_representation("bitplane_bottle_conn")
+        elif state_repr_norm in {"bitplane_bottle_conn_mask", "bitplane-bottle-conn-mask"}:
+            obs_spec = 4  # DRM_POOL_OBS_BITPLANE_BOTTLE_CONN_MASK
+            obs_channels = 12
+            ram_specs.set_state_representation("bitplane_bottle_conn_mask")
         else:
             raise ValueError(
                 "cpp-pool backend only supports state_repr in "
-                "{bitplane_bottle, bitplane_bottle_mask}."
+                "{bitplane_bottle, bitplane_bottle_mask, "
+                "bitplane_bottle_conn, bitplane_bottle_conn_mask}."
             )
 
         self.single_action_space = spaces.Discrete(MACRO_ACTIONS)

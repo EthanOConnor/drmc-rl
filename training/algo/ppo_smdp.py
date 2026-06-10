@@ -87,6 +87,7 @@ class SMDPPPOConfig:
 
     # Candidate-scoring policy params (policy_type=candidate)
     candidate_board_encoder: str = "cnn"  # cnn|col_transformer
+    candidate_board_channels: int = 0  # 0=auto: non-feasibility bottle channels
     candidate_max_candidates: int = 512
     candidate_d_model: int = 128
     candidate_pos_embed_dim: int = 32
@@ -148,6 +149,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             encoder_blocks=int(ppo_cfg_dict.get("encoder_blocks", 0)),
             policy_type=str(ppo_cfg_dict.get("policy_type", "heatmap")),
             candidate_board_encoder=str(ppo_cfg_dict.get("candidate_board_encoder", "cnn")),
+            candidate_board_channels=int(ppo_cfg_dict.get("candidate_board_channels", 0)),
             candidate_max_candidates=int(ppo_cfg_dict.get("candidate_max_candidates", 512)),
             candidate_d_model=int(ppo_cfg_dict.get("candidate_d_model", 128)),
             candidate_pos_embed_dim=int(ppo_cfg_dict.get("candidate_pos_embed_dim", 32)),
@@ -203,6 +205,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             try:
                 env_cfg = getattr(cfg, "env", None)
                 state_repr = getattr(env_cfg, "state_repr", None) if env_cfg is not None else None
+                names: Tuple[str, ...] = tuple()
                 if state_repr is not None:
                     names = ram_specs.get_plane_names(str(state_repr))
                     if len(names) >= 4 and tuple(names[:4]) != (
@@ -220,10 +223,28 @@ class SMDPPPOAdapter(AlgoAdapter):
                 # Raise as ValueError to keep config errors actionable.
                 raise ValueError(str(e)) from e
 
-            # Bottle-bitplane policies should ignore injected feasibility planes; keep the first 4 channels.
+            candidate_board_channels = int(self.hparams.candidate_board_channels)
+            if candidate_board_channels <= 0:
+                candidate_board_channels = int(in_channels)
+                if names:
+                    for i, name in enumerate(names):
+                        if str(name).startswith("feasible_"):
+                            candidate_board_channels = int(i)
+                            break
+            candidate_board_channels = int(
+                max(4, min(int(candidate_board_channels), int(in_channels)))
+            )
+            if names:
+                included = tuple(names[:candidate_board_channels])
+                if any(str(name).startswith("feasible_") for name in included):
+                    raise ValueError(
+                        "candidate_board_channels must exclude feasible mask planes; "
+                        f"got {candidate_board_channels} for state_repr={state_repr!r}."
+                    )
+
             self.net = CandidatePlacementPolicyNet(
-                in_channels=min(int(in_channels), 4),
-                board_channels=4,
+                in_channels=int(in_channels),
+                board_channels=int(candidate_board_channels),
                 board_encoder=str(self.hparams.candidate_board_encoder),
                 encoder_blocks=self.hparams.encoder_blocks,
                 d_model=self.hparams.candidate_d_model,

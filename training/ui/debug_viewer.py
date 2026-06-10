@@ -77,22 +77,12 @@ class DebugViewerState:
 
 class DebugViewer:
     """Interactive debug viewer for Dr. Mario.
-    
-    Usage:
-        viewer = DebugViewer()
-        env = gym.make("DrMario-v0")
-        obs, info = env.reset()
-        viewer.update(obs, info)
-        
-        with viewer:
-            for step in range(1000):
-                if viewer.paused:
-                    continue
-                action = policy(obs)
-                obs, reward, done, truncated, info = env.step(action)
-                viewer.update(obs, info, action=action, reward=reward)
-                if done:
-                    obs, info = env.reset()
+
+    Current placement debugging is normally launched through:
+        python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug
+
+    This class remains a lower-level viewer component for env loops that already
+    own reset/step policy logic.
     """
     
     def __init__(

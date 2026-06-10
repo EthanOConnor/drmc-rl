@@ -61,12 +61,34 @@ This is intended for spawn-latched placement policies that receive pill colors
 as separate vector inputs (`next_pill_colors` for the current pill and
 `preview_pill` for the next/preview pill).
 
+### `bitplane_bottle_conn` (8 channels)
+- `bitplane_bottle` plus 4 locked-capsule connection-edge channels:
+  - `connected_up`
+  - `connected_down`
+  - `connected_left`
+  - `connected_right`
+
+These channels encode the neighboring cell direction for each ordinary locked
+pill half. For example, a `bottomHalfPill` cell has `connected_up=1`, and a
+`leftHalfPill` cell has `connected_right=1`. Viruses and `singleHalfPill` cells
+have no connection edge. Legacy `middleVerHalfPill` / `middleHorHalfPill` tile
+codes are treated as no-edge transitional residue rather than as real capsule
+pieces.
+
 ### `bitplane_bottle_mask` (8 channels)
 - `bitplane_bottle` plus 4 feasibility-mask channels:
   - `feasible_o0..feasible_o3`
 
 These feasibility planes are *not* derived from RAM; they are injected by the
 placement wrapper at decision points and match `info["placements/feasible_mask"]`.
+
+### `bitplane_bottle_conn_mask` (12 channels)
+- `bitplane_bottle_conn` plus 4 feasibility-mask channels:
+  - `feasible_o0..feasible_o3`
+
+This is the current default for placement-SMDP training. The first eight
+channels are board facts, and the final four channels are decision-time planner
+feasibility.
 
 ### `bitplane_reduced` (6 channels)
 - Minimal decision-time features for spawn-latched placement policies:

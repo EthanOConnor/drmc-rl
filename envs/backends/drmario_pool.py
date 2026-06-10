@@ -7,7 +7,7 @@ thin, allocation-minimizing Python interface around the batched C ABI.
 
 The pool owns N engine instances + the native reachability planner and steps at
 SMDP decision boundaries (pill spawns). Python consumes compact arrays:
-  - observations (bitplane_bottle / bitplane_bottle_mask),
+  - observations (bitplane_bottle / bitplane_bottle_mask / connection variants),
   - feasibility masks + costs,
   - event counters for reward/curriculum.
 """
@@ -25,7 +25,7 @@ GRID_H = 16
 GRID_W = 8
 MACRO_ACTIONS = 4 * GRID_H * GRID_W  # 512
 
-DRMARIO_POOL_PROTOCOL_VERSION = 1
+DRMARIO_POOL_PROTOCOL_VERSION = 2
 
 
 class DrMarioPoolError(RuntimeError):

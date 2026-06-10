@@ -11,6 +11,8 @@ import envs.specs.ram_to_state as ram_specs
         "bitplane",
         "bitplane_bottle",
         "bitplane_bottle_mask",
+        "bitplane_bottle_conn",
+        "bitplane_bottle_conn_mask",
         "bitplane_reduced",
         "bitplane_reduced_mask",
     ],

@@ -1,5 +1,10 @@
 # C++ Simulator Notes — Dr. Mario (NES)
 
+> **Status (2026-05-07):** Native simulator work now enters `drmc-rl` through
+> `game_engine/` as the `drmario-native` submodule and through the `cpp-pool`
+> training backend. Use this file as parity/core-rules notes, not as setup or
+> onboarding guidance.
+
 Goal: faithful, max-FPS, rules-exact simulator matching the disassembly.
 This outlines state layout, per-frame order, and key routines to port.
 

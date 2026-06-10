@@ -4,6 +4,13 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 ---
 
+## 2026-03-26 – Coding Agent (Codex CLI)
+
+- Extracted the native C++ Dr. Mario engine from the tracked `game_engine/` directory into a standalone repo at `EthanOConnor/drmario-native`.
+- Made the extracted engine repo self-contained for builds by vendoring the required reachability helper into `third_party/reach_native/` and dropping tracked build artifacts/logs from the new repo.
+- Re-integrated the engine back into `drmc-rl` as the `game_engine/` git submodule so existing engine paths/imports remain stable.
+- Updated root docs to call out the new submodule-based setup.
+
 ## 2025-10-17 – Coding Agent (Codex CLI)
 
 - Confirmed ROM revision (Dr. Mario Japan/USA rev0, CRC32 0xB1F7E3E9).

@@ -93,6 +93,7 @@ class _ObsStackEnv(gym.Env):
     [
         ("bitplane_reduced_mask", 10, (6, 7, 8, 9)),
         ("bitplane_bottle_mask", 8, (4, 5, 6, 7)),
+        ("bitplane_bottle_conn_mask", 12, (8, 9, 10, 11)),
     ],
 )
 def test_feasible_mask_planes_are_injected_into_obs_when_enabled(

@@ -1,8 +1,11 @@
-"""Dr. Mario env wrappers with pluggable emulator backends (libretro default).
+"""Dr. Mario placement helpers and emulator parity/debug wrappers.
 
 This package provides:
-- DrMarioRetroEnv: single-agent Gymnasium Env with pixel/state observations
-- Utilities for seed registry loading and core configuration
+- active placement planner/reachability modules used by training paths;
+- DrMarioRetroEnv for emulator-backed parity/debug sessions;
+- seed registry and libretro core configuration utilities.
+
+Normal training uses `backend=cpp-pool` through `training.envs.drmario_pool_vec`.
 """
 
 from .drmario_env import DrMarioRetroEnv, Action

@@ -8,11 +8,26 @@ from envs.backends.drmario_pool import is_library_present
 from training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
 
 
+def _expected_connection_edges(board: np.ndarray) -> np.ndarray:
+    board_arr = np.asarray(board, dtype=np.uint8).reshape(16, 8)
+    type_hi = board_arr & 0xF0
+    edges = np.zeros((4, 16, 8), dtype=np.float32)
+    edges[0] = (type_hi == ram_specs.T_BOTTOM).astype(np.float32)  # connected_up
+    edges[1] = (type_hi == ram_specs.T_TOP).astype(np.float32)  # connected_down
+    edges[2] = (type_hi == ram_specs.T_RIGHT).astype(np.float32)  # connected_left
+    edges[3] = (type_hi == ram_specs.T_LEFT).astype(np.float32)  # connected_right
+    return edges
+
+
 @pytest.mark.skipif(
     not is_library_present(),
     reason="cpp-pool library missing (build with: python -m tools.build_drmario_pool)",
 )
-def test_cpp_pool_reset_step_smoke() -> None:
+@pytest.mark.parametrize(
+    ("state_repr", "channels"),
+    [("bitplane_bottle_mask", 8), ("bitplane_bottle_conn_mask", 12)],
+)
+def test_cpp_pool_reset_step_smoke(state_repr: str, channels: int) -> None:
     prev_repr = ram_specs.get_state_representation()
     cfg = VecEnvConfig(
         id="DrMarioPlacementEnv-v0",
@@ -22,10 +37,10 @@ def test_cpp_pool_reset_step_smoke() -> None:
         render=False,
         randomize_rng=True,
         backend="cpp-pool",
-        state_repr="bitplane_bottle_mask",
+        state_repr=state_repr,
         level=10,
         vectorization="sync",
-        emit_raw_ram=False,
+        emit_raw_ram=(state_repr == "bitplane_bottle_conn_mask"),
     )
     env = make_vec_env(cfg)
     try:
@@ -33,7 +48,7 @@ def test_cpp_pool_reset_step_smoke() -> None:
         assert isinstance(infos, (list, tuple))
         assert len(infos) == cfg.num_envs
         assert isinstance(obs, np.ndarray)
-        assert obs.shape == (cfg.num_envs, 8, 16, 8)
+        assert obs.shape == (cfg.num_envs, channels, 16, 8)
 
         actions = []
         for info in infos:
@@ -55,6 +70,11 @@ def test_cpp_pool_reset_step_smoke() -> None:
             assert tau >= 1
             assert isinstance(info.get("next_pill_colors"), np.ndarray)
             assert "preview_pill" in info
+        if state_repr == "bitplane_bottle_conn_mask":
+            for env_i, info in enumerate(infos2):
+                board = np.asarray(info["board"], dtype=np.uint8)
+                expected_edges = _expected_connection_edges(board)
+                np.testing.assert_array_equal(obs2[env_i, 4:8], expected_edges)
 
         # Invalid action should not advance and should be surfaced in info.
         bad = np.full((cfg.num_envs,), 512, dtype=np.int32)

@@ -126,6 +126,47 @@ def test_candidate_policy_forward_shapes_and_masking():
     assert (logits[1, 2:] < -1e8).all()
 
 
+def test_candidate_policy_forward_with_connection_edge_channels():
+    net = CandidatePlacementPolicyNet(
+        in_channels=12,
+        board_channels=8,
+        board_encoder="cnn",
+        encoder_blocks=0,
+        d_model=64,
+        pill_embed_dim=64,
+        aux_dim=0,
+        transformer_layers=2,
+        transformer_heads=2,
+        transformer_ff_mult=2,
+        patch_kernel=3,
+    )
+    net.eval()
+
+    B = 2
+    K = 8
+    obs = torch.randn(B, 12, 16, 8)
+    colors = torch.randint(0, 3, (B, 2))
+    preview = torch.randint(0, 3, (B, 2))
+    cand_actions = torch.tensor(
+        [
+            [0, 1, -1, -1, -1, -1, -1, -1],
+            [128, 129, -1, -1, -1, -1, -1, -1],
+        ],
+        dtype=torch.int64,
+    )
+    cand_mask = cand_actions >= 0
+    cand_cost = torch.zeros(B, K, dtype=torch.float32)
+
+    with torch.no_grad():
+        logits, value = net(obs, colors, preview, cand_actions, cand_cost, cand_mask)
+
+    assert logits.shape == (B, K)
+    assert value.shape == (B, 1)
+    assert torch.isfinite(logits[cand_mask]).all()
+    assert torch.isfinite(value).all()
+    assert (logits[~cand_mask] < -1e8).all()
+
+
 def test_candidate_policy_forward_shapes_and_masking_col_transformer():
     net = CandidatePlacementPolicyNet(
         in_channels=4,

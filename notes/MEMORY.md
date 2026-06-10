@@ -817,6 +817,16 @@ the rotation can be recovered from the preview mask.
 
 ---
 
+## 2026-03-26 – Extract Native Engine Into Its Own Repo
+
+### Decision: split the native C++ engine into `drmario-native`, then vendor it back at `game_engine/` via git submodule
+
+- **Decision:** Move the contents of the tracked `game_engine/` directory into a standalone repo (`EthanOConnor/drmario-native`) and mount that repo back into `drmc-rl` at the same `game_engine/` path as a submodule.
+- **Why:** The native engine now has its own source/build lifecycle and should not be versioned inline with the RL/training repo. Keeping the mount point at `game_engine/` preserves existing Python paths, CLI defaults, tests, and build commands, so this is a source/build reorg rather than an interface change.
+- **Trade-offs:** Clones now need `git submodule update --init --recursive`, and engine changes require coordinating a submodule SHA update in `drmc-rl`. The standalone engine repo also vendors its required reachability helper so its build no longer depends on `../reach_native`.
+
+---
+
 ## 2025-12-20 – Curriculum Graduation Logging
 
 ### Decision: Emit curriculum advancement events via env `info` and log frame/episode totals in SMDP-PPO

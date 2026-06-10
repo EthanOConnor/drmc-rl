@@ -16,7 +16,7 @@ The placement policy system replaces per-frame REINFORCE training with:
 
 Three interchangeable architectures are provided in `models/policy/placement_heads.py`:
 
-#### A. Dense Conv Heatmaps (Recommended)
+#### A. Dense Conv Heatmaps (baseline)
 ```python
 head_type = "dense"
 ```
@@ -24,6 +24,7 @@ head_type = "dense"
 - Direct 4×16×8 heatmap generation
 - FiLM conditioning on current + preview pill colors
 - Fast parallel inference
+- Useful as a controlled baseline, not the current default
 
 #### B. Shift-and-Score
 ```python
@@ -42,7 +43,7 @@ head_type = "factorized"
 - Smallest parameter count
 - Slightly more complex credit assignment
 
-#### D. Candidate-Scoring (packed feasible actions)
+#### D. Candidate-Scoring (packed feasible actions, default)
 
 This variant avoids a fixed 512-way output head by scoring only a packed list of
 planner-feasible macro actions and using the planner’s frames-to-lock as an
@@ -52,7 +53,7 @@ Config:
 ```yaml
 smdp_ppo:
   policy_type: candidate
-  candidate_board_encoder: col_transformer  # or cnn
+  candidate_board_encoder: cnn  # or col_transformer
   # Typical feasible counts are far smaller than 512; keep Kmax modest for speed.
   candidate_max_candidates: 128
 ```
@@ -138,7 +139,7 @@ from models.policy.placement_dist import MaskedPlacementDist
 
 # Create policy
 net = PlacementPolicyNet(
-    in_channels=4,  # `bitplane_bottle`; see `env.state_repr`
+    in_channels=12,  # `bitplane_bottle_conn_mask`; see `env.state_repr`
     head_type="dense",
     pill_embed_dim=32,
 )
@@ -159,9 +160,18 @@ action_idx, log_prob = dist.sample()
 ### Training
 
 ```bash
-# Fast training (recommended; default `training/configs/smdp_ppo.yaml` uses `cpp-engine`)
+# Fast training (recommended; default `training/configs/smdp_ppo.yaml` uses
+# `cpp-pool` + candidate scoring)
 python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui \
-  --backend cpp-engine --vectorization async --num_envs 16
+  --backend cpp-pool --num_envs 16
+
+# Annotated candidate-scoring policy experiment
+python -m training.run --cfg training/configs/smdp_ppo_candidate.yaml --ui headless \
+  --backend cpp-pool
+
+# Dense heatmap baseline
+python -m training.run --cfg training/configs/smdp_ppo_heatmap.yaml --ui headless \
+  --backend cpp-pool
 
 # Emulator parity/debugging (requires a libretro core + ROM)
 python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
@@ -191,19 +201,22 @@ Troubleshooting:
 
 ### Configuration
 
-Edit `training/configs/smdp_ppo.yaml`:
+Default candidate-scoring config in `training/configs/smdp_ppo.yaml`:
 
 ```yaml
 smdp_ppo:
   lr: 3.0e-4
-  gamma: 0.995
+  gamma: 0.998
   gae_lambda: 0.95
   clip_epsilon: 0.2
-  
-  # Policy head
-  head_type: "dense"  # or "shift_score", "factorized"
-  pill_embed_dim: 32
-  
+
+  policy_type: "candidate"
+  candidate_board_encoder: "cnn"
+  candidate_max_candidates: 128
+  candidate_patch_kernel: 9
+  pill_embed_dim: 128
+  pill_embed_type: "ordered_pair"
+
   # Rollout
   decisions_per_update: 512
   num_epochs: 4
@@ -258,10 +271,13 @@ Track these during training:
 
 ### Placement Wrapper
 
-The placement macro-environment (`envs/retro/placement_env.py`) provides:
+The current `cpp-pool` vector env (`training/envs/drmario_pool_vec.py`) provides
+the same placement contract directly from the native pool. The emulator wrapper
+(`envs/retro/placement_env.py`) provides the same contract for parity/debug runs:
 - `info["placements/feasible_mask"]`: Boolean mask [4, 16, 8]
 - `info["placements/legal_mask"]`: Boolean mask [4, 16, 8] (in-bounds-only)
-- `info["placements/costs"]`: Float costs [4, 16, 8] (frames to lock; `inf` if unreachable)
+- `info["placements/cost_to_lock"]`: UInt16 costs [4, 16, 8] for `cpp-pool` (`0xFFFF` sentinel)
+- `info["placements/costs"]`: Float costs [4, 16, 8] for emulator wrapper paths (`inf` if unreachable)
 - `info["next_pill_colors"]`: Current pill color indices [2]
 - `info["preview_pill"]`: HUD preview pill metadata (colors/rotation; raw NES encoding)
 - `info["placements/spawn_id"]`: Pill spawn counter for cache invalidation
@@ -322,12 +338,12 @@ else:
 The unified runner supports a simple scripted curriculum (enabled in
 `training/configs/smdp_ppo.yaml` by default):
 
-- **Synthetic levels**: `-10..0` are represented by setting `env.level` negative.
+- **Synthetic levels**: `-15..0` are represented by setting `env.level` negative.
 - **Match-count staging** (0 viruses; applied by patching the bottle RAM at reset time):
-  - `-10`: 1 match (“any match”)
-  - `-9`: 2 matches
+  - `-15`: 1 match
+  - `-14`: 2 matches
   - …
-  - `-4`: 7 matches
+  - `-4`: 12 matches
 - **Virus-count staging** (applied by patching the bottle RAM at reset time):
   - `-3`: 1 virus
   - `-2`: 2 viruses

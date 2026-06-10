@@ -19,15 +19,15 @@ import multiprocessing as mp
 import numbers
 import os
 import pickle
-import random
 import queue
+import random
 import sys
 import time
 from collections import deque
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
-from contextlib import nullcontext
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -43,13 +43,8 @@ from envs.retro.register_env import (
     register_placement_env_id,
 )
 from gymnasium import make
-from models.policy.networks import DrMarioStatePolicyNet, DrMarioPixelUNetPolicyNet
+from models.policy.networks import DrMarioPixelUNetPolicyNet, DrMarioStatePolicyNet
 from training.discounting import discounted_returns_mlx, discounted_returns_torch
-
-try:
-    from models.policy.mlx_networks import DrMarioStatePolicyMLX
-except Exception:  # pragma: no cover - optional dependency
-    DrMarioStatePolicyMLX = None
 
 try:
     import torch
@@ -61,14 +56,42 @@ except Exception:  # pragma: no cover - torch is optional for this experiment
     optim = None
     Categorical = None
 
-try:  # pragma: no cover - optional dependency
-    import mlx.core as mx
-    import mlx.nn as nn_mlx
-    import mlx.optimizers as optim_mlx
-except Exception:  # pragma: no cover - MLX is optional
-    mx = None
-    nn_mlx = None
-    optim_mlx = None
+mx = None
+nn_mlx = None
+optim_mlx = None
+DrMarioStatePolicyMLX = None
+_MLX_IMPORT_ATTEMPTED = False
+
+
+def _ensure_mlx_imported() -> bool:
+    """Import MLX lazily.
+
+    Some broken MLX binary combinations abort the interpreter at import time.
+    Keeping MLX out of module import lets torch-only tests and non-MLX training
+    paths run without touching the optional accelerator stack.
+    """
+
+    global mx, nn_mlx, optim_mlx, DrMarioStatePolicyMLX, _MLX_IMPORT_ATTEMPTED
+    if _MLX_IMPORT_ATTEMPTED:
+        return mx is not None and nn_mlx is not None and optim_mlx is not None
+    _MLX_IMPORT_ATTEMPTED = True
+    try:  # pragma: no cover - optional dependency
+        import mlx.core as mx_mod
+        import mlx.nn as nn_mlx_mod
+        import mlx.optimizers as optim_mlx_mod
+
+        from models.policy.mlx_networks import DrMarioStatePolicyMLX as PolicyMLX
+    except Exception:  # pragma: no cover - MLX is optional
+        mx = None
+        nn_mlx = None
+        optim_mlx = None
+        DrMarioStatePolicyMLX = None
+        return False
+    mx = mx_mod
+    nn_mlx = nn_mlx_mod
+    optim_mlx = optim_mlx_mod
+    DrMarioStatePolicyMLX = PolicyMLX
+    return True
 
 
 def _mlx_log_softmax(tensor: "mx.array", axis: int = -1) -> "mx.array":
@@ -597,6 +620,7 @@ def _mlx_configure_device(spec: Optional[str]) -> Optional[_MLXDeviceInfo]:
 
 
 def _mlx_print_available_devices() -> int:
+    _ensure_mlx_imported()
     if mx is None:
         print("MLX backend is unavailable; please install mlx to inspect devices.", file=sys.stderr)
         return 1
@@ -2765,6 +2789,7 @@ class PolicyGradientAgentMLX:
         lr_min_scale: float = 0.0,
         use_last_frame_inference: bool = True,
     ) -> None:
+        _ensure_mlx_imported()
         if mx is None or nn_mlx is None or optim_mlx is None:
             raise RuntimeError(
                 "MLX backend is not available. Please install mlx to use --policy-backend mlx."
@@ -3739,11 +3764,13 @@ def main() -> None:
         ap.error("--intent-action-space and --placement-action-space are mutually exclusive")
 
     if args.mlx_list_devices:
+        _ensure_mlx_imported()
         exit_code = _mlx_print_available_devices()
         sys.exit(exit_code)
 
     selected_mlx_device: Optional[_MLXDeviceInfo] = None
     if args.policy_backend == "mlx":
+        _ensure_mlx_imported()
         if mx is None:
             print(
                 "MLX backend is unavailable; install mlx to use --policy-backend mlx.",

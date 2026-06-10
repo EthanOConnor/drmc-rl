@@ -3,6 +3,14 @@
 
 **Purpose:** One-stop reference for agents/humans implementing the faithful Dr. Mario simulator and RL env. Aggregates **confirmed project decisions** and a **RAM map (external candidates → validate)**.
 
+> **Status (2026-05-07):** This is a ROM/RAM-map reference, not the
+> current training architecture source of truth. Current training uses
+> `ppo_smdp` over the in-process `cpp-pool` backend, `DrMarioPlacementEnv-v0`,
+> `bitplane_bottle_conn_mask` observations, and the `ln_hop_back` curriculum. Use
+> `README.md`, `docs/DESIGN.md`, `docs/STATE_OBS_AND_RAM_MAPPING.md`,
+> `docs/PLACEMENT_POLICY.md`, and `docs/PLACEMENT_PLANNER.md` for the live
+> training path.
+
 > ⚖️ **Legal:** Use only a **legally owned** ROM. Do **not** commit ROMs. ROM path via env var `DRMARIO_ROM`.
 
 ---
@@ -16,29 +24,52 @@
 ## 1) Project-confirmed details
 
 ### 1.1 Observation modes
-- **pixel**: 128×128 RGB, 4-frame stack.
-- **state**: 14×16×8 planes (**visible-only**), 4-stack.
+- **Current training (`cpp-pool`)**: state tensor `(C,16,8)`, normally
+  `bitplane_bottle_conn_mask` with twelve channels: red/yellow/blue bottle color
+  occupancy, virus mask, four locked-capsule connection-edge planes, and four
+  orientation-specific feasible-placement masks.
+- **Emulator/debug lane**: pixel and RAM-derived state observations are still
+  available for libretro/Stable-Retro parity work.
+- See `docs/STATE_OBS_AND_RAM_MAPPING.md` and `envs/specs/ram_to_state.py` for
+  the maintained state specifications.
 
-### 1.2 Actions (10 at 60 Hz, latching holds)
-- hold LEFT, hold RIGHT, hold DOWN (latched)
-- tap A, tap B, tap A+B (one-frame taps)
-- NONE (+ release semantics per adapter)
+### 1.2 Action model
+- **Current training action**: one 512-way macro placement per controllable
+  spawn, encoded as `orientation * 16 * 8 + row * 8 + col`.
+- **Execution**: the placement planner/native pool maps a legal macro placement
+  to the frame-level movement/rotation/down sequence and reports lock cost
+  (`tau`, `cost_to_lock`, per-candidate costs).
+- **Per-frame controller actions** remain emulator/native-parity primitives, not
+  the default RL action space.
 
-### 1.3 Rewards & shaping
-- Base: negative time per step + clear bonus; **per-level T_max** timeouts.
-- Potential shaping: r_shape = γ·Φ(s′) − Φ(s), **Φ(terminal)=0**. Evaluator Φ is distributional ETC; scale with `potential_kappa` (≈250).
+### 1.3 Rewards and curriculum
+- SMDP-PPO consumes macro-decision rewards plus `placements`, `tau`, and
+  `gamma^tau` discounting.
+- Current configs use soft time budgets and `ln_hop_back` synthetic curriculum
+  stages before real levels. See `docs/PLACEMENT_POLICY.md`,
+  `docs/REWARD_SHAPING.md`, and `training/configs/smdp_ppo.yaml`.
 
 ### 1.4 Evaluator
-- Distributional (QR/IQN). Quantiles → mean/τ-quantiles/CVaR. TorchScript runtime; optional bootstrap into PPO-style value targets.
+- Distributional evaluator code exists, but it is not in the current default
+  training loop. Treat `models/evaluator/train_qr.py` as unfinished unless it
+  has been refreshed after this document.
 
 ### 1.5 Seeds/determinism
-- Seeds by **level-select + frame offset**; catalog under `envs/retro/seeds/`. Eval harness computes E[T], Var[T], CVaR.
+- `cpp-pool` training can randomize native RNG state on reset.
+- Emulator seed registries under `envs/retro/seeds/` remain a parity/evaluation
+  lane, not a prerequisite for current training runs.
 
 ### 1.6 Planning hooks
-- snapshot/restore/peek_step in env; one-step lookahead wrapper supports mean/quantile/CVaR.
+- Current planner-facing data is the legal/feasible mask, per-placement
+  `cost_to_lock`/`costs`, and `tau` for the chosen macro action.
+- See `docs/PLACEMENT_PLANNER.md` for the contract exposed by `cpp-pool` and
+  the compatibility backends.
 
-### 1.7 Emulator
-- Stable-Retro (guarded); pixel via core frames; state via `retro.get_ram()` → mapper. Env id `DrMarioRetroEnv-v0`.
+### 1.7 Backend lanes
+- **Default training**: `cpp-pool`, an in-process native pool under
+  `game_engine/` / `drmario-native`; no ROM required.
+- **Emulator parity/debug**: libretro / Stable-Retro with a legally owned ROM.
+- **Compatibility lane**: older `cpp-engine` subprocess/shared-memory backend.
 
 ---
 ## 2) RAM Map — external candidates (must validate on your ROM)
@@ -101,19 +132,28 @@ RNG and init:
 - Gravity table discussion (validate): https://tetrisconcept.net/threads/dr-mario-virus-placement.2037/page-3
 - Dr. Mario AI (context): https://meatfighter.com/drmarioai/
 ---
-## 7) State Observation Spec (confirmed)
-- Shape: `C=14, H=16, W=8`, frame‑stack 4.
-- Channels (R/Y/B order within groups):
-  - 0..2: viruses (R,Y,B) where type==$D0 and color in {1,0,2}
-  - 3..5: fixed pill halves (R,Y,B) where type in {$40,$50,$60,$70,$80,$90,$A0}
-  - 6..8: falling pill halves (R,Y,B) — from `p1_fallingPill*`
-  - 9: orientation (0=vertical, 1=horizontal), broadcast scalar
-  - 10: gravity counter (normalized from `$0312`)
-  - 11: settle/lock proxy (normalized from `$0307`)
-  - 12: level scalar (normalized from `$0316`)
-  - 13: spare/settle flag placeholder (0 for now)
+## 7) State Observation Spec (current summary)
 
-See code: `envs/specs/ram_to_state.py:1` for the exact mapping and masks.
+The maintained state-observation reference is
+`docs/STATE_OBS_AND_RAM_MAPPING.md`; use this section only as a quick index.
+
+- `bitplane_bottle`: `4×16×8`, with red/yellow/blue color occupancy plus
+  virus mask.
+- `bitplane_bottle_mask`: `8×16×8`, extending `bitplane_bottle` with four
+  orientation-specific feasible-placement masks. This remains available as a
+  no-connection-edge ablation.
+- `bitplane_bottle_conn`: `8×16×8`, extending `bitplane_bottle` with
+  `connected_{up,down,left,right}` for ordinary locked pill halves.
+- `bitplane_bottle_conn_mask`: `12×16×8`, extending `bitplane_bottle_conn` with
+  four orientation-specific feasible-placement masks. This is the current
+  `cpp-pool` default for `training/configs/smdp_ppo.yaml`.
+- `extended`: `16×16×8` RAM-derived emulator/debug representation including
+  falling pill planes, preview pill broadcast planes, gravity/lock/level scalar
+  planes, and terminal flag planes.
+
+See code: `envs/specs/ram_to_state.py:1` for RAM-derived mapping details, and
+`envs/backends/drmario_pool.py` / `envs/retro/placement_env.py` for current
+`cpp-pool` observation assembly.
 
 ---
 ## 8) RNG & Placement (from disassembly)

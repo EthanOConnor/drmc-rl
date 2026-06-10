@@ -1,96 +1,118 @@
 # Design Overview
 
-This document captures the concrete environment spec, training stack, evaluator design, and evaluation methodology for Dr. Mario RL, aligning with the October 2025 plan. It is the working source of truth for implementation details.
+This document describes the current `drmc-rl` architecture. It is intentionally
+forward-facing: older emulator-first and EnvPool plans are retained only where
+they still explain parity/debug code.
 
-## Environment
+## Product Goal
 
-- Observation modes
-  - Pixel: 128×128 RGB from 256×240 NES frames, stack 4, float32 [0,1]
-  - State-tensor: 16×8 grid with channels for viruses, fixed pill colors, falling pill halves, orientation (0/1), gravity/lock scalars (broadcast), and level/time (broadcast); stack 4
-- Action space (discrete, 60 Hz)
-  - 0 noop; 1 left; 2 right; 3 down; 4 rotate_A; 5 rotate_B; 6 left_hold; 7 right_hold; 8 down_hold; 9 both_rot
-- Episode & termination
-  - One level per episode; terminate on clear or timeout T_max (2–4× median clear time)
-  - State mode (RAM-backed): canonical detection using game flags
-    - Fail: `$0309 != 0` (p1_levelFailFlag)
-    - Success: `$0055 == 0x01` (whoWon) or `$0324 == 0` (p1_virusLeft)
-  - Pixel mode: heuristic detection (virus deltas, inactivity/top-out pattern) remains as fallback
-  - Info: viruses cleared, total frames, chains, drops
-- Rewards (speedrun baseline + shaping)
-  - r_t = −1 + α·ΔV + β·chain_bonus − γ·settle_penalty; terminal clear +C
-- Seeding/determinism
-  - Savestate at Level Select with fixed power‑on frame counter; registry: seed_id → (state_file, frame_offset)
-  - Expose RNG controls and seed sweeps for eval
+Train a single-player Dr. Mario agent that chooses one macro placement per pill
+spawn. The training problem is a placement SMDP, not a 60 Hz controller-policy
+problem.
 
-## Training Stack
+## Current Runtime Path
 
-- Stable‑Retro + Libretro (Mesen/Nestopia) for emulator fidelity and savestate control
-- In-repo `ppo_smdp` (PPO-style, decision/SMDP) for training placement policies
-- TorchRL utilities optional for distributional losses
-- PettingZoo wrapper later for 2‑player vs. mode
-- EnvPool C++ re‑implementation later for 10–100× FPS, with golden parity vs emulator
+Default command:
 
-## Evaluator (Distributional Time‑to‑Clear)
+```bash
+python -m training.run --cfg training/configs/smdp_ppo.yaml --backend cpp-pool
+```
 
-- Head: QR (K=51–101) or IQN; inputs: state tensor (optionally after‑action)
-- Targets: Monte‑Carlo playout distributions per position; censor at T_max
-- Uses: bootstrapped RL with short rollouts; risk‑aware action selection (mean vs quantiles vs CVaR)
+Default config shape:
 
-## Risk‑Aware Policy
+- `algo: ppo_smdp`
+- `env.id: DrMarioPlacementEnv-v0`
+- `env.backend: cpp-pool`
+- `env.state_repr: bitplane_bottle_conn_mask`
+- `curriculum.mode: ln_hop_back`
 
-- Add scalar `risk_tau ∈ (0,1]` to observation
-- Score actions using evaluator quantiles or CVaR at chosen τ/α; switch behavior at inference without retraining
+Data flow:
 
-## Evaluation Harness
+1. `game_engine/` builds `libdrmario_pool` from the `drmario-native` submodule.
+2. `envs/backends/drmario_pool.py` loads the native pool with ctypes.
+3. `training/envs/drmario_pool_vec.py` owns the current vector-env hot path.
+4. `training/envs/dr_mario_vec.py` routes `DrMarioPlacementEnv-v0` +
+   `backend=cpp-pool` directly to that hot path.
+5. `training/algo/ppo_smdp.py` gathers one transition per placement decision and
+   updates the policy with SMDP discounting.
 
-- For each seed (layout, pill sequence): run N=100–1000 episodes with fixed seeds
-- Metrics: E[T], Var[T], P(T≤t*), CVaRα(T) for α ∈ {5%,25%}; per‑seed distribution logging
-- Save parquet + plots; keep savestate replay traces for anomalies
+`cpp-pool` does not go through the emulator backend registry and does not require
+a ROM.
 
-## Data & Curriculum
+## Placement SMDP
 
-- RAM‑labeled corpus via Mesen/FCEUX Lua/trace: 8×16 grid, pill halves, orientation, gravity/lock counters, timers, level
-- Curriculum: single‑move solves → short stacks → full level 0
-- Train evaluator first; use as bootstrap for RL
-- Pixel→state translator trained on emulator frames + RAM labels; later fine‑tune on HDMI frames
+Action space: a dense `4 x 16 x 8 = 512` placement grid.
 
-## Multi‑Agent (later)
+- Action `a = (orientation, row, col)` selects the final locked pose.
+- Feasibility comes from planner masks.
+- `placements/cost_to_lock` or `placements/costs` records frames-to-lock.
+- `placements/tau` records the SMDP duration through the macro step.
 
-- PettingZoo ParallelEnv with `player_0`, `player_1`; same obs/action spaces
-- Rewards: zero‑sum win/loss with optional shaped time signals
+Current training observations are RAM/state-derived board tensors, especially
+`bitplane_bottle_conn_mask`: bottle color planes, virus mask, locked-capsule
+connection edges, and feasibility planes. Pill colors and preview data are
+carried alongside the board.
 
-## Extreme Scale (later)
+## Policy Stack
 
-- EnvPool C++ simulator implementing core rules + RNG; golden parity suite against emulator traces
+Implemented policy modes:
 
-## Reverse Engineering
+- Dense, shift-score, and factorized 512-way placement heads.
+- Candidate-scoring policy that packs only feasible placements and scores each
+  candidate with explicit cost-to-lock features.
 
-- Tools: FCEUX/Mesen trace & CDL; Ghidra (6502) or ca65; NesDev wiki
-- Targets: frame counter source, virus placement constraints, pill RNG, RAM map, input read cadence
-- Workflow: breakpoints on bottle writes, CDL playout, bank mapping per MMC1, unit tests reproducing layouts
+The default config is now candidate scoring in
+`training/configs/smdp_ppo.yaml`. Use
+`training/configs/smdp_ppo_heatmap.yaml` only for controlled heatmap baseline
+comparisons, and `training/configs/smdp_ppo_candidate.yaml` as the verbose
+annotated candidate experiment file.
 
-## Stand‑Up (macOS first; Linux/Windows included)
+## Curriculum
 
-- macOS Apple Silicon
-  - `brew install cmake pkg-config lua@5.1`
-  - `uv venv && source .venv/bin/activate`
-  - `pip install torch torchvision torchaudio`
-  - `pip install stable-retro gymnasium numpy opencv-python rich`
-  - Place NES libretro core (`mesen_libretro.dylib` or `nestopia_libretro.dylib`)
-  - `python -m retro.import ~/ROMs/NES`
-  - `python -m envs.retro.demo --obs-mode pixel`
-- Linux (training)
-  - Install CUDA 12.x; use PyTorch CUDA wheels; run the in-repo trainer (`python -m training.run ...`)
-- Windows
-  - Supported for dev; prefer Linux for large CUDA training runs
+The current default curriculum is `ln_hop_back`.
 
-## Open Questions
+- Synthetic negative levels cover match-count and low-virus tasks.
+- Stage advancement uses EMA/Wilson-style confidence gates plus minimum decision
+  budgets.
+- Time budgets become active after mastery and are treated as soft goals.
+- PPO rollouts stop at advancement boundaries so updates remain stage-pure.
 
-Record decisions in `notes/MEMORY.md` and track open questions in `notes/CHAT.md` / `notes/SCRUTINY.md`
-(see `AGENTS.md` for the notes workflow). Key items:
-- Final observation channel semantics for state‑tensor (exact planes and scaling)
-- Action macro timing (hold durations, repeats, release rules)
-- Reward shaping coefficients (α, β, γ) and terminal bonus C by level
-- T_max policy and evaluation thresholds per level
-- Seed cataloging (frame windows, savestate directories) and naming convention
-- Policy input format for risk conditioning across pixel/state modes
+## Backend Roles
+
+- `cpp-pool`: default training backend.
+- `cpp-engine`: older subprocess/shared-memory engine backend. Useful for
+  compatibility and parity checks, not the default.
+- `libretro`: emulator oracle/debug path with a legal ROM and NES core.
+- `stable-retro`: legacy compatibility path.
+- `mock`: dry-run and hermetic smoke behavior.
+
+## Emulator Parity Boundary
+
+Emulator-backed code remains important for:
+
+- checking native-engine behavior against an oracle;
+- recording and replaying traces;
+- inspecting RAM and visual frames;
+- validating ROM-specific timing assumptions.
+
+It is not the onboarding or training default. See `docs/RETRO_CORE_NOTES.md` for
+that lane.
+
+## Current Non-Goals
+
+These are not active default directions:
+
+- EnvPool as the next simulator architecture;
+- Stable-Retro-first setup;
+- per-frame controller-policy training as the main learning setup;
+- pixel-to-state as a prerequisite for training;
+- 2-player/PettingZoo work as near-term scope.
+
+If any of these become active again, promote them through `notes/BACKLOG.md` and
+update this document at the same time.
+
+## Design Records
+
+Use `notes/MEMORY.md` for durable decisions, `notes/SCRUTINY.md` for risks, and
+`notes/WORKLOG.md` for changes made. `docs/PROJECT_DEEP_DIVE_2026-05-07.md` is a
+dated audit and handoff, not a replacement for current docs.

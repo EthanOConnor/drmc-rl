@@ -23,6 +23,7 @@ from training.utils.reproducibility import pick_device, set_reproducibility, wri
 
 
 DEFAULT_BASE_CFG = Path("training/configs/base.yaml")
+DEFAULT_RUN_CFG = Path("training/configs/smdp_ppo.yaml")
 
 
 def _generate_run_id() -> str:
@@ -124,18 +125,19 @@ def parse_args(argv: Any = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m training.run --algo simple_pg --ui tui
-  python -m training.run --algo ppo_smdp --ui debug --env-id DrMarioPlacementEnv-v0 --core quicknes --rom-path legal_ROMs/DrMario.nes
-  python -m training.run --algo simple_pg --wandb --total_steps 1e6
+  python -m training.run --cfg training/configs/smdp_ppo.yaml --dry_run true
+  python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui --backend cpp-pool --num_envs 16
+  python -m training.run --cfg training/configs/smdp_ppo_candidate.yaml --ui headless --backend cpp-pool
+  python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes --num_envs 1
 """,
     )
     parser.add_argument(
         "--algo",
         choices=["simple_pg", "ppo_smdp", "smdp_ppo"],
         default=None,
-        help="Algorithm to run (defaults to cfg.algo or 'simple_pg').",
+        help="Algorithm to run (defaults to cfg.algo; current default config uses 'ppo_smdp').",
     )
-    parser.add_argument("--cfg", type=str, default=str(DEFAULT_BASE_CFG))
+    parser.add_argument("--cfg", type=str, default=str(DEFAULT_RUN_CFG))
     parser.add_argument("--override", type=str, default=None, help="Comma separated key=value overrides")
 
     # UI options
@@ -171,7 +173,10 @@ Examples:
 
     # Retro backend convenience flags (also available via --override env.*)
     parser.add_argument(
-        "--backend", type=str, default=None, help="Backend: libretro|stable-retro|cpp-engine|mock"
+        "--backend",
+        type=str,
+        default=None,
+        help="Backend: cpp-pool|cpp-engine|libretro|stable-retro|mock",
     )
     parser.add_argument("--core", type=str, default=None, help="Libretro core name (e.g. quicknes) or path")
     parser.add_argument("--core-path", type=str, default=None, help="Path to libretro core file")

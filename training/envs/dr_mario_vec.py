@@ -11,7 +11,13 @@ __all__ = ["make_vec_env", "VecEnvConfig", "DummyVecEnv"]
 
 @dataclass
 class VecEnvConfig:
-    """Configuration describing the vector environment."""
+    """Configuration describing a vector environment.
+
+    Runner configs define the current training path (`DrMarioPlacementEnv-v0`
+    with `backend=cpp-pool`). The dataclass keeps legacy lightweight defaults so
+    direct smoke tests can still instantiate `DummyVecEnv` without native or ROM
+    dependencies.
+    """
 
     id: str = "DrMario-v0"
     obs_mode: str = "pixels"
@@ -148,16 +154,17 @@ class DummyVecEnv:
 def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
     """Factory that returns a vectorised Dr. Mario environment instance.
 
-    The training stack historically used a lightweight `DummyVecEnv` for unit
-    tests and early prototyping. For actual training, we also support building a
-    real Gymnasium VectorEnv backed by `envs.retro.DrMarioRetroEnv` (libretro or
-    mock).
+    Current training routes `DrMarioPlacementEnv-v0` + `backend=cpp-pool` to the
+    in-process native pool vector env. Emulator-backed Gymnasium vector envs are
+    still available for parity/debugging, and `DummyVecEnv` remains for
+    dependency-light smoke tests.
 
     Selection rule:
-      - If `env.id` is one of the registered Dr. Mario env ids, build a real
-        vector env.
-      - Otherwise, fall back to `DummyVecEnv` (keeps unit tests fast and
-        dependency-light).
+      - If `env.id` is the placement env and backend is `cpp-pool`, build the
+        native pool vector env.
+      - If `env.id` is another registered Dr. Mario env id, build a real
+        emulator/Gymnasium vector env.
+      - Otherwise, fall back to `DummyVecEnv`.
     """
 
     if isinstance(cfg, VecEnvConfig):
@@ -299,7 +306,7 @@ def _make_real_vec_env(env_cfg: VecEnvConfig, seed: Optional[int] = None) -> Any
 
         return DrMarioPoolVecEnv(
             num_envs=int(max(1, env_cfg.num_envs)),
-            state_repr=str(env_cfg.state_repr or "bitplane_bottle_mask"),
+            state_repr=str(env_cfg.state_repr or "bitplane_bottle_conn_mask"),
             level=int(env_cfg.level),
             speed_setting=int(env_cfg.speed_setting),
             randomize_rng=bool(env_cfg.randomize_rng),

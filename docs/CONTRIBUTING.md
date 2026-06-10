@@ -1,30 +1,57 @@
 # Contributing
 
-Thanks for helping build Dr. Mario RL. Please read AGENTS.md at the repo root for context and constraints that apply across the codebase.
+Read `AGENTS.md` before editing this repo. It defines the current architecture
+and the notes workflow.
 
 ## Ground Rules
-- Do not distribute ROMs; use legally‑obtained copies only.
-- Preserve determinism: changes that affect timing or RNG must note implications and update parity tests.
-- Keep changes minimal and focused; avoid unrelated refactors in the same PR.
-- Match the existing style and structure; prefer type hints and descriptive names.
+
+- Keep the default mental model on `cpp-pool` placement-SMDP training.
+- Do not distribute ROMs; emulator work must use legally obtained local copies.
+- Preserve determinism. Timing, RNG, and planner changes need explicit parity or
+  regression notes.
+- Keep changes focused and avoid unrelated refactors.
+- Match existing style and update docs/notes when behavior changes.
 
 ## Setup
-- macOS: `brew install cmake pkg-config lua@5.1`
-- Python: `uv venv && source .venv/bin/activate` (or `python -m venv venv`)
-- Install `torch`, `stable-retro`, `gymnasium`, `numpy`, `opencv-python` when network is available.
+
+```bash
+git submodule update --init --recursive
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,rl,viz]"
+python -m tools.build_drmario_pool
+python -m training.run --cfg training/configs/smdp_ppo.yaml --dry_run true
+```
+
+If PyTorch requires a platform-specific install, install the correct `torch`
+wheel first and then reinstall this package with extras.
 
 ## Development Areas
-- `envs/retro/`: Stable‑Retro wrappers; state extraction; seed registry utilities
-- `models/`: policy nets, evaluator heads, pixel→state
-- `eval/`: evaluation harness and plots
-- `dr-mario-disassembly/`: disassembly + annotations (no ROMs)
-- `sim-envpool/`: rules‑exact high‑FPS simulator (later)
+
+- `training/`: runner, PPO-SMDP, curriculum, diagnostics, vector env factory.
+- `training/envs/drmario_pool_vec.py`: active high-throughput env.
+- `envs/backends/drmario_pool.py`: native pool ctypes bridge.
+- `models/policy/`: placement and candidate-scoring policies.
+- `envs/retro/`: active placement planner/reachability plus emulator
+  parity/debug wrappers.
+- `game_engine/`: `drmario-native` submodule mount.
+- `docs/` and `notes/`: current guidance and durable handoff.
 
 ## Testing
-- Add focused unit tests near the code you change.
-- For parity, record action/seed traces and assert board hashes + clear times.
-- Keep tests hermetic; avoid network and large data downloads.
+
+- Add focused tests near the behavior you change.
+- Prefer deterministic seeds and small env counts.
+- For native/emulator parity, record action/seed traces and assert board hashes,
+  counters, or clear-time invariants.
+- Run `pytest -q` when dependencies are installed.
+- At minimum, run `python -m training.run --cfg training/configs/smdp_ppo.yaml
+  --dry_run true` after runner/config changes.
 
 ## Documentation
-- Update `docs/DESIGN.md` and `docs/RNG.md` when changing specs or RNG understanding.
-- Record decisions in `notes/MEMORY.md` and open questions/risks in `notes/CHAT.md` / `notes/SCRUTINY.md`.
+
+- Update `docs/DESIGN.md` for architecture changes.
+- Update `docs/PLACEMENT_POLICY.md` or `docs/PLACEMENT_PLANNER.md` for SMDP,
+  policy, mask, planner, or cost semantics.
+- Update `docs/RETRO_CORE_NOTES.md` only for emulator parity/debug changes.
+- Record decisions in `notes/MEMORY.md`, risks in `notes/SCRUTINY.md`, and work
+  done in `notes/WORKLOG.md`.

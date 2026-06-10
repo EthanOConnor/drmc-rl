@@ -1,4 +1,9 @@
-"""Backend factory for Dr. Mario emulator integrations."""
+"""Backend factory for emulator/per-frame Dr. Mario integrations.
+
+The current `cpp-pool` training backend is not registered here; it is a native
+placement vector env loaded through `envs.backends.drmario_pool` and dispatched
+from `training.envs.dr_mario_vec`.
+"""
 
 from __future__ import annotations
 

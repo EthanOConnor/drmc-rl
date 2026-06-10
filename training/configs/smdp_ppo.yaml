@@ -12,26 +12,48 @@ train:
 smdp_ppo:
   # Learning
   lr: 3.0e-4
-  gamma: 0.997
+  gamma: 0.998
   gae_lambda: 0.95
   
   # PPO parameters
   clip_epsilon: 0.2
   value_coef: 0.5
   entropy_coef: 0.01
-  max_grad_norm: 0.5
+  max_grad_norm: 0.7
   
   # Rollout
   decisions_per_update: 512
   num_epochs: 4
   minibatch_size: 128
   
-  # Policy head architecture
-  # Options: "dense" (recommended), "shift_score", "factorized"
+  # Policy architecture.
+  # The default is candidate scoring: score planner-feasible macro placements
+  # with cost-to-lock as an explicit input. This better matches the placement
+  # SMDP than emitting a dense 512-action heatmap and then masking it.
+  policy_type: "candidate"
+  # Heatmap-only option: "dense", "shift_score", or "factorized".
   head_type: "dense"
   pill_embed_dim: 128
-  # Extra 64-channel residual blocks in the board encoder (0 keeps the tiny baseline).
-  encoder_blocks: 32
+  pill_embed_type: "ordered_pair"
+  # Extra residual blocks in the board encoder. Keep the default small; a
+  # previous 32-block heatmap default was far slower without being the current
+  # forward path.
+  encoder_blocks: 0
+
+  # Candidate-scoring policy params (policy_type=candidate).
+  candidate_max_candidates: 128
+  candidate_d_model: 128
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 256
+  candidate_board_encoder: "cnn"
+  # Use the first 8 non-feasibility bottle channels:
+  # color_{r,y,b}, virus_mask, connected_{up,down,left,right}.
+  candidate_board_channels: 8
+  candidate_transformer_layers: 4
+  candidate_transformer_heads: 4
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
 
   # Optional aux vector inputs (derived from obs + info).
   #   - none: board + pill colors only (legacy)
@@ -58,10 +80,11 @@ env:
   #   - extended: 16ch (explicit virus/static/falling + scalars)
   #   - bitplane_bottle: 4ch (bottle-only color planes + virus_mask)
   #   - bitplane_bottle_mask: 8ch (bottle-only + feasibility planes injected by placement env)
+  #   - bitplane_bottle_conn_mask: 12ch (bottle-only + capsule connection edges + feasibility)
   #   - bitplane: 12ch (type-blind colors + masks + scalars)
   #   - bitplane_reduced: 6ch (colors + virus + falling + preview)
   #   - bitplane_reduced_mask: 10ch (reduced + feasibility mask planes injected by placement env)
-  state_repr: bitplane_bottle_mask
+  state_repr: bitplane_bottle_conn_mask
   num_envs: 16
   frame_stack: 1
   randomize_rng: true
@@ -75,7 +98,7 @@ curriculum:
   # levels as we introduce harder ones.
   mode: ln_hop_back
   start_level: -15
-  max_level: 0
+  max_level: 20
   # Use a 1-sigma Wilson lower bound for stage passes (less strict than 2-sigma).
   confidence_sigmas: 1.0
   # Use a 2-sigma Wilson lower bound for base-skill "mastery" before enabling time budgets.
@@ -91,7 +114,7 @@ curriculum:
   probe_threshold: 0.25
   window_episodes: 100
   min_episodes: 50
-  rehearsal_prob: 0.0
+  rehearsal_prob: 0.1
   
 # Logging
 logdir: "runs/smdp_ppo"

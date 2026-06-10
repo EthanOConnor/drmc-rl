@@ -1,46 +1,65 @@
-# Environment Stand-up (macOS & Linux)
+# Environment Stand-Up
 
-## macOS (Apple Silicon)
-1. Install prerequisites:
-   ```bash
-   brew install cmake pkg-config lua@5.1
-   ```
-2. Python env + core libs (Python ≤3.14 recommended for Stable-Retro wheels):
-   ```bash
-   python3.13 -m venv .venv && source .venv/bin/activate
-   pip install -e .
-   pip install -e ".[retro,dev]"  # installs stable-retro wheels (Python ≤3.14)
-   # For RL training on macOS: install torch MPS wheels
-   pip install torch torchvision torchaudio
-   ```
-3. Libretro core (NES): install RetroArch to fetch a NES core (Mesen/Nestopia/QuickNES) or download a nightly core build, then export:
-   ```bash
-   export DRMARIO_CORE_PATH=/path/to/quicknes_libretro.dylib  # or mesen_libretro.dylib
-   export DRMARIO_ROM_PATH=/path/to/DrMario.nes
-   ```
-4. (Optional for Stable-Retro fallback) Import the game you legally own:
-   ```bash
-   python -m retro.import ~/ROMs/NES
-   ```
-5. Run your smoke test: `python envs/retro/demo.py --obs-mode pixel --steps 200 --backend libretro --start-presses 3`
-6. Optional live preview (requires Pillow/Tk): `python envs/retro/demo.py --backend libretro --show-window --display-scale 2`
-   - Install Tk if missing (`brew install python-tk` on macOS, then recreate your venv).
+The default setup is for native `cpp-pool` placement training. Emulator setup is
+optional and only needed for parity/debug work.
 
-## Linux (training)
-1. Install CUDA 12.x drivers/toolkit and create a Python env.
-2. PyTorch CUDA wheels (+ optional TorchRL helpers):
-   ```bash
-   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-   pip install -e ".[rl]"
-   ```
-3. Install Stable-Retro and a libretro NES core. Set `DRMARIO_CORE_PATH` and `DRMARIO_ROM_PATH`, then import ROMs if you plan to use the Stable-Retro backend.
-4. Register env id and launch:
-   ```bash
-   python -c "from envs.retro.register_env import register_env_id; register_env_id(); print('OK')"
-   python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui --env-id DrMarioPlacementEnv-v0 --backend cpp-pool --num_envs 16
-   ```
+## macOS
 
-Notes
-- macOS development is great for wiring and tests; prefer Linux for long PPO runs.
-- If LuaJIT errors occur on macOS, stick to Lua 5.1 (brew formula shown above).
-- Switch backends via `DRMARIO_BACKEND` (`libretro` default, `stable-retro`, or `mock`).
+```bash
+brew install cmake pkg-config
+git submodule update --init --recursive
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev,rl,viz]"
+python -m tools.build_drmario_pool
+python -m training.run --cfg training/configs/smdp_ppo.yaml --dry_run true
+```
+
+For Apple Silicon, install the PyTorch packages appropriate for MPS first if the
+generic install does not select the wheel you want.
+
+Small live run:
+
+```bash
+python -m training.run --cfg training/configs/smdp_ppo.yaml \
+  --ui tui --backend cpp-pool --num_envs 16
+```
+
+## Linux
+
+```bash
+git submodule update --init --recursive
+python -m venv .venv
+source .venv/bin/activate
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[dev,rl,viz]"
+python -m tools.build_drmario_pool
+python -m training.run --cfg training/configs/smdp_ppo.yaml --dry_run true
+```
+
+Long CUDA training runs should use Linux when available. Keep the same runner
+and config path unless a specific experiment says otherwise.
+
+## Emulator Parity Setup
+
+Only do this for libretro/Stable-Retro parity, frame capture, or ROM debugging.
+
+```bash
+export DRMARIO_CORE_PATH=/path/to/quicknes_libretro.dylib
+export DRMARIO_ROM_PATH=/path/to/DrMario.nes
+python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
+  --backend libretro --core quicknes --rom-path "$DRMARIO_ROM_PATH" \
+  --num_envs 1
+```
+
+Stable-Retro is a legacy compatibility path. If it is needed, install it
+explicitly in the local environment and keep those commands out of the default
+training setup.
+
+## Notes
+
+- `cpp-pool` needs the native submodule and build artifact, not a ROM.
+- `envs/retro/` contains active placement planner code despite the historical
+  package name.
+- If Tk/Pillow or libretro UI dependencies are missing, that should not block
+  native `cpp-pool` training checks.

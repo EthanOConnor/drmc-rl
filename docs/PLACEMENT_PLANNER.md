@@ -15,8 +15,9 @@ The macro action space is a dense 4×16×8 grid (512 actions):
 - The environment exposes **masks** and **costs** at each spawn:
   - `placements/legal_mask`: in-bounds actions (boundary actions masked out)
   - `placements/feasible_mask`: actions reachable under current board + counters
-  - `placements/costs`: minimal frames-to-lock for each feasible action (`inf` otherwise)
-- Each `env.step(action)` advances the emulator until the **next decision point**,
+  - `placements/cost_to_lock`: native `cpp-pool` frames-to-lock (`0xFFFF` sentinel otherwise)
+  - `placements/costs`: emulator-wrapper frames-to-lock (`inf` otherwise)
+- Each `env.step(action)` advances the env until the **next decision point**,
   returning an SMDP duration `placements/tau` (frames elapsed).
 
 ## Action Space (Canonical)
@@ -81,6 +82,20 @@ Backend selection is handled by `PlacementPlanner(reach_backend=...)`:
 At runtime, the macro env surfaces the chosen backend as `placements/reach_backend`
 in `info` (`native` or `python`).
 
+## Current Training Path (`cpp-pool`)
+
+For normal training, `DrMarioPlacementEnv-v0` plus `backend=cpp-pool` bypasses
+Gymnasium vector wrappers and `DrMarioPlacementEnv` entirely. The active path is:
+
+- `training/envs/dr_mario_vec.py` dispatch
+- `training/envs/drmario_pool_vec.py` vector env
+- `envs/backends/drmario_pool.py` ctypes wrapper
+- native `game_engine/libdrmario_pool`
+
+This path keeps the same canonical 512-way placement action contract and planner
+semantics, but masks, costs, observations, and rewards come directly from the
+native pool. Use the emulator wrapper path for parity/debugging.
+
 ## Planner (Spawn-Latched Masks + Plans)
 
 Module: `envs/retro/placement_planner.py`
@@ -95,7 +110,7 @@ Key responsibilities:
 - `plan_action(reach, action)` reconstructs the per-frame controller script:
   an array of holds (`left/right/down`) plus button taps (`NOOP`, `ROTATE_A/B`).
 
-Note: `placements/costs` is **frames-to-lock** from spawn; the SMDP step duration
+Note: placement costs are **frames-to-lock** from spawn; the SMDP step duration
 `placements/tau` additionally includes any post-lock wait until the next pill is
 controllable.
 
@@ -122,7 +137,7 @@ Module: `envs/retro/placement_env.py`
 
 Important `info` keys:
 
-- `placements/legal_mask`, `placements/feasible_mask`, `placements/costs`
+- `placements/legal_mask`, `placements/feasible_mask`, `placements/cost_to_lock` or `placements/costs`
 - `placements/options` (count of feasible actions)
 - `placements/spawn_id` (for caching logits “one inference per spawn”)
 - `placements/tau` (SMDP duration in frames)
