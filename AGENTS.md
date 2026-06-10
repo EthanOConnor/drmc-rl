@@ -15,6 +15,14 @@
 - `cpp-pool` bypasses the emulator backend registry. Look at
   `training/envs/dr_mario_vec.py`, `training/envs/drmario_pool_vec.py`, and
   `envs/backends/drmario_pool.py` for the live training path.
+- The pool plans with the costs-only `drm_reach_bfs_v4` planner and warps
+  pills to their lock pose (no controller-script replay). The v1 planner
+  (`drm_reach_bfs_full`) is the verification oracle; never change one without
+  re-running `tests/test_reach_v4_parity.py`. `DRMARIO_POOL_WARP=0` restores
+  the legacy replay path for byte-level debugging.
+- Roadmap toward top-human play (speedrun + VS league + strength dial):
+  `docs/DESIGN_TOP_PLAY.md`. Current measured throughput:
+  `docs/BENCHMARKS_2026-06-09.md`.
 
 ## Project Structure & Module Organization
 

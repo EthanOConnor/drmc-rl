@@ -3,6 +3,41 @@
 Forward backlog for the current architecture. Historical plans that are no
 longer active belong in `notes/archive/` or git history, not in this file.
 
+## P0: Top-Play Roadmap (see docs/DESIGN_TOP_PLAY.md)
+
+Sequenced plan toward beating strong humans (speedrun + VS):
+
+1. **Speedrun push**: capacity bump (d_model 256, 4–6 blocks) once curriculum
+   reaches positive levels; small GRU over decision embeddings; long runs
+   through the level ladder with per-checkpoint `tools.eval_policy` sweeps;
+   tighten mastery-gated time budgets toward BestTimesDB floors.
+2. **VS engine port**: 2P attack/garbage rules from the disassembly into the
+   pool (combo→attack tables, garbage drop scheduling, win/loss); paired-env
+   pool ABI; parity tests vs emulator 2P mode.
+3. **League training**: snapshot pool + PFSP opponent sampling + exploiter
+   agents; round-robin Elo harness (extend tools/eval_policy to head-to-head).
+4. **Strength dial**: value-gap sampling + reaction-time model + optional
+   persona conditioning; calibrate notches against the Elo ladder.
+5. **Eval-time shallow search**: depth-2 expectimax over placements × next
+   pill using warp rollouts (~30 µs/sim) with the value head at leaves, for
+   exhibition play.
+
+## P0.5: Throughput Tail (post-2026-06-09 substrate)
+
+- PPO update is the current ceiling (~1.1 s / 2048 decisions): try
+  torch.compile on the candidate net (MPS + CPU), then async rollout/update
+  overlap (collect next rollout while updating).
+- Planner worst case (sparse low-virus boards, deep tuck poses, 4–9 ms):
+  NEON the v2/v4 inner loop, factor the per-action Y-stage recompute, or add
+  an explicit `DRMARIO_REACH_HORIZON` knob (documented approximation, off by
+  default). v3's bit-sliced design is a measured dead end — see WORKLOG
+  2026-06-09 before attempting anything similar.
+- `build_reset_spec` is called for all envs every step in the pool vec env
+  (~1% of wall); build specs only for envs actually resetting.
+- Demo-parity drift: `tests/test_game_engine_demo.py` fails from pre-existing
+  engine/source mismatch (SCRUTINY 2026-06-09). Recover the working source
+  state from `../drmario-native` history.
+
 ## P0: Keep `cpp-pool` Training Reproducible
 
 - Verify fresh-checkout setup after the `game_engine/` submodule split:

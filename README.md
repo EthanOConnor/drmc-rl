@@ -17,6 +17,13 @@ placement planner in-process through the `game_engine/` submodule, so no ROM or
 emulator is needed for normal training. Libretro and Stable-Retro code remains
 for parity, capture, and debugging only.
 
+As of 2026-06, the pool plans with a gated exact reachability search
+(`drm_reach_bfs_v4`) and warps each pill directly to its lock pose instead of
+replaying controller scripts (`DRMARIO_POOL_WARP=0` restores the legacy path).
+Measured on an M3 Max: ~180k frames/s env-only, ~64k frames/s end-to-end
+training (docs/BENCHMARKS_2026-06-09.md). The plan toward top-human play in
+speedrun and VS modes is in docs/DESIGN_TOP_PLAY.md.
+
 Clone/setup note:
 
 ```bash
