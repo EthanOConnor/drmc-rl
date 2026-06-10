@@ -91,7 +91,13 @@ def main() -> None:
             if r["name"] == "curriculum/advanced_to":
                 print(f"  {r['step']:>12,} -> {int(r['value'])}")
 
-    ckpts = sorted((run_dir / "checkpoints").glob("*.pt.gz"))
+    def _step(p):
+        try:
+            return int(p.name.split("step")[-1].split(".")[0])
+        except Exception:
+            return -1
+
+    ckpts = sorted((run_dir / "checkpoints").glob("*.pt.gz"), key=_step)
     if ckpts:
         print(f"\ncheckpoints: {len(ckpts)} (latest {ckpts[-1].name})")
 
