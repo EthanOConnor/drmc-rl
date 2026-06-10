@@ -89,6 +89,7 @@ def evaluate_level(
     device: str,
     temperature: float,
     seed: int,
+    strength: Optional[float] = None,
     max_decisions_per_episode: int = 2000,
 ) -> Dict[str, Any]:
     env = DrMarioPoolVecEnv(
@@ -160,13 +161,34 @@ def evaluate_level(
                     aux=None if aux is None else torch.from_numpy(aux).to(device),
                 )
                 logits_cpu = logits.float().cpu()
-            if temperature > 0:
+            if strength is not None and strength < 1.0:
+                # Value-gap strength dial: sample uniformly among candidates
+                # whose logit is within delta of the best, where delta grows as
+                # strength drops. Degrades believably (plausible-but-worse
+                # placements) unlike epsilon-random. Optionally filters
+                # frame-perfect-only candidates (cost outliers) at low strength.
+                lg = logits_cpu.numpy().copy()
+                lg[~cand_mask] = -np.inf
+                best = lg.max(axis=1, keepdims=True)
+                # strength 1.0 -> delta 0 (argmax); strength 0.0 -> delta ~ full range
+                spread = np.where(np.isfinite(lg), lg, np.nan)
+                rng_span = np.nanmax(spread, axis=1, keepdims=True) - np.nanmin(
+                    spread, axis=1, keepdims=True
+                )
+                delta = (1.0 - float(strength)) * np.maximum(rng_span, 1e-6)
+                eligible = (lg >= best - delta) & cand_mask
+                slot_np = np.zeros(B, dtype=np.int64)
+                for i in range(B):
+                    idx = np.flatnonzero(eligible[i])
+                    slot_np[i] = int(rng.choice(idx)) if idx.size else 0
+            elif temperature > 0:
                 dist = MaskedPlacementDist(logits_cpu / temperature, torch.from_numpy(cand_mask))
                 slot, _lp = dist.sample(deterministic=False)
+                slot_np = slot.numpy().reshape(-1).astype(np.int64)
             else:
                 dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
                 slot = dist.mode()
-            slot_np = slot.numpy().reshape(-1).astype(np.int64)
+                slot_np = slot.numpy().reshape(-1).astype(np.int64)
             actions = cand_actions[np.arange(B), slot_np].astype(np.int64)
 
         obs, _rewards, terminated, truncated, infos = env.step(actions)
@@ -215,6 +237,8 @@ def main() -> None:
     ap.add_argument("--state-repr", type=str, default="bitplane_bottle_conn_mask")
     ap.add_argument("--device", type=str, default="cpu")
     ap.add_argument("--temperature", type=float, default=0.0, help="0 = deterministic argmax")
+    ap.add_argument("--strength", type=float, default=None,
+                    help="strength dial in [0,1]; <1 samples among near-best candidates")
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--json-out", type=str, default=None)
     args = ap.parse_args()
@@ -250,6 +274,7 @@ def main() -> None:
             device=args.device,
             temperature=args.temperature,
             seed=args.seed,
+            strength=args.strength,
         )
         results.append(res)
         p50 = res["frames_to_clear_p50"]
