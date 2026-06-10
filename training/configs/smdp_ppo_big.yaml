@@ -27,8 +27,8 @@ smdp_ppo:
   # Sized for accelerator efficiency: small minibatches are dispatch-bound on
   # MPS (the update, not the env, was the throughput ceiling). Larger batch +
   # fewer epochs follows current large-batch PPO practice.
-  decisions_per_update: 2048
-  num_epochs: 3
+  decisions_per_update: 4096
+  num_epochs: 2
   minibatch_size: 512
   
   # Policy architecture.
