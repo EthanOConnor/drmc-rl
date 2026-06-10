@@ -58,6 +58,28 @@ Chronological log of work done. Format: date, actor, brief summary.
   planner cases are sparse low-virus boards with deep tuck poses (~4–9 ms);
   mid-game boards ~0.5 ms.
 
+## 2026-06-10 – Coding Agent (Claude)
+
+- **Training-loop sync purge** (`training/algo/ppo_smdp.py`,
+  `models/policy/placement_dist.py`): live-profiling showed the trainer at
+  168 decisions/s vs ~3k env-only — all MPS dispatch/sync overhead. Rollout
+  selection now runs under `torch.inference_mode` with one device→host sync
+  and CPU-side sampling; per-minibatch metric `.item()` syncs replaced by
+  on-device stacking (one sync per update); `MaskedPlacementDist` rewritten
+  branchless (`torch.where`, no clone/bool-index/host-sync); aux_v1 features
+  built batched (equivalence test added). Config moved to 64 envs /
+  2048 decisions-per-update / minibatch 512 / 3 epochs; checkpoint interval
+  100k→5M frames (was gzipping every ~2 s at the new speed).
+  Result: 168 → **954 decisions/s**, 11k → **64k frames/s** during training.
+- **Eval harness** (`tools/eval_policy.py`): fixed-seed, curriculum-free
+  checkpoint evaluation across levels (clear rate, frames-to-clear p50/p90,
+  baselines: random, greedy-cost). Sanity: an 80-second (5M-frame) checkpoint
+  clears level 0 at 12.5% vs 0% for both baselines.
+- **Docs**: `docs/DESIGN_TOP_PLAY.md` (system design toward top-human play:
+  speedrun track, native 2P VS port, PFSP league, strength dial, eval-time
+  shallow search over warp rollouts), `docs/BENCHMARKS_2026-06-09.md`
+  (measured numbers), BACKLOG P0 roadmap, README/AGENTS pointers.
+
 - Rewrote the forward-facing docs and backlog around the current `cpp-pool`
   placement-SMDP architecture, keeping emulator/libretro/Stable-Retro material
   in a parity/debug lane instead of the default onboarding path.
