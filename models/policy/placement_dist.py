@@ -103,18 +103,19 @@ class MaskedPlacementDist:
         self.logits_flat = self.logits_map.reshape(B, -1)
         self.mask_flat = self.mask.reshape(B, -1)
         
-        # Apply mask: set invalid logits to large negative value
-        self.masked_logits = self.logits_flat.clone()
-        self.masked_logits[~self.mask_flat] = -1e9
-        
-        # Handle edge case: no valid actions (shouldn't happen in practice)
-        # Fall back to enabling action 0 for those batch entries.
-        # (We avoid scanning other batch entries; if a given sample truly has no
-        # feasible actions, any deterministic fallback is acceptable for stability.)
-        no_valid = ~self.mask_flat.any(dim=-1)
-        if bool(no_valid.any()):
-            self.mask_flat[no_valid, 0] = True
-            self.masked_logits[no_valid, 0] = 0.0
+        # Apply mask, with a branchless fallback for the no-valid-action edge
+        # case (enable slot 0 with logit 0). torch.where avoids both the
+        # clone + boolean-indexed assignment and the host sync that an
+        # `if mask.any()` check would force on accelerators; this runs in every
+        # rollout step and every PPO minibatch.
+        neg = torch.tensor(-1e9, dtype=self.logits_flat.dtype, device=self.logits_flat.device)
+        masked = torch.where(self.mask_flat, self.logits_flat, neg)
+        no_valid = ~self.mask_flat.any(dim=-1, keepdim=True)  # [B, 1]
+        col0 = torch.zeros_like(self.mask_flat)
+        col0[:, 0] = True
+        fallback = no_valid & col0
+        self.mask_flat = self.mask_flat | fallback
+        self.masked_logits = torch.where(fallback, torch.zeros_like(masked), masked)
                 
         # Compute probabilities
         self.probs = F.softmax(self.masked_logits, dim=-1)

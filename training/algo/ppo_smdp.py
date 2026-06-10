@@ -57,6 +57,16 @@ _AUX_V1_VIRUS_NORM = 84.0  # Max viruses at level 20: (20+1)*4 = 84
 #   virus_max_height/16 [1]
 _AUX_V1_DIM = 3 + 1 + 3 + _AUX_V1_LEVEL_DIM + 1 + 1 + 8 + 1 + 1 + 1 + 1  # 57
 
+# Order must match the stacked per-minibatch metric rows in `_update_policy`.
+_UPDATE_METRIC_KEYS = (
+    "loss/policy",
+    "loss/value",
+    "loss/total",
+    "policy/entropy",
+    "policy/kl",
+    "policy/clip_frac",
+)
+
 
 @dataclass(slots=True)
 class SMDPPPOConfig:
@@ -659,8 +669,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             costs_to_lock[i] = self._extract_cost_to_lock(info_i)
             pill_colors[i] = self._extract_pill_colors(info_i)
             preview_pill_colors[i] = self._extract_preview_pill_colors(info_i)
-            if aux_batch is not None:
-                aux_batch[i] = self._build_aux(obs_arr[i], info_i)
+        if aux_batch is not None:
+            aux_batch = self._build_aux_batch(obs_arr, infos)
 
         if self.policy_type == "candidate":
             cand_actions = np.full((num_envs, self.candidate_max), -1, dtype=np.int32)
@@ -674,26 +684,31 @@ class SMDPPPOAdapter(AlgoAdapter):
                 cand_mask[i] = packed.mask
                 cand_cost[i] = packed.cost
 
-            obs_t = torch.from_numpy(obs_arr).to(self.device)
-            colors_t = torch.from_numpy(pill_colors).to(self.device)
-            preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
-            aux_t = None if aux_batch is None else torch.from_numpy(aux_batch).to(self.device)
-            cand_actions_t = torch.from_numpy(cand_actions).to(self.device)
-            cand_cost_t = torch.from_numpy(cand_cost).to(self.device)
-            cand_mask_t = torch.from_numpy(cand_mask).to(self.device)
-
             t0 = time.perf_counter()
-            logits, values = self.net(  # type: ignore[misc]
-                obs_t,
-                colors_t,
-                preview_t,
-                cand_actions_t,
-                cand_cost_t,
-                cand_mask_t,
-                aux=aux_t,
-            )
+            with torch.inference_mode():
+                obs_t = torch.from_numpy(obs_arr).to(self.device)
+                colors_t = torch.from_numpy(pill_colors).to(self.device)
+                preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
+                aux_t = None if aux_batch is None else torch.from_numpy(aux_batch).to(self.device)
+                cand_actions_t = torch.from_numpy(cand_actions).to(self.device)
+                cand_cost_t = torch.from_numpy(cand_cost).to(self.device)
+                cand_mask_t = torch.from_numpy(cand_mask).to(self.device)
+
+                logits, values = self.net(  # type: ignore[misc]
+                    obs_t,
+                    colors_t,
+                    preview_t,
+                    cand_actions_t,
+                    cand_cost_t,
+                    cand_mask_t,
+                    aux=aux_t,
+                )
+                # Single device->host sync; sampling on tiny [B, K] logits is
+                # far cheaper on CPU than paying per-op accelerator dispatch.
+                logits_cpu = logits.float().cpu()
+                values_np = values.float().cpu().numpy().astype(np.float32).reshape(-1)
             dt = float(time.perf_counter() - t0)
-            batch_size = int(obs_t.shape[0])
+            batch_size = int(obs_arr.shape[0])
             self._perf_inference_calls += batch_size
             self._perf_inference_sec_total += dt
             self._perf_last_inference_sec = dt
@@ -703,17 +718,16 @@ class SMDPPPOAdapter(AlgoAdapter):
             except Exception:
                 pass
 
-            dist = MaskedPlacementDist(logits, cand_mask_t)
+            dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
             if deterministic:
                 slot = dist.mode()
                 log_probs = dist.log_prob(slot)
             else:
                 slot, log_probs = dist.sample(deterministic=False)
 
-            actions_t = cand_actions_t.gather(1, slot.unsqueeze(-1)).squeeze(-1)
-            actions_np = actions_t.detach().cpu().numpy().astype(np.int64)
-            log_probs_np = log_probs.detach().cpu().numpy().astype(np.float32)
-            values_np = values.detach().cpu().numpy().astype(np.float32).reshape(-1)
+            slot_np = slot.numpy().astype(np.int64).reshape(-1)
+            actions_np = cand_actions[np.arange(num_envs), slot_np].astype(np.int64)
+            log_probs_np = log_probs.numpy().astype(np.float32)
             return (
                 actions_np,
                 log_probs_np,
@@ -725,19 +739,21 @@ class SMDPPPOAdapter(AlgoAdapter):
                 aux_batch,
             )
 
-        logits_map, values = self._forward_policy_batch(
-            obs_arr, masks, pill_colors, preview_pill_colors, aux_batch
-        )
-        dist = MaskedPlacementDist(logits_map, torch.from_numpy(masks).to(self.device))
+        with torch.inference_mode():
+            logits_map, values = self._forward_policy_batch(
+                obs_arr, masks, pill_colors, preview_pill_colors, aux_batch
+            )
+            logits_cpu = logits_map.float().cpu()
+            values_np = values.float().cpu().numpy().astype(np.float32)
+        dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(masks))
         if deterministic:
             action_idx = dist.mode()
             log_probs = dist.log_prob(action_idx)
         else:
             action_idx, log_probs = dist.sample(deterministic=False)
 
-        actions_np = action_idx.detach().cpu().numpy().astype(np.int64)
-        log_probs_np = log_probs.detach().cpu().numpy().astype(np.float32)
-        values_np = values.detach().cpu().numpy().astype(np.float32)
+        actions_np = action_idx.numpy().astype(np.int64)
+        log_probs_np = log_probs.numpy().astype(np.float32)
 
         return (
             actions_np,
@@ -836,14 +852,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             cand_cost_all_t = torch.from_numpy(cand_cost_all).to(self.device)
 
         # Multiple epochs over the batch
-        metrics_accum = {
-            "loss/policy": 0.0,
-            "loss/value": 0.0,
-            "loss/total": 0.0,
-            "policy/entropy": 0.0,
-            "policy/kl": 0.0,
-            "policy/clip_frac": 0.0,
-        }
+        metrics_accum = {key: 0.0 for key in _UPDATE_METRIC_KEYS}
+        metric_rows: List[torch.Tensor] = []
 
         for epoch in range(self.hparams.num_epochs):
             # Shuffle indices
@@ -952,24 +962,31 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
                 self.optimizer.step()
 
-                # Track metrics
+                # Track metrics on-device; a `.item()` per metric per minibatch
+                # forces an accelerator sync each time (dominated profiles).
                 with torch.no_grad():
                     clip_frac = ((ratio - 1.0).abs() > self.hparams.clip_epsilon).float().mean()
                     # Approximate KL(old || new) under the sampled actions.
                     # Use the mini-batch's old log-probs to match `ratio` and avoid shape mismatch.
                     kl = (mb_log_probs_old - log_probs).mean()
+                    metric_rows.append(
+                        torch.stack(
+                            [
+                                policy_loss.detach(),
+                                value_loss.detach(),
+                                loss.detach(),
+                                entropy.detach(),
+                                kl,
+                                clip_frac,
+                            ]
+                        )
+                    )
 
-                metrics_accum["loss/policy"] += policy_loss.item()
-                metrics_accum["loss/value"] += value_loss.item()
-                metrics_accum["loss/total"] += loss.item()
-                metrics_accum["policy/entropy"] += entropy.item()
-                metrics_accum["policy/kl"] += kl.item()
-                metrics_accum["policy/clip_frac"] += clip_frac.item()
-
-        # Average metrics
-        num_updates = self.hparams.num_epochs * max(1, T // self.hparams.minibatch_size)
-        for key in metrics_accum:
-            metrics_accum[key] /= num_updates
+        # Average metrics with a single host sync.
+        if metric_rows:
+            stacked = torch.stack(metric_rows).mean(dim=0).cpu()
+            for idx, key in enumerate(_UPDATE_METRIC_KEYS):
+                metrics_accum[key] = float(stacked[idx])
 
         metrics_accum["optim/lr"] = self.optimizer.param_groups[0]["lr"]
         metrics_accum["optim/entropy_coef"] = entropy_coef
@@ -1118,6 +1135,109 @@ class SMDPPPOAdapter(AlgoAdapter):
         if self.aux_spec == _AUX_SPEC_V1:
             return self._build_aux_v1(obs, info)
         raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
+
+    def _build_aux_batch(self, obs_arr: np.ndarray, infos: List[Dict[str, Any]]) -> np.ndarray:
+        """Batched aux_v1: vectorizes the plane-derived features across envs.
+
+        Must stay output-identical to per-env `_build_aux_v1` (covered by
+        tests); scalar info lookups remain per-env, plane math is batched.
+        """
+        if self.aux_spec != _AUX_SPEC_V1:
+            raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
+        B = int(obs_arr.shape[0])
+        frames = np.asarray(obs_arr, dtype=np.float32)
+        if frames.ndim == 5 and frames.shape[-2:] == (16, 8):
+            frames = frames[:, -1]
+        if frames.ndim != 4 or frames.shape[2:] != (16, 8):
+            raise ValueError(f"Expected obs shape (B,C,16,8), got {frames.shape!r}")
+
+        out = np.zeros((B, _AUX_V1_DIM), dtype=np.float32)
+
+        # Batched plane features.
+        virus_mask = np.stack([ram_specs.get_virus_mask(frames[i]) for i in range(B)])
+        occ = np.stack([ram_specs.get_occupancy_mask(frames[i]) for i in range(B)])
+        virus_total = virus_mask.reshape(B, -1).sum(axis=1).astype(np.float32)
+        virus_planes = np.stack([ram_specs.get_virus_color_planes(frames[i]) for i in range(B)])
+        virus_by_color = (virus_planes > 0.5).reshape(B, 3, -1).sum(axis=2).astype(np.float32)
+
+        def _heights(masks_b: np.ndarray) -> np.ndarray:
+            any_occ = masks_b.any(axis=1)  # (B, 8)
+            first = masks_b.argmax(axis=1)  # (B, 8) first occupied row from top
+            return np.where(any_occ, 16 - first, 0).astype(np.float32)
+
+        heights = _heights(occ.astype(bool))
+        virus_heights = _heights(virus_mask.astype(bool))
+
+        for i in range(B):
+            info = infos[i] if i < len(infos) else {}
+            k = 0
+            speed = self._extract_int(info.get("pill/speed_setting"))
+            if speed is None:
+                speed = self._extract_int(info.get("speed_setting"))
+            if speed is None:
+                speed = 2
+            out[i, k + int(max(0, min(int(speed), 2)))] = 1.0
+            k += 3
+
+            out[i, k] = min(1.0, virus_total[i] / float(_AUX_V1_VIRUS_NORM))
+            k += 1
+            out[i, k : k + 3] = np.clip(virus_by_color[i] / float(_AUX_V1_VIRUS_NORM), 0.0, 1.0)
+            k += 3
+
+            lvl = self._extract_int(info.get("curriculum/env_level"))
+            if lvl is None:
+                lvl = self._extract_int(info.get("curriculum_level"))
+            if lvl is None:
+                lvl = self._extract_int(info.get("level"))
+            if lvl is None:
+                lvl = 0
+            lvl_i = int(lvl)
+            if _AUX_V1_LEVEL_MIN <= lvl_i <= _AUX_V1_LEVEL_MAX:
+                out[i, k + (lvl_i - _AUX_V1_LEVEL_MIN)] = 1.0
+            k += _AUX_V1_LEVEL_DIM
+
+            frames_used = self._extract_int(info.get("task/frames_used")) or 0
+            max_frames = self._extract_int(info.get("task/max_frames"))
+            if max_frames is not None and int(max_frames) > 0:
+                out[i, k] = float(np.clip(float(frames_used) / float(max_frames), 0.0, 1.0))
+            else:
+                out[i, k] = float(np.tanh(float(frames_used) / 8000.0))
+            k += 1
+
+            out[i, k] = min(1.0, float(heights[i].max()) / 16.0)
+            k += 1
+            out[i, k : k + 8] = np.clip(heights[i] / 16.0, 0.0, 1.0)
+            k += 8
+
+            task_mode = str(info.get("task_mode") or "viruses").strip().lower()
+            progress = 0.0
+            if task_mode in {"matches", "any_clear"}:
+                mc = self._extract_int(info.get("matches_completed")) or 0
+                target = self._extract_int(info.get("match_target")) or 0
+                if target > 0:
+                    progress = float(mc) / float(max(1, target))
+            else:
+                v0 = self._extract_int(info.get("drm/viruses_initial"))
+                if v0 is None:
+                    v0 = self._extract_int(info.get("viruses_initial"))
+                v_now = self._extract_int(info.get("viruses_remaining"))
+                if v_now is None:
+                    v_now = int(virus_total[i])
+                if v0 is not None and int(v0) > 0:
+                    progress = float(int(v0) - int(v_now)) / float(int(v0))
+            out[i, k] = float(np.clip(progress, 0.0, 1.0))
+            k += 1
+
+            options = self._extract_int(info.get("placements/options")) or 0
+            out[i, k] = float(np.clip(float(options) / 512.0, 0.0, 1.0))
+            k += 1
+            out[i, k] = float(np.clip(float(occ[i].sum()) / 128.0, 0.0, 1.0))
+            k += 1
+            out[i, k] = min(1.0, float(virus_heights[i].max()) / 16.0)
+            k += 1
+            if k != _AUX_V1_DIM:
+                raise RuntimeError(f"aux_v1 packing mismatch: k={k} dim={_AUX_V1_DIM}")
+        return out
 
     @staticmethod
     def _column_heights(mask: np.ndarray) -> np.ndarray:
