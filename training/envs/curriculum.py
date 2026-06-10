@@ -189,7 +189,8 @@ def _mad(values: Sequence[float]) -> float:
 @dataclass(slots=True)
 class CurriculumConfig:
     enabled: bool = False
-    mode: str = "linear"  # linear|ln_hop_back
+    mode: str = "linear"  # linear|ln_hop_back|uniform_mixture
+    uniform_min_level: int = 0
     start_level: int = -10
     max_level: int = 0
     success_threshold: float = 0.9
@@ -282,6 +283,7 @@ class CurriculumConfig:
         return cls(
             enabled=bool(_get("enabled", False)),
             mode=str(_get("mode", "linear")),
+            uniform_min_level=int(_get("uniform_min_level", 0)),
             start_level=int(_get("start_level", -10)),
             max_level=int(_get("max_level", 0)),
             success_threshold=float(_get("success_threshold", 0.9)),
@@ -1249,6 +1251,79 @@ class LnHopBackCurriculum:
         return out
 
 
+
+class UniformMixtureCurriculum:
+    """Gate-free level mixture for post-bootstrap consolidation.
+
+    Samples each episode's level from [uniform_min_level, max_level], weighted
+    toward levels with lower recent success (inverse-success sampling with a
+    floor so mastered levels keep some rehearsal mass). No certification
+    machinery: nothing advances, nothing stalls, the training distribution is
+    stationary up to the success-weighting drift. Use once a bootstrapping
+    curriculum has produced broad competence and certification gates start
+    fighting policy plasticity instead of guiding it.
+    """
+
+    def __init__(self, cfg: CurriculumConfig) -> None:
+        self.cfg = cfg
+        self._min_level = int(getattr(cfg, "uniform_min_level", 0) or 0)
+        self._max_level = int(cfg.max_level)
+        if self._max_level < self._min_level:
+            self._max_level = self._min_level
+        self._levels = list(range(self._min_level, self._max_level + 1))
+        self._ema = {lvl: 0.5 for lvl in self._levels}
+        self._alpha = 0.02
+        self._episodes_total = 0
+        self._weight_floor = 0.15
+
+    @property
+    def current_level(self) -> int:
+        return self._max_level
+
+    def sample_level(self, rng: np.random.Generator) -> int:
+        weights = np.array(
+            [max(self._weight_floor, 1.0 - self._ema[lvl]) for lvl in self._levels],
+            dtype=np.float64,
+        )
+        weights /= weights.sum()
+        return int(rng.choice(self._levels, p=weights))
+
+    def note_episode(
+        self,
+        *,
+        level: int,
+        success: bool,
+        episode_frames: Optional[int] = None,
+        episode_spawns: Optional[int] = None,
+        objective_met: Optional[bool] = None,
+        stage_token: object = None,
+    ) -> bool:
+        lvl = int(level)
+        if lvl in self._ema:
+            self._ema[lvl] += self._alpha * (float(bool(success)) - self._ema[lvl])
+        self._episodes_total += 1
+        return False
+
+    def stage_token_for_level(self, level: int) -> int:
+        return int(level)
+
+    def snapshot(self) -> Dict[str, Any]:
+        mean_success = float(np.mean(list(self._ema.values()))) if self._ema else 0.0
+        return {
+            "mode": "uniform_mixture",
+            "start_level": self._min_level,
+            "max_level": self._max_level,
+            "episodes_current_total": self._episodes_total,
+            "window_n": self._episodes_total,
+            "window_size": max(1, self._episodes_total),
+            "success_threshold": 0.0,
+            "confidence_lower_bound": mean_success,
+        }
+
+    def restore(self, snap: Dict[str, Any]) -> None:
+        self._episodes_total = int(snap.get("episodes_current_total", 0) or 0)
+
+
 class CurriculumVecEnv:
     """Vector-env wrapper that assigns per-episode curriculum levels."""
 
@@ -1261,6 +1336,8 @@ class CurriculumVecEnv:
         self._mode = mode
         if mode == "ln_hop_back":
             self._curriculum = LnHopBackCurriculum(cfg)
+        elif mode in {"uniform", "uniform_mixture"}:
+            self._curriculum = UniformMixtureCurriculum(cfg)
         else:
             self._curriculum = ScriptedCurriculum(cfg)
         self._env_levels: List[int] = [int(cfg.start_level) for _ in range(self.num_envs)]
