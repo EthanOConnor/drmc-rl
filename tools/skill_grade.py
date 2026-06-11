@@ -16,6 +16,11 @@ extraction artifacts) are dropped. Each valid crown yields two samples
 (winner-side, loser-side). The win/loss outcome is deliberately NOT a
 feature: we grade playstyle, not results.
 
+To control for opponent skill, each sample also carries ``opp_whr`` — the
+OTHER side's eC rating at the crown's date (same nearest-day join). Samples
+whose opponent is unrated are dropped. ``opp_whr`` is standardized and
+included in the degree-2 expansion like every other base feature.
+
 Model: ridge regression on standardized degree-2 features (base + squares +
 pairwise interactions), numpy-only. Samples are weighted 1/n_crowns(player)
 so frequent players don't dominate, and cross-validation folds are grouped
@@ -44,11 +49,23 @@ Usage:
         [--players ../fightcadeRatings/data/out/players.json]
         [--out data/skill_grade_model.json]
     python tools/skill_grade.py grade games.jsonl [--model data/skill_grade_model.json]
+        [--opp-whr RATING | --self-play]
 
 Grade input: JSON list or JSONL, one object per game, with either the rate
 features directly (cpm, cur, spd, salt_per_min, pills_per_min,
 garbage_per_min) or raw totals plus length_s (salt, cur, cpm, spd, pills,
 garbage, length_s) from which rates are derived.
+
+Grading a version-2 model requires an opponent rating. ``--opp-whr R`` uses
+an explicit value; the default (``--self-play``) treats the opponent as a
+copy of the graded agent and solves the fixed point r = f(metrics,
+opp_whr=r) by iterating from the corpus mean rating until |Δ| < 1 Elo or 20
+iterations. f is quadratic in opp_whr, so plain iteration converges whenever
+|df/d opp_whr| < 1 near the fixed point; if successive deltas flip sign
+(oscillation), the step is damped by 0.5 (cumulatively), which restores
+convergence for any locally stable fixed point. Version-1 model files (no
+``version`` field) have no opp_whr feature; grade detects this and ignores
+the opponent options with a warning.
 """
 
 from __future__ import annotations
@@ -69,6 +86,9 @@ DEFAULT_PLAYERS = REPO.parent / "fightcadeRatings" / "data" / "out" / "players.j
 DEFAULT_MODEL = REPO / "data" / "skill_grade_model.json"
 
 BASE_FEATURES = ["cpm", "cur", "spd", "salt_per_min", "pills_per_min", "garbage_per_min"]
+OPP_FEATURE = "opp_whr"
+FIT_FEATURES = BASE_FEATURES + [OPP_FEATURE]
+MODEL_VERSION = 2
 
 # Filters for known extraction artifacts in the crown table.
 MIN_LENGTH_S = 30.0
@@ -105,7 +125,11 @@ def _rating_at(table, name, day):
 
 
 def build_dataset(db_path: Path, players_path: Path):
-    """Per-crown per-player samples: (features, rating, player name)."""
+    """Per-crown per-player samples: (features incl. opp_whr, rating, player name).
+
+    A sample is kept only if BOTH sides are rated: the player's own rating is
+    the target, the opponent's rating is the ``opp_whr`` feature.
+    """
     table = _rating_lookup(players_path)
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
@@ -119,36 +143,46 @@ def build_dataset(db_path: Path, players_path: Path):
 
     X, y, groups = [], [], []
     n_crowns = 0
+    n_dropped_unrated_opp = 0
     for (day, winner, loser, length_s, salt_w, salt_l, cur_w, cur_l, cpm_w,
          cpm_l, spd_w, spd_l, pills_w, pills_l, garbage_w, garbage_l) in rows:
         minutes = length_s / 60.0
         n_crowns += 1
-        for name, salt, cur, cpm, spd, pills, garbage in (
-            (winner, salt_w, cur_w, cpm_w, spd_w, pills_w, garbage_w),
-            (loser, salt_l, cur_l, cpm_l, spd_l, pills_l, garbage_l),
+        rating_w = _rating_at(table, winner, day)
+        rating_l = _rating_at(table, loser, day)
+        for name, rating, opp_rating, salt, cur, cpm, spd, pills, garbage in (
+            (winner, rating_w, rating_l, salt_w, cur_w, cpm_w, spd_w, pills_w, garbage_w),
+            (loser, rating_l, rating_w, salt_l, cur_l, cpm_l, spd_l, pills_l, garbage_l),
         ):
-            rating = _rating_at(table, name, day)
             if rating is None:
                 continue
-            X.append([cpm, cur, spd, salt / minutes, pills / minutes, garbage / minutes])
+            if opp_rating is None:
+                n_dropped_unrated_opp += 1
+                continue
+            X.append([cpm, cur, spd, salt / minutes, pills / minutes,
+                      garbage / minutes, opp_rating])
             y.append(rating)
             groups.append(name)
+    if n_dropped_unrated_opp:
+        print(f"dropped {n_dropped_unrated_opp} samples with unrated opponent")
     return np.asarray(X, float), np.asarray(y, float), groups, n_crowns
 
 
 # ---------------------------------------------------------------- model
 
-def expand(X):
+def expand(X, base_names=None):
     """Degree-2 expansion: base, squares, pairwise interactions."""
+    if base_names is None:
+        base_names = BASE_FEATURES
     cols = [X]
-    names = list(BASE_FEATURES)
+    names = list(base_names)
     n = X.shape[1]
     for i in range(n):
         for j in range(i, n):
             cols.append((X[:, i] * X[:, j])[:, None])
             names.append(
-                f"{BASE_FEATURES[i]}^2" if i == j
-                else f"{BASE_FEATURES[i]}*{BASE_FEATURES[j]}"
+                f"{base_names[i]}^2" if i == j
+                else f"{base_names[i]}*{base_names[j]}"
             )
     return np.hstack(cols), names
 
@@ -170,6 +204,55 @@ def ridge_fit(Z, y, w, alpha):
 def ridge_predict(model, Z):
     Zs = (Z - np.asarray(model["mu"])) / np.asarray(model["sd"])
     return Zs @ np.asarray(model["coef"]) + model["intercept"]
+
+
+def model_version(model) -> int:
+    return int(model.get("version", 1))
+
+
+def predict_rating(model, X, opp_whr=None):
+    """Per-sample rating predictions from metric features X (n, 6).
+
+    For version>=2 models a scalar ``opp_whr`` (opponent rating) is required
+    and is appended as the last base feature; version-1 models ignore it.
+    """
+    X = np.asarray(X, float)
+    base = model["base_features"]
+    if model_version(model) >= 2:
+        if opp_whr is None:
+            raise ValueError("opp_whr is required for version>=2 models")
+        X = np.hstack([X, np.full((X.shape[0], 1), float(opp_whr))])
+    Z, _ = expand(X, base)
+    return ridge_predict(model, Z)
+
+
+def self_play_rating(model, X, tol=1.0, max_iter=20):
+    """Self-play rating: solve r = mean(f(metrics, opp_whr=r)).
+
+    Iterates from the corpus mean rating. f is quadratic in opp_whr, so plain
+    fixed-point iteration converges when |df/dr| < 1 near the solution; when
+    successive deltas flip sign (oscillation) the step is damped by 0.5
+    (cumulatively), which restores convergence for any locally stable fixed
+    point. Stops when |Δ| < tol (Elo) or after max_iter iterations.
+
+    Version-1 models have no opp_whr feature; the mean prediction is returned
+    directly. Returns (rating, converged, n_iterations).
+    """
+    X = np.asarray(X, float)
+    if model_version(model) < 2:
+        return float(np.mean(predict_rating(model, X))), True, 1
+    r = float(model["y_mean"])
+    damp = 1.0
+    prev_delta = None
+    for it in range(1, max_iter + 1):
+        delta = float(np.mean(predict_rating(model, X, opp_whr=r))) - r
+        if prev_delta is not None and delta * prev_delta < 0:
+            damp *= 0.5
+        r += damp * delta
+        if abs(delta) < tol:
+            return r, True, it
+        prev_delta = delta
+    return r, False, max_iter
 
 
 def group_kfold(groups, k):
@@ -216,7 +299,7 @@ def cmd_fit(args):
 
     # direction sanity checks: weighted correlation of base features vs rating
     print("feature -> rating correlations (weighted):")
-    for j, name in enumerate(BASE_FEATURES):
+    for j, name in enumerate(FIT_FEATURES):
         xm = np.average(X[:, j], weights=w)
         ym = np.average(y, weights=w)
         cov = np.average((X[:, j] - xm) * (y - ym), weights=w)
@@ -224,20 +307,35 @@ def cmd_fit(args):
         sy = math.sqrt(np.average((y - ym) ** 2, weights=w))
         print(f"  {name:16s} r = {cov / (sx * sy):+.3f}")
 
-    Z, feat_names = expand(X)
-    best = None
-    for alpha in (0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0):
-        mae, resid_std, _ = cross_validate(Z, y, w, groups, alpha)
-        print(f"  alpha={alpha:<6g} CV MAE={mae:7.1f}  resid std={resid_std:7.1f}")
-        if best is None or mae < best[1]:
-            best = (alpha, mae, resid_std)
-    alpha, cv_mae, resid_std = best
+    def sweep(Z):
+        best = None
+        for alpha in (0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0):
+            mae, resid_std, _ = cross_validate(Z, y, w, groups, alpha)
+            print(f"  alpha={alpha:<6g} CV MAE={mae:7.1f}  resid std={resid_std:7.1f}")
+            if best is None or mae < best[1]:
+                best = (alpha, mae, resid_std)
+        return best
+
+    # baseline: old config (metrics only, no opp_whr) on the same samples
+    print("old config (no opp_whr):")
+    Z_old, _ = expand(X[:, : len(BASE_FEATURES)], BASE_FEATURES)
+    _, cv_mae_old, _ = sweep(Z_old)
+
+    print("new config (with opp_whr):")
+    Z, feat_names = expand(X, FIT_FEATURES)
+    alpha, cv_mae, resid_std = sweep(Z)
     print(f"selected alpha={alpha}: CV MAE={cv_mae:.1f} Elo, residual std={resid_std:.1f} Elo")
+    print(f"CV MAE old (no opp_whr) {cv_mae_old:.1f} -> new (with opp_whr) {cv_mae:.1f} Elo")
 
     mu, sd, coef, b0 = ridge_fit(Z, y, w, alpha)
+    j_opp = feat_names.index(OPP_FEATURE)
+    print(f"opp_whr standardized coef: {coef[j_opp]:+.1f} Elo per sd "
+          f"(sd = {sd[j_opp]:.1f} Elo)")
     model = {
+        "version": MODEL_VERSION,
         "kind": "ridge_poly2",
-        "base_features": BASE_FEATURES,
+        "base_features": FIT_FEATURES,
+        "metric_features": BASE_FEATURES,
         "feature_names": feat_names,
         "mu": mu.tolist(),
         "sd": sd.tolist(),
@@ -245,14 +343,16 @@ def cmd_fit(args):
         "intercept": float(b0),
         "alpha": alpha,
         "cv_mae": round(cv_mae, 2),
+        "cv_mae_no_opp": round(cv_mae_old, 2),
         "resid_std": round(resid_std, 2),
         "n_samples": int(len(y)),
         "n_crowns": int(n_crowns),
         "n_players": int(n_players),
         "target_range": [float(y.min()), float(y.max())],
+        "y_mean": float(y.mean()),
         "feature_range": {
             name: [float(X[:, j].min()), float(X[:, j].max())]
-            for j, name in enumerate(BASE_FEATURES)
+            for j, name in enumerate(FIT_FEATURES)
         },
         "filters": {"min_length_s": MIN_LENGTH_S, "min_pills": MIN_PILLS},
         "rating_basis": "WHR-C (corrected), set-basis, players.json traj eC nearest day",
@@ -303,10 +403,32 @@ def cmd_grade(args):
     if not rows:
         return
     X = np.asarray(rows, float)
-    Z, _ = expand(X)
-    preds = ridge_predict(model, Z)
+    version = model_version(model)
+    self_play = None
+    if version < 2:
+        if args.opp_whr is not None or args.self_play:
+            print("note: model file is version 1 (no opp_whr feature); "
+                  "opponent options ignored — refit to use them", file=sys.stderr)
+        opp_used = None
+        preds = predict_rating(model, X)
+        mode = "v1_no_opp"
+    elif args.opp_whr is not None:
+        opp_used = float(args.opp_whr)
+        preds = predict_rating(model, X, opp_whr=opp_used)
+        mode = "fixed_opp"
+    else:
+        r, converged, iters = self_play_rating(model, X)
+        opp_used = r
+        preds = predict_rating(model, X, opp_whr=r)
+        self_play = {"rating": round(r, 1), "converged": converged, "iterations": iters}
+        mode = "self_play"
     franges = model["feature_range"]
     sigma = model["resid_std"]
+    opp_oob = (
+        opp_used is not None
+        and OPP_FEATURE in franges
+        and not (franges[OPP_FEATURE][0] <= opp_used <= franges[OPP_FEATURE][1])
+    )
 
     per_game = []
     for vec, pred, i in zip(X, preds, ok_idx):
@@ -314,6 +436,8 @@ def cmd_grade(args):
             name for j, name in enumerate(BASE_FEATURES)
             if not (franges[name][0] <= vec[j] <= franges[name][1])
         ]
+        if opp_oob:
+            oob.append(OPP_FEATURE)
         out = {
             "index": i,
             "rating": round(float(pred), 1),
@@ -333,7 +457,12 @@ def cmd_grade(args):
         "sem": round(sigma / math.sqrt(n), 1),
         "model_sigma": sigma,
         "extrapolated_games": sum(1 for g in per_game if g["extrapolated_features"]),
+        "mode": mode,
     }
+    if opp_used is not None:
+        summary["opp_whr"] = round(opp_used, 1)
+    if self_play is not None:
+        summary["self_play"] = self_play
     print(json.dumps({"summary": summary}))
 
 
@@ -347,7 +476,14 @@ def main():
     g = sub.add_parser("grade", help="grade agent games (JSON list or JSONL; '-' = stdin)")
     g.add_argument("input")
     g.add_argument("--model", default=str(DEFAULT_MODEL))
+    g.add_argument("--opp-whr", type=float, default=None,
+                   help="explicit opponent rating (Elo)")
+    g.add_argument("--self-play", action="store_true",
+                   help="opponent is the graded agent itself; solve the rating"
+                        " fixed point (default when --opp-whr is absent)")
     args = ap.parse_args()
+    if args.mode == "grade" and args.opp_whr is not None and args.self_play:
+        ap.error("--opp-whr and --self-play are mutually exclusive")
     if args.mode == "fit":
         cmd_fit(args)
     else:

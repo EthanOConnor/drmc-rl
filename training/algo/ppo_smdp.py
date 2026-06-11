@@ -1751,13 +1751,15 @@ class SMDPPPOAdapter(AlgoAdapter):
                 [[float(g[name]) for name in skill_grade.BASE_FEATURES] for g in games],
                 dtype=float,
             )
-            Z, _names = skill_grade.expand(X)
-            preds = skill_grade.ridge_predict(model, Z)
+            # Self-play: the opponent is the agent itself, so solve the rating
+            # fixed point r = f(metrics, opp_whr=r). Falls back to the plain
+            # mean prediction for version-1 (no opp_whr) model files.
+            whr, _converged, _iters = skill_grade.self_play_rating(model, X)
 
             n_matches = len(games) // 2
             row: Dict[str, float] = {
                 "step": int(step),
-                "whr": float(np.mean(preds)),
+                "whr": float(whr),
                 "whr_std": float(model["resid_std"]) / float(max(1, len(games))) ** 0.5,
                 "n_games": int(n_matches),
                 "n_samples": int(len(games)),
