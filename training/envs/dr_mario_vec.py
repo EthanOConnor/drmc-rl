@@ -30,6 +30,7 @@ class VecEnvConfig:
     core_path: Optional[str] = None
     rom_path: Optional[str] = None
     backend: Optional[str] = None
+    num_pairs: Optional[int] = None  # cpp-vs-pool backend: pairs (num_envs = 2*pairs)
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -182,6 +183,22 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             env_dict["id"] = env_dict.get("env_id")
         env_cfg = VecEnvConfig(**{k: env_dict.get(k, getattr(VecEnvConfig, k)) for k in VecEnvConfig.__annotations__})
     env_id = str(env_cfg.id)
+
+    # 2-player VS self-play pool: both sides flattened as 2*num_pairs envs.
+    if env_id in {"drmario-vs", "DrMarioVs-v0"} or str(env_cfg.backend or "") in {"cpp-vs-pool", "cpp_vs_pool"}:
+        from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+
+        num_pairs = env_cfg.num_pairs
+        if num_pairs is None:
+            num_pairs = max(1, int(env_cfg.num_envs) // 2)
+        return DrMarioVsPoolVecEnv(
+            num_pairs=int(num_pairs),
+            state_repr=str(env_cfg.state_repr or "bitplane_bottle_conn_mask"),
+            level=int(env_cfg.level),
+            speed_setting=int(env_cfg.speed_setting),
+            randomize_rng=bool(env_cfg.randomize_rng),
+        )
+
     real_ids = {
         "DrMarioRetroEnv-v0",
         "DrMarioIntentEnv-v0",

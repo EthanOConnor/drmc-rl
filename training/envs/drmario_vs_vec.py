@@ -1,0 +1,620 @@
+from __future__ import annotations
+
+"""Batched, in-process 2-player VS pool vector environment (pure self-play).
+
+Both sides of every pair are flattened into ``num_envs = 2 * num_pairs``
+"envs" so the existing SMDP-PPO adapter can drive them with a single learning
+policy. The API mirrors `DrMarioPoolVecEnv` (info dicts with
+``placements/feasible_mask``, ``placements/cost_to_lock``, ``placements/tau``,
+``next_pill_colors``, ``preview_pill``, ``episode``/``drm`` dicts on terminal,
+NEXT_STEP autoreset) so `SMDPPPOAdapter` works unchanged.
+
+Observation parity matters: the loaded 1P champion was trained on the native
+`DrMarioPool::build_obs` 12-channel ``bitplane_bottle_conn_mask`` planes plus
+the Python-side symmetry reduction in `DrMarioPoolVecEnv`. The VS pool does
+not build observations natively, so this module replicates both, exactly, in
+numpy from ``board_bytes`` + ``feasible_mask`` (see `_build_obs_in_place`).
+
+Reward: terminal +1 win / -1 loss / 0 draw, plus a small shaping term
+``garbage_reward_coef * garbage_sent_delta`` (half pills sent this decision;
+anneal via ``set_attr("garbage_reward_coef", ...)``).
+"""
+
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from collections import deque
+
+import numpy as np
+from gymnasium import spaces
+
+import envs.specs.ram_to_state as ram_specs
+from envs.backends.drmario_vs_pool import (
+    GRID_H,
+    GRID_W,
+    MACRO_ACTIONS,
+    VS_OUTCOME_DRAW,
+    VS_OUTCOME_LOSS,
+    VS_OUTCOME_WIN,
+    DrMarioVsPoolRunner,
+    build_vs_reset_spec,
+)
+
+NES_FPS = 60.1
+
+# NES tile encoding (see game_engine/DrMarioPool.cpp / envs/specs/ram_to_state.py).
+_TILE_EMPTY = 0xFF
+_TILE_CLEARED = 0xB0
+_TILE_JUST_EMPTIED = 0xF0
+_MASK_TYPE = 0xF0
+_MASK_COLOR = 0x03
+
+
+def _canonical_to_raw_color(canonical: int) -> int:
+    """Map canonical color idx (0=R,1=Y,2=B) -> NES raw bits (Y=0,R=1,B=2)."""
+
+    c = int(canonical) & 0x03
+    if c == 0:
+        return 1
+    if c == 1:
+        return 0
+    if c == 2:
+        return 2
+    return 0
+
+
+class DrMarioVsPoolVecEnv:
+    """Self-play VS vector environment backed by the native VS pool library.
+
+    Sides are flattened: env index ``i`` is pair ``i // 2``, side ``i % 2``
+    (side 0 = P1). Episodes are one VS game; on terminal both sides report
+    ``episode``/``drm`` info and the pair autoresets on the next step
+    (NEXT_STEP semantics, matching `DrMarioPoolVecEnv`).
+    """
+
+    metadata = {"render_modes": [], "render_fps": 60}
+
+    def __init__(
+        self,
+        *,
+        num_pairs: int,
+        state_repr: str = "bitplane_bottle_conn_mask",
+        level: int = 10,
+        speed_setting: int = 2,
+        randomize_rng: bool = True,
+        garbage_reward_coef: float = 0.05,
+        max_lock_frames: int = 2048,
+        max_wait_frames: int = 6000,
+        lib_path: Optional[str] = None,
+        seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
+    ) -> None:
+        self.num_pairs = int(max(1, int(num_pairs)))
+        self.num_envs = 2 * self.num_pairs
+        self.level = int(max(0, min(int(level), 20)))
+        self.speed_setting = int(max(0, min(int(speed_setting), 2)))
+        self.rng_randomize = bool(randomize_rng)
+        self.garbage_reward_coef = float(garbage_reward_coef)
+        self.seed_provider = seed_provider
+
+        state_repr_norm = str(state_repr or "").strip().lower()
+        if state_repr_norm not in {"bitplane_bottle_conn_mask", "bitplane-bottle-conn-mask"}:
+            raise ValueError("cpp-vs-pool backend only supports state_repr=bitplane_bottle_conn_mask.")
+        ram_specs.set_state_representation("bitplane_bottle_conn_mask")
+        obs_channels = 12
+
+        self.single_action_space = spaces.Discrete(MACRO_ACTIONS)
+        self.single_observation_space = spaces.Box(
+            low=0.0, high=1.0, shape=(obs_channels, GRID_H, GRID_W), dtype=np.float32
+        )
+        self.observation_space = self.single_observation_space
+
+        self._rng = np.random.default_rng(None)
+
+        self._runner = DrMarioVsPoolRunner(
+            num_pairs=self.num_pairs,
+            max_lock_frames=int(max_lock_frames),
+            max_wait_frames=int(max_wait_frames),
+            volley_capacity=max(64, 8 * self.num_pairs),
+            lib_path=lib_path,
+        )
+
+        # Views (no copies) into runner-owned buffers.
+        self._mask_1d = self._runner.buffers.feasible_mask
+        self._mask = self._mask_1d.reshape(self.num_envs, 4, GRID_H, GRID_W)
+        self._cost_1d = self._runner.buffers.cost_to_lock
+        self._cost = self._cost_1d.reshape(self.num_envs, 4, GRID_H, GRID_W)
+
+        # Python-built observations (the VS pool does not emit obs natively).
+        self._obs = np.zeros((self.num_envs, obs_channels, GRID_H, GRID_W), dtype=np.float32)
+
+        # Persistent per-env infos (updated in-place).
+        self._infos: List[Dict[str, Any]] = [dict() for _ in range(self.num_envs)]
+
+        # Autoreset (NEXT_STEP semantics; per pair).
+        self._pending_reset = np.zeros((self.num_pairs,), dtype=bool)
+
+        # Per-side episode stats.
+        self._ep_return = np.zeros((self.num_envs,), dtype=np.float64)
+        self._ep_frames = np.zeros((self.num_envs,), dtype=np.int64)
+        self._ep_decisions = np.zeros((self.num_envs,), dtype=np.int64)
+        self._ep_pills = np.zeros((self.num_envs,), dtype=np.int64)
+        self._ep_viruses_cleared = np.zeros((self.num_envs,), dtype=np.int64)
+        self._viruses_prev = np.full((self.num_envs,), -1, dtype=np.int32)
+        self._viruses_initial = np.zeros((self.num_envs,), dtype=np.int32)
+        self._garbage_sent_prev = np.zeros((self.num_envs,), dtype=np.int64)
+        self._volleys_sent_round = np.zeros((self.num_envs,), dtype=np.int64)
+        self._volleys_recv_round = np.zeros((self.num_envs,), dtype=np.int64)
+        self._garbage_recv_round = np.zeros((self.num_envs,), dtype=np.int64)
+
+        # Pair-clock tracking (emulated time, for vs/cpm).
+        self._pair_clock_prev = np.zeros((self.num_pairs,), dtype=np.int64)
+
+        # Need-action snapshot from the last reset/step call.
+        self._need_action = np.zeros((self.num_envs,), dtype=np.uint8)
+
+        # Rolling VS metrics (dashboard contract: tools/vs_dashboard.py).
+        self._matches_total = 0
+        self._win_p1 = deque(maxlen=100)  # 1.0 P1 win, 0.0 P1 loss, 0.5 draw
+        self._draws = deque(maxlen=100)
+        self._match_len_sec = deque(maxlen=100)
+        self._volleys_total = 0
+        self._emu_frames_total = 0
+        # Per-side completed-game feature records for the skill grader.
+        self._skill_games: List[Dict[str, float]] = []
+
+    # ------------------------------------------------------------------ vector API
+    def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
+        if seed is not None:
+            self._rng = np.random.default_rng(int(seed))
+        _ = options
+
+        specs = self._build_reset_specs(reset_mask=None)
+        self._runner.reset(None, specs)
+
+        self._pending_reset.fill(False)
+        self._ep_return.fill(0.0)
+        self._ep_frames.fill(0)
+        self._ep_decisions.fill(0)
+        self._ep_pills.fill(0)
+        self._ep_viruses_cleared.fill(0)
+        self._garbage_sent_prev.fill(0)
+        self._volleys_sent_round.fill(0)
+        self._volleys_recv_round.fill(0)
+        self._garbage_recv_round.fill(0)
+        self._pair_clock_prev = self._pair_clocks().astype(np.int64)
+        self._emu_frames_total += int(self._pair_clock_prev.sum())
+
+        v_now = self._runner.buffers.viruses_rem.astype(np.int32, copy=False)
+        self._viruses_prev = v_now.copy()
+        self._viruses_initial = v_now.copy()
+        self._need_action = self._runner.buffers.need_action.copy()
+
+        self._build_obs_in_place()
+        self._apply_symmetry_reduction_in_place()
+        self._refresh_infos(step_tau_raw=np.zeros((self.num_envs,), dtype=np.uint32))
+        return self._obs, list(self._infos)
+
+    def step(
+        self, actions: Sequence[int]
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[Dict[str, Any]]]:
+        acts = np.asarray(list(actions), dtype=np.int32).reshape(self.num_envs)
+
+        # Only act for sides parked at a decision boundary; leave others parked.
+        # (-1 from the policy's empty-mask fallback becomes noop-fall, which is
+        # exactly the intended escape hatch when the feasible mask is empty.)
+        send = acts.copy()
+        send[self._need_action == 0] = -2
+        was_need_action = self._need_action.astype(bool)
+
+        reset_mask = self._pending_reset.astype(np.uint8, copy=True)
+        reset_specs = None
+        if bool(reset_mask.any()):
+            reset_specs = self._build_reset_specs(reset_mask=reset_mask)
+
+        self._runner.step(send, reset_mask if reset_specs is not None else None, reset_specs)
+
+        buf = self._runner.buffers
+        tau_raw = buf.tau_frames.astype(np.uint32, copy=False)
+        invalid = buf.invalid_action.astype(np.int32, copy=False)
+        term_pair = buf.terminated.astype(np.uint8, copy=False)
+        trunc_pair = buf.truncated.astype(np.uint8, copy=False)
+        outcome = buf.outcome.astype(np.uint8, copy=False)
+        garbage_sent = buf.garbage_sent_total.astype(np.int64, copy=False)
+        v_now = buf.viruses_rem.astype(np.int32, copy=False)
+        self._need_action = buf.need_action.copy()
+
+        # Volley events from this call.
+        volleys = self._runner.volleys()
+        for v in volleys:
+            recv_gi = v.pair * 2 + v.receiver
+            sent_gi = v.pair * 2 + (1 - v.receiver)
+            self._volleys_recv_round[recv_gi] += 1
+            self._garbage_recv_round[recv_gi] += int(v.size)
+            self._volleys_sent_round[sent_gi] += 1
+            self._volleys_total += 1
+
+        # Emulated (pair-clock) time accounting.
+        pair_clocks = self._pair_clocks().astype(np.int64)
+        was_reset_pair = reset_mask.astype(bool)
+        clock_delta = pair_clocks - self._pair_clock_prev
+        clock_delta[was_reset_pair] = pair_clocks[was_reset_pair]  # clock restarts at 0 on reset
+        self._emu_frames_total += int(np.maximum(clock_delta, 0).sum())
+        self._pair_clock_prev = pair_clocks
+
+        rewards = np.zeros((self.num_envs,), dtype=np.float32)
+        terminated = np.zeros((self.num_envs,), dtype=bool)
+        truncated = np.zeros((self.num_envs,), dtype=bool)
+        garbage_delta_arr = np.zeros((self.num_envs,), dtype=np.int64)
+        outcome_str: List[str] = ["" for _ in range(self.num_envs)]
+
+        for i in range(self.num_envs):
+            pair_i = i // 2
+            is_reset = bool(reset_mask[pair_i] != 0)
+
+            tau_i_raw = int(tau_raw[i])
+            self._ep_decisions[i] += 1
+            self._ep_frames[i] += int(max(1, tau_i_raw))
+
+            v_prev = int(self._viruses_prev[i])
+            v_i = int(v_now[i])
+            if v_prev >= 0:
+                self._ep_viruses_cleared[i] += max(0, v_prev - v_i)
+            self._viruses_prev[i] = int(v_i)
+
+            if is_reset:
+                # NEXT_STEP autoreset: action ignored, return reset state.
+                if i % 2 == 0:
+                    self._pending_reset[pair_i] = False
+                self._garbage_sent_prev[i] = 0
+                self._volleys_sent_round[i] = 0
+                self._volleys_recv_round[i] = 0
+                self._garbage_recv_round[i] = 0
+                self._viruses_initial[i] = int(v_i)
+                self._ep_viruses_cleared[i] = 0
+                continue
+
+            accepted = bool(was_need_action[i]) and int(invalid[i]) == -1 and int(acts[i]) >= -1
+            if accepted:
+                self._ep_pills[i] += 1
+
+            g_delta = int(garbage_sent[i]) - int(self._garbage_sent_prev[i])
+            g_delta = max(0, g_delta)
+            self._garbage_sent_prev[i] = int(garbage_sent[i])
+            garbage_delta_arr[i] = int(g_delta)
+
+            r = float(self.garbage_reward_coef) * float(g_delta)
+
+            pair_done = bool(int(term_pair[pair_i]) != 0)
+            if pair_done:
+                oc = int(outcome[i])
+                if oc == VS_OUTCOME_WIN:
+                    r += 1.0
+                    outcome_str[i] = "win"
+                elif oc == VS_OUTCOME_LOSS:
+                    r -= 1.0
+                    outcome_str[i] = "loss"
+                elif oc == VS_OUTCOME_DRAW:
+                    outcome_str[i] = "draw"
+                if int(trunc_pair[pair_i]) != 0 and oc == 0:
+                    truncated[i] = True
+                    outcome_str[i] = "timeout"
+                else:
+                    terminated[i] = True
+            rewards[i] = r
+
+        self._build_obs_in_place()
+        self._apply_symmetry_reduction_in_place()
+        self._refresh_infos(step_tau_raw=tau_raw)
+
+        for i in range(self.num_envs):
+            info_i = self._infos[i]
+            r_env = float(rewards[i])
+            info_i["vs/garbage_sent_delta"] = int(garbage_delta_arr[i])
+            info_i["vs/outcome"] = str(outcome_str[i])
+            info_i["r_env"] = r_env
+            info_i["r_shape"] = float(self.garbage_reward_coef) * float(garbage_delta_arr[i])
+            info_i["r_total"] = r_env
+            info_i["reward/r_env"] = r_env
+            info_i["reward/r_shape"] = info_i["r_shape"]
+            info_i["reward/r_total"] = r_env
+            info_i["cleared"] = bool(outcome_str[i] == "win")
+            info_i["topout"] = bool(outcome_str[i] == "loss")
+            info_i["goal_achieved"] = bool(outcome_str[i] == "win")
+            info_i["terminal_reason"] = str(outcome_str[i])
+
+        self._ep_return += rewards.astype(np.float64)
+
+        # Finalize episodes + match-level metrics; mark pending resets.
+        for pair_i in range(self.num_pairs):
+            i0, i1 = pair_i * 2, pair_i * 2 + 1
+            if not bool(terminated[i0] or truncated[i0] or terminated[i1] or truncated[i1]):
+                continue
+            self._record_match(pair_i, outcome, pair_clocks[pair_i])
+            for i in (i0, i1):
+                info_i = self._infos[i]
+                info_i["episode"] = {
+                    "r": float(self._ep_return[i]),
+                    "l": int(self._ep_frames[i]),
+                    "decisions": int(self._ep_decisions[i]),
+                }
+                info_i["drm"] = {
+                    "viruses_cleared": int(self._ep_viruses_cleared[i]),
+                    "viruses_remaining": int(v_now[i]),
+                    "viruses_initial": int(self._viruses_initial[i]),
+                    "top_out": bool(self._infos[i].get("topout", False)),
+                    "cleared": bool(self._infos[i].get("cleared", False)),
+                    "level": int(self.level),
+                    "speed_setting": int(self.speed_setting),
+                    "vs_outcome": str(outcome_str[i]),
+                    "garbage_sent": int(self._garbage_sent_prev[i]),
+                }
+                self._ep_return[i] = 0.0
+                self._ep_frames[i] = 0
+                self._ep_decisions[i] = 0
+                self._ep_pills[i] = 0
+                self._ep_viruses_cleared[i] = 0
+            self._pending_reset[pair_i] = True
+
+        return self._obs, rewards.astype(np.float32), terminated, truncated, list(self._infos)
+
+    def close(self) -> None:
+        if hasattr(self._runner, "close"):
+            self._runner.close()
+
+    def render(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
+        return None
+
+    def set_attr(self, name: str, values: Any, indices: Optional[Sequence[int]] = None) -> None:
+        _ = indices
+        if isinstance(values, (list, tuple, np.ndarray)) and not isinstance(values, (str, bytes, bytearray)):
+            value = values[0] if len(values) else None
+        else:
+            value = values
+        if name == "level":
+            self.level = int(max(0, min(int(value), 20)))
+            return
+        if name == "garbage_reward_coef":
+            self.garbage_reward_coef = float(value)
+            return
+        if name in {"rng_randomize", "randomize_rng"}:
+            self.rng_randomize = bool(value)
+            return
+        try:
+            setattr(self, name, value)
+        except Exception:
+            return
+
+    # ------------------------------------------------------------------ VS metrics
+    def get_vs_metrics(self) -> Dict[str, float]:
+        """Scalar metrics for the dashboard (tools/vs_dashboard.py)."""
+
+        minutes = float(self._emu_frames_total) / NES_FPS / 60.0
+        cpm = float(self._volleys_total) / minutes if minutes > 0 else 0.0
+        out: Dict[str, float] = {
+            "vs/matches_total": float(self._matches_total),
+            "vs/opponent_pool": 1.0,
+            # Pooled across both sides every sent volley is received by the
+            # opponent, so the pooled sent/received rates coincide.
+            "vs/cpm": cpm,
+            "vs/cpm_received": cpm,
+        }
+        if self._win_p1:
+            out["vs/win_rate"] = float(np.mean(self._win_p1))
+        if self._draws:
+            out["vs/draw_rate"] = float(np.mean(self._draws))
+        if self._match_len_sec:
+            out["vs/match_len_p50_sec"] = float(np.median(self._match_len_sec))
+        return out
+
+    def skill_games_pending(self) -> int:
+        return len(self._skill_games)
+
+    def pop_skill_games(self) -> List[Dict[str, float]]:
+        games = self._skill_games
+        self._skill_games = []
+        return games
+
+    # ------------------------------------------------------------------ internals
+    def _pair_clocks(self) -> np.ndarray:
+        sf = self._runner.buffers.side_frames.reshape(self.num_pairs, 2)
+        return sf.max(axis=1)
+
+    def _record_match(self, pair_i: int, outcome: np.ndarray, pair_clock: int) -> None:
+        i0 = pair_i * 2
+        oc0 = int(outcome[i0])
+        self._matches_total += 1
+        if oc0 == VS_OUTCOME_WIN:
+            self._win_p1.append(1.0)
+            self._draws.append(0.0)
+        elif oc0 == VS_OUTCOME_LOSS:
+            self._win_p1.append(0.0)
+            self._draws.append(0.0)
+        else:
+            self._win_p1.append(0.5)
+            self._draws.append(1.0)
+
+        length_s = float(max(1, int(pair_clock))) / NES_FPS
+        self._match_len_sec.append(length_s)
+        minutes = max(length_s / 60.0, 1e-6)
+
+        # DrMC-style per-game features for tools/skill_grade.py (one record per
+        # side). Approximations (no per-frame stats from the pool):
+        #   cpm           = garbage volleys sent / min
+        #   cur           = cures: 1 if this side won by clearing all viruses
+        #                   (the crown-table cur is a small per-set count;
+        #                   human feature range is [0, 3.33])
+        #   spd           = 31 + 0.5 * (pills // 10): HI base speed plus the
+        #                   time-average of the every-10-pills speedup ramp
+        #   salt_per_min  = garbage half pills received / min (true SALT
+        #                   weights received garbage by stack depth)
+        #   pills_per_min = pills locked / min
+        #   garbage_per_min = garbage half pills sent / min
+        viruses_rem = self._runner.buffers.viruses_rem
+        for i in (i0, i0 + 1):
+            pills = int(self._ep_pills[i])
+            won = int(outcome[i]) == VS_OUTCOME_WIN
+            cured = bool(won and int(viruses_rem[i]) == 0)
+            self._skill_games.append(
+                {
+                    "length_s": length_s,
+                    "cpm": float(self._volleys_sent_round[i]) / minutes,
+                    "cur": 1.0 if cured else 0.0,
+                    "spd": 31.0 + 0.5 * float(pills // 10),
+                    "salt_per_min": float(self._garbage_recv_round[i]) / minutes,
+                    "pills_per_min": float(pills) / minutes,
+                    "garbage_per_min": float(self._garbage_sent_prev[i]) / minutes,
+                    "won": 1.0 if won else 0.0,
+                }
+            )
+
+    def _build_reset_specs(self, *, reset_mask: Optional[np.ndarray]) -> List[object]:
+        specs: List[object] = []
+        for pair_i in range(self.num_pairs):
+            if reset_mask is not None and int(reset_mask[pair_i]) == 0:
+                specs.append(build_vs_reset_spec())  # placeholder; ignored natively
+                continue
+
+            provided = self.seed_provider(pair_i) if self.seed_provider is not None else None
+            if provided is not None:
+                seed_bytes = (int(provided[0]) & 0xFF, int(provided[1]) & 0xFF)
+                rng_override = True
+            elif self.rng_randomize:
+                seed_bytes = (
+                    int(self._rng.integers(0, 256)) & 0xFF,
+                    int(self._rng.integers(0, 256)) & 0xFF,
+                )
+                rng_override = True
+            else:
+                seed_bytes = (0, 0)
+                rng_override = False
+
+            frame_counter_base = (
+                int(self._rng.integers(0, 2**16)) if self.rng_randomize else 0
+            )
+
+            specs.append(
+                build_vs_reset_spec(
+                    level=(self.level, self.level),
+                    speed_setting=(self.speed_setting, self.speed_setting),
+                    rng_state=seed_bytes,
+                    rng_override=rng_override,
+                    frame_counter_base=frame_counter_base,
+                )
+            )
+        return specs
+
+    def _build_obs_in_place(self) -> None:
+        """Replicate `DrMarioPool::build_obs` (bitplane_bottle_conn_mask, 12ch).
+
+        Channels: 0..2 color_{r,y,b}, 3 virus_mask, 4..7 connection edges
+        (connected_up/down/left/right from the tile-type nibble), 8..11
+        feasible mask planes (one per orientation).
+        """
+
+        board = self._runner.buffers.board_bytes.reshape(self.num_envs, GRID_H, GRID_W)
+        type_hi = board & _MASK_TYPE
+        color_lo = board & _MASK_COLOR
+
+        is_empty = board == _TILE_EMPTY
+        is_zero = board == 0x00
+        just_emptied = (type_hi == _TILE_JUST_EMPTIED) & ~is_empty
+        clearing = (type_hi == _TILE_CLEARED) | just_emptied
+        color_valid = ~(is_empty | is_zero | clearing)
+
+        obs = self._obs
+        # Raw NES color bits: 0=Y,1=R,2=B -> canonical planes R,Y,B.
+        obs[:, 0] = (color_valid & (color_lo == 1)).astype(np.float32)
+        obs[:, 1] = (color_valid & (color_lo == 0)).astype(np.float32)
+        obs[:, 2] = (color_valid & (color_lo == 2)).astype(np.float32)
+        obs[:, 3] = (type_hi == ram_specs.T_VIRUS).astype(np.float32)
+        obs[:, 4] = (type_hi == ram_specs.T_BOTTOM).astype(np.float32)  # connected_up
+        obs[:, 5] = (type_hi == ram_specs.T_TOP).astype(np.float32)  # connected_down
+        obs[:, 6] = (type_hi == ram_specs.T_RIGHT).astype(np.float32)  # connected_left
+        obs[:, 7] = (type_hi == ram_specs.T_LEFT).astype(np.float32)  # connected_right
+        obs[:, 8:12] = self._mask.astype(np.float32)
+
+    def _apply_symmetry_reduction_in_place(self) -> None:
+        """Same-color pills: drop H-/V- duplicate orientations (o=2,3).
+
+        Replicates `DrMarioPoolVecEnv._apply_symmetry_reduction_in_place`
+        exactly — including zeroing obs channels 6 and 7 (which for the
+        12-channel conn_mask layout are the connected_left/right planes, not
+        the feasibility planes). The 1P champion was trained with that
+        behavior, so obs parity requires reproducing it as-is.
+        """
+
+        colors = self._runner.buffers.pill_colors
+        if colors.shape != (self.num_envs, 2):
+            return
+        same = colors[:, 0] == colors[:, 1]
+        if not bool(np.any(same)):
+            return
+        idxs = np.nonzero(same)[0]
+        if idxs.size <= 0:
+            return
+        self._mask[idxs, 2, :, :] = 0
+        self._mask[idxs, 3, :, :] = 0
+        self._cost[idxs, 2, :, :] = np.uint16(0xFFFF)
+        self._cost[idxs, 3, :, :] = np.uint16(0xFFFF)
+        self._obs[idxs, 6, :, :] = 0.0
+        self._obs[idxs, 7, :, :] = 0.0
+
+    def _refresh_infos(self, *, step_tau_raw: np.ndarray) -> None:
+        buf = self._runner.buffers
+        pill_colors = buf.pill_colors
+        preview_colors = buf.preview_colors
+        spawn_ids = buf.spawn_id
+        viruses = buf.viruses_rem
+        invalid = buf.invalid_action
+        garbage_pending = buf.garbage_pending
+        garbage_sent = buf.garbage_sent_total
+        need_action = self._need_action
+
+        options_count = self._mask_1d.sum(axis=1).astype(np.int32, copy=False)
+
+        for i in range(self.num_envs):
+            info = self._infos[i]
+            info.clear()
+
+            info["placements/feasible_mask"] = self._mask[i]
+            info["placements/cost_to_lock"] = self._cost[i]
+            info["placements/options"] = int(options_count[i])
+            info["placements/reach_backend"] = "cpp-vs-pool"
+            info["placements/needs_action"] = bool(need_action[i])
+            info["placements/spawn_id"] = int(spawn_ids[i])
+            info["pill/spawn_id"] = int(spawn_ids[i])
+
+            info["next_pill_colors"] = np.asarray(pill_colors[i], dtype=np.int64)
+            p_left = _canonical_to_raw_color(int(preview_colors[i, 0]))
+            p_right = _canonical_to_raw_color(int(preview_colors[i, 1]))
+            info["preview_pill"] = {"first_color": int(p_left), "second_color": int(p_right), "rotation": 0}
+
+            info["level"] = int(self.level)
+            info["task_mode"] = "viruses"
+            info["rng_randomize"] = bool(self.rng_randomize)
+            info["viruses_remaining"] = int(viruses[i])
+            info["drm/viruses_initial"] = int(self._viruses_initial[i])
+            info["pill/speed_setting"] = int(self.speed_setting)
+            info["speed_setting"] = int(self.speed_setting)
+            info["task/frames_used"] = int(self._ep_frames[i])
+
+            info["vs/pair"] = int(i // 2)
+            info["vs/side"] = int(i % 2)
+            info["vs/garbage_pending"] = int(garbage_pending[i])
+            info["vs/garbage_sent_total"] = int(garbage_sent[i])
+
+            tau_i_raw = int(step_tau_raw[i]) if i < int(step_tau_raw.shape[0]) else 0
+            info["placements/tau"] = int(max(1, tau_i_raw))
+            if int(invalid[i]) != -1:
+                info["placements/invalid_action"] = int(invalid[i])
+
+            info["delta_v"] = 0
+            info["r_env"] = 0.0
+            info["r_shape"] = 0.0
+            info["r_total"] = 0.0
+            info["goal_achieved"] = False
+            info["cleared"] = False
+            info["topout"] = False
+            info["terminal_reason"] = ""
+
+
+__all__ = ["DrMarioVsPoolVecEnv"]

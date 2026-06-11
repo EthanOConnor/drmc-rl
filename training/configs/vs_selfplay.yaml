@@ -1,0 +1,88 @@
+# SMDP-PPO VS self-play configuration (2-player pool, pure self-play).
+#
+# Cloned from smdp_ppo_big.yaml: the policy/arch must stay identical so the 1P
+# champion checkpoint loads strictly. Both sides of every pair are sampled
+# from the same learning policy.
+
+# Algorithm selection
+algo: ppo_smdp
+
+# Training hyperparameters
+train:
+  total_steps: 500000000
+  checkpoint_interval: 5000000
+  # Start from the 535M-frame 1P champion; fresh frame count for the VS run.
+  init_checkpoint: /Users/ethan/dev/drmario/drmc-rl/runs/best_agents/smdp_ppo_step535164979.pt.gz
+  strict_checkpoint: true
+  resume_step: false
+  resume_optimizer: false
+
+# SMDP-PPO specific (identical arch to smdp_ppo_big.yaml)
+smdp_ppo:
+  # Learning
+  lr: 7.0e-5
+  gamma: 0.998
+  gae_lambda: 0.95
+
+  # PPO parameters
+  clip_epsilon: 0.15
+  value_coef: 0.5
+  entropy_coef: 0.006
+  max_grad_norm: 0.7
+
+  # Rollout
+  decisions_per_update: 4096
+  num_epochs: 2
+  minibatch_size: 512
+
+  # Policy architecture (must match the loaded champion checkpoint).
+  policy_type: "candidate"
+  head_type: "dense"
+  pill_embed_dim: 128
+  pill_embed_type: "ordered_pair"
+  encoder_blocks: 4
+
+  candidate_max_candidates: 128
+  candidate_d_model: 192
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 384
+  candidate_board_encoder: "cnn"
+  candidate_board_channels: 8
+  candidate_transformer_layers: 4
+  candidate_transformer_heads: 4
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
+
+  aux_spec: "v1"
+
+  # Exploration
+  entropy_schedule_end: 0.004
+  entropy_schedule_steps: 100000000
+  use_gumbel_topk: false
+  gumbel_k: 2
+
+  # Loss
+  value_loss_type: "huber"
+
+# Environment: 2-player VS pool, both sides flattened (num_envs = 2*num_pairs).
+env:
+  id: "drmario-vs"
+  obs_mode: state
+  backend: cpp-vs-pool
+  state_repr: bitplane_bottle_conn_mask
+  num_pairs: 16
+  frame_stack: 1
+  randomize_rng: true
+  # Level 10, HI speed for both sides.
+  level: 10
+  speed_setting: 2
+
+# No curriculum for VS self-play.
+curriculum:
+  enabled: false
+
+# Logging
+logdir: "runs/vs_selfplay"
+video_interval: 10000
+log_interval: 100

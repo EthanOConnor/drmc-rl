@@ -1709,6 +1709,72 @@ class SMDPPPOAdapter(AlgoAdapter):
         for key, value in metrics.items():
             self.logger.log_scalar(key, value, step)
 
+        # VS self-play metrics + skill grading (vs vec env only).
+        get_vs_metrics = getattr(self.env, "get_vs_metrics", None)
+        if callable(get_vs_metrics):
+            try:
+                for key, value in get_vs_metrics().items():
+                    self.logger.log_scalar(str(key), float(value), step)
+            except Exception:
+                pass
+            self._maybe_grade_vs_skill(step)
+
+    # Grade a batch of completed VS matches every N matches (2 per-side
+    # samples per match) and append to <logdir>/skill_history.jsonl.
+    _VS_SKILL_GRADE_MATCHES = 50
+
+    def _maybe_grade_vs_skill(self, step: int) -> None:
+        pop_games = getattr(self.env, "pop_skill_games", None)
+        pending = getattr(self.env, "skill_games_pending", None)
+        if not callable(pop_games) or not callable(pending):
+            return
+        try:
+            if int(pending()) < 2 * self._VS_SKILL_GRADE_MATCHES:
+                return
+            games = list(pop_games())
+        except Exception:
+            return
+        if not games:
+            return
+
+        import json
+
+        try:
+            import tools.skill_grade as skill_grade
+
+            model_path = Path(skill_grade.DEFAULT_MODEL)
+            if not model_path.is_file():
+                return
+            model = json.loads(model_path.read_text())
+
+            X = np.asarray(
+                [[float(g[name]) for name in skill_grade.BASE_FEATURES] for g in games],
+                dtype=float,
+            )
+            Z, _names = skill_grade.expand(X)
+            preds = skill_grade.ridge_predict(model, Z)
+
+            n_matches = len(games) // 2
+            row: Dict[str, float] = {
+                "step": int(step),
+                "whr": float(np.mean(preds)),
+                "whr_std": float(model["resid_std"]) / float(max(1, len(games))) ** 0.5,
+                "n_games": int(n_matches),
+                "n_samples": int(len(games)),
+                "win_rate": float(np.mean([g.get("won", 0.0) for g in games])),
+            }
+            for j, name in enumerate(skill_grade.BASE_FEATURES):
+                row[name] = float(np.mean(X[:, j]))
+            # Dashboard-friendly alias (tools/vs_dashboard.py shows "salt").
+            row["salt"] = row["salt_per_min"]
+
+            logdir = Path(str(getattr(self.cfg, "logdir", "runs/smdp_ppo")))
+            logdir.mkdir(parents=True, exist_ok=True)
+            with (logdir / "skill_history.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(row) + "\n")
+        except Exception:
+            return
+
     def _maybe_checkpoint(self) -> None:
         """Save checkpoint if interval reached."""
         if self.global_step < self._next_checkpoint:
