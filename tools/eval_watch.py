@@ -59,6 +59,7 @@ def main() -> None:
     evaluated: set[int] = set()
     last_step = -(10**18)
     best_mean = 0.0
+    best_per_level: dict[str, float] = {}
     if history_path.is_file():
         for line in history_path.read_text().splitlines():
             try:
@@ -114,8 +115,14 @@ def main() -> None:
             mean_clear = sum(v["clear_rate"] for v in row["levels"].values()) / max(
                 1, len(row["levels"])
             )
-            if mean_clear > best_mean + 1e-9:
-                best_mean = mean_clear
+            new_level_best = False
+            for lvl_key, v in row["levels"].items():
+                if v["clear_rate"] > best_per_level.get(lvl_key, 0.0) + 1e-9:
+                    best_per_level[lvl_key] = v["clear_rate"]
+                    if v["clear_rate"] > 0:
+                        new_level_best = True
+            if mean_clear > best_mean + 1e-9 or new_level_best:
+                best_mean = max(best_mean, mean_clear)
                 try:
                     import shutil
 
