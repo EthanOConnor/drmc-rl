@@ -1,0 +1,504 @@
+"""Annotate fightcadeRatings v2 replay events with planner/policy move metrics.
+
+Cross-project deliverable agreed in ../fightcadeRatings/COORDINATION.md
+("Ask from fightcadeRatings: annotation schema for placement playback" +
+"drmc-rl: schema accepted"). Reads event blobs from their sqlite store,
+computes per-move annotations, and writes them back to *their* store
+(table `drmc_annotation` + per-quark JSONL blob via `store.put_blob`).
+The boundary stays data-only: no code dependency in either direction
+beyond importing their `store` module for connect/put_blob.
+
+Join key: (quarkid, p, spawn_f). One row per spawn->lock pair.
+
+Fields (per the accepted schema):
+  opt_frames_chosen  exact minimal input frames to reach the chosen lock pose
+                     (drm_reach_bfs_v4; planner-exact). NULL if infeasible.
+  opt_frames_best    min cost over all feasible placements for that spawn.
+  rank               1 + number of feasible candidates whose policy logit is
+                     strictly greater than the chosen placement's logit.
+  n_options          number of feasible macro placements (distinct actions).
+  value_gap          best_logit - chosen_logit, in champion *policy-logit*
+                     units (dimensionless; chosen==best -> 0.0). Comparable
+                     only within one model_ver. NOTE: the accepted schema said
+                     "value head"; we rank with the candidate policy logits
+                     instead because that is the quantity the policy actually
+                     argmaxes over -- documented here so consumers know.
+  tuck               heuristic: 1 if some occupied cell sits strictly above
+                     one of the chosen pose's cells (i.e. the pose is not
+                     reachable by a straight vertical drop). Not an exact
+                     maneuver classifier.
+  kick               always 0 in phase 1 (not derived yet; reserved).
+  feasible           1 if the observed lock pose has a finite planner cost
+                     from the spawn snapshot (desync canary when 0).
+  interrupted        1 if a garbage volley landed on this player's board
+                     strictly between spawn_f and lock_f (static-board fields
+                     are still emitted; reachability may be off for these).
+  planner_ver        'v4' (drm_reach_bfs_v4).
+  model_ver          champion checkpoint filename.
+  blob_sha           sha256 of this quark's annotation JSONL blob.
+
+Known approximations (documented, deliberate for phase 1):
+  - Planner spawn state assumes neutral controller at spawn (hold_dir=0,
+    rot_hold=0, hv=0, sc=0); held buttons at spawn are not in the v2 records.
+  - parity = spawn_f & 1 uses the harness frame index, not NES $0043; a
+    constant parity flip costs at most ~1 frame on soft-drop timing.
+  - Collision occupancy follows the engine (DrMarioPool::build_cols_u16):
+    occupied = tile != 0x00 and tile < 0xF0 (mid-clear $Bx counts occupied).
+  - aux_v1 inputs mirror training semantics where derivable from the replay
+    (level/speed from init/spawn records, frames_used = spawn_f - game init
+    frame, viruses from field snapshots); task budget fields use the
+    no-max-frames tanh fallback, same as budget-less training envs.
+
+Usage (single-threaded on purpose -- a training run shares this box):
+  nice -n 19 .venv/bin/python -m tools.annotate_replay_events [--limit N]
+      [--requark QUARKID] [--dry-run]
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import ctypes as C
+import json
+import sys
+import time
+from collections import defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import numpy as np
+import torch
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
+
+from envs.backends.drmario_pool import default_library_path
+from envs.retro.fast_reach import compute_speed_threshold
+from envs.specs.ram_to_state import COLOR_VALUE_TO_INDEX
+from models.policy.candidate_packing import pack_feasible_candidates
+from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
+from training.utils.checkpoint_io import load_checkpoint
+
+PLANNER_VER = "v4"
+CHECKPOINT = REPO_ROOT / "runs" / "best_agents" / "smdp_ppo_step535164979.pt.gz"
+GRID_W, GRID_H = 8, 16
+OBS_CHANNELS = 12  # bitplane_bottle_conn_mask
+BATCH = 256
+
+CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS drmc_annotation (
+    quarkid TEXT, p INTEGER, spawn_f INTEGER,
+    opt_frames_chosen INTEGER, opt_frames_best INTEGER,
+    rank INTEGER, n_options INTEGER, value_gap REAL,
+    tuck INTEGER, kick INTEGER, feasible INTEGER, interrupted INTEGER,
+    planner_ver TEXT, model_ver TEXT, blob_sha TEXT, annotated_at REAL,
+    PRIMARY KEY (quarkid, p, spawn_f)
+)
+"""
+
+# Pose geometry (DrMarioPool.cpp ROT_OFFSETS / orient_index). Pose base =
+# bottom-left of the 2x2 box, y=0 top. Macro action = o*128 + row*8 + col.
+ROT_OFFSETS = ((0, 0, 0, 1), (0, 0, -1, 0), (0, 1, 0, 0), (-1, 0, 0, 0))
+ORIENT_INDEX = {(0, 1): 0, (1, 0): 1, (0, -1): 2, (-1, 0): 3}
+
+
+def _pose_to_action_map() -> np.ndarray:
+    """Map pose idx (rot*128 + y*8 + x) -> macro action idx, -1 if oob."""
+    out = np.full(512, -1, dtype=np.int32)
+    for rot in range(4):
+        dr1, dc1, dr2, dc2 = ROT_OFFSETS[rot]
+        for y in range(GRID_H):
+            for x in range(GRID_W):
+                r1, c1 = y + dr1, x + dc1
+                r2, c2 = y + dr2, x + dc2
+                if not (0 <= r1 < GRID_H and 0 <= c1 < GRID_W):
+                    continue
+                if not (0 <= r2 < GRID_H and 0 <= c2 < GRID_W):
+                    continue
+                o = ORIENT_INDEX.get((r2 - r1, c2 - c1))
+                if o is None:
+                    continue
+                out[rot * 128 + y * 8 + x] = o * 128 + r1 * 8 + c1
+    return out
+
+
+POSE_TO_ACTION = _pose_to_action_map()
+
+
+def load_planner():
+    lib = C.CDLL(str(default_library_path()))
+    fn = lib.drm_reach_bfs_v4
+    fn.restype = C.c_int
+    fn.argtypes = [C.POINTER(C.c_uint16)] + [C.c_int] * 10 + [C.POINTER(C.c_uint16)]
+    return fn
+
+
+def decode_field(b64: str) -> np.ndarray:
+    return np.frombuffer(base64.b64decode(b64), dtype=np.uint8).reshape(GRID_H, GRID_W)
+
+
+def occupancy_cols(field: np.ndarray) -> np.ndarray:
+    """uint16[8] column masks, bit y = occupied (engine collision semantics)."""
+    occ = (field != 0x00) & (field < 0xF0)
+    cols = np.zeros(8, dtype=np.uint16)
+    for r in range(GRID_H):
+        cols |= occ[r].astype(np.uint16) << r
+    return cols
+
+
+def canonical_color(raw: int) -> int:
+    return int(COLOR_VALUE_TO_INDEX.get(int(raw) & 0x03, 0))
+
+
+def build_obs(field: np.ndarray, feasible_512: np.ndarray) -> np.ndarray:
+    """12-channel bitplane_bottle_conn_mask obs, mirrors DrMarioPool::build_obs."""
+    obs = np.zeros((OBS_CHANNELS, GRID_H, GRID_W), dtype=np.float32)
+    type_hi = field & 0xF0
+    color_lo = field & 0x03
+    is_empty = field == 0xFF
+    is_zero = field == 0x00
+    is_just_emptied = (type_hi == 0xF0) & ~is_empty
+    is_clearing = (type_hi == 0xB0) | is_just_emptied
+    color_valid = ~(is_empty | is_zero | is_clearing)
+    for raw_value, ch in ((1, 0), (0, 1), (2, 2)):  # red, yellow, blue
+        obs[ch] = ((color_lo == raw_value) & color_valid).astype(np.float32)
+    obs[3] = (type_hi == 0xD0).astype(np.float32)  # virus
+    for code, ch in ((0x50, 4), (0x40, 5), (0x70, 6), (0x60, 7)):
+        # connected_up / down / left / right
+        obs[ch] = (type_hi == code).astype(np.float32)
+    feas = feasible_512.reshape(4, GRID_H, GRID_W)
+    obs[8:12] = feas.astype(np.float32)
+    return obs
+
+
+def parse_quark_events(raw: bytes) -> Dict[str, list]:
+    """Split a JSONL event blob into init/spawn/lock/grb records (in order)."""
+    inits, spawns, locks, grbs = [], [], [], []
+    for line in raw.decode("utf-8", errors="replace").splitlines():
+        if '"t":"spawn"' in line:
+            spawns.append(json.loads(line))
+        elif '"t":"lock"' in line:
+            locks.append(json.loads(line))
+        elif '"t":"init"' in line:
+            inits.append(json.loads(line))
+        elif '"grb"' in line:
+            try:
+                ev = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "grb" in ev and "f" in ev:
+                grbs.append(ev)
+    return {"init": inits, "spawn": spawns, "lock": locks, "grb": grbs}
+
+
+def pair_moves(events: Dict[str, list], counters: Dict[str, int]) -> List[Dict[str, Any]]:
+    """Pair each spawn with the next same-player lock within the same game."""
+    timeline: List[tuple] = []
+    for kind in ("init", "spawn", "lock"):
+        for ev in events[kind]:
+            timeline.append((int(ev["f"]), {"init": 0, "spawn": 1, "lock": 2}[kind], ev))
+    timeline.sort(key=lambda t: (t[0], t[1]))
+
+    moves: List[Dict[str, Any]] = []
+    pending: Dict[int, Optional[dict]] = {1: None, 2: None}
+    game_ctx: Dict[int, dict] = {}
+    for _f, kind, ev in timeline:
+        if kind == 0:  # init: new game, drop unpaired spawns
+            for p in (1, 2):
+                if pending[p] is not None:
+                    counters["spawn_without_lock"] += 1
+                pending[p] = None
+                fld = decode_field(ev["field1"] if p == 1 else ev["field2"])
+                game_ctx[p] = {
+                    "init_f": int(ev["f"]),
+                    "level": int(ev["lvl"][p - 1]),
+                    "viruses_initial": int(((fld & 0xF0) == 0xD0).sum()),
+                }
+        elif kind == 1:  # spawn
+            p = int(ev["p"])
+            if pending[p] is not None:
+                counters["spawn_without_lock"] += 1
+            pending[p] = ev
+        else:  # lock
+            p = int(ev["p"])
+            sp = pending[p]
+            if sp is None:
+                counters["lock_without_spawn"] += 1
+                continue
+            pending[p] = None
+            ctx = game_ctx.get(p, {"init_f": int(sp["f"]), "level": 0, "viruses_initial": 0})
+            moves.append({"p": p, "spawn": sp, "lock": ev, "ctx": ctx})
+    for p in (1, 2):
+        if pending[p] is not None:
+            counters["spawn_without_lock"] += 1
+    return moves
+
+
+def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
+                   candidate_max: int, counters: Dict[str, int]) -> List[Dict[str, Any]]:
+    events = parse_quark_events(raw)
+    if not events["spawn"]:
+        counters["quarks_no_v2"] += 1
+        return []
+    moves = pair_moves(events, counters)
+    grbs = events["grb"]
+
+    out_costs = np.empty(512, dtype=np.uint16)
+    recs: List[Dict[str, Any]] = []
+    batch_items: List[dict] = []  # net inputs for rank/value_gap
+
+    for mv in moves:
+        sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
+        spawn_f, lock_f = int(sp["f"]), int(lk["f"])
+        field = decode_field(sp["field"])
+        cols = occupancy_cols(field)
+        thr = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
+        out_costs.fill(0xFFFF)
+        rc = planner(
+            cols.ctypes.data_as(C.POINTER(C.c_uint16)),
+            3, 0, 0, 0, 0, 0, spawn_f & 1, 0, thr, 2048,
+            out_costs.ctypes.data_as(C.POINTER(C.c_uint16)),
+        )
+        if rc != 0:
+            counters["planner_error"] += 1
+            continue
+
+        # Pose costs -> macro action costs/feasibility (as in ensure_planner).
+        action_cost = np.full(512, 0xFFFF, dtype=np.uint16)
+        finite = np.flatnonzero(out_costs != 0xFFFF)
+        for pose in finite:
+            a = POSE_TO_ACTION[pose]
+            if a >= 0:
+                action_cost[a] = out_costs[pose]
+        feasible_512 = action_cost != 0xFFFF
+        n_options = int(feasible_512.sum())
+        opt_best = int(action_cost[feasible_512].min()) if n_options else None
+
+        # Chosen pose from the lock record (NES y counts from the bottom).
+        x, rot = int(lk["x"]), int(lk["rot"]) & 3
+        y_top = (GRID_H - 1) - int(lk["y"])
+        chosen_action = -1
+        chosen_cost: Optional[int] = None
+        if 0 <= x < GRID_W and 0 <= y_top < GRID_H:
+            pose = rot * 128 + y_top * 8 + x
+            chosen_action = int(POSE_TO_ACTION[pose])
+            if chosen_action >= 0 and out_costs[pose] != 0xFFFF:
+                chosen_cost = int(out_costs[pose])
+        feasible = chosen_cost is not None
+
+        interrupted = any(
+            int(g["grb"]) == p and spawn_f < int(g["f"]) < lock_f for g in grbs
+        )
+
+        # Tuck heuristic: occupied cell strictly above any chosen pose cell.
+        tuck: Optional[int] = None
+        if 0 <= x < GRID_W and 0 <= y_top < GRID_H:
+            dr1, dc1, dr2, dc2 = ROT_OFFSETS[rot]
+            occ = (field != 0x00) & (field < 0xF0)
+            tuck = 0
+            for (cy, cx) in ((y_top + dr1, x + dc1), (y_top + dr2, x + dc2)):
+                if 0 <= cy < GRID_H and 0 <= cx < GRID_W and occ[:cy, cx].any():
+                    tuck = 1
+
+        rec = {
+            "p": p, "spawn_f": spawn_f, "lock_f": lock_f,
+            "lock_x": x, "lock_y_top": y_top, "lock_rot": rot,
+            "opt_frames_chosen": chosen_cost,
+            "opt_frames_best": opt_best,
+            "slack": (lock_f - spawn_f - chosen_cost) if feasible else None,
+            "rank": None, "n_options": n_options, "value_gap": None,
+            "tuck": tuck, "kick": 0,
+            "feasible": int(feasible), "interrupted": int(interrupted),
+        }
+        recs.append(rec)
+        counters["moves"] += 1
+        counters["feasible"] += int(feasible)
+        counters["interrupted"] += int(interrupted)
+        if not feasible:
+            continue
+
+        # Defer policy scoring so we can batch the net forward.
+        packed = pack_feasible_candidates(
+            feasible_512.reshape(4, GRID_H, GRID_W),
+            action_cost.reshape(4, GRID_H, GRID_W),
+            max_candidates=candidate_max, sort_by_cost=True,
+        )
+        slot = np.flatnonzero(packed.actions[: packed.count] == chosen_action)
+        if slot.size == 0:
+            counters["chosen_not_packed"] += 1
+            continue
+        info = {
+            "pill/speed_setting": int(sp["spd"]),
+            "speed_setting": int(sp["spd"]),
+            "level": mv["ctx"]["level"],
+            "task_mode": "viruses",
+            "task/frames_used": spawn_f - mv["ctx"]["init_f"],
+            "drm/viruses_initial": mv["ctx"]["viruses_initial"],
+            "viruses_remaining": int(((field & 0xF0) == 0xD0).sum()),
+            "placements/options": n_options,
+        }
+        batch_items.append({
+            "rec": rec,
+            "obs": build_obs(field, feasible_512),
+            "pill": [canonical_color(sp["pill"][0]), canonical_color(sp["pill"][1])],
+            "prev": [canonical_color(sp["prev"][0]), canonical_color(sp["prev"][1])],
+            "packed": packed,
+            "slot": int(slot[0]),
+            "info": info,
+        })
+
+    # Batched policy forward for rank / value_gap.
+    for start in range(0, len(batch_items), BATCH):
+        chunk = batch_items[start : start + BATCH]
+        obs = np.stack([c["obs"] for c in chunk])
+        pills = np.array([c["pill"] for c in chunk], dtype=np.int64)
+        prevs = np.array([c["prev"] for c in chunk], dtype=np.int64)
+        cand_a = np.stack([c["packed"].actions for c in chunk])
+        cand_m = np.stack([c["packed"].mask for c in chunk])
+        cand_c = np.stack([c["packed"].cost for c in chunk])
+        aux = None
+        if aux_shim is not None:
+            aux = aux_shim._build_aux_batch(obs, [c["info"] for c in chunk])
+        with torch.inference_mode():
+            logits, _values = net(
+                torch.from_numpy(obs),
+                torch.from_numpy(pills),
+                torch.from_numpy(prevs),
+                torch.from_numpy(cand_a.astype(np.int32)),
+                torch.from_numpy(cand_c.astype(np.float32)),
+                torch.from_numpy(cand_m),
+                aux=None if aux is None else torch.from_numpy(aux),
+            )
+            lg = logits.float().cpu().numpy()
+        lg[~cand_m] = -np.inf
+        for i, c in enumerate(chunk):
+            chosen_logit = float(lg[i, c["slot"]])
+            best_logit = float(lg[i].max())
+            c["rec"]["rank"] = 1 + int((lg[i] > chosen_logit).sum())
+            c["rec"]["value_gap"] = best_logit - chosen_logit
+
+    return recs
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Annotate v2 replay events (see module docstring)")
+    ap.add_argument("--limit", type=int, default=None, help="annotate at most N quarks")
+    ap.add_argument("--requark", type=str, default=None,
+                    help="(re-)annotate this quark only, replacing existing rows")
+    ap.add_argument("--dry-run", action="store_true", help="compute + print, no write")
+    ap.add_argument("--fcr-root", type=str, default=str(FCR_ROOT))
+    args = ap.parse_args()
+
+    torch.set_num_threads(1)
+
+    fcr_root = Path(args.fcr_root)
+    sys.path.insert(0, str(fcr_root))
+    import store  # fightcadeRatings/store.py
+
+    payload = load_checkpoint(CHECKPOINT, map_location="cpu")
+    net, aux_dim, candidate_max = _build_net_from_cfg(payload["cfg"], OBS_CHANNELS, "cpu")
+    net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
+    aux_shim = _make_aux_builder(aux_dim)
+    model_ver = CHECKPOINT.name
+    print(f"model={model_ver} step={payload.get('step')} planner={PLANNER_VER}")
+
+    planner = load_planner()
+    con = store.connect()
+    con.execute(CREATE_TABLE)
+    con.commit()
+
+    if args.requark:
+        rows = con.execute(
+            "SELECT quarkid, sha256 FROM processed_replay WHERE quarkid=?",
+            (args.requark,),
+        ).fetchall()
+        if not rows:
+            raise SystemExit(f"quark {args.requark!r} not in processed_replay")
+    else:
+        rows = con.execute(
+            "SELECT quarkid, sha256 FROM processed_replay ORDER BY quarkid"
+        ).fetchall()
+
+    counters: Dict[str, int] = defaultdict(int)
+    all_slacks: List[int] = []
+    all_ranks: List[int] = []
+    quarks_done = 0
+    t0 = time.time()
+
+    for quarkid, sha in rows:
+        if args.limit is not None and quarks_done >= args.limit:
+            break
+        if not args.requark:
+            done = con.execute(
+                "SELECT 1 FROM drmc_annotation WHERE quarkid=? AND planner_ver=? "
+                "AND model_ver=? LIMIT 1",
+                (quarkid, PLANNER_VER, model_ver),
+            ).fetchone()
+            if done:
+                counters["quarks_skipped_done"] += 1
+                continue
+        try:
+            raw = store.get_blob(sha)
+        except FileNotFoundError:
+            counters["quarks_blob_missing"] += 1
+            continue
+
+        recs = annotate_quark(quarkid, raw, planner, net, aux_shim, candidate_max, counters)
+        if not recs:
+            continue
+        quarks_done += 1
+
+        for r in recs:
+            if r["slack"] is not None:
+                all_slacks.append(r["slack"])
+            if r["rank"] is not None:
+                all_ranks.append(r["rank"])
+
+        now = time.time()
+        header = {"quarkid": quarkid, "planner_ver": PLANNER_VER,
+                  "model_ver": model_ver, "annotated_at": now, "moves": len(recs)}
+        blob = "\n".join(json.dumps(x) for x in [header] + recs) + "\n"
+
+        if args.dry_run:
+            feas = sum(r["feasible"] for r in recs)
+            print(f"[dry-run] {quarkid}: {len(recs)} moves, {feas} feasible, "
+                  f"blob {len(blob)} bytes")
+            continue
+
+        blob_sha = store.put_blob(blob.encode())
+        con.execute("DELETE FROM drmc_annotation WHERE quarkid=?", (quarkid,))
+        con.executemany(
+            "INSERT OR REPLACE INTO drmc_annotation "
+            "(quarkid,p,spawn_f,opt_frames_chosen,opt_frames_best,rank,n_options,"
+            "value_gap,tuck,kick,feasible,interrupted,planner_ver,model_ver,"
+            "blob_sha,annotated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (quarkid, r["p"], r["spawn_f"], r["opt_frames_chosen"],
+                 r["opt_frames_best"], r["rank"], r["n_options"], r["value_gap"],
+                 r["tuck"], r["kick"], r["feasible"], r["interrupted"],
+                 PLANNER_VER, model_ver, blob_sha, now)
+                for r in recs
+            ],
+        )
+        con.commit()
+        print(f"{quarkid}: {len(recs)} moves -> blob {blob_sha[:12]}")
+
+    moves = counters["moves"]
+    feas_frac = counters["feasible"] / moves if moves else 0.0
+    slacks = np.array(all_slacks) if all_slacks else np.array([0])
+    ranks = np.array(all_ranks) if all_ranks else np.array([0])
+    print("--- summary ---")
+    print(f"quarks annotated: {quarks_done}  moves: {moves}")
+    print(f"feasible: {counters['feasible']}/{moves} = {feas_frac:.4f}")
+    print(f"interrupted: {counters['interrupted']}")
+    print(f"slack: median {np.median(slacks):.0f}  p10 {np.percentile(slacks,10):.0f}  "
+          f"p90 {np.percentile(slacks,90):.0f}")
+    if all_ranks:
+        print(f"rank: median {np.median(ranks):.0f}  rank1 {(ranks==1).mean():.3f}  "
+              f"top3 {(ranks<=3).mean():.3f}  p90 {np.percentile(ranks,90):.0f}")
+    print(f"counters: {dict(counters)}")
+    print(f"wall: {time.time()-t0:.1f}s")
+
+
+if __name__ == "__main__":
+    main()
