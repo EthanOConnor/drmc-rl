@@ -78,6 +78,17 @@ def main() -> None:
         ]
         for path in pending:
             step = _ckpt_step(path)
+            # Snapshot before evaluating: checkpoint thinning can delete the
+            # file during the multi-minute eval, losing new-best agents.
+            import shutil as _sh
+            pend_dir = Path(args.protect_dir) / "_pending"
+            try:
+                pend_dir.mkdir(parents=True, exist_ok=True)
+                snap_path = pend_dir / path.name
+                _sh.copy2(path, snap_path)
+            except Exception:
+                snap_path = path
+            path = snap_path
             try:
                 payload = load_checkpoint(path, map_location="cpu")
                 in_ch = _CHANNELS.get(args.state_repr, 12)
@@ -134,6 +145,11 @@ def main() -> None:
                     print(f"protect failed: {exc}")
             evaluated.add(step)
             last_step = max(last_step, step)
+            try:
+                if path.parent.name == "_pending":
+                    path.unlink()
+            except Exception:
+                pass
             summary = " ".join(
                 f"L{lvl}:{row['levels'][str(lvl)]['clear_rate']*100:.0f}%/"
                 f"{row['levels'][str(lvl)]['viruses_cleared_mean']:.1f}v"

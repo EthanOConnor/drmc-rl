@@ -152,7 +152,10 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
   8 bytes with the high nibble encoding tile type and low bits encoding color.
 - **Gravity/drop timing**: `$0312` counts frames until forced drop; `0xFF`
   stalls the fall and `0x01` forces a drop.
-- **Spawn detection**: `$0310` increments whenever a new pill appears.
+- **Spawn detection**: `$0310` increments whenever a new pill appears
+  (BCD with manual decimal adjust, `$0311` hundreds; includes the
+  currently falling pill — reconciled against the disassembly with the
+  fightcadeRatings project, see docs/HUMAN_CORPUS_INTEGRATION.md).
 
 ---
 
