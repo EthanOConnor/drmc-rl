@@ -93,7 +93,7 @@ def main() -> None:
                 payload = load_checkpoint(path, map_location="cpu")
                 in_ch = _CHANNELS.get(args.state_repr, 12)
                 net, aux_dim, cand_max = _build_net_from_cfg(payload.get("cfg", {}), in_ch, args.device)
-                net.load_state_dict(payload["state_dict"])
+                net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
                 aux_shim = _make_aux_builder(aux_dim)
             except Exception as exc:  # partial writes from the live trainer
                 print(f"skip {path.name}: {exc}")

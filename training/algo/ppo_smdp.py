@@ -283,6 +283,14 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         self.optimizer = optim.Adam(self.net.parameters(), lr=self.hparams.lr)
 
+        # EMA of the policy weights: PPO iterates wander, and evaluating the
+        # raw iterate produced large sweep-to-sweep skill swings; the EMA is
+        # the deployable/evaluated policy (docs/DESIGN_TOP_PLAY.md).
+        self.ema_decay = float(getattr(self.hparams, "ema_decay", 0.995) or 0.995)
+        self._ema_state = {
+            k: v.detach().clone() for k, v in self.net.state_dict().items()
+        }
+
         # Rollout buffer (decision-wise)
         self.buffer = DecisionRolloutBuffer(
             capacity=self.hparams.decisions_per_update * 2,
@@ -961,6 +969,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                     self.hparams.max_grad_norm,
                 )
                 self.optimizer.step()
+                with torch.no_grad():
+                    d = self.ema_decay
+                    for k, v in self.net.state_dict().items():
+                        e = self._ema_state[k]
+                        if v.dtype.is_floating_point:
+                            e.mul_(d).add_(v, alpha=1.0 - d)
+                        else:
+                            e.copy_(v)
 
                 # Track metrics on-device; a `.item()` per metric per minibatch
                 # forces an accelerator sync each time (dominated profiles).
@@ -1628,6 +1644,12 @@ class SMDPPPOAdapter(AlgoAdapter):
             + (self.hparams.entropy_schedule_end - self._entropy_coef_initial) * progress
         )
 
+    def _seed_ema_from_net(self) -> None:
+        if hasattr(self, "_ema_state"):
+            self._ema_state = {
+                k: v.detach().clone() for k, v in self.net.state_dict().items()
+            }
+
     def _load_checkpoint(
         self,
         path: Path,
@@ -1649,6 +1671,11 @@ class SMDPPPOAdapter(AlgoAdapter):
         if state_dict is None:
             raise KeyError("Checkpoint missing state_dict")
         self.net.load_state_dict(state_dict, strict=bool(strict))
+        ema_sd = payload.get("ema_state_dict")
+        if ema_sd is not None and hasattr(self, "_ema_state"):
+            self._ema_state = {k: v.detach().clone().to(self.device) for k, v in ema_sd.items()}
+        else:
+            self._seed_ema_from_net()
         if resume_optimizer:
             opt_state = payload.get("optimizer")
             if opt_state is not None:
@@ -1689,6 +1716,7 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         payload = {
             "state_dict": self.net.state_dict(),
+            "ema_state_dict": self._ema_state,
             "optimizer": self.optimizer.state_dict(),
             "cfg": getattr(self.cfg, "to_dict", lambda: {})(),
             "step": self.global_step,

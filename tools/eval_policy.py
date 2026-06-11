@@ -255,7 +255,8 @@ def main() -> None:
                     "bitplane_bottle_conn": 8, "bitplane_bottle_conn_mask": 12}
         in_ch = channels.get(args.state_repr, 12)
         net, aux_dim, candidate_max = _build_net_from_cfg(cfg, in_ch, args.device)
-        net.load_state_dict(payload["state_dict"])
+        sd = payload.get("ema_state_dict") or payload["state_dict"]
+        net.load_state_dict(sd)
         aux_shim = _make_aux_builder(aux_dim)
         print(f"loaded checkpoint step={payload.get('step')} sha={payload.get('sha')}")
 
