@@ -77,6 +77,14 @@ env:
   # Level 10, HI speed for both sides.
   level: 10
   speed_setting: 2
+  # Frozen-opponent snapshot pool (PFSP). enabled:false = pure self-play
+  # (legacy 2N-side flattening). With the pool enabled, only the learner sides
+  # are exposed (num_envs == num_pairs); P2 is driven by frozen checkpoints
+  # under <logdir>/opponent_pool/.
+  opponent_pool:
+    enabled: true
+    max_pool: 12
+    snapshot_every_matches: 400
 
 # No curriculum for VS self-play.
 curriculum:

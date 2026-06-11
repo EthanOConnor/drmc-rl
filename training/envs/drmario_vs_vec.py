@@ -1,10 +1,19 @@
 from __future__ import annotations
 
-"""Batched, in-process 2-player VS pool vector environment (pure self-play).
+"""Batched, in-process 2-player VS pool vector environment.
 
-Both sides of every pair are flattened into ``num_envs = 2 * num_pairs``
-"envs" so the existing SMDP-PPO adapter can drive them with a single learning
-policy. The API mirrors `DrMarioPoolVecEnv` (info dicts with
+Two modes:
+
+- Pure self-play (default, ``opponent_pool_cfg=None``): both sides of every
+  pair are flattened into ``num_envs = 2 * num_pairs`` "envs" so the existing
+  SMDP-PPO adapter can drive them with a single learning policy.
+- Opponent pool (``opponent_pool_cfg={"enabled": True, ...}``): only the N
+  learner sides (side 0 of each pair) are exposed as envs
+  (``num_envs == num_pairs``). The P2 sides are driven internally by frozen
+  policy nets sampled from a PFSP `OpponentPool`
+  (`training/envs/vs_opponents.py`); the trainer sees a plain 1P vector env.
+
+The API mirrors `DrMarioPoolVecEnv` (info dicts with
 ``placements/feasible_mask``, ``placements/cost_to_lock``, ``placements/tau``,
 ``next_pill_colors``, ``preview_pill``, ``episode``/``drm`` dicts on terminal,
 NEXT_STEP autoreset) so `SMDPPPOAdapter` works unchanged.
@@ -23,6 +32,7 @@ anneal via ``set_attr("garbage_reward_coef", ...)``).
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 from gymnasium import spaces
@@ -86,9 +96,15 @@ class DrMarioVsPoolVecEnv:
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
         seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
+        opponent_pool_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
-        self.num_envs = 2 * self.num_pairs
+        self.num_sides = 2 * self.num_pairs
+        self._opp_pool = None
+        opp_cfg = dict(opponent_pool_cfg or {})
+        self._opp_enabled = bool(opp_cfg.get("enabled", False))
+        # Pool mode exposes only the learner sides as envs.
+        self.num_envs = self.num_pairs if self._opp_enabled else self.num_sides
         self.level = int(max(0, min(int(level), 20)))
         self.speed_setting = int(max(0, min(int(speed_setting), 2)))
         self.rng_randomize = bool(randomize_rng)
@@ -119,37 +135,37 @@ class DrMarioVsPoolVecEnv:
 
         # Views (no copies) into runner-owned buffers.
         self._mask_1d = self._runner.buffers.feasible_mask
-        self._mask = self._mask_1d.reshape(self.num_envs, 4, GRID_H, GRID_W)
+        self._mask = self._mask_1d.reshape(self.num_sides, 4, GRID_H, GRID_W)
         self._cost_1d = self._runner.buffers.cost_to_lock
-        self._cost = self._cost_1d.reshape(self.num_envs, 4, GRID_H, GRID_W)
+        self._cost = self._cost_1d.reshape(self.num_sides, 4, GRID_H, GRID_W)
 
         # Python-built observations (the VS pool does not emit obs natively).
-        self._obs = np.zeros((self.num_envs, obs_channels, GRID_H, GRID_W), dtype=np.float32)
+        self._obs = np.zeros((self.num_sides, obs_channels, GRID_H, GRID_W), dtype=np.float32)
 
         # Persistent per-env infos (updated in-place).
-        self._infos: List[Dict[str, Any]] = [dict() for _ in range(self.num_envs)]
+        self._infos: List[Dict[str, Any]] = [dict() for _ in range(self.num_sides)]
 
         # Autoreset (NEXT_STEP semantics; per pair).
         self._pending_reset = np.zeros((self.num_pairs,), dtype=bool)
 
         # Per-side episode stats.
-        self._ep_return = np.zeros((self.num_envs,), dtype=np.float64)
-        self._ep_frames = np.zeros((self.num_envs,), dtype=np.int64)
-        self._ep_decisions = np.zeros((self.num_envs,), dtype=np.int64)
-        self._ep_pills = np.zeros((self.num_envs,), dtype=np.int64)
-        self._ep_viruses_cleared = np.zeros((self.num_envs,), dtype=np.int64)
-        self._viruses_prev = np.full((self.num_envs,), -1, dtype=np.int32)
-        self._viruses_initial = np.zeros((self.num_envs,), dtype=np.int32)
-        self._garbage_sent_prev = np.zeros((self.num_envs,), dtype=np.int64)
-        self._volleys_sent_round = np.zeros((self.num_envs,), dtype=np.int64)
-        self._volleys_recv_round = np.zeros((self.num_envs,), dtype=np.int64)
-        self._garbage_recv_round = np.zeros((self.num_envs,), dtype=np.int64)
+        self._ep_return = np.zeros((self.num_sides,), dtype=np.float64)
+        self._ep_frames = np.zeros((self.num_sides,), dtype=np.int64)
+        self._ep_decisions = np.zeros((self.num_sides,), dtype=np.int64)
+        self._ep_pills = np.zeros((self.num_sides,), dtype=np.int64)
+        self._ep_viruses_cleared = np.zeros((self.num_sides,), dtype=np.int64)
+        self._viruses_prev = np.full((self.num_sides,), -1, dtype=np.int32)
+        self._viruses_initial = np.zeros((self.num_sides,), dtype=np.int32)
+        self._garbage_sent_prev = np.zeros((self.num_sides,), dtype=np.int64)
+        self._volleys_sent_round = np.zeros((self.num_sides,), dtype=np.int64)
+        self._volleys_recv_round = np.zeros((self.num_sides,), dtype=np.int64)
+        self._garbage_recv_round = np.zeros((self.num_sides,), dtype=np.int64)
 
         # Pair-clock tracking (emulated time, for vs/cpm).
         self._pair_clock_prev = np.zeros((self.num_pairs,), dtype=np.int64)
 
         # Need-action snapshot from the last reset/step call.
-        self._need_action = np.zeros((self.num_envs,), dtype=np.uint8)
+        self._need_action = np.zeros((self.num_sides,), dtype=np.uint8)
 
         # Rolling VS metrics (dashboard contract: tools/vs_dashboard.py).
         self._matches_total = 0
@@ -160,6 +176,36 @@ class DrMarioVsPoolVecEnv:
         self._emu_frames_total = 0
         # Per-side completed-game feature records for the skill grader.
         self._skill_games: List[Dict[str, float]] = []
+
+        # Frozen-opponent pool (PFSP) state.
+        self._pair_opponents: List[Optional[Any]] = [None] * self.num_pairs
+        self._aux_shim: Optional[Any] = None
+        self._snapshot_every = 0
+        self._matches_since_snapshot = 0
+        if self._opp_enabled:
+            from training.envs.vs_opponents import OpponentPool, default_seed_paths
+
+            self._snapshot_every = int(opp_cfg.get("snapshot_every_matches", 400))
+            pool = opp_cfg.get("pool")  # injected pool (tests)
+            if pool is None:
+                pool = OpponentPool(
+                    opp_cfg.get("dir") or "runs/opponent_pool",
+                    max_pool=int(opp_cfg.get("max_pool", 12)),
+                )
+                if not pool.entries:
+                    seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
+                    if not seed_paths:
+                        raise RuntimeError(
+                            "opponent_pool enabled but no seed checkpoints found "
+                            "(runs/vs2_*/checkpoints, runs/best_agents)."
+                        )
+                    from training.envs.vs_opponents import CHAMPION_CHECKPOINT
+
+                    protected = [Path(p).name == CHAMPION_CHECKPOINT.name for p in seed_paths]
+                    pool.seed(seed_paths, protected=protected)
+            if not pool.entries:
+                raise RuntimeError("opponent_pool enabled but the pool is empty.")
+            self._opp_pool = pool
 
     # ------------------------------------------------------------------ vector API
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
@@ -190,13 +236,24 @@ class DrMarioVsPoolVecEnv:
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
-        self._refresh_infos(step_tau_raw=np.zeros((self.num_envs,), dtype=np.uint32))
+        self._refresh_infos(step_tau_raw=np.zeros((self.num_sides,), dtype=np.uint32))
+
+        if self._opp_pool is not None:
+            for pair_i in range(self.num_pairs):
+                self._pair_opponents[pair_i] = self._opp_pool.sample(self._rng)
+            return self._obs[0::2], [self._infos[i] for i in range(0, self.num_sides, 2)]
         return self._obs, list(self._infos)
 
     def step(
         self, actions: Sequence[int]
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, List[Dict[str, Any]]]:
-        acts = np.asarray(list(actions), dtype=np.int32).reshape(self.num_envs)
+        if self._opp_pool is not None:
+            learner_acts = np.asarray(list(actions), dtype=np.int32).reshape(self.num_pairs)
+            acts = np.empty((self.num_sides,), dtype=np.int32)
+            acts[0::2] = learner_acts
+            acts[1::2] = self._opponent_actions()
+        else:
+            acts = np.asarray(list(actions), dtype=np.int32).reshape(self.num_sides)
 
         # Only act for sides parked at a decision boundary; leave others parked.
         # (-1 from the policy's empty-mask fallback becomes noop-fall, which is
@@ -240,13 +297,13 @@ class DrMarioVsPoolVecEnv:
         self._emu_frames_total += int(np.maximum(clock_delta, 0).sum())
         self._pair_clock_prev = pair_clocks
 
-        rewards = np.zeros((self.num_envs,), dtype=np.float32)
-        terminated = np.zeros((self.num_envs,), dtype=bool)
-        truncated = np.zeros((self.num_envs,), dtype=bool)
-        garbage_delta_arr = np.zeros((self.num_envs,), dtype=np.int64)
-        outcome_str: List[str] = ["" for _ in range(self.num_envs)]
+        rewards = np.zeros((self.num_sides,), dtype=np.float32)
+        terminated = np.zeros((self.num_sides,), dtype=bool)
+        truncated = np.zeros((self.num_sides,), dtype=bool)
+        garbage_delta_arr = np.zeros((self.num_sides,), dtype=np.int64)
+        outcome_str: List[str] = ["" for _ in range(self.num_sides)]
 
-        for i in range(self.num_envs):
+        for i in range(self.num_sides):
             pair_i = i // 2
             is_reset = bool(reset_mask[pair_i] != 0)
 
@@ -305,7 +362,7 @@ class DrMarioVsPoolVecEnv:
         self._apply_symmetry_reduction_in_place()
         self._refresh_infos(step_tau_raw=tau_raw)
 
-        for i in range(self.num_envs):
+        for i in range(self.num_sides):
             info_i = self._infos[i]
             r_env = float(rewards[i])
             info_i["vs/garbage_sent_delta"] = int(garbage_delta_arr[i])
@@ -354,6 +411,26 @@ class DrMarioVsPoolVecEnv:
                 self._ep_viruses_cleared[i] = 0
             self._pending_reset[pair_i] = True
 
+            if self._opp_pool is not None:
+                entry = self._pair_opponents[pair_i]
+                if entry is not None:
+                    oc0 = int(outcome[i0])
+                    result = 1.0 if oc0 == VS_OUTCOME_WIN else (0.0 if oc0 == VS_OUTCOME_LOSS else 0.5)
+                    self._opp_pool.record(entry.id, result)
+                    self._infos[i0]["vs/opponent_id"] = str(entry.id)
+                self._matches_since_snapshot += 1
+                # PFSP resample for the pair's next episode.
+                self._pair_opponents[pair_i] = self._opp_pool.sample(self._rng)
+
+        if self._opp_pool is not None:
+            sel = np.arange(0, self.num_sides, 2)
+            return (
+                self._obs[0::2],
+                rewards[sel].astype(np.float32),
+                terminated[sel],
+                truncated[sel],
+                [self._infos[i] for i in sel],
+            )
         return self._obs, rewards.astype(np.float32), terminated, truncated, list(self._infos)
 
     def close(self) -> None:
@@ -398,12 +475,42 @@ class DrMarioVsPoolVecEnv:
             "vs/cpm_received": cpm,
         }
         if self._win_p1:
+            # Pool mode: side 0 is always the learner, so this is the learner's
+            # rolling win rate vs the frozen pool (meaningful, unlike pure
+            # self-play where it hovers at 0.5 by construction).
             out["vs/win_rate"] = float(np.mean(self._win_p1))
         if self._draws:
             out["vs/draw_rate"] = float(np.mean(self._draws))
         if self._match_len_sec:
             out["vs/match_len_p50_sec"] = float(np.median(self._match_len_sec))
+        if self._opp_pool is not None:
+            out["vs/opponent_pool"] = float(len(self._opp_pool.entries))
+            rates = [float(e.wins) / float(e.games) for e in self._opp_pool.entries if int(e.games) > 0]
+            if rates:
+                out["vs/pool_winrate_min"] = float(min(rates))
+                out["vs/pool_winrate_max"] = float(max(rates))
         return out
+
+    def maybe_snapshot(
+        self,
+        state_dict_getter: Callable[[], Dict[str, Any]],
+        *,
+        cfg: Optional[Dict[str, Any]] = None,
+        step: int = 0,
+    ) -> bool:
+        """Freeze the current (EMA) weights into the opponent pool when due.
+
+        Called from the trainer's metrics hook; a snapshot is taken every
+        ``snapshot_every_matches`` completed learner matches.
+        """
+
+        if self._opp_pool is None or self._snapshot_every <= 0:
+            return False
+        if self._matches_since_snapshot < self._snapshot_every:
+            return False
+        self._opp_pool.snapshot(state_dict_getter(), dict(cfg or {}), int(step))
+        self._matches_since_snapshot = 0
+        return True
 
     def skill_games_pending(self) -> int:
         return len(self._skill_games)
@@ -417,6 +524,91 @@ class DrMarioVsPoolVecEnv:
     def _pair_clocks(self) -> np.ndarray:
         sf = self._runner.buffers.side_frames.reshape(self.num_pairs, 2)
         return sf.max(axis=1)
+
+    # ------------------------------------------------------------ frozen opponents
+    def _get_aux_shim(self) -> Any:
+        """Aux-v1 builder shim (same trick as tools/eval_policy)."""
+
+        if self._aux_shim is None:
+            from training.algo.ppo_smdp import SMDPPPOAdapter, _AUX_V1_DIM
+
+            shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
+            shim.aux_spec = "v1"
+            shim.aux_dim = int(_AUX_V1_DIM)
+            self._aux_shim = shim
+        return self._aux_shim
+
+    def _opponent_actions(self) -> np.ndarray:
+        """Macro actions for the P2 sides, from their assigned frozen nets.
+
+        Sides not parked at a decision (or pending reset) stay parked (-2).
+        Forwards are batched per opponent entry.
+        """
+
+        acts = np.full((self.num_pairs,), -2, dtype=np.int32)
+        groups: Dict[str, List[int]] = {}
+        entries: Dict[str, Any] = {}
+        for pair_i in range(self.num_pairs):
+            gi = pair_i * 2 + 1
+            if bool(self._pending_reset[pair_i]) or int(self._need_action[gi]) == 0:
+                continue
+            entry = self._pair_opponents[pair_i]
+            if entry is None:
+                acts[pair_i] = -1  # noop-fall escape hatch
+                continue
+            groups.setdefault(entry.id, []).append(gi)
+            entries[entry.id] = entry
+        for entry_id, side_idxs in groups.items():
+            chosen = self._forward_opponent(entries[entry_id], side_idxs)
+            for k, gi in enumerate(side_idxs):
+                acts[gi // 2] = int(chosen[k])
+        return acts
+
+    def _forward_opponent(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
+        """Sample macro actions for `side_idxs` from one frozen opponent net."""
+
+        import torch
+
+        from models.policy.candidate_packing import pack_feasible_candidates
+        from models.policy.placement_dist import MaskedPlacementDist
+
+        B = len(side_idxs)
+        obs = np.ascontiguousarray(self._obs[side_idxs], dtype=np.float32)
+        pills = self._runner.buffers.pill_colors[side_idxs].astype(np.int64)
+        previews = self._runner.buffers.preview_colors[side_idxs].astype(np.int64)
+
+        kmax = int(entry.candidate_max)
+        cand_actions = np.full((B, kmax), -1, dtype=np.int32)
+        cand_mask = np.zeros((B, kmax), dtype=np.bool_)
+        cand_cost = np.zeros((B, kmax), dtype=np.float32)
+        for k, gi in enumerate(side_idxs):
+            packed = pack_feasible_candidates(
+                self._mask[gi].astype(bool), self._cost[gi], max_candidates=kmax, sort_by_cost=True
+            )
+            cand_actions[k] = packed.actions
+            cand_mask[k] = packed.mask
+            cand_cost[k] = packed.cost
+
+        aux = None
+        if int(entry.aux_dim) > 0:
+            aux = self._get_aux_shim()._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
+
+        with torch.inference_mode():
+            logits, _values = entry.net(
+                torch.from_numpy(obs),
+                torch.from_numpy(pills),
+                torch.from_numpy(previews),
+                torch.from_numpy(cand_actions),
+                torch.from_numpy(cand_cost),
+                torch.from_numpy(cand_mask),
+                aux=None if aux is None else torch.from_numpy(aux),
+            )
+            logits_cpu = logits.float().cpu()
+        dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
+        slot, _lp = dist.sample(deterministic=False)
+        slot_np = slot.numpy().reshape(-1).astype(np.int64)
+        # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
+        return cand_actions[np.arange(B), slot_np].astype(np.int32)
 
     def _record_match(self, pair_i: int, outcome: np.ndarray, pair_clock: int) -> None:
         i0 = pair_i * 2
@@ -449,7 +641,9 @@ class DrMarioVsPoolVecEnv:
         #   pills_per_min = pills locked / min
         #   garbage_per_min = garbage half pills sent / min
         viruses_rem = self._runner.buffers.viruses_rem
-        for i in (i0, i0 + 1):
+        # Pool mode: only the learner side is graded (P2 is a frozen net).
+        sides = (i0,) if self._opp_pool is not None else (i0, i0 + 1)
+        for i in sides:
             pills = int(self._ep_pills[i])
             won = int(outcome[i]) == VS_OUTCOME_WIN
             cured = bool(won and int(viruses_rem[i]) == 0)
@@ -510,7 +704,7 @@ class DrMarioVsPoolVecEnv:
         feasible mask planes (one per orientation).
         """
 
-        board = self._runner.buffers.board_bytes.reshape(self.num_envs, GRID_H, GRID_W)
+        board = self._runner.buffers.board_bytes.reshape(self.num_sides, GRID_H, GRID_W)
         type_hi = board & _MASK_TYPE
         color_lo = board & _MASK_COLOR
 
@@ -543,7 +737,7 @@ class DrMarioVsPoolVecEnv:
         """
 
         colors = self._runner.buffers.pill_colors
-        if colors.shape != (self.num_envs, 2):
+        if colors.shape != (self.num_sides, 2):
             return
         same = colors[:, 0] == colors[:, 1]
         if not bool(np.any(same)):
@@ -571,7 +765,7 @@ class DrMarioVsPoolVecEnv:
 
         options_count = self._mask_1d.sum(axis=1).astype(np.int32, copy=False)
 
-        for i in range(self.num_envs):
+        for i in range(self.num_sides):
             info = self._infos[i]
             info.clear()
 

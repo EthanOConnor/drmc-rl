@@ -1718,6 +1718,18 @@ class SMDPPPOAdapter(AlgoAdapter):
             except Exception:
                 pass
             self._maybe_grade_vs_skill(step)
+            # Opponent-pool snapshots (vs env with opponent_pool enabled):
+            # freeze the EMA weights into the pool every N learner matches.
+            maybe_snapshot = getattr(self.env, "maybe_snapshot", None)
+            if callable(maybe_snapshot):
+                try:
+                    maybe_snapshot(
+                        lambda: {k: v.detach().cpu().clone() for k, v in self._ema_state.items()},
+                        cfg=getattr(self.cfg, "to_dict", lambda: {})(),
+                        step=int(step),
+                    )
+                except Exception:
+                    pass
 
     # Grade a batch of completed VS matches every N matches (2 per-side
     # samples per match) and append to <logdir>/skill_history.jsonl.

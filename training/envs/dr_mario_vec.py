@@ -31,6 +31,7 @@ class VecEnvConfig:
     rom_path: Optional[str] = None
     backend: Optional[str] = None
     num_pairs: Optional[int] = None  # cpp-vs-pool backend: pairs (num_envs = 2*pairs)
+    opponent_pool: Optional[Dict[str, Any]] = None  # cpp-vs-pool: frozen-opponent PFSP pool
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -191,12 +192,32 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
         num_pairs = env_cfg.num_pairs
         if num_pairs is None:
             num_pairs = max(1, int(env_cfg.num_envs) // 2)
+
+        # Frozen-opponent PFSP pool (optional). The pool directory defaults to
+        # <logdir>/opponent_pool so the run is self-contained.
+        opp_cfg = env_cfg.opponent_pool
+        if isinstance(opp_cfg, dict) and bool(opp_cfg.get("enabled", False)):
+            opp_cfg = dict(opp_cfg)
+            if not opp_cfg.get("dir"):
+                logdir = None
+                if isinstance(cfg, dict):
+                    logdir = cfg.get("logdir")
+                else:
+                    logdir = getattr(cfg, "logdir", None)
+                if logdir:
+                    from pathlib import Path as _Path
+
+                    opp_cfg["dir"] = str(_Path(str(logdir)) / "opponent_pool")
+        else:
+            opp_cfg = None
+
         return DrMarioVsPoolVecEnv(
             num_pairs=int(num_pairs),
             state_repr=str(env_cfg.state_repr or "bitplane_bottle_conn_mask"),
             level=int(env_cfg.level),
             speed_setting=int(env_cfg.speed_setting),
             randomize_rng=bool(env_cfg.randomize_rng),
+            opponent_pool_cfg=opp_cfg,
         )
 
     real_ids = {

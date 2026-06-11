@@ -1219,3 +1219,22 @@ the rotation can be recovered from the preview mask.
 - **Decision:** Remove the in-repo `re/` reverse-engineering workspace and rely on the `dr-mario-disassembly/` submodule for annotated disassembly. Keep only the derived, runtime-relevant artifacts in-repo (e.g. `envs/specs/ram_map.py`, `envs/specs/ram_offsets.json`, and tracked parity fixtures like `data/nes_demo.json`).
 - **Why:** Avoid duplicating the disassembly/annotation effort and reduce repo bloat; keep the codebase focused on env/training/eval rather than RE pipelines.
 - **Trade-offs:** We lose the local RE automation scripts and intermediate outputs; if we need to redo ROM verification on a new revision, recreate minimal tooling under `tools/` (without reintroducing a separate `re/` tree).
+
+---
+
+## 2026-06-11 – VS Self-Play: PFSP Opponent Pool Lives in the Env
+
+- **Decision:** Opponent-pool self-play is implemented entirely inside
+  `DrMarioVsPoolVecEnv` (`opponent_pool_cfg`): the env exposes only learner
+  sides (`num_envs == num_pairs`) and drives P2 with frozen CPU nets from
+  `training/envs/vs_opponents.py::OpponentPool`. The SMDP-PPO adapter trains
+  it exactly like a 1P env; the only trainer touchpoint is the
+  `maybe_snapshot(ema_state_dict)` call in the metrics hook.
+- **Why:** Zero changes to action collection/PPO; the pool is restart-safe
+  (checkpoints + manifest copied under `<logdir>/opponent_pool/`), and
+  `vs/win_rate` becomes a meaningful learner-vs-pool signal instead of the
+  0.5 self-play fixed point.
+- **Trade-offs:** Opponent inference runs on CPU inside `env.step` (batched
+  per opponent id); each restart of the supervisor starts a fresh pool dir
+  seeded from the newest `vs2_*` checkpoint + the protected 1P champion, so
+  per-opponent history resets across restarts.

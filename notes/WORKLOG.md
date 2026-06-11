@@ -634,3 +634,27 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Extended the native `cpp-pool` observation ABI to protocol v2 with connection-edge observation specs, and made `bitplane_bottle_conn_mask` the forward-facing default for placement-SMDP training, benchmarking, and docs.
 - Updated candidate PPO wiring so the board trunk consumes non-feasibility bottle channels (`candidate_board_channels: 8`) while local raw patches stay on the first four color/virus planes; added validation to reject feasible-mask planes in the board trunk.
 - Added focused unit/smoke coverage for RAM decoder edge planes, plane-name/channel ordering, feasibility injection, candidate forward passes with 12-channel observations, and cpp-pool reset/step behavior for both old and new bottle-mask representations.
+
+## 2026-06-11 – Coding Agent – VS Opponent Snapshot Pool (PFSP)
+
+- Added `training/envs/vs_opponents.py`: `OpponentPool` of frozen policy
+  checkpoints with PFSP sampling (`p=(w+1)/(g+2)`, weight `(p(1-p))^2 + 0.05`,
+  unplayed = max weight), persisted as `<logdir>/opponent_pool/manifest.json`
+  plus checkpoint copies; eviction beyond `max_pool` (12) keeps the protected
+  seed champion. Seeds: newest `runs/vs2_*` checkpoint + the 1P placement
+  champion (`runs/best_agents/smdp_ppo_step535164979.pt.gz`).
+- `DrMarioVsPoolVecEnv` grew an `opponent_pool_cfg` mode: exposes only the N
+  learner sides (`num_envs == num_pairs`); P2 sides are driven internally by
+  the frozen nets (CPU, batched per opponent, same candidate-packing +
+  MaskedPlacementDist path). Per match: result recorded to the pool, PFSP
+  resample, `vs/opponent_id` in terminal info. `maybe_snapshot()` freezes the
+  EMA weights into the pool every `snapshot_every_matches` (400) matches
+  (called from the trainer metrics hook). `get_vs_metrics` adds real
+  `vs/opponent_pool` size and `vs/pool_winrate_min/max`; `vs/win_rate` is now
+  the learner-vs-pool rate. `enabled: false` keeps the legacy 2N self-play
+  path unchanged.
+- Tests: `tests/test_vs_opponent_pool.py` (PFSP math, manifest roundtrip,
+  snapshot eviction, 2-pair env smoke with a tiny random candidate net).
+- 2.5-min CPU smoke (2 pairs, DRMARIO_POOL_WORKERS=2) from the champion
+  checkpoint vs the seeded pool: matches completed and per-opponent
+  wins/games recorded in the manifest.
