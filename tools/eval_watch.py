@@ -47,6 +47,8 @@ def main() -> None:
     ap.add_argument("--min-gap-frames", type=int, default=10_000_000)
     ap.add_argument("--poll-sec", type=float, default=30.0)
     ap.add_argument("--once", action="store_true", help="evaluate pending checkpoints and exit")
+    ap.add_argument("--protect-dir", type=str, default="runs/best_agents",
+                    help="copy checkpoints that set a new best mean clear rate here")
     args = ap.parse_args()
 
     run_dir = Path(args.run_dir)
@@ -56,6 +58,7 @@ def main() -> None:
 
     evaluated: set[int] = set()
     last_step = -(10**18)
+    best_mean = 0.0
     if history_path.is_file():
         for line in history_path.read_text().splitlines():
             try:
@@ -107,6 +110,21 @@ def main() -> None:
                 }
             with history_path.open("a") as f:
                 f.write(json.dumps(row) + "\n")
+            # Protect new-best checkpoints from checkpoint thinning.
+            mean_clear = sum(v["clear_rate"] for v in row["levels"].values()) / max(
+                1, len(row["levels"])
+            )
+            if mean_clear > best_mean + 1e-9:
+                best_mean = mean_clear
+                try:
+                    import shutil
+
+                    protect = Path(args.protect_dir)
+                    protect.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, protect / path.name)
+                    print(f"protected {path.name} (mean clear {mean_clear:.2f})", flush=True)
+                except Exception as exc:
+                    print(f"protect failed: {exc}")
             evaluated.add(step)
             last_step = max(last_step, step)
             summary = " ".join(
