@@ -27,14 +27,15 @@ file path is the reference implementation.]
  "mode": 4,             // $0046; server only acts when 4 (gameplay)
  "side": 1,             // which player the bot controls (1|2)
  "na": 0,               // p{side}_nextAction ($0317/$0397): 0 = pill falling
- "spawn": 137,          // pill spawn counter ($0310 BCD low or any per-spawn-changing id)
+ "pc": 137,             // pill spawn counter ($0310 BCD low or any per-spawn-changing id)
  "pill": [c1, c2],      // $0301/$0302 (+0x80 for P2): raw NES colors 0..2
- "preview": [c1, c2],   // $031A/$031B (+0x80)
+ "prev": [c1, c2],      // $031A/$031B (+0x80)
  "x": 3, "y": 12,       // falling pill col $0305, row-from-bottom $0306 (+0x80)
  "rot": 0,              // $0325 (+0x80)
  "sc": 5, "hv": 0,      // speed counter / hor velocity ($0312/$0313 family, +0x80)
  "spd": 2, "spdups": 4, // speed setting $030B, speedups $030A (+0x80)
- "field": "<b64 128B>"  // own bottle $0400 (P1) / $0500 (P2), row 0 = top
+ "field": "<hex 128B>", // own bottle $0400 (P1) / $0500 (P2), row 0 = top
+ "nesf": 102           // NES frameCounter low byte $0043 (parity source)
 }
 ```
 
@@ -47,14 +48,16 @@ are fine — the server collapses to the freshest line per spawn id.
 
 ```json
 {"plan_id": 42,
- "side": 1,
+ "spawn": 137,                // pc of the spawn this plan answers
  "start_frame": 12351,        // first frame the script applies to
- "buttons": [b0, b1, ...]}    // one NES button byte per frame
+ "buttons": [b0, b1, ...]}    // one button byte per frame (mask layout below)
 ```
 
-Button byte = NES bit layout: A=0x01, B=0x02, Select=0x04, Start=0x08,
-Up=0x10, Down=0x20, Left=0x40, Right=0x80 (the standard joypad order; the
-server only emits A/B/Left/Right/Down combinations).
+Button byte = DrMarioPool mask layout (NOT the NES standard order):
+Right=0x01, Left=0x02, Down=0x04, B=0x40, A=0x80 — matches
+`DrMarioPool::buttons_mask_from_reach_action` and `GameLogic` button
+constants; frontends map these to their own pad representation. Plan
+objects also carry "spawn": <pc> identifying which spawn the plan is for.
 
 Frontend behavior:
 - Apply `buttons[current_frame - start_frame]` when in range; neutral
