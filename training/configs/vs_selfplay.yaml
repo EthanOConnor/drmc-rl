@@ -21,13 +21,13 @@ train:
 smdp_ppo:
   # Learning
   lr: 7.0e-5
-  gamma: 0.998
-  gae_lambda: 0.95
+  gamma: 1.0
+  gae_lambda: 0.98
 
   # PPO parameters
   clip_epsilon: 0.15
   value_coef: 0.5
-  entropy_coef: 0.006
+  entropy_coef: 0.008
   max_grad_norm: 0.7
 
   # Rollout
@@ -57,7 +57,7 @@ smdp_ppo:
   aux_spec: "v1"
 
   # Exploration
-  entropy_schedule_end: 0.004
+  entropy_schedule_end: 0.008
   entropy_schedule_steps: 100000000
   use_gumbel_topk: false
   gumbel_k: 2
@@ -75,7 +75,7 @@ env:
   frame_stack: 1
   randomize_rng: true
   # Level 10, HI speed for both sides.
-  level: 10
+  level: 14
   speed_setting: 2
   # Frozen-opponent snapshot pool (PFSP). enabled:false = pure self-play
   # (legacy 2N-side flattening). With the pool enabled, only the learner sides
