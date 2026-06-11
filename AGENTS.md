@@ -34,6 +34,8 @@
 - `training/envs/drmario_pool_vec.py`: in-process vector env used for current
   training.
 - `envs/retro/`: placement planner/reachability plus emulator parity/debug envs.
+- `seedlab/`: per-seed clear-time catalog (census, search workers, reporting,
+  TUI) — see `docs/SEED_CATALOG.md`; CLI via `python -m seedlab`.
 - `reach_native/`: native reachability helper.
 - `game_engine/`: submodule mount for `drmario-native`; engine changes belong in
   the standalone project first, then land here as a submodule SHA update.

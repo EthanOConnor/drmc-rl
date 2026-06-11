@@ -38,6 +38,24 @@ Sequenced plan toward beating strong humans (speedrun + VS):
   engine/source mismatch (SCRUTINY 2026-06-09). Recover the working source
   state from `../drmario-native` history.
 
+## P1: Seed Catalog ("seedlab") Follow-ups
+
+Base system landed 2026-06-10 (docs/SEED_CATALOG.md). Next:
+
+- Run the pass-0 sweep with the best checkpoint (queue is enqueued: 1,344
+  units, levels 0–20 speed 2), then a sampled pass 1+ for distributions.
+- Adaptive pass scheduling: spend attempts where best-vs-quantile gap or
+  clear variance is highest, instead of uniform passes.
+- Per-seed optimistic lower bound (sum of per-spawn min lock costs) to flag
+  seeds with remaining headroom; surface "headroom" in report/TUI.
+- Depth-2 expectimax solver pass for record-hunting on frontier seeds
+  (shares the P0 roadmap item #5 machinery).
+- Byte-exact spot audits of stored solutions via `DRMARIO_POOL_WARP=0`
+  replay or v1 oracle (see SCRUTINY 2026-06-10).
+- Cross-machine federation: export/import unit results as JSONL shards.
+- Human-game hook: map fightcadeRatings v2 init-RNG events to catalog rows
+  and emit per-game percentile grades (`seedlab grade` API exists).
+
 ## P0: Keep `cpp-pool` Training Reproducible
 
 - Verify fresh-checkout setup after the `game_engine/` submodule split:

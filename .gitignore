@@ -23,6 +23,7 @@ tensorboard/
 data/datasets/
 data/states/
 data/best_times.sqlite3*
+data/seed_catalog.sqlite3*
 data/pose_mismatches*.jsonl
 data/pose_mismatches*.jsonl.gz
 data/ghost_parity_divergences*.jsonl

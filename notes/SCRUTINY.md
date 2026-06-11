@@ -4,6 +4,46 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ---
 
+## 2026-06-10 – Seed Catalog ("seedlab")
+
+**M2. Catalog frames are warp-mode planner frames, not emulator-audited frames**
+- **Location**: `seedlab/worker.py`, `seedlab/verify.py`
+- **Issue**: Recorded times accumulate `max(1, tau)` planner costs under warp.
+  `seedlab verify` replays traces in the same warp engine, so it catches
+  nondeterminism/storage bugs but shares any warp/v4 systematic bias.
+- **Impact**: A v4/warp frame-accounting bug would skew the whole catalog the
+  same way (relative comparisons survive; absolute "fastest known" claims vs
+  real-NES play would not).
+- **Mitigation**: Spot-audit top solutions with `DRMARIO_POOL_WARP=0` replay /
+  v1 oracle before publishing absolute numbers (BACKLOG item). v4 parity test
+  remains the gate for planner changes.
+
+**M3. Interrupted work units double-count attempts in distribution aggregates**
+- **Location**: `seedlab/worker.py` periodic flush + `release_unit`
+- **Issue**: Partial results flush every ~30 s; if a unit is released (crash,
+  Ctrl-C) and re-run, those seeds' attempts fold in twice. Bests and coverage
+  are idempotent; `n_attempts`/reservoir mass are not.
+- **Impact**: Mild bias of "typical achievable" stats toward seeds from
+  re-run units; no effect on best-known times.
+- **Mitigation**: Acceptable for v1 (interruption is rare and per-unit blast
+  radius is ≤ chunk seeds). If it matters later: stage per-unit results in a
+  scratch table keyed by unit id and fold on `complete_unit`.
+
+**L. Transient segfault when the native lib is rebuilt mid-test**
+- **Location**: `envs/backends/drmario_pool.py` (`drm_pool_create` window)
+- **Issue**: One-off segfault during `tests/test_seedlab_rng.py` while the VS
+  engine port agent was rebuilding `libdrmario_pool` in the submodule;
+  unreproducible afterward (all combos pass standalone).
+- **Mitigation**: Don't run pool tests while the lib is being rebuilt; if it
+  recurs without a concurrent rebuild, treat as a real pool-create race.
+
+**L. Idle tail envs in a work unit play random-seed episodes**
+- **Location**: `seedlab/worker.py` provider (job queue drained)
+- **Issue**: When jobs run out, remaining envs autoreset onto random seeds and
+  their episodes are discarded; bounded waste at the end of each unit.
+- **Mitigation**: None needed (wall-clock noise only); revisit if chunk sizes
+  shrink.
+
 ## 2026-06-09 – Planner v4 + Warp Execution
 
 **M1. Demo-parity tests fail from pre-existing engine drift (NOT the training path)**

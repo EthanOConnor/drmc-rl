@@ -5,7 +5,27 @@ Format: short entries, timestamped, with rationale and trade-offs (ADR-lite).
 
 ---
 
-## 2026-06-09 – Planner v4 (gated exact BFS) + Pool Warp Execution
+## 2026-06-10 – Seed Catalog ("seedlab") Architecture
+
+- **Decision**: The per-seed clear-time catalog lives in `seedlab/` with its
+  own `data/seed_catalog.sqlite3` (games census, per-(level,speed,seed)
+  aggregates + reservoir, replayable best-solution traces, lease-based work
+  queue). It is separate from `data/best_times.sqlite3`, which remains the
+  trainer's opportunistic per-curriculum-level floor tracker.
+- **Facts** (measured, don't re-derive): NES RNG orbit from `0x8988` has
+  period 32,767 = the entire console-reachable seed universe; census over
+  levels 0–20 found zero game-hash collisions and virus placement always
+  completes, so the catalog universe is exactly 688,107 distinct games per
+  speed setting. `seedlab/rng.py` is a parity-tested Python mirror of the
+  engine's seed-determined generation (pill reserve first, then viruses, one
+  RNG stream, no warmup).
+- **Why sqlite + leases over a server**: single-host multi-process is the
+  near-term reality; WAL + `BEGIN IMMEDIATE` claims are enough, and cross-
+  machine federation can ride JSONL shard export later (BACKLOG).
+- **Catalog frame semantics**: frames are planner-exact NES frame costs under
+  warp (`max(1, tau)` per decision, same as eval/trainer); solution traces
+  re-verify frame-exact via `python -m seedlab verify`. Byte-exact emulator
+  audits are a separate lane (SCRUTINY 2026-06-10).
 
 - **Decision**: The production reachability planner is `drm_reach_bfs_v4`
   (costs-only): greedy simulated witnesses provide per-pose upper bounds,

@@ -19,7 +19,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from gymnasium import spaces
@@ -135,11 +135,16 @@ class DrMarioPoolVecEnv:
         max_lock_frames: int = 2048,
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
+        seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
     ) -> None:
         self.num_envs = int(max(1, int(num_envs)))
         self.include_risk_tau = bool(include_risk_tau)
         self.default_risk_tau = float(risk_tau)
         self.rng_randomize = bool(randomize_rng)
+        # Optional per-env exact engine seeding: called with the env index on
+        # every (auto)reset; a (byte0, byte1) return overrides rng selection,
+        # None falls through to the fixed/randomized paths below.
+        self.seed_provider = seed_provider
         self.emit_board = bool(emit_board)
         self.speed_setting = int(max(0, min(int(speed_setting), 2)))
 
@@ -224,6 +229,11 @@ class DrMarioPoolVecEnv:
         self._spawn_id_at_decision = np.zeros((self.num_envs,), dtype=np.int32)
 
     # ------------------------------------------------------------------ vector API
+    def request_reset(self, idx: int) -> None:
+        """Force env `idx` to autoreset on the next step() (action ignored)."""
+
+        self._pending_reset[int(idx)] = True
+
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         if seed is not None:
             self._rng = np.random.default_rng(int(seed))
@@ -627,7 +637,11 @@ class DrMarioPoolVecEnv:
             task_mode, match_target, synthetic_target = self._task_spec_for_level(lvl)
             _ = task_mode, match_target
 
-            if fixed_seed_bytes is not None:
+            provided = self.seed_provider(i) if self.seed_provider is not None else None
+            if provided is not None:
+                seed_bytes = (int(provided[0]) & 0xFF, int(provided[1]) & 0xFF)
+                rng_override = True
+            elif fixed_seed_bytes is not None:
                 seed_bytes = fixed_seed_bytes
                 rng_override = True
             elif rng_randomize:

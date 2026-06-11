@@ -4,6 +4,32 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 ---
 
+## 2026-06-10 – Coding Agent (Claude) – Seed Catalog ("seedlab")
+
+- New `seedlab/` package + `docs/SEED_CATALOG.md`: prime95-style exhaustive
+  per-seed catalog of best-known and typical clear times, for agent eval
+  baselines, human skill grading (fightcadeRatings v2 events carry init RNG),
+  and speedrun research.
+- Measured seed-space facts: the NES RNG orbit from `0x8988` has period
+  32,767; `0x0000` is a lockup fixed point; the other 32,768 states are
+  unreachable on console. Census over levels 0–20 (analytic, no rollouts,
+  ~4 s/level): zero game-hash collisions — 688,107 distinct games per speed.
+- `seedlab/rng.py`: pure-Python mirror of `rng_step`/`generatePillsReserve`/
+  `addVirus` from `GameLogic.cpp`; byte-exact board + pill parity vs the
+  engine asserted in `tests/test_seedlab_rng.py`.
+- `seedlab/db.py`: WAL sqlite (`data/seed_catalog.sqlite3`) with games census,
+  per-(level,speed,seed) aggregates + 64-sample reservoir, best solutions as
+  replayable uint16 action traces, and a lease-based `work_units` queue.
+- `seedlab/worker.py`: claims units, runs K attempts/seed on
+  `DrMarioPoolVecEnv` via the new `seed_provider` hook (per-env exact engine
+  seeds, surgical addition to the vec env + `request_reset` for decision
+  caps); solver modes checkpoint/greedy-cost/random.
+- CLI `python -m seedlab init|worker|report|grade|verify|tui`; rich dashboard.
+- End-to-end test with the current best checkpoint: level-0 unit searched,
+  solutions stored and re-verified frame-exact on replay
+  (`tests/test_seedlab_worker.py`). Catalog initialized and pass-0 queue
+  (1,344 units, levels 0–20 speed 2) enqueued.
+
 ## 2026-06-09 – Coding Agent (Claude)
 
 - Profiled the `cpp-pool` training path end to end. `sample` on a single-env
