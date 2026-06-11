@@ -93,3 +93,4 @@ Sequenced plan toward beating strong humans (speedrun + VS):
 - Keep future 2P, pixel-to-state, and EnvPool references out of current docs
   unless they become active scope again.
 - Curriculum state is not saved in checkpoints; resume restarts the ladder (fast with a strong policy, but wasteful). Persist curriculum stage/stats in the checkpoint payload.
+- Human-corpus integration: see docs/HUMAN_CORPUS_INTEGRATION.md — fightcadeRatings event schema v2, ingest + planner-annotation tools, replay-parity acceptance tests for the 2P port, WHR dial calibration, BC league seeding.
