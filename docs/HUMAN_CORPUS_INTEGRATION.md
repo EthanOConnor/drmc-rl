@@ -107,3 +107,34 @@ pipeline.
    acceptance test — this replaces the "build 2P parity fixtures by hand"
    plan; the corpus IS the fixture set.
 4. WHR join → dial calibration; BC opponents → league seeding (P0 items 3-4).
+
+## Skill grading: metrics → WHR regression (`tools/skill_grade.py`)
+
+Since the agent cannot play on Fightcade, we estimate its position on the
+fightcadeRatings WHR scale by regression from DrMC play metrics to human
+ratings. `tools/skill_grade.py fit` joins each valid `crown` row (both
+sides) in `../fightcadeRatings/data/drmario.sqlite` to that player's
+corrected WHR-C rating (`eC` in `data/out/players.json` trajectories,
+nearest day), filtering known extraction artifacts (length < 30 s or < 5
+pills per side). Features per player-side: CPM, CUR, SPD, SALT/min,
+pills/min, garbage/min — outcome (won/lost) is deliberately excluded.
+Model: numpy-only weighted ridge on standardized degree-2 features
+(squares + interactions), samples weighted 1/n_crowns(player), CV grouped
+by player. `grade` mode maps agent per-game metrics (JSON/JSONL) to an
+estimated rating with the CV residual std as uncertainty and flags
+out-of-human-range features as extrapolation.
+
+Fit quality (2026-06-10, 329 crowns → 658 samples, 45 rated players,
+target range 704–2751 Elo):
+
+- grouped CV MAE **289 Elo** (constant-prediction baseline: 403), residual
+  std 362 Elo, ridge alpha 10.
+- direction sanity checks (weighted r vs rating): CPM +0.65,
+  SALT/min +0.68, garbage/min +0.67, SPD +0.51, CUR +0.49,
+  pills/min +0.18 — all positive, as expected.
+
+Caveats (see module docstring): this grades playstyle, not head-to-head
+strength; an ~300-Elo blur is inherent; superhuman metric values are
+extrapolation (grade mode flags them); self-play metric distributions are
+not identical to human-vs-human ones, so stage-over-stage comparisons are
+more meaningful than absolute levels. Refit as the corpus grows.
