@@ -191,6 +191,7 @@ class CurriculumConfig:
     enabled: bool = False
     mode: str = "linear"  # linear|ln_hop_back|uniform_mixture
     uniform_min_level: int = 0
+    uniform_weight_floor: float = 0.15  # 1.0 => pure uniform
     start_level: int = -10
     max_level: int = 0
     success_threshold: float = 0.9
@@ -284,6 +285,7 @@ class CurriculumConfig:
             enabled=bool(_get("enabled", False)),
             mode=str(_get("mode", "linear")),
             uniform_min_level=int(_get("uniform_min_level", 0)),
+            uniform_weight_floor=float(_get("uniform_weight_floor", 0.15)),
             start_level=int(_get("start_level", -10)),
             max_level=int(_get("max_level", 0)),
             success_threshold=float(_get("success_threshold", 0.9)),
@@ -1274,7 +1276,7 @@ class UniformMixtureCurriculum:
         self._ema = {lvl: 0.5 for lvl in self._levels}
         self._alpha = 0.02
         self._episodes_total = 0
-        self._weight_floor = 0.15
+        self._weight_floor = float(getattr(cfg, "uniform_weight_floor", 0.15) or 0.15)
 
     @property
     def current_level(self) -> int:
