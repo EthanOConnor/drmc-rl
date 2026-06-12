@@ -69,7 +69,7 @@ def _root_state(sp: PonderingSearchPolicy):
     return board, mask, cost
 
 
-def _stub_result(board: np.ndarray, pill_raw, actions, q) -> PonderResult:
+def _stub_result(board: np.ndarray, pill_raw, actions, q, refined=None) -> PonderResult:
     actions = np.asarray(actions, dtype=np.int64)
     q = np.asarray(q, dtype=np.float64)
     return PonderResult(
@@ -77,6 +77,7 @@ def _stub_result(board: np.ndarray, pill_raw, actions, q) -> PonderResult:
         pill_raw=(int(pill_raw[0]), int(pill_raw[1])),
         actions=actions,
         q=q,
+        refined=np.ones_like(q, dtype=bool) if refined is None else np.asarray(refined, bool),
         prior_action=np.full((9,), int(actions[0]), dtype=np.int64),
         depth=np.full((9,), 2, dtype=np.int8),
         wall_s=0.01,
@@ -154,6 +155,36 @@ def test_hit_restricted_to_caller_feasible_mask() -> None:
         # Caller mask no longer allows the pondered best (a1): take next best.
         act, info = sp.decide(board, (1, 2), (0, 0), _mask_for([a2, 30]), cost, 2, 0, 5)
         assert act == a2 and info["ponder_hit"] is True
+    finally:
+        sp.close()
+
+
+def test_hit_prefers_refined_entries_over_higher_depth1_estimates() -> None:
+    """Regression: the argmax must not mix depth-1 estimates with depth-2
+    backups (the depth-1 V bias degenerated the probe to a depth-1 search)."""
+
+    sp = _tiny_ponder()
+    try:
+        board = np.full(128, 0xFF, dtype=np.uint8)
+        a1, a2, a3 = 10, 20, 30
+        q = np.zeros((3, 9))
+        q[0, :], q[1, :], q[2, :] = 0.4, 0.6, 5.0  # a3: inflated depth-1 estimate
+        refined = np.zeros((3, 9), dtype=bool)
+        refined[0, :] = refined[1, :] = True  # only a1, a2 got the ply-2 backup
+        result = _stub_result(board, (1, 2), [a1, a2, a3], q, refined=refined)
+        sp._ponder_compute = lambda job: result  # type: ignore[method-assign]
+        cost = np.ones(MACRO_ACTIONS, dtype=np.uint16)
+        _kick_stub(sp, board, _mask_for([a1, a2, a3]), cost)
+        assert sp.wait_ponder_idle(10.0)
+
+        mask = _mask_for([a1, a2, a3])
+        act, info = sp.decide(board, (1, 2), (0, 1), mask, cost, 2, 0, 5)
+        assert act == a2  # best refined, not the inflated depth-1 a3
+        assert info["ponder_refined"] is True
+
+        # With no refined entry feasible, the depth-1 ranking is the fallback.
+        act2, info2 = sp.decide(board, (1, 2), (0, 1), _mask_for([a3]), cost, 2, 0, 5)
+        assert act2 == a3 and info2["ponder_refined"] is False
     finally:
         sp.close()
 

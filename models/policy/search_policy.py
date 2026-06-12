@@ -1016,12 +1016,19 @@ class PonderResult:
     `q[:, c]` are the backed-up Q values of the full-width ply-1 `actions`
     conditioned on canonical preview-pair index `c`; `depth[c]` is 2 when the
     pair got the ply-2 refinement (1 = depth-1 value estimate only).
+    `refined[i, c]` marks entries whose q is a depth-2 backup (or an exact
+    ply-1 terminal value) rather than a depth-1 estimate: the decision argmax
+    must not mix the two — the depth-1 V estimate is systematically biased
+    relative to the depth-2 backup, so an unrestricted argmax degenerates to
+    a depth-1 search (measured: probe win rate collapsed to ~13% vs the
+    plain depth-2 search before this restriction).
     """
 
     board_key: bytes
     pill_raw: Tuple[int, int]
     actions: np.ndarray  # (F,) int64 macro actions, full feasible width
     q: np.ndarray  # (F, 9) float64
+    refined: np.ndarray  # (F, 9) bool
     prior_action: np.ndarray  # (9,) int64 root policy argmax per preview pair
     depth: np.ndarray  # (9,) int8
     wall_s: float
@@ -1236,7 +1243,11 @@ class PonderingSearchPolicy(SearchPolicy):
                 qcol = res.q[:, cidx]
                 ok = mask512[res.actions] & np.isfinite(qcol)
                 if bool(ok.any()):
-                    qm = np.where(ok, qcol, -np.inf)
+                    # Compare like with like: argmax over depth-2-refined
+                    # entries only; depth-1 estimates are a fallback ranking.
+                    okr = ok & res.refined[:, cidx]
+                    use = okr if bool(okr.any()) else ok
+                    qm = np.where(use, qcol, -np.inf)
                     sel = int(np.argmax(qm))
                     action = int(res.actions[sel])
                     fb = int(res.prior_action[cidx])
@@ -1256,6 +1267,7 @@ class PonderingSearchPolicy(SearchPolicy):
                         "stage": "ponder",
                         "ponder_hit": True,
                         "ponder_depth": int(res.depth[cidx]),
+                        "ponder_refined": bool(okr.any()),
                     }
                     return action, info
             # Miss (or unusable entry): the running job is for a stale context.
@@ -1441,6 +1453,11 @@ class PonderingSearchPolicy(SearchPolicy):
         lg9 = logits9.copy()
         lg9[:, ~packed.mask] = -np.inf
         prior_action = packed.actions[np.argmax(lg9, axis=1)].astype(np.int64)
+        # Per-pair prior over the full-width actions (slot order == actions_full
+        # order): the ply-1 beam below is prior-selected, exactly as decide()'s
+        # is — beam selection by depth-1 *values* measurably degraded play (the
+        # value head misranks off-distribution ply-1 outcomes).
+        prior_full = lg9[:, packed.mask]  # (9, F)
 
         # ---- sim every ply-1 placement (chunked over the runner)
         status = np.full((F,), _BLOCK_ALIVE, dtype=np.int32)
@@ -1487,8 +1504,10 @@ class PonderingSearchPolicy(SearchPolicy):
 
         # ---- depth-1: V(s after a1 | preview pair) for all pairs in one pass
         q = np.full((F, 9), -np.inf, dtype=np.float64)
+        refined = np.zeros((F, 9), dtype=bool)
         term_idx = np.flatnonzero(status == _BLOCK_TERMINAL)
         q[term_idx] = term_q[term_idx, None]
+        refined[term_idx] = True  # exact ply-1 terminal values
         alive_idx = np.flatnonzero(status == _BLOCK_ALIVE)
         if alive_idx.size == 0:
             if not bool(np.isfinite(q).any()):
@@ -1498,6 +1517,7 @@ class PonderingSearchPolicy(SearchPolicy):
                 pill_raw=k_raw,
                 actions=actions_full,
                 q=q,
+                refined=refined,
                 prior_action=prior_action,
                 depth=np.ones((9,), dtype=np.int8),
                 wall_s=time.perf_counter() - t0,
@@ -1544,7 +1564,7 @@ class PonderingSearchPolicy(SearchPolicy):
             p_can = (cidx // 3, cidx % 3)
             p_raw = (_COLOR_SWAP[p_can[0]], _COLOR_SWAP[p_can[1]])
             same_p = p_can[0] == p_can[1]
-            order = np.argsort(-q[:, cidx], kind="stable")
+            order = np.argsort(-prior_full[cidx], kind="stable")
             beam = [int(i) for i in order if status[i] == _BLOCK_ALIVE][:K]
             if not beam:
                 continue
@@ -1648,6 +1668,7 @@ class PonderingSearchPolicy(SearchPolicy):
                 if leaves[b]:
                     i = beam[b]
                     q[i, cidx] = r1[i] + disc1[i] * max(leaves[b])
+                    refined[i, cidx] = True
             depth[cidx] = 2
 
         return PonderResult(
@@ -1655,6 +1676,7 @@ class PonderingSearchPolicy(SearchPolicy):
             pill_raw=k_raw,
             actions=actions_full,
             q=q,
+            refined=refined,
             prior_action=prior_action,
             depth=depth,
             wall_s=time.perf_counter() - t0,
