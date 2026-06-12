@@ -1,7 +1,9 @@
 # Inference-Time Search (Policy-Guided Truncated Expectimax)
 
-Status: implemented (`models/policy/search_policy.py`). This doc is the design
-spec plus the calibration/measurement notes that fixed its free parameters.
+Status: implemented (`models/policy/search_policy.py`), including the phase-2
+dead-time ponder (`PonderingSearchPolicy`, section below). This doc is the
+design spec plus the calibration/measurement notes that fixed its free
+parameters.
 
 ## Summary
 
@@ -195,11 +197,68 @@ the budget.
 8 = default full strength. Latency scales roughly linearly in beam via the
 leaf batch (beam² leaves).
 
-## Phase 2 (future work, deliberately not built)
+## Pondering (dead-time search of the next decision)
 
-- **Ponder during pill fall**: the ~40–90 frames while the committed script
-  executes are idle; pre-expand the next decision's tree from the predicted
-  post-lock state and refine when the real spawn arrives.
+Status: implemented (`PonderingSearchPolicy`, same file). The ~40–90 frames
+while the committed script executes (fall + lock + clear animations, ≈0.7–1.5 s)
+are idle; the policy spends them searching the *next* decision.
+
+After committing placement P at decision N (board B, pill, preview):
+
+1. The post-P board B′ is deterministic — one sim resolves it. The next
+   decision root is (B′, pill = the known preview, preview = unknown ∈ 9
+   canonical color pairs).
+2. A single background worker (one job at a time, newest job wins, its own
+   dedicated 64-env pool runner) runs with a *seconds*-scale budget
+   (`ponder_budget_s`, default 1.0):
+   - resolve P (one checkpoint-reset + step with the caller's plan injected);
+   - **full-width ply-1**: every feasible placement of the next pill is
+     simmed (chunked over the runner) — not beam-8;
+   - **depth-1 for all 9 preview pairs in one pass**: a variant of the
+     marginal value forward returns V conditioned on each falling-pill pair
+     with its preview marginalized (`_pill_conditioned_values`, [F, 9] from
+     one trunk pass), so every ply-1 action gets a per-pair Q estimate;
+   - **per preview pair**: ply-2 beam-K (priors conditioned on that pair) +
+     marginalized leaf values + the same reward-augmented backup as
+     `decide()`. Budget-checked between pairs; unreached pairs keep their
+     depth-1 values (`depth[pair] = 1`).
+   - Result cached keyed by (normalized B′ bytes, next-pill colors):
+     per-pair Q over the full ply-1 ranking + the root prior argmax.
+3. At decision N+1, `decide()` consults the cache first. On a (board hash,
+   pill) match the revealed preview pair selects a column and the answer is
+   an argmax restricted to the caller's (mid-fall) feasible mask —
+   **~0.03 ms**. Any mismatch (garbage landed, replan, divergence) is a
+   normal deadline search; the stale job is aborted (`ponder_invalidate()`
+   additionally clears the cache on live desync/late replans).
+4. **VS wrinkle**: B′ can be perturbed by incoming garbage before the next
+   spawn. The board-hash check makes this a safe miss (correctness via
+   fallback). A secondary ponder for the garbage case is deliberately *not*
+   built (phase 1): the garbage row pattern depends on the opponent's match
+   colors/timing and there is no cheap signal for it in the 1P sim; the
+   miss path already handles it. Depth-3 (a 9-pair expectation at ply-3) is
+   likewise deferred; the budget loop is the natural place to add it.
+
+Live bridge (`tools/live_agent_server --ponder`, implies `--search`): after
+every plan write the server kicks `start_ponder`; at the next spawn line a
+cache hit commits with a **2-frame margin** instead of 6 (`PONDER_MARGIN`) —
+planner + script generation is ~10 ms p95, well inside 33 ms (measured
+spawn→plan on hits: p50 ≈ 1–8 ms). The shrunken margin preserves placements
+a 6-frame neutral roll-forward would lose: at high gravity (speed-ups 40,
+HI) mean feasible options were 28.8 at margin 2 vs 12.2 at margin 6
+(+16.6/decision, max +34); at slow early-game gravity the gain is ~0. Hits
+log `n_options` at both margins (`n_options_default_margin`).
+
+Measured (M3 Max, MPS, vs2_02 step540020887, level 14 HI, beam 8): ponder
+job wall p50 ≈ 0.25–0.7 s, p95 < 0.8 s (within the spawn-to-spawn dead
+time); decide() cache-hit latency ≈ 0.03 ms; 1P-flow hit rate ≈ 97 %
+(garbage-free); all 9 pairs reach depth 2 within the 1 s budget. Offline
+probe: `tools/vs_head_to_head --a-ponder` (ponder-search vs plain-search,
+side-1 = `SearchPolicy`); dead time is simulated by running each job to
+completion before the env steps, which is fair because real dead time far
+exceeds the measured job wall time.
+
+## Phase 2 leftovers (future work, deliberately not built)
+
 - **1-ply opponent model**: for VS, simulate the opponent's most likely
   placement (their policy prior argmax) between our plies in a VS-pool sim,
   capturing garbage exchange in the horizon.
