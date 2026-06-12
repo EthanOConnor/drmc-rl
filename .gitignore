@@ -45,3 +45,6 @@ tests/user_testing/
 /writeup/
 /commandlines*.txt
 /re/
+
+# corpus-derived BC dataset (rebuild: tools/train_bc_opponent.py extract)
+data/human_vs/

@@ -56,6 +56,16 @@ class _DrmVsResetSpec(C.Structure):
         ("_pad0", C.c_uint8),
         ("frame_counter_base", C.c_uint32),
         ("attack_colors", C.c_uint8 * 8),
+        # Mid-game checkpoint reset (per side; see drmario_pool_capi.h).
+        ("checkpoint_enabled", C.c_uint8),
+        ("_pad1", C.c_uint8 * 3),
+        ("checkpoint_board", (C.c_uint8 * 128) * 2),
+        ("checkpoint_falling_colors", (C.c_uint8 * 2) * 2),
+        ("checkpoint_preview_colors", (C.c_uint8 * 2) * 2),
+        ("checkpoint_pill_counter", C.c_uint8 * 2),
+        ("checkpoint_pill_counter_total", C.c_uint16 * 2),
+        ("checkpoint_speed_ups", C.c_uint8 * 2),
+        ("_pad2", C.c_uint8 * 2),
     ]
 
 
@@ -385,6 +395,13 @@ def build_vs_reset_spec(
     rng_override: bool = False,
     frame_counter_base: int = 0,
     attack_colors: Optional[Tuple[int, ...]] = None,
+    checkpoint_enabled: bool = False,
+    checkpoint_board: Optional[np.ndarray] = None,  # (2,128) NES tile bytes
+    checkpoint_falling_colors: Optional[np.ndarray] = None,  # (2,2) raw NES colors
+    checkpoint_preview_colors: Optional[np.ndarray] = None,  # (2,2) raw NES colors
+    checkpoint_pill_counter: Tuple[int, int] = (0, 0),
+    checkpoint_pill_counter_total: Tuple[int, int] = (0, 0),
+    checkpoint_speed_ups: Tuple[int, int] = (0, 0),
 ) -> _DrmVsResetSpec:
     spec = _DrmVsResetSpec()
     spec.struct_size = C.sizeof(_DrmVsResetSpec)
@@ -401,6 +418,32 @@ def build_vs_reset_spec(
         raise ValueError(f"attack_colors must have 8 entries, got {len(colors)}")
     for j, value in enumerate(colors):
         spec.attack_colors[j] = int(value) & 0xFF
+    spec.checkpoint_enabled = 1 if bool(checkpoint_enabled) else 0
+    if checkpoint_enabled:
+        board = np.ascontiguousarray(
+            np.asarray(checkpoint_board, dtype=np.uint8).reshape(2, 128)
+        )
+        falling = (
+            np.full((2, 2), 0xFF, dtype=np.uint8)
+            if checkpoint_falling_colors is None
+            else np.asarray(checkpoint_falling_colors, dtype=np.uint8).reshape(2, 2)
+        )
+        preview = (
+            np.full((2, 2), 0xFF, dtype=np.uint8)
+            if checkpoint_preview_colors is None
+            else np.asarray(checkpoint_preview_colors, dtype=np.uint8).reshape(2, 2)
+        )
+        for i in range(2):
+            C.memmove(spec.checkpoint_board[i], board[i].ctypes.data, 128)
+            spec.checkpoint_falling_colors[i][0] = int(falling[i, 0]) & 0xFF
+            spec.checkpoint_falling_colors[i][1] = int(falling[i, 1]) & 0xFF
+            spec.checkpoint_preview_colors[i][0] = int(preview[i, 0]) & 0xFF
+            spec.checkpoint_preview_colors[i][1] = int(preview[i, 1]) & 0xFF
+            spec.checkpoint_pill_counter[i] = int(checkpoint_pill_counter[i]) & 0xFF
+            spec.checkpoint_pill_counter_total[i] = (
+                int(checkpoint_pill_counter_total[i]) & 0xFFFF
+            )
+            spec.checkpoint_speed_ups[i] = int(checkpoint_speed_ups[i]) & 0xFF
     return spec
 
 

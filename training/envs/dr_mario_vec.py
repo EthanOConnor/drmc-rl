@@ -32,6 +32,7 @@ class VecEnvConfig:
     backend: Optional[str] = None
     num_pairs: Optional[int] = None  # cpp-vs-pool backend: pairs (num_envs = 2*pairs)
     opponent_pool: Optional[Dict[str, Any]] = None  # cpp-vs-pool: frozen-opponent PFSP pool
+    start_bank: Optional[Dict[str, Any]] = None  # cpp-vs-pool: Go-Exploit start-state bank
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -218,6 +219,7 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             speed_setting=int(env_cfg.speed_setting),
             randomize_rng=bool(env_cfg.randomize_rng),
             opponent_pool_cfg=opp_cfg,
+            start_bank_cfg=env_cfg.start_bank,
         )
 
     real_ids = {

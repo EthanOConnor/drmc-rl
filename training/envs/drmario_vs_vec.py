@@ -106,6 +106,7 @@ class DrMarioVsPoolVecEnv:
         lib_path: Optional[str] = None,
         seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
         opponent_pool_cfg: Optional[Dict[str, Any]] = None,
+        start_bank_cfg: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
         self.num_sides = 2 * self.num_pairs
@@ -140,6 +141,20 @@ class DrMarioVsPoolVecEnv:
         self.observation_space = self.single_observation_space
 
         self._rng = np.random.default_rng(None)
+
+        # Start-state bank (Go-Exploit): a fraction of episode resets start
+        # from mid-game human-corpus positions instead of clean level starts.
+        # Disabled (None) leaves the reset path bit-identical: no extra RNG
+        # draws happen unless a bank is loaded.
+        self._start_bank = None
+        self._start_bank_fraction = 0.0
+        bank_cfg = dict(start_bank_cfg or {})
+        if bool(bank_cfg.get("enabled", False)):
+            from training.envs.start_bank import StartBank
+
+            path = bank_cfg.get("path") or "runs/start_bank/start_bank_v1.npz"
+            self._start_bank = StartBank(path)
+            self._start_bank_fraction = float(bank_cfg.get("fraction", 0.25))
 
         self._runner = DrMarioVsPoolRunner(
             num_pairs=self.num_pairs,
@@ -739,6 +754,15 @@ class DrMarioVsPoolVecEnv:
                 int(self._rng.integers(0, 2**16)) if self.rng_randomize else 0
             )
 
+            # Go-Exploit: draw a fraction of resets from the start bank
+            # (mid-game checkpoint overlay; RNG stays randomized above).
+            bank_kwargs: Dict[str, Any] = {}
+            if (
+                self._start_bank is not None
+                and float(self._rng.random()) < self._start_bank_fraction
+            ):
+                bank_kwargs = self._start_bank.sample_spec_kwargs(self._rng)
+
             specs.append(
                 build_vs_reset_spec(
                     level=(self.level, self.level),
@@ -746,6 +770,7 @@ class DrMarioVsPoolVecEnv:
                     rng_state=seed_bytes,
                     rng_override=rng_override,
                     frame_counter_base=frame_counter_base,
+                    **bank_kwargs,
                 )
             )
         return specs
