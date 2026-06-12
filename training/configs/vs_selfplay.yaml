@@ -48,6 +48,13 @@ smdp_ppo:
   candidate_cost_embed_dim: 32
   candidate_hidden_dim: 384
   candidate_board_encoder: "cnn"
+  # Opponent-board observability (docs/VS_OPPONENT_OBS.md), default OFF:
+  # set env.state_repr to bitplane_bottle_conn_mask_vs (20-channel obs with
+  # the opponent bottle at channels 8..15), candidate_board_channels to 16,
+  # aux_spec to "v1_vs" (57 v1 features + 15 opponent scalars), and point
+  # train.init_checkpoint at a checkpoint expanded with
+  # `python -m tools.expand_checkpoint` (zero-init slices: identical outputs
+  # at init, the optimizer state is dropped).
   candidate_board_channels: 8
   candidate_transformer_layers: 4
   candidate_transformer_heads: 4
@@ -70,6 +77,7 @@ env:
   id: "drmario-vs"
   obs_mode: state
   backend: cpp-vs-pool
+  # bitplane_bottle_conn_mask_vs enables opponent-board obs (see smdp_ppo note).
   state_repr: bitplane_bottle_conn_mask
   num_pairs: 16
   frame_stack: 1

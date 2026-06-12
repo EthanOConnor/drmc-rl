@@ -24,6 +24,15 @@ the Python-side symmetry reduction in `DrMarioPoolVecEnv`. The VS pool does
 not build observations natively, so this module replicates both, exactly, in
 numpy from ``board_bytes`` + ``feasible_mask`` (see `_build_obs_in_place`).
 
+Opponent-board observability (``state_repr=bitplane_bottle_conn_mask_vs``,
+default OFF): channels 0..7 stay the own-bottle planes, channels 8..15 are the
+opponent's bottle planes (same scheme, as the opponent observes them), and the
+feasible planes move to 16..19. Opponent scalars (virus count, garbage pending
+both directions, opponent pill/preview colors) are exposed via ``vs/*`` info
+keys for ``aux_spec=v1_vs``. Old 12-channel policies keep working on the
+20-channel obs because the candidate net only reads its ``board_channels``
+prefix.
+
 Reward: terminal +1 win / -1 loss / 0 draw, plus a small shaping term
 ``garbage_reward_coef * garbage_sent_delta`` (half pills sent this decision;
 anneal via ``set_attr("garbage_reward_coef", ...)``).
@@ -111,11 +120,18 @@ class DrMarioVsPoolVecEnv:
         self.garbage_reward_coef = float(garbage_reward_coef)
         self.seed_provider = seed_provider
 
-        state_repr_norm = str(state_repr or "").strip().lower()
-        if state_repr_norm not in {"bitplane_bottle_conn_mask", "bitplane-bottle-conn-mask"}:
-            raise ValueError("cpp-vs-pool backend only supports state_repr=bitplane_bottle_conn_mask.")
-        ram_specs.set_state_representation("bitplane_bottle_conn_mask")
-        obs_channels = 12
+        state_repr_norm = str(state_repr or "").strip().lower().replace("-", "_")
+        if state_repr_norm not in {"bitplane_bottle_conn_mask", "bitplane_bottle_conn_mask_vs"}:
+            raise ValueError(
+                "cpp-vs-pool backend only supports state_repr="
+                "bitplane_bottle_conn_mask[_vs]."
+            )
+        # Opponent-board observability gate: the `_vs` representation appends
+        # the opponent bottle planes (8..15) ahead of the feasible planes.
+        self.opponent_obs = state_repr_norm == "bitplane_bottle_conn_mask_vs"
+        ram_specs.set_state_representation(state_repr_norm)
+        obs_channels = 20 if self.opponent_obs else 12
+        self._feas_ch = 16 if self.opponent_obs else 8
 
         self.single_action_space = spaces.Discrete(MACRO_ACTIONS)
         self.single_observation_space = spaces.Box(
@@ -141,6 +157,8 @@ class DrMarioVsPoolVecEnv:
 
         # Python-built observations (the VS pool does not emit obs natively).
         self._obs = np.zeros((self.num_sides, obs_channels, GRID_H, GRID_W), dtype=np.float32)
+        # Side index of each side's opponent (pair partner).
+        self._opp_idx = np.arange(self.num_sides, dtype=np.int64) ^ 1
 
         # Persistent per-env infos (updated in-place).
         self._infos: List[Dict[str, Any]] = [dict() for _ in range(self.num_sides)]
@@ -236,6 +254,8 @@ class DrMarioVsPoolVecEnv:
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
+        if self.opponent_obs:
+            self._fill_opponent_planes_in_place()
         self._refresh_infos(step_tau_raw=np.zeros((self.num_sides,), dtype=np.uint32))
 
         if self._opp_pool is not None:
@@ -360,6 +380,8 @@ class DrMarioVsPoolVecEnv:
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
+        if self.opponent_obs:
+            self._fill_opponent_planes_in_place()
         self._refresh_infos(step_tau_raw=tau_raw)
 
         for i in range(self.num_sides):
@@ -526,17 +548,21 @@ class DrMarioVsPoolVecEnv:
         return sf.max(axis=1)
 
     # ------------------------------------------------------------ frozen opponents
-    def _get_aux_shim(self) -> Any:
-        """Aux-v1 builder shim (same trick as tools/eval_policy)."""
+    def _get_aux_shim(self, aux_spec: str = "v1") -> Any:
+        """Aux builder shim per spec (same trick as tools/eval_policy)."""
 
         if self._aux_shim is None:
-            from training.algo.ppo_smdp import SMDPPPOAdapter, _AUX_V1_DIM
+            self._aux_shim = {}
+        spec = str(aux_spec or "v1")
+        shim = self._aux_shim.get(spec)
+        if shim is None:
+            from training.algo.ppo_smdp import SMDPPPOAdapter, _AUX_DIM_BY_SPEC
 
             shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
-            shim.aux_spec = "v1"
-            shim.aux_dim = int(_AUX_V1_DIM)
-            self._aux_shim = shim
-        return self._aux_shim
+            shim.aux_spec = spec
+            shim.aux_dim = int(_AUX_DIM_BY_SPEC[spec])
+            self._aux_shim[spec] = shim
+        return shim
 
     def _opponent_actions(self) -> np.ndarray:
         """Macro actions for the P2 sides, from their assigned frozen nets.
@@ -591,7 +617,8 @@ class DrMarioVsPoolVecEnv:
 
         aux = None
         if int(entry.aux_dim) > 0:
-            aux = self._get_aux_shim()._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
+            shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
+            aux = shim._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
 
         with torch.inference_mode():
             logits, _values = entry.net(
@@ -700,8 +727,10 @@ class DrMarioVsPoolVecEnv:
         """Replicate `DrMarioPool::build_obs` (bitplane_bottle_conn_mask, 12ch).
 
         Channels: 0..2 color_{r,y,b}, 3 virus_mask, 4..7 connection edges
-        (connected_up/down/left/right from the tile-type nibble), 8..11
-        feasible mask planes (one per orientation).
+        (connected_up/down/left/right from the tile-type nibble), then the
+        feasible mask planes (one per orientation) at ``self._feas_ch``.
+        With ``opponent_obs`` the opponent bottle planes occupy 8..15 and are
+        filled by `_fill_opponent_planes_in_place` after symmetry reduction.
         """
 
         board = self._runner.buffers.board_bytes.reshape(self.num_sides, GRID_H, GRID_W)
@@ -724,7 +753,18 @@ class DrMarioVsPoolVecEnv:
         obs[:, 5] = (type_hi == ram_specs.T_TOP).astype(np.float32)  # connected_down
         obs[:, 6] = (type_hi == ram_specs.T_RIGHT).astype(np.float32)  # connected_left
         obs[:, 7] = (type_hi == ram_specs.T_LEFT).astype(np.float32)  # connected_right
-        obs[:, 8:12] = self._mask.astype(np.float32)
+        obs[:, self._feas_ch : self._feas_ch + 4] = self._mask.astype(np.float32)
+
+    def _fill_opponent_planes_in_place(self) -> None:
+        """Copy each side's opponent bottle planes into channels 8..15.
+
+        Called after `_apply_symmetry_reduction_in_place`, so side i's
+        opponent planes are exactly side i^1's own-board planes as that side
+        observes them (including the channel-6/7 zeroing quirk for same-color
+        pills).
+        """
+
+        self._obs[:, 8:16] = self._obs[self._opp_idx, 0:8]
 
     def _apply_symmetry_reduction_in_place(self) -> None:
         """Same-color pills: drop H-/V- duplicate orientations (o=2,3).
@@ -795,6 +835,15 @@ class DrMarioVsPoolVecEnv:
             info["vs/side"] = int(i % 2)
             info["vs/garbage_pending"] = int(garbage_pending[i])
             info["vs/garbage_sent_total"] = int(garbage_sent[i])
+
+            # Opponent state (pair partner) for opponent-aware policies
+            # (aux_spec=v1_vs); everything here is already exported per-side
+            # by the native vspool.
+            opp = i ^ 1
+            info["vs/opponent_viruses_remaining"] = int(viruses[opp])
+            info["vs/garbage_pending_opp"] = int(garbage_pending[opp])
+            info["vs/opponent_pill_colors"] = np.asarray(pill_colors[opp], dtype=np.int64)
+            info["vs/opponent_preview_colors"] = np.asarray(preview_colors[opp], dtype=np.int64)
 
             tau_i_raw = int(step_tau_raw[i]) if i < int(step_tau_raw.shape[0]) else 0
             info["placements/tau"] = int(max(1, tau_i_raw))

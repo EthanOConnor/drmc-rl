@@ -37,6 +37,7 @@ from training.utils.reproducibility import git_commit
 
 _AUX_SPEC_NONE = "none"
 _AUX_SPEC_V1 = "v1"
+_AUX_SPEC_V1_VS = "v1_vs"
 
 _AUX_V1_LEVEL_MIN = -15
 _AUX_V1_LEVEL_MAX = 20
@@ -56,6 +57,19 @@ _AUX_V1_VIRUS_NORM = 84.0  # Max viruses at level 20: (20+1)*4 = 84
 #   occupancy_fraction [1] (occupied tiles / 128)
 #   virus_max_height/16 [1]
 _AUX_V1_DIM = 3 + 1 + 3 + _AUX_V1_LEVEL_DIM + 1 + 1 + 8 + 1 + 1 + 1 + 1  # 57
+
+# v1_vs = the 57 v1 features (built identically) + VS opponent scalars
+# (`vs/*` info keys from `DrMarioVsPoolVecEnv`; all zeros in 1P envs):
+#   opp_virus_total/84 [1]
+#   garbage_pending_self/4 [1] (NES attack buffer holds at most 4 columns)
+#   garbage_pending_opp/4 [1]
+#   opp_pill_onehot [6] (2 halves x 3 canonical colors R,Y,B)
+#   opp_preview_onehot [6]
+_AUX_V1_VS_EXTRA = 1 + 1 + 1 + 6 + 6  # 15
+_AUX_V1_VS_DIM = _AUX_V1_DIM + _AUX_V1_VS_EXTRA  # 72
+_AUX_GARBAGE_PENDING_NORM = 4.0
+
+_AUX_DIM_BY_SPEC = {_AUX_SPEC_V1: _AUX_V1_DIM, _AUX_SPEC_V1_VS: _AUX_V1_VS_DIM}
 
 # Order must match the stacked per-minibatch metric rows in `_update_policy`.
 _UPDATE_METRIC_KEYS = (
@@ -196,10 +210,10 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.pill_embed_type = pill_embed_type_norm
 
         aux_spec_norm = str(self.hparams.aux_spec or "none").strip().lower()
-        if aux_spec_norm not in {_AUX_SPEC_NONE, _AUX_SPEC_V1}:
+        if aux_spec_norm not in {_AUX_SPEC_NONE, _AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
             raise ValueError(f"Unknown smdp_ppo.aux_spec: {self.hparams.aux_spec!r}")
         self.aux_spec = aux_spec_norm
-        self.aux_dim = int(_AUX_V1_DIM) if self.aux_spec == _AUX_SPEC_V1 else 0
+        self.aux_dim = int(_AUX_DIM_BY_SPEC.get(self.aux_spec, 0))
 
         self.candidate_max = int(max(1, int(self.hparams.candidate_max_candidates)))
 
@@ -1148,17 +1162,38 @@ class SMDPPPOAdapter(AlgoAdapter):
             return None
 
     def _build_aux(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
-        if self.aux_spec == _AUX_SPEC_V1:
+        if self.aux_spec in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
             return self._build_aux_v1(obs, info)
         raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
 
+    def _fill_aux_vs(self, out_row: np.ndarray, k: int, info: Dict[str, Any]) -> int:
+        """Append the v1_vs opponent scalars (see `_AUX_V1_VS_EXTRA` layout)."""
+
+        opp_viruses = self._extract_int(info.get("vs/opponent_viruses_remaining")) or 0
+        out_row[k] = float(np.clip(float(opp_viruses) / float(_AUX_V1_VIRUS_NORM), 0.0, 1.0))
+        k += 1
+        gp_self = self._extract_int(info.get("vs/garbage_pending")) or 0
+        out_row[k] = float(np.clip(float(gp_self) / float(_AUX_GARBAGE_PENDING_NORM), 0.0, 1.0))
+        k += 1
+        gp_opp = self._extract_int(info.get("vs/garbage_pending_opp")) or 0
+        out_row[k] = float(np.clip(float(gp_opp) / float(_AUX_GARBAGE_PENDING_NORM), 0.0, 1.0))
+        k += 1
+        for key in ("vs/opponent_pill_colors", "vs/opponent_preview_colors"):
+            colors = np.asarray(info.get(key, ()), dtype=np.int64).reshape(-1)
+            for j in range(2):
+                c = int(colors[j]) if j < colors.shape[0] else -1
+                if 0 <= c <= 2:
+                    out_row[k + c] = 1.0
+                k += 3
+        return k
+
     def _build_aux_batch(self, obs_arr: np.ndarray, infos: List[Dict[str, Any]]) -> np.ndarray:
-        """Batched aux_v1: vectorizes the plane-derived features across envs.
+        """Batched aux_v1[_vs]: vectorizes the plane-derived features across envs.
 
         Must stay output-identical to per-env `_build_aux_v1` (covered by
         tests); scalar info lookups remain per-env, plane math is batched.
         """
-        if self.aux_spec != _AUX_SPEC_V1:
+        if self.aux_spec not in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
             raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
         B = int(obs_arr.shape[0])
         frames = np.asarray(obs_arr, dtype=np.float32)
@@ -1167,7 +1202,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         if frames.ndim != 4 or frames.shape[2:] != (16, 8):
             raise ValueError(f"Expected obs shape (B,C,16,8), got {frames.shape!r}")
 
-        out = np.zeros((B, _AUX_V1_DIM), dtype=np.float32)
+        out = np.zeros((B, self.aux_dim), dtype=np.float32)
 
         # Batched plane features.
         virus_mask = np.stack([ram_specs.get_virus_mask(frames[i]) for i in range(B)])
@@ -1253,6 +1288,10 @@ class SMDPPPOAdapter(AlgoAdapter):
             k += 1
             if k != _AUX_V1_DIM:
                 raise RuntimeError(f"aux_v1 packing mismatch: k={k} dim={_AUX_V1_DIM}")
+            if self.aux_spec == _AUX_SPEC_V1_VS:
+                k = self._fill_aux_vs(out[i], k, info)
+            if k != self.aux_dim:
+                raise RuntimeError(f"aux packing mismatch: k={k} dim={self.aux_dim}")
         return out
 
     @staticmethod
@@ -1270,8 +1309,11 @@ class SMDPPPOAdapter(AlgoAdapter):
         return heights
 
     def _build_aux_v1(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
-        if self.aux_dim != _AUX_V1_DIM:
-            raise ValueError(f"aux_dim mismatch: expected {_AUX_V1_DIM}, got {self.aux_dim}")
+        if self.aux_dim != _AUX_DIM_BY_SPEC.get(self.aux_spec):
+            raise ValueError(
+                f"aux_dim mismatch: expected {_AUX_DIM_BY_SPEC.get(self.aux_spec)}, "
+                f"got {self.aux_dim}"
+            )
         frame = np.asarray(obs, dtype=np.float32)
         if frame.ndim == 4 and frame.shape[-2:] == (16, 8):
             # Allow passing a fixed frame stack (T,C,16,8); use the latest frame.
@@ -1279,7 +1321,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         if frame.ndim != 3 or frame.shape[1:] != (16, 8):
             raise ValueError(f"Expected obs shape (C,16,8), got {frame.shape!r}")
 
-        out = np.zeros((_AUX_V1_DIM,), dtype=np.float32)
+        out = np.zeros((self.aux_dim,), dtype=np.float32)
         k = 0
 
         # speed_onehot[3]
@@ -1380,6 +1422,10 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         if k != _AUX_V1_DIM:
             raise RuntimeError(f"aux_v1 packing mismatch: k={k} dim={_AUX_V1_DIM}")
+        if self.aux_spec == _AUX_SPEC_V1_VS:
+            k = self._fill_aux_vs(out, k, info)
+        if k != self.aux_dim:
+            raise RuntimeError(f"aux packing mismatch: k={k} dim={self.aux_dim}")
         return out
 
     def _extract_curriculum_snapshot(self, infos: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

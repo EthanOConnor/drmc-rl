@@ -73,6 +73,7 @@ def _normalize_mode(mode: Optional[str]) -> str:
         "bitplane_bottle_mask",
         "bitplane_bottle_conn",
         "bitplane_bottle_conn_mask",
+        "bitplane_bottle_conn_mask_vs",
         "bitplane_reduced",
         "bitplane_reduced_mask",
         "policy_v1",
@@ -237,6 +238,30 @@ def _build_state_index_bitplane_bottle_conn_mask() -> SimpleNamespace:
     return base
 
 
+def _build_state_index_bitplane_bottle_conn_mask_vs() -> SimpleNamespace:
+    """20-channel VS representation: own bottle + opponent bottle + mask slots.
+
+    Channels:
+      0..7:  own bottle (same as `bitplane_bottle_conn`)
+      8..15: opponent bottle, same plane scheme (opp_color_{r,y,b},
+             opp_virus_mask, opp_connected_{up,down,left,right})
+     16..19: feasible mask slots (own pill orientations)
+
+    The opponent planes are only emitted by the VS pool vector env
+    (`training/envs/drmario_vs_vec.py`); the 1P RAM decoder leaves them zero.
+    """
+
+    base = _build_state_index_bitplane_bottle_conn()
+    base.opp_color_channels = (8, 9, 10)
+    base.opp_virus_mask = 11
+    base.opp_connected_up = 12
+    base.opp_connected_down = 13
+    base.opp_connected_left = 14
+    base.opp_connected_right = 15
+    base.feasible_mask_channels = (16, 17, 18, 19)
+    return base
+
+
 def _build_state_index_policy_v1() -> SimpleNamespace:
     return SimpleNamespace(
         color_channels=None,
@@ -339,6 +364,29 @@ _PLANE_NAMES_BY_REPR: Dict[str, Tuple[str, ...]] = {
         "feasible_o2",
         "feasible_o3",
     ),
+    # 20 channels (see `_build_state_index_bitplane_bottle_conn_mask_vs`).
+    "bitplane_bottle_conn_mask_vs": (
+        "color_red",
+        "color_yellow",
+        "color_blue",
+        "virus_mask",
+        "connected_up",
+        "connected_down",
+        "connected_left",
+        "connected_right",
+        "opp_color_red",
+        "opp_color_yellow",
+        "opp_color_blue",
+        "opp_virus_mask",
+        "opp_connected_up",
+        "opp_connected_down",
+        "opp_connected_left",
+        "opp_connected_right",
+        "feasible_o0",
+        "feasible_o1",
+        "feasible_o2",
+        "feasible_o3",
+    ),
     # 6 channels (see `_build_state_index_bitplane_reduced`).
     "bitplane_reduced": (
         "color_red",
@@ -431,6 +479,12 @@ def _configure_state_representation(mode: str) -> None:
         STATE_USE_BITPLANES = True
         STATE_CHANNELS = 12
         STATE_IDX = _build_state_index_bitplane_bottle_conn_mask()
+        STATE_DECODER = _ram_to_state_bitplane_bottle
+    elif mode_norm == "bitplane_bottle_conn_mask_vs":
+        STATE_REPR = "bitplane_bottle_conn_mask_vs"
+        STATE_USE_BITPLANES = True
+        STATE_CHANNELS = 20
+        STATE_IDX = _build_state_index_bitplane_bottle_conn_mask_vs()
         STATE_DECODER = _ram_to_state_bitplane_bottle
     elif mode_norm == "bitplane_reduced":
         STATE_REPR = "bitplane_reduced"

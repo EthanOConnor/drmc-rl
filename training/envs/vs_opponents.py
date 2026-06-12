@@ -39,6 +39,7 @@ class OpponentEntry:
     games: int = 0
     net: Any = field(default=None, repr=False)  # lazy-loaded CPU policy net
     aux_dim: int = 0
+    aux_spec: str = "v1"
     candidate_max: int = 128
 
     def smoothed_winrate(self) -> float:
@@ -192,7 +193,8 @@ class OpponentPool:
         from training.utils.checkpoint_io import load_checkpoint
 
         payload = load_checkpoint(entry.path, map_location="cpu")
-        net, aux_dim, candidate_max = _build_net_from_cfg(payload.get("cfg", {}), 12, "cpu")
+        cfg = payload.get("cfg", {})
+        net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
         sd = payload.get("ema_state_dict") or payload["state_dict"]
         net.load_state_dict({k: v.detach().cpu() for k, v in sd.items()})
         net.eval()
@@ -200,6 +202,7 @@ class OpponentPool:
             p.requires_grad_(False)
         entry.net = net
         entry.aux_dim = int(aux_dim)
+        entry.aux_spec = str(cfg.get("smdp_ppo", cfg).get("aux_spec", "v1")).strip().lower()
         entry.candidate_max = int(candidate_max)
 
     # ------------------------------------------------------------------ internals

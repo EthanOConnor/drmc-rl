@@ -39,7 +39,9 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     def g(key: str, default):
         return sp.get(key, default)
 
-    aux_dim = 57 if str(g("aux_spec", "none")).lower() == "v1" else 0
+    from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC
+
+    aux_dim = int(_AUX_DIM_BY_SPEC.get(str(g("aux_spec", "none")).strip().lower(), 0))
     if str(g("policy_type", "candidate")).lower() != "candidate":
         raise SystemExit("eval_policy currently supports policy_type=candidate checkpoints")
     net = CandidatePlacementPolicyNet(
@@ -67,10 +69,11 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
 def _make_aux_builder(aux_dim: int):
     if aux_dim <= 0:
         return None
-    from training.algo.ppo_smdp import SMDPPPOAdapter
+    from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
 
     shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
-    shim.aux_spec = "v1"
+    spec = next((s for s, d in _AUX_DIM_BY_SPEC.items() if int(d) == int(aux_dim)), "v1")
+    shim.aux_spec = spec
     shim.aux_dim = aux_dim
     return shim
 
