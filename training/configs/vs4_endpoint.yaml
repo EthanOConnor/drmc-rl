@@ -80,10 +80,12 @@ env:
   randomize_rng: true
   level: 14
   speed_setting: 2
-  # Clear-win incentive (ablation ladder candidate; see docs/ABLATION_PLAN.md
-  # match-ending forensics): +bonus on wins earned by clearing all own
-  # viruses. 0.0 = off.
-  # clear_win_bonus: 0.25
+  # Clear-win incentive — PROMOTED to on-by-default after the 2026-06-12
+  # forensics + BC-band results (docs/ABLATION_PLAN.md): the self-play
+  # metagame never clears (0/40), and human-style BC nets beat the champion
+  # ~90% mostly by full clear. Enters together with start_bank (late strata
+  # make clear-wins discoverable) and the BC league seeds below.
+  clear_win_bonus: 0.25
   # Go-Exploit: a fraction of resets start from real human mid-game positions
   # (docs/HUMAN_CORPUS_INTEGRATION.md).
   start_bank:
