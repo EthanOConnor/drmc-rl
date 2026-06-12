@@ -900,6 +900,9 @@ class DrMarioVsPoolVecEnv:
             info["vs/garbage_pending_opp"] = int(garbage_pending[opp])
             info["vs/opponent_pill_colors"] = np.asarray(pill_colors[opp], dtype=np.int64)
             info["vs/opponent_preview_colors"] = np.asarray(preview_colors[opp], dtype=np.int64)
+            # Opponent NES tile bytes (view, like info["board"]) — consumed at
+            # decision time by search_distill's opponent_model=self.
+            info["vs/opponent_board"] = buf.board_bytes[opp]
 
             tau_i_raw = int(step_tau_raw[i]) if i < int(step_tau_raw.shape[0]) else 0
             info["placements/tau"] = int(max(1, tau_i_raw))

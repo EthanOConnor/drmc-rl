@@ -380,9 +380,11 @@ class SMDPPPOAdapter(AlgoAdapter):
     def _build_search_distill_runner(self):
         """Validate + build the rollout-side search runner (enabled=true only).
 
-        Phase-1 restrictions (docs/SEARCH_DISTILL.md): candidate policy over the
-        12-channel single-board obs (`bitplane_bottle_conn_mask`); v1_vs aux /
-        opponent-board obs are not searchable with the 1P sim pool.
+        Supported obs (docs/SEARCH_DISTILL.md): candidate policy over the
+        12-channel `bitplane_bottle_conn_mask` obs, or the 20-channel `_vs`
+        opponent-obs layout (search sims rebuild the own-board planes natively;
+        opponent planes + the v1_vs aux tail are frozen from the live decision
+        and spliced into search node evaluations).
         """
 
         from training.algo.search_distill import SearchDistillRunner
@@ -391,15 +393,28 @@ class SMDPPPOAdapter(AlgoAdapter):
             raise ValueError("search_distill requires smdp_ppo.policy_type=candidate")
         obs_space = getattr(self.env, "single_observation_space", self.env.observation_space)
         in_channels = int(obs_space.shape[0]) if len(obs_space.shape) == 3 else 0
-        if in_channels != 12:
+        if in_channels not in (12, 20):
             raise ValueError(
                 "search_distill requires the 12-channel bitplane_bottle_conn_mask obs "
-                f"(search sims rebuild it natively); got {in_channels} channels."
+                "or the 20-channel bitplane_bottle_conn_mask_vs obs; "
+                f"got {in_channels} channels."
             )
         # VS rollouts: search the learner's own board with the 1P sim pool and
         # replicate the VS reward (garbage shaping + terminal +-1). 1P rollouts
         # replicate the configured env reward exactly.
         reward_mode = "vs" if callable(getattr(self.env, "get_vs_metrics", None)) else "1p"
+        if self.search_distill_cfg.opponent_model == "self":
+            if in_channels != 20:
+                raise ValueError(
+                    "search_distill.opponent_model=self requires the 20-channel "
+                    "bitplane_bottle_conn_mask_vs obs (the opponent planes are what "
+                    f"the advance updates); got {in_channels} channels."
+                )
+            if reward_mode != "vs":
+                raise ValueError(
+                    "search_distill.opponent_model=self requires the VS env "
+                    "(vs/opponent_board decision context)."
+                )
         return SearchDistillRunner(
             self.search_distill_cfg,
             net=self.net,
@@ -444,12 +459,26 @@ class SMDPPPOAdapter(AlgoAdapter):
                     aux_batch,
                 ) = self._select_actions_batch(decision_obs, decision_info, deterministic=False)
 
-                # Search-amplified targets for a sampled subset of decisions
-                # (the executed action stays the behavior-policy sample above).
+                # Search-amplified targets for a sampled subset of decisions.
+                # With act_from_search the returned actions/log_probs replace
+                # the behavior samples on searched rows (the behavior policy
+                # there is the improved policy); otherwise they pass through.
                 sd_targets = sd_values = sd_flags = None
                 if self._sd_runner is not None:
-                    sd_targets, sd_values, sd_flags = self._sd_runner.run(
-                        decision_info, masks, costs_to_lock, actions
+                    (
+                        sd_targets,
+                        sd_values,
+                        sd_flags,
+                        actions,
+                        log_probs,
+                    ) = self._sd_runner.run(
+                        decision_info,
+                        masks,
+                        costs_to_lock,
+                        actions,
+                        log_probs,
+                        obs=decision_obs,
+                        aux=aux_batch,
                     )
 
                 # Step environment once for the full batch.

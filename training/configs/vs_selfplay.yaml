@@ -72,12 +72,14 @@ smdp_ppo:
   # Loss
   value_loss_type: "huber"
 
-  # Search-amplified training targets (Gumbel-AZ-lite phase 1, OFF by default;
+  # Search-amplified training targets (Gumbel-AZ-lite, OFF by default;
   # docs/SEARCH_DISTILL.md). VS approximation: the learner's own board is
   # searched with the 1P sim pool (garbage arrival between decisions ignored
-  # at depth 2 — same as inference-time search). Requires the 12-channel obs
-  # (state_repr bitplane_bottle_conn_mask, aux_spec v1); not compatible with
-  # opponent-board obs (_vs) yet.
+  # at depth 2 — same as inference-time search). Works with the 12-channel
+  # obs (this config) and with the 20-channel opponent-obs stack (_vs repr +
+  # aux v1_vs: opponent planes/scalars are frozen at the searched decision
+  # and spliced into search node evals). Searched envs are batched per
+  # vectorized decision (phase 2).
   # search_distill:
   #   enabled: false
   #   sims: 12               # native sim envs per searched decision
@@ -86,6 +88,13 @@ smdp_ppo:
   #   beta: 1.0              # KL term weight
   #   value_mix: 0.5         # blend of search Q into value targets (0 = off)
   #   sigma_scale: 1.0       # c in improved_logits = prior + c * norm(Q)
+  #   opponent_model: none   # none|self — self advances the opponent board
+  #                          # one self-model placement for ply-2 leaf
+  #                          # contexts (_vs repr only)
+  #   act_from_search: false # execute improved-policy samples at searched
+  #                          # decisions (behavior log-prob taken from the
+  #                          # improved distribution; shifts toward full
+  #                          # Gumbel-AZ)
 
 # Environment: 2-player VS pool, both sides flattened (num_envs = 2*num_pairs).
 env:

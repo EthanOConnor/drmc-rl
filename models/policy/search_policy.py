@@ -182,6 +182,105 @@ def _build_obs_from_board(board: np.ndarray, feasible_512: np.ndarray) -> np.nda
     return obs
 
 
+# ----------------------------------------------------------- vs obs context
+@dataclass(slots=True)
+class ObsContext:
+    """Frozen per-decision obs context spliced around the sim's own-board obs.
+
+    The search sims run the learner's own board on the 1P pool; nets trained
+    on the 20-channel `bitplane_bottle_conn_mask_vs` layout
+    (docs/VS_OPPONENT_OBS.md) additionally see the opponent bottle (live obs
+    channels 8..15) and the v1_vs aux tail (opponent scalars). Both are frozen
+    at the searched decision and spliced into every node evaluation: exact at
+    ply 1, a frozen-opponent approximation at ply 2 (see ``opponent_model``).
+
+    Optional opponent-advance state (``opponent_model="self"``): the
+    opponent's own decision context, used to advance the opponent board by one
+    self-model placement for ply-2 leaf evaluations. Colors are canonical
+    (0=R,1=Y,2=B), matching the vs-pool buffers.
+    """
+
+    opp_planes: Optional[np.ndarray] = None  # [8,16,8] float32 (live obs ch 8..15)
+    aux_tail: Optional[np.ndarray] = None  # [T] float32 (live aux[57:])
+    opp_board: Optional[np.ndarray] = None  # [128] uint8 NES tile bytes
+    opp_pill: Optional[Tuple[int, int]] = None  # canonical colors
+    opp_preview: Optional[Tuple[int, int]] = None  # canonical colors
+    own_planes: Optional[np.ndarray] = None  # [8,16,8] learner planes (opp's view)
+    opp_aux_tail: Optional[np.ndarray] = None  # [T] mirrored tail for the opp obs
+
+
+def splice_obs_context(sim_obs: np.ndarray, extra_planes: Optional[np.ndarray]) -> np.ndarray:
+    """Insert frozen extra planes between the own-board and feasible planes.
+
+    Args:
+        sim_obs: [B, 12, 16, 8] pool obs (own bottle 0..7, feasible 8..11).
+        extra_planes: [E, 16, 8] (broadcast over B) or [B, E, 16, 8]; None is
+            the identity.
+
+    Returns:
+        [B, 12+E, 16, 8]: own planes 0..7, extra planes 8..7+E, feasible
+        planes at the tail (the `bitplane_bottle_conn_mask_vs` layout for
+        E=8).
+    """
+
+    if extra_planes is None:
+        return sim_obs
+    obs = np.asarray(sim_obs, dtype=np.float32)
+    B = int(obs.shape[0])
+    extra = np.asarray(extra_planes, dtype=np.float32)
+    if extra.ndim == 3:
+        extra = np.broadcast_to(extra[None], (B,) + extra.shape)
+    E = int(extra.shape[1])
+    out = np.empty((B, 12 + E, GRID_H, GRID_W), dtype=np.float32)
+    out[:, :8] = obs[:, :8]
+    out[:, 8 : 8 + E] = extra
+    out[:, 8 + E :] = obs[:, 8:12]
+    return out
+
+
+def aux_v1_with_tail(
+    obs: np.ndarray,
+    infos: Sequence[Dict[str, Any]],
+    aux_tails: Optional[np.ndarray],
+    tail_dim: int,
+) -> np.ndarray:
+    """`aux_v1_batch_fast` plus a frozen per-row tail (v1_vs opponent scalars).
+
+    ``aux_tails``: [T] (broadcast) or [B, T]; None fills zeros (the v1_vs tail
+    is defined as all-zeros outside VS contexts).
+    """
+
+    base = aux_v1_batch_fast(obs, infos)
+    if tail_dim <= 0:
+        return base
+    B = int(base.shape[0])
+    if aux_tails is None:
+        tails = np.zeros((B, int(tail_dim)), dtype=np.float32)
+    else:
+        tails = np.asarray(aux_tails, dtype=np.float32)
+        if tails.ndim == 1:
+            tails = np.broadcast_to(tails[None], (B, tails.shape[0]))
+    return np.concatenate([base, tails], axis=1)
+
+
+@dataclass(slots=True)
+class SearchRequest:
+    """One decision context for `SearchPolicy.decide_batch` (raw NES colors
+    for pill/preview, matching `decide`)."""
+
+    board: np.ndarray  # (128,) uint8 NES tiles
+    pill: Tuple[int, int]
+    preview: Tuple[int, int]
+    feasible_mask512: np.ndarray
+    cost_to_lock512: np.ndarray
+    speed_setting: int
+    speed_ups: int
+    level: int
+    viruses_initial: Optional[int] = None
+    frames_used: int = 0
+    obs_context: Optional[ObsContext] = None
+
+
 class SearchPolicy:
     """Depth-2 beam search over the native pool engine, guided by a policy net."""
 
@@ -200,6 +299,7 @@ class SearchPolicy:
         reward_mode: Optional[str] = None,
         gamma: Optional[float] = None,
         garbage_reward_coef: float = 0.05,
+        opponent_model: str = "none",
         seed: int = 0,
         warmup: bool = True,
     ) -> None:
@@ -209,7 +309,9 @@ class SearchPolicy:
         path = Path(checkpoint_path)
         payload = load_checkpoint(path, map_location="cpu")
         cfg = payload.get("cfg", {})
-        net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
+        env_cfg_in = cfg.get("env", {}) if isinstance(cfg.get("env"), dict) else {}
+        in_ch = 20 if str(env_cfg_in.get("state_repr", "")).strip().lower().endswith("_vs") else 12
+        net, aux_dim, candidate_max = _build_net_from_cfg(cfg, in_ch, "cpu")
         net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
         self.checkpoint_name = path.name
         self.checkpoint_step = payload.get("step")
@@ -235,6 +337,7 @@ class SearchPolicy:
             reward_mode=str(reward_mode),
             gamma=float(gamma),
             garbage_reward_coef=float(garbage_reward_coef),
+            opponent_model=opponent_model,
             seed=seed,
             warmup=warmup,
         )
@@ -257,6 +360,7 @@ class SearchPolicy:
         reward_mode: str = "1p",
         gamma: float = 1.0,
         garbage_reward_coef: float = 0.05,
+        opponent_model: str = "none",
         seed: int = 0,
         warmup: bool = False,
     ) -> "SearchPolicy":
@@ -280,6 +384,7 @@ class SearchPolicy:
             reward_mode=reward_mode,
             gamma=gamma,
             garbage_reward_coef=garbage_reward_coef,
+            opponent_model=opponent_model,
             seed=seed,
             warmup=warmup,
         )
@@ -302,10 +407,15 @@ class SearchPolicy:
         reward_mode: str,
         gamma: float,
         garbage_reward_coef: float,
-        seed: int,
-        warmup: bool,
+        opponent_model: str = "none",
+        seed: int = 0,
+        warmup: bool = False,
     ) -> None:
-        ram_specs.set_state_representation("bitplane_bottle_conn_mask")
+        # Keep the ambient `_vs` representation when set (the live VS env owns
+        # it; the first 12 channels are layout-compatible) — otherwise pin the
+        # 12-channel layout the sim obs uses.
+        if ram_specs.get_state_representation() != "bitplane_bottle_conn_mask_vs":
+            ram_specs.set_state_representation("bitplane_bottle_conn_mask")
         # Two net copies: the small full forwards (root B=1, ply-2 priors B<=K)
         # run on CPU where dispatch latency is lowest; only the big marginal
         # leaf batch runs on `device` (one transfer in, one sync out).
@@ -329,6 +439,16 @@ class SearchPolicy:
         if reward_mode not in {"1p", "vs"}:
             raise ValueError(f"reward_mode must be '1p' or 'vs', got {reward_mode!r}")
         self.reward_mode = reward_mode
+        # VS-obs context dims (docs/VS_OPPONENT_OBS.md): planes beyond the
+        # 12-channel sim obs are frozen-context (opponent bottle); aux dims
+        # beyond the 57 v1 features are the frozen v1_vs tail.
+        self.obs_extra_planes = max(0, int(getattr(net, "in_channels", 12)) - 12)
+        aux_dim = int(getattr(aux_shim, "aux_dim", 57) or 57) if aux_shim is not None else 0
+        self.aux_tail_dim = max(0, aux_dim - 57) if aux_shim is not None else 0
+        opponent_model = str(opponent_model or "none").strip().lower()
+        if opponent_model not in {"none", "self"}:
+            raise ValueError(f"opponent_model must be 'none' or 'self', got {opponent_model!r}")
+        self.opponent_model = opponent_model
         self.gamma = float(gamma)
         self.garbage_reward_coef = float(garbage_reward_coef)
         if self.reward_mode == "1p":
@@ -410,6 +530,7 @@ class SearchPolicy:
         viruses_initial: Optional[int] = None,
         frames_used: int = 0,
         deadline_ms: Optional[float] = None,
+        obs_context: Optional[ObsContext] = None,
     ) -> Tuple[int, Dict[str, Any]]:
         """Pick a macro action for the given decision context.
 
@@ -420,6 +541,9 @@ class SearchPolicy:
             speed_setting / speed_ups / level: engine context for the sim.
             viruses_initial / frames_used: aux-v1 context (defaults: current
                 virus count / 0).
+            obs_context: frozen vs obs context (opponent planes + aux tail)
+                spliced into every node evaluation; required for nets trained
+                on the `_vs` layout (zero-filled when omitted).
         Returns:
             (macro_action, info). `macro_action` is -1 when no placement is
             feasible. info: fallback_action, agreed_with_policy,
@@ -477,6 +601,20 @@ class SearchPolicy:
         v_count = int(((board & 0xF0) == 0xD0).sum())
         v0 = v_count if viruses_initial is None else int(viruses_initial)
 
+        # Frozen vs obs context; the opponent advance (opponent_model="self")
+        # replaces the ply-2 leaf context with a one-placement-ahead opponent.
+        ctx = obs_context
+        ctx_planes = None if ctx is None else ctx.opp_planes
+        ctx_tails = None if ctx is None else ctx.aux_tail
+        leaf_planes, leaf_tails = ctx_planes, ctx_tails
+        if self.opponent_model == "self" and ctx is not None and ctx.opp_board is not None:
+            adv = self._advance_opponents(
+                [(0, ctx, int(speed_setting), int(speed_ups), int(level), int(frames_used), v0)]
+            )
+            info["opp_advanced"] = bool(0 in adv)
+            if 0 in adv:
+                leaf_planes, leaf_tails = adv[0]
+
         # ---------------------------------------------------------- root prior
         obs0 = _build_obs_from_board(board, mask512)  # ch 8..11 = unreduced mask
         if pill_can[0] == pill_can[1]:
@@ -505,6 +643,8 @@ class SearchPolicy:
             packed0.cost[None],
             packed0.mask[None],
             infos0,
+            extra_planes=ctx_planes,
+            aux_tails=ctx_tails,
         )
         lg0 = logits0[0]
         lg0[~packed0.mask] = -np.inf
@@ -641,7 +781,10 @@ class SearchPolicy:
             )
         pills2 = np.repeat(np.array([prev_can], dtype=np.int64), B2, axis=0)
         prevs2 = buf.preview_colors[alive].astype(np.int64)  # seed garbage; priors only
-        logits2, values2 = self._forward_full(obs2, pills2, prevs2, ca2, cc2, cm2, infos2)
+        logits2, values2 = self._forward_full(
+            obs2, pills2, prevs2, ca2, cc2, cm2, infos2,
+            extra_planes=ctx_planes, aux_tails=ctx_tails,
+        )
         # Depth-1 estimate: Q(a1) = r1 + gamma^tau1 * V(s after ply-1).
         block_values[alive] = r1[alive] + disc1[alive] * values2.astype(np.float64)
 
@@ -754,6 +897,8 @@ class SearchPolicy:
                     tau1=tau1,
                     block=block,
                     viruses_initial=v0,
+                    extra_planes=leaf_planes,
+                    aux_tails=leaf_tails,
                 )
                 dt_ms = (time.perf_counter() - tchunk) * 1e3
                 per_env = dt_ms / max(1, len(idxs))
@@ -765,6 +910,714 @@ class SearchPolicy:
             block_status, block_values, leaf_values, r1=r1, disc1=disc1
         )
         return _commit("depth2")
+
+    # ----------------------------------------------------- opponent self-model
+    def _advance_opponents(
+        self, jobs: List[Tuple[int, ObsContext, int, int, int, int, int]]
+    ) -> Dict[int, Tuple[np.ndarray, Optional[np.ndarray]]]:
+        """Advance each job's opponent board by ONE self-model placement.
+
+        Jobs: ``(key, ctx, speed_setting, speed_ups, level, frames_used, v0)``
+        with ``ctx`` carrying ``opp_board``/``opp_pill``/``opp_preview`` (and
+        optionally ``own_planes``/``opp_aux_tail`` for the opponent's mirrored
+        obs). Cost: one pool checkpoint reset + one batched net forward + one
+        pool step per chunk of ``num_sim_envs`` jobs — O(1) extra sim phases
+        per searched decision, independent of leaf count.
+
+        Returns ``{key: (planes [8,16,8], aux_tail or None)}`` — the advanced
+        opponent context for ply-2 leaf evaluations. Keys are omitted on
+        fallback (no feasible opponent placement, rejected action, or the
+        placement ended the opponent's game): callers keep the frozen context.
+        """
+
+        out: Dict[int, Tuple[np.ndarray, Optional[np.ndarray]]] = {}
+        if not jobs:
+            return out
+        runner = self._runner
+        buf = runner.buffers
+        N = self.num_sim_envs
+        for c0 in range(0, len(jobs), N):
+            chunk = jobs[c0 : c0 + N]
+            specs: List[object] = []
+            for _key, ctx, spd, sups, lvl, _fr, _v0 in chunk:
+                raw_p = (_COLOR_SWAP[int(ctx.opp_pill[0]) % 3], _COLOR_SWAP[int(ctx.opp_pill[1]) % 3])
+                raw_v = (
+                    _COLOR_SWAP[int(ctx.opp_preview[0]) % 3],
+                    _COLOR_SWAP[int(ctx.opp_preview[1]) % 3],
+                )
+                specs.append(
+                    build_reset_spec(
+                        level=int(max(0, min(int(lvl), 25))),
+                        speed_setting=int(max(0, min(int(spd), 2))),
+                        rng_state=(
+                            int(self._rng.integers(0, 256)),
+                            int(self._rng.integers(0, 256)),
+                        ),
+                        rng_override=True,
+                        checkpoint_enabled=True,
+                        checkpoint_board=np.ascontiguousarray(
+                            np.asarray(ctx.opp_board, dtype=np.uint8).reshape(128)
+                        ),
+                        checkpoint_falling_colors=raw_p,
+                        checkpoint_preview_colors=raw_v,
+                        checkpoint_speed_ups=int(max(0, min(int(sups), 255))),
+                    )
+                )
+            specs.extend([specs[-1]] * (N - len(chunk)))
+            runner.reset(None, specs)
+
+            B = len(chunk)
+            obs = np.ascontiguousarray(buf.obs[:B], dtype=np.float32)
+            masks = buf.feasible_mask[:B].reshape(B, 4, GRID_H, GRID_W).astype(bool).copy()
+            costs = buf.cost_to_lock[:B].reshape(B, 4, GRID_H, GRID_W).astype(np.float32)
+
+            rows: List[int] = []
+            ca = np.full((B, self.candidate_max), -1, dtype=np.int32)
+            cm = np.zeros((B, self.candidate_max), dtype=np.bool_)
+            cc = np.zeros((B, self.candidate_max), dtype=np.float32)
+            pills = np.zeros((B, 2), dtype=np.int64)
+            prevs = np.zeros((B, 2), dtype=np.int64)
+            planes_rows = np.zeros((B, 8, GRID_H, GRID_W), dtype=np.float32)
+            tails_rows = (
+                np.zeros((B, self.aux_tail_dim), dtype=np.float32)
+                if self.aux_tail_dim > 0
+                else None
+            )
+            infos_fwd: List[Dict[str, Any]] = []
+            for b, (_key, ctx, spd, _sups, lvl, fr, v0) in enumerate(chunk):
+                p_can = (int(ctx.opp_pill[0]) % 3, int(ctx.opp_pill[1]) % 3)
+                m = masks[b]
+                if p_can[0] == p_can[1]:
+                    if bool(m[:2].any()):
+                        m[2:] = False
+                    obs[b, 6:8] = 0.0
+                if not bool(m.any()):
+                    infos_fwd.append({})
+                    continue
+                pk = pack_feasible_candidates(
+                    m, costs[b], max_candidates=self.candidate_max, sort_by_cost=True
+                )
+                ca[b], cm[b], cc[b] = pk.actions, pk.mask, pk.cost
+                pills[b] = p_can
+                prevs[b] = (int(ctx.opp_preview[0]) % 3, int(ctx.opp_preview[1]) % 3)
+                if ctx.own_planes is not None:
+                    planes_rows[b] = np.asarray(ctx.own_planes, dtype=np.float32)
+                if tails_rows is not None and ctx.opp_aux_tail is not None:
+                    tails_rows[b] = np.asarray(ctx.opp_aux_tail, dtype=np.float32)
+                infos_fwd.append(
+                    self._sim_info(
+                        speed_setting=int(spd),
+                        level=int(lvl),
+                        frames_used=int(fr),
+                        viruses_initial=int(v0),
+                        viruses_remaining=int(buf.viruses_rem[b]),
+                        options=int(m.sum()),
+                    )
+                )
+                rows.append(b)
+            if not rows:
+                continue
+
+            logits, _values = self._forward_full(
+                obs[rows],
+                pills[rows],
+                prevs[rows],
+                ca[rows],
+                cc[rows],
+                cm[rows],
+                [infos_fwd[b] for b in rows],
+                extra_planes=planes_rows[rows],
+                aux_tails=None if tails_rows is None else tails_rows[rows],
+                on_device=True,
+            )
+            acts = np.full((N,), -1, dtype=np.int32)
+            for k, b in enumerate(rows):
+                lg = logits[k].copy()
+                lg[~cm[b]] = -np.inf
+                acts[b] = int(ca[b][int(np.argmax(lg))])
+            runner.step(acts, None, None)
+
+            for b in rows:
+                if (
+                    int(buf.invalid_action[b]) != -1
+                    or int(buf.terminated[b]) != 0
+                    or int(buf.truncated[b]) != 0
+                ):
+                    continue  # fallback: keep the frozen context
+                key, ctx = chunk[b][0], chunk[b][1]
+                planes = buf.obs[b, :8].copy().astype(np.float32)
+                nxt = (int(ctx.opp_preview[0]) % 3, int(ctx.opp_preview[1]) % 3)
+                if nxt[0] == nxt[1]:
+                    planes[6:8] = 0.0  # symmetry-reduction quirk, as the opp sees it
+                tail: Optional[np.ndarray] = None
+                if self.aux_tail_dim == 15 and ctx.aux_tail is not None:
+                    # Update the learner-side tail: opp viruses from the sim,
+                    # opp pill = its old preview, opp preview unknown (zeros);
+                    # garbage pendings stay frozen.
+                    tail = np.asarray(ctx.aux_tail, dtype=np.float32).copy()
+                    tail[0] = min(1.0, float(buf.viruses_rem[b]) / 84.0)
+                    tail[3:15] = 0.0
+                    tail[3 + nxt[0]] = 1.0
+                    tail[6 + nxt[1]] = 1.0
+                out[key] = (planes, tail)
+        return out
+
+    # ------------------------------------------------------- batched decisions
+    def decide_batch(
+        self, requests: Sequence[SearchRequest]
+    ) -> List[Tuple[int, Dict[str, Any]]]:
+        """`decide()` over several decision contexts with cross-request net
+        batching.
+
+        Native sims still run per request on the shared pool (CPU, cheap); the
+        net evaluations — root priors, ply-2 priors, the 81-combo leaf
+        marginalization, and the optional opponent-model forward — are batched
+        across requests so the device sees large batches (the phase-2
+        cross-env batching of docs/SEARCH_DISTILL.md). No wall-clock deadline:
+        every request runs to full depth (training path; sim budget bounds
+        work). Per-request results match serial `decide()` up to float
+        association; the returned info dicts carry the same keys.
+        """
+
+        S = len(requests)
+        results: List[Tuple[int, Dict[str, Any]]] = []
+        infos_out: List[Dict[str, Any]] = []
+        for _ in range(S):
+            infos_out.append(
+                {
+                    "fallback_action": -1,
+                    "agreed_with_policy": True,
+                    "nodes_expanded": 0,
+                    "elapsed_ms": 0.0,
+                    "value_best": None,
+                    "value_fallback": None,
+                    "stage": "fallback",
+                    "value_root": None,
+                    "cand_actions": None,
+                    "cand_mask": None,
+                    "prior_logits": None,
+                    "ply1_actions": None,
+                    "q_values": None,
+                }
+            )
+        t0 = time.perf_counter()
+        N = self.num_sim_envs
+        buf = self._runner.buffers
+
+        # ------------------------------------------------ per-request prep
+        boards: List[Optional[np.ndarray]] = [None] * S
+        masks512: List[Optional[np.ndarray]] = [None] * S
+        costs512: List[Optional[np.ndarray]] = [None] * S
+        pill_cans: List[Tuple[int, int]] = [(0, 0)] * S
+        prev_cans: List[Tuple[int, int]] = [(0, 0)] * S
+        packed0s: List[Any] = [None] * S
+        obs0s: List[Optional[np.ndarray]] = [None] * S
+        opts0 = np.zeros((S,), dtype=np.int64)
+        v_counts = np.zeros((S,), dtype=np.int64)
+        v0s = np.zeros((S,), dtype=np.int64)
+        active: List[int] = []
+        for s, req in enumerate(requests):
+            mask512 = np.asarray(req.feasible_mask512).reshape(MACRO_ACTIONS).astype(bool)
+            if not bool(mask512.any()):
+                infos_out[s]["stage"] = "no-feasible"
+                continue
+            board = np.ascontiguousarray(np.asarray(req.board, dtype=np.uint8).reshape(128))
+            cost512 = np.asarray(req.cost_to_lock512, dtype=np.float64).reshape(MACRO_ACTIONS)
+            pill_raw = (int(req.pill[0]) & 0x03, int(req.pill[1]) & 0x03)
+            prev_raw = (int(req.preview[0]) & 0x03, int(req.preview[1]) & 0x03)
+            pill_can = (_COLOR_SWAP[pill_raw[0]], _COLOR_SWAP[pill_raw[1]])
+            prev_can = (_COLOR_SWAP[prev_raw[0]], _COLOR_SWAP[prev_raw[1]])
+            mask_red = mask512.copy()
+            if pill_can[0] == pill_can[1]:
+                cand = mask_red.reshape(4, GRID_H, GRID_W)
+                if bool(cand[:2].any()):
+                    cand[2:] = False
+            obs0 = _build_obs_from_board(board, mask512)
+            if pill_can[0] == pill_can[1]:
+                obs0[6:8] = 0.0
+            packed0s[s] = pack_feasible_candidates(
+                mask_red.reshape(4, GRID_H, GRID_W),
+                cost512.reshape(4, GRID_H, GRID_W),
+                max_candidates=self.candidate_max,
+                sort_by_cost=True,
+            )
+            boards[s] = board
+            masks512[s] = mask512
+            costs512[s] = cost512
+            pill_cans[s] = pill_can
+            prev_cans[s] = prev_can
+            obs0s[s] = obs0
+            opts0[s] = int(mask_red.sum())
+            v_counts[s] = int(((board & 0xF0) == 0xD0).sum())
+            v0s[s] = (
+                int(v_counts[s]) if req.viruses_initial is None else int(req.viruses_initial)
+            )
+            active.append(s)
+
+        def _ctx_of(s: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+            ctx = requests[s].obs_context
+            if ctx is None:
+                return None, None
+            return ctx.opp_planes, ctx.aux_tail
+
+        def _finish_all() -> List[Tuple[int, Dict[str, Any]]]:
+            elapsed = (time.perf_counter() - t0) * 1e3
+            for s in range(S):
+                infos_out[s]["elapsed_ms"] = elapsed
+            return results
+
+        if not active:
+            for s in range(S):
+                results.append((-1, infos_out[s]))
+            return _finish_all()
+
+        # -------------------------------- opponent self-model (one sim phase)
+        leaf_ctx: Dict[int, Tuple[np.ndarray, Optional[np.ndarray]]] = {}
+        if self.opponent_model == "self":
+            jobs = []
+            for s in active:
+                ctx = requests[s].obs_context
+                if (
+                    ctx is not None
+                    and ctx.opp_board is not None
+                    and ctx.opp_pill is not None
+                    and ctx.opp_preview is not None
+                ):
+                    req = requests[s]
+                    jobs.append(
+                        (
+                            s,
+                            ctx,
+                            int(req.speed_setting),
+                            int(req.speed_ups),
+                            int(req.level),
+                            int(req.frames_used),
+                            int(v0s[s]),
+                        )
+                    )
+            leaf_ctx = self._advance_opponents(jobs)
+            for s in active:
+                infos_out[s]["opp_advanced"] = bool(s in leaf_ctx)
+
+        def _leaf_ctx_of(s: int) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+            if s in leaf_ctx:
+                return leaf_ctx[s]
+            return _ctx_of(s)
+
+        # --------------------------------------- stage A: batched root priors
+        A = len(active)
+        obs0_all = np.stack([obs0s[s] for s in active])
+        planes0 = tails0 = None
+        if self.obs_extra_planes > 0:
+            planes0 = np.zeros((A, self.obs_extra_planes, GRID_H, GRID_W), dtype=np.float32)
+        if self.aux_tail_dim > 0:
+            tails0 = np.zeros((A, self.aux_tail_dim), dtype=np.float32)
+        for k, s in enumerate(active):
+            cp, ct = _ctx_of(s)
+            if planes0 is not None and cp is not None:
+                planes0[k] = cp
+            if tails0 is not None and ct is not None:
+                tails0[k] = ct
+        infos0 = [
+            self._sim_info(
+                speed_setting=int(requests[s].speed_setting),
+                level=int(requests[s].level),
+                frames_used=int(requests[s].frames_used),
+                viruses_initial=int(v0s[s]),
+                viruses_remaining=int(v_counts[s]),
+                options=int(opts0[s]),
+            )
+            for s in active
+        ]
+        logits0_all, value0_all = self._forward_full(
+            obs0_all,
+            np.array([pill_cans[s] for s in active], dtype=np.int64),
+            np.array([prev_cans[s] for s in active], dtype=np.int64),
+            np.stack([packed0s[s].actions for s in active]),
+            np.stack([packed0s[s].cost for s in active]),
+            np.stack([packed0s[s].mask for s in active]),
+            infos0,
+            extra_planes=planes0,
+            aux_tails=tails0,
+            on_device=True,
+        )
+
+        ply1_actions_s: Dict[int, np.ndarray] = {}
+        fallback_s: Dict[int, int] = {}
+        K_s: Dict[int, int] = {}
+        block_s: Dict[int, int] = {}
+        for k, s in enumerate(active):
+            packed0 = packed0s[s]
+            lg0 = logits0_all[k].copy()
+            lg0[~packed0.mask] = -np.inf
+            order = np.argsort(-lg0, kind="stable")
+            order = order[packed0.mask[order]]
+            fb = int(packed0.actions[order[0]])
+            fallback_s[s] = fb
+            infos_out[s]["fallback_action"] = fb
+            infos_out[s]["value_fallback"] = float(value0_all[k])
+            infos_out[s]["value_root"] = float(value0_all[k])
+            infos_out[s]["cand_actions"] = packed0.actions.copy()
+            infos_out[s]["cand_mask"] = packed0.mask.copy()
+            infos_out[s]["prior_logits"] = lg0
+            K = min(self.beam, int(order.size), N)
+            K_s[s] = K
+            block_s[s] = max(1, N // K)
+            ply1_actions_s[s] = packed0.actions[order[:K]].astype(np.int64)
+            infos_out[s]["nodes_expanded"] = K
+
+        # -------------------------------------- stage B: per-request ply-1 sims
+        lvl_s = {s: int(max(0, min(int(requests[s].level), 25))) for s in active}
+        spd_s = {s: int(max(0, min(int(requests[s].speed_setting), 2))) for s in active}
+        sups_s = {s: int(max(0, min(int(requests[s].speed_ups), 255))) for s in active}
+
+        def _root_spec(s: int) -> object:
+            return build_reset_spec(
+                level=lvl_s[s],
+                speed_setting=spd_s[s],
+                rng_state=(int(self._rng.integers(0, 256)), int(self._rng.integers(0, 256))),
+                rng_override=True,
+                checkpoint_enabled=True,
+                checkpoint_board=boards[s],
+                checkpoint_falling_colors=(
+                    int(requests[s].pill[0]) & 0x03,
+                    int(requests[s].pill[1]) & 0x03,
+                ),
+                checkpoint_preview_colors=(
+                    int(requests[s].preview[0]) & 0x03,
+                    int(requests[s].preview[1]) & 0x03,
+                ),
+                checkpoint_speed_ups=sups_s[s],
+                inject_plan=True,
+                inject_feasible=masks512[s].astype(np.uint8),
+                inject_costs=self._inject_costs(costs512[s], masks512[s]),
+            )
+
+        block_status_s: Dict[int, np.ndarray] = {}
+        block_values_s: Dict[int, np.ndarray] = {}
+        tau1_s: Dict[int, np.ndarray] = {}
+        r1_s: Dict[int, np.ndarray] = {}
+        disc1_s: Dict[int, np.ndarray] = {}
+        alive_s: Dict[int, np.ndarray] = {}
+        obs2_s: Dict[int, np.ndarray] = {}
+        boards2_s: Dict[int, np.ndarray] = {}
+        mask2_flat_s: Dict[int, np.ndarray] = {}
+        cost2_flat_s: Dict[int, np.ndarray] = {}
+        viruses2_s: Dict[int, np.ndarray] = {}
+        prevs2_s: Dict[int, np.ndarray] = {}
+        for s in active:
+            K = K_s[s]
+            self._runner.reset(None, [_root_spec(s) for _ in range(N)])
+            acts = np.full((N,), -1, dtype=np.int32)
+            acts[:K] = ply1_actions_s[s].astype(np.int32)
+            self._runner.step(acts, None, None)
+
+            block_status = np.full((K,), _BLOCK_ALIVE, dtype=np.int32)
+            block_values = -1e-3 * np.arange(K, dtype=np.float64)
+            tau1 = np.zeros((K,), dtype=np.int64)
+            r1 = np.zeros((K,), dtype=np.float64)
+            disc1 = np.ones((K,), dtype=np.float64)
+            for i in range(K):
+                tau1[i] = int(buf.tau_frames[i])
+                disc1[i] = self.gamma ** float(tau1[i])
+                if int(buf.invalid_action[i]) != -1:
+                    block_status[i] = _BLOCK_INVALID
+                    block_values[i] = -np.inf
+                    continue
+                r1[i] = self._step_reward(
+                    i,
+                    v_prev=int(v_counts[s]),
+                    v0=int(v0s[s]),
+                    elapsed_frames=int(requests[s].frames_used) + int(tau1[i]),
+                )
+                if int(buf.terminated[i]) != 0 or int(buf.truncated[i]) != 0:
+                    block_status[i] = _BLOCK_TERMINAL
+                    block_values[i] = self._terminal_q(
+                        reason=int(buf.terminal_reason[i]), ply=1, reward=float(r1[i])
+                    )
+            alive = np.flatnonzero(block_status == _BLOCK_ALIVE)
+            block_status_s[s] = block_status
+            block_values_s[s] = block_values
+            tau1_s[s] = tau1
+            r1_s[s] = r1
+            disc1_s[s] = disc1
+            alive_s[s] = alive
+            if alive.size:
+                obs2_s[s] = np.ascontiguousarray(buf.obs[alive], dtype=np.float32)
+                boards2_s[s] = buf.board_bytes[alive].copy()  # type: ignore[union-attr]
+                mask2_flat_s[s] = buf.feasible_mask[alive].copy()
+                cost2_flat_s[s] = buf.cost_to_lock[alive].copy()
+                viruses2_s[s] = buf.viruses_rem[alive].astype(np.int64)
+                prevs2_s[s] = buf.preview_colors[alive].astype(np.int64)
+
+        def _commit(s: int, stage: str) -> Tuple[int, Dict[str, Any]]:
+            info = infos_out[s]
+            ply1_actions = ply1_actions_s[s]
+            block_values = block_values_s[s]
+            info["ply1_actions"] = ply1_actions.copy()
+            info["q_values"] = block_values.copy()
+            info["stage"] = stage
+            fallback_action = fallback_s[s]
+            best = int(np.argmax(block_values))
+            if not np.isfinite(block_values[best]):
+                info["agreed_with_policy"] = True
+                return fallback_action, info
+            info["value_best"] = float(block_values[best])
+            fbpos = np.flatnonzero(ply1_actions == fallback_action)
+            if fbpos.size and np.isfinite(block_values[int(fbpos[0])]):
+                info["value_fallback"] = float(block_values[int(fbpos[0])])
+            action = int(ply1_actions[best])
+            info["agreed_with_policy"] = bool(action == fallback_action)
+            return action, info
+
+        # ----------------------------- stage C: batched ply-2 (depth-1) priors
+        rows: List[Tuple[int, int]] = []  # (request, local alive index)
+        for s in active:
+            for k in range(int(alive_s[s].size)):
+                rows.append((s, k))
+        masks2_rows: Dict[int, np.ndarray] = {}
+        packed2_rows: List[Any] = []
+        if rows:
+            R = len(rows)
+            obs2_all = np.zeros((R, 12, GRID_H, GRID_W), dtype=np.float32)
+            ca2 = np.full((R, self.candidate_max), -1, dtype=np.int32)
+            cm2 = np.zeros((R, self.candidate_max), dtype=np.bool_)
+            cc2 = np.zeros((R, self.candidate_max), dtype=np.float32)
+            pills2 = np.zeros((R, 2), dtype=np.int64)
+            prevs2 = np.zeros((R, 2), dtype=np.int64)
+            planes2 = (
+                np.zeros((R, self.obs_extra_planes, GRID_H, GRID_W), dtype=np.float32)
+                if self.obs_extra_planes > 0
+                else None
+            )
+            tails2 = (
+                np.zeros((R, self.aux_tail_dim), dtype=np.float32)
+                if self.aux_tail_dim > 0
+                else None
+            )
+            infos2: List[Dict[str, Any]] = []
+            for r, (s, k) in enumerate(rows):
+                same2 = prev_cans[s][0] == prev_cans[s][1]
+                ob = obs2_s[s][k]
+                obs2_all[r] = ob
+                m2 = mask2_flat_s[s][k].reshape(4, GRID_H, GRID_W).astype(bool).copy()
+                if same2:
+                    obs2_all[r, 6:8] = 0.0
+                    if bool(m2[:2].any()):
+                        m2[2:] = False
+                pk = pack_feasible_candidates(
+                    m2,
+                    cost2_flat_s[s][k].reshape(4, GRID_H, GRID_W),
+                    max_candidates=self.candidate_max,
+                    sort_by_cost=True,
+                )
+                packed2_rows.append(pk)
+                ca2[r], cm2[r], cc2[r] = pk.actions, pk.mask, pk.cost
+                pills2[r] = prev_cans[s]
+                prevs2[r] = prevs2_s[s][k]
+                cp, ct = _ctx_of(s)
+                if planes2 is not None and cp is not None:
+                    planes2[r] = cp
+                if tails2 is not None and ct is not None:
+                    tails2[r] = ct
+                i = int(alive_s[s][k])
+                infos2.append(
+                    self._sim_info(
+                        speed_setting=int(requests[s].speed_setting),
+                        level=int(requests[s].level),
+                        frames_used=int(requests[s].frames_used) + int(tau1_s[s][i]),
+                        viruses_initial=int(v0s[s]),
+                        viruses_remaining=int(viruses2_s[s][k]),
+                        options=int(m2.sum()),
+                    )
+                )
+            logits2_all, values2_all = self._forward_full(
+                obs2_all,
+                pills2,
+                prevs2,
+                ca2,
+                cc2,
+                cm2,
+                infos2,
+                extra_planes=planes2,
+                aux_tails=tails2,
+                on_device=True,
+            )
+            for r, (s, k) in enumerate(rows):
+                i = int(alive_s[s][k])
+                block_values_s[s][i] = float(r1_s[s][i]) + float(disc1_s[s][i]) * float(
+                    values2_all[r]
+                )
+
+        # -------------------------------------- stage D: per-request ply-2 sims
+        leaf_rows_obs: List[np.ndarray] = []
+        leaf_rows_info: List[Dict[str, Any]] = []
+        leaf_rows_req: List[int] = []
+        leaf_rows_block: List[int] = []
+        leaf_rows_r2: List[float] = []
+        leaf_rows_disc2: List[float] = []
+        leaf_values_s: Dict[int, List[List[float]]] = {
+            s: [[] for _ in range(K_s[s])] for s in active
+        }
+        row_of = {(s, k): r for r, (s, k) in enumerate(rows)}
+        for s in active:
+            alive = alive_s[s]
+            if alive.size == 0:
+                continue
+            K = K_s[s]
+            block = block_s[s]
+            alive_set = set(int(i) for i in alive)
+            rep_of_block = {int(i): k for k, i in enumerate(alive)}
+            prev_raw = (
+                int(requests[s].preview[0]) & 0x03,
+                int(requests[s].preview[1]) & 0x03,
+            )
+            specs_b: List[object] = []
+            for j in range(N):
+                i = j // block
+                if i not in alive_set:
+                    specs_b.append(_root_spec(s))  # parked; stepped with -1 below
+                    continue
+                k = rep_of_block[i]
+                specs_b.append(
+                    build_reset_spec(
+                        level=lvl_s[s],
+                        speed_setting=spd_s[s],
+                        rng_state=(
+                            int(self._rng.integers(0, 256)),
+                            int(self._rng.integers(0, 256)),
+                        ),
+                        rng_override=True,
+                        checkpoint_enabled=True,
+                        checkpoint_board=boards2_s[s][k],
+                        checkpoint_falling_colors=prev_raw,
+                        checkpoint_preview_colors=(0xFF, 0xFF),  # marginalized
+                        checkpoint_speed_ups=sups_s[s],
+                        inject_plan=True,
+                        inject_feasible=mask2_flat_s[s][k],
+                        inject_costs=cost2_flat_s[s][k],
+                    )
+                )
+            self._runner.reset(None, specs_b)
+
+            acts2 = np.full((N,), -1, dtype=np.int32)
+            n2 = np.zeros((K,), dtype=np.int64)
+            for k, i in enumerate(alive):
+                r = row_of[(s, k)]
+                pk = packed2_rows[r]
+                lg = logits2_all[r].copy()
+                lg[~pk.mask] = -np.inf
+                o2 = np.argsort(-lg, kind="stable")
+                o2 = o2[pk.mask[o2]][:block]
+                n2[int(i)] = int(o2.size)
+                for t, slot in enumerate(o2):
+                    acts2[int(i) * block + t] = int(pk.actions[slot])
+            self._runner.step(acts2, None, None)
+
+            viruses_of_block = {int(i): int(viruses2_s[s][k]) for k, i in enumerate(alive)}
+            for i in alive:
+                for t in range(int(n2[int(i)])):
+                    j = int(i) * block + t
+                    if int(buf.invalid_action[j]) != -1:
+                        continue
+                    tau2 = int(buf.tau_frames[j])
+                    r2 = self._step_reward(
+                        j,
+                        v_prev=viruses_of_block[int(i)],
+                        v0=int(v0s[s]),
+                        elapsed_frames=int(requests[s].frames_used)
+                        + int(tau1_s[s][int(i)])
+                        + tau2,
+                    )
+                    if int(buf.terminated[j]) != 0 or int(buf.truncated[j]) != 0:
+                        leaf_values_s[s][int(i)].append(
+                            self._terminal_q(
+                                reason=int(buf.terminal_reason[j]), ply=2, reward=float(r2)
+                            )
+                        )
+                    else:
+                        leaf_rows_obs.append(buf.obs[j].copy().astype(np.float32))
+                        mask_j = buf.feasible_mask[j].reshape(4, -1)
+                        opt_n = int(mask_j.sum())
+                        opt_z = int(mask_j[:2].sum()) if bool(mask_j[:2].any()) else opt_n
+                        leaf_rows_info.append(
+                            dict(
+                                speed_setting=int(requests[s].speed_setting),
+                                level=int(requests[s].level),
+                                frames_used=int(requests[s].frames_used)
+                                + int(tau1_s[s][int(i)])
+                                + tau2,
+                                viruses_initial=int(v0s[s]),
+                                viruses_remaining=int(buf.viruses_rem[j]),
+                                options_n=opt_n,
+                                options_z=opt_z,
+                            )
+                        )
+                        leaf_rows_req.append(s)
+                        leaf_rows_block.append(int(i))
+                        leaf_rows_r2.append(float(r2))
+                        leaf_rows_disc2.append(self.gamma ** float(tau2))
+            infos_out[s]["nodes_expanded"] += int(n2.sum())
+
+        # ------------------------------ stage E: one batched leaf marginal eval
+        if leaf_rows_obs:
+            L = len(leaf_rows_obs)
+            obs_leaf = np.stack(leaf_rows_obs)
+            infos_n: List[Dict[str, Any]] = []
+            infos_z: List[Dict[str, Any]] = []
+            for li in leaf_rows_info:
+                common = dict(
+                    speed_setting=li["speed_setting"],
+                    level=li["level"],
+                    frames_used=li["frames_used"],
+                    viruses_initial=li["viruses_initial"],
+                    viruses_remaining=li["viruses_remaining"],
+                )
+                infos_n.append(self._sim_info(options=li["options_n"], **common))
+                infos_z.append(self._sim_info(options=li["options_z"], **common))
+            planes_l = (
+                np.zeros((L, self.obs_extra_planes, GRID_H, GRID_W), dtype=np.float32)
+                if self.obs_extra_planes > 0
+                else None
+            )
+            tails_l = (
+                np.zeros((L, self.aux_tail_dim), dtype=np.float32)
+                if self.aux_tail_dim > 0
+                else None
+            )
+            if planes_l is not None or tails_l is not None:
+                for r, s in enumerate(leaf_rows_req):
+                    lp, lt = _leaf_ctx_of(s)
+                    if planes_l is not None and lp is not None:
+                        planes_l[r] = lp
+                    if tails_l is not None and lt is not None:
+                        tails_l[r] = lt
+            v = self._combo_values(
+                obs_leaf, infos_n, infos_z, extra_planes=planes_l, aux_tails=tails_l
+            )
+            vals = v.mean(dim=1).reshape(-1).float().cpu().numpy()
+            for r in range(L):
+                leaf_values_s[leaf_rows_req[r]][leaf_rows_block[r]].append(
+                    leaf_rows_r2[r] + leaf_rows_disc2[r] * float(vals[r])
+                )
+
+        # ----------------------------------------------------- backup + commit
+        for s in active:
+            if alive_s[s].size:
+                block_values_s[s] = backup_block_values(
+                    block_status_s[s],
+                    block_values_s[s],
+                    leaf_values_s[s],
+                    r1=r1_s[s],
+                    disc1=disc1_s[s],
+                )
+        out_by_s: Dict[int, Tuple[int, Dict[str, Any]]] = {}
+        for s in active:
+            stage = "depth2" if alive_s[s].size else "ply1"
+            out_by_s[s] = _commit(s, stage)
+        for s in range(S):
+            results.append(out_by_s.get(s, (-1, infos_out[s])))
+        return _finish_all()
 
     # ---------------------------------------------------------------- internals
     @staticmethod
@@ -859,6 +1712,27 @@ class SearchPolicy:
             r += rc.time_bonus_topout_per_60_frames * elapsed_sec
         return float(r)
 
+    def _ctx_obs(self, obs: np.ndarray, extra_planes: Optional[np.ndarray]) -> np.ndarray:
+        """Splice frozen context planes when the net expects the _vs layout."""
+
+        if self.obs_extra_planes <= 0:
+            return obs
+        if extra_planes is None:
+            extra_planes = np.zeros(
+                (self.obs_extra_planes, GRID_H, GRID_W), dtype=np.float32
+            )
+        return splice_obs_context(obs, extra_planes)
+
+    def _ctx_aux(
+        self,
+        obs: np.ndarray,
+        infos: Sequence[Dict[str, Any]],
+        aux_tails: Optional[np.ndarray],
+    ) -> Optional[np.ndarray]:
+        if self.aux_shim is None:
+            return None
+        return aux_v1_with_tail(obs, infos, aux_tails, self.aux_tail_dim)
+
     def _forward_full(
         self,
         obs: np.ndarray,
@@ -868,15 +1742,24 @@ class SearchPolicy:
         cand_cost: np.ndarray,
         cand_mask: np.ndarray,
         infos: List[Dict[str, Any]],
+        *,
+        extra_planes: Optional[np.ndarray] = None,
+        aux_tails: Optional[np.ndarray] = None,
+        on_device: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Full candidate forward: (logits [B,Kmax], values [B]) as numpy."""
+        """Full candidate forward: (logits [B,Kmax], values [B]) as numpy.
 
-        aux = None
-        if self.aux_shim is not None:
-            aux = aux_v1_batch_fast(obs, infos)
-        dev = "cpu"
+        ``extra_planes``/``aux_tails`` are the frozen obs context (per batch or
+        per row); ``on_device`` routes the forward through the device net copy
+        (used by the cross-env-batched `decide_batch` stages).
+        """
+
+        obs = self._ctx_obs(obs, extra_planes)
+        aux = self._ctx_aux(obs, infos, aux_tails)
+        dev = self.device if on_device else "cpu"
+        net = self.net_dev if on_device else self.net
         with torch.inference_mode():
-            logits, values = self.net(
+            logits, values = net(
                 torch.from_numpy(np.ascontiguousarray(obs, dtype=np.float32)).to(dev),
                 torch.from_numpy(np.ascontiguousarray(pills, dtype=np.int64)).to(dev),
                 torch.from_numpy(np.ascontiguousarray(prevs, dtype=np.int64)).to(dev),
@@ -901,6 +1784,8 @@ class SearchPolicy:
         block: int,
         viruses_initial: int,
         buf: Optional[Any] = None,
+        extra_planes: Optional[np.ndarray] = None,
+        aux_tails: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """Leaf values with the unknown (pill, preview) colors marginalized.
 
@@ -932,7 +1817,9 @@ class SearchPolicy:
             infos_n.append(self._sim_info(options=opt_n, **common))
             infos_z.append(self._sim_info(options=opt_z, **common))
 
-        v = self._combo_values(obs, infos_n, infos_z)  # [B,81]
+        v = self._combo_values(
+            obs, infos_n, infos_z, extra_planes=extra_planes, aux_tails=aux_tails
+        )  # [B,81]
         return v.mean(dim=1).reshape(-1).float().cpu().numpy()
 
     def _combo_values(
@@ -940,14 +1827,18 @@ class SearchPolicy:
         obs: np.ndarray,
         infos_n: List[Dict[str, Any]],
         infos_z: List[Dict[str, Any]],
+        extra_planes: Optional[np.ndarray] = None,
+        aux_tails: Optional[np.ndarray] = None,
     ) -> "torch.Tensor":
         """Value head over all 81 (pill, preview) canonical color combos.
 
         Returns a [B, 81] tensor (combo index = 9*pill_pair + preview_pair,
         canonical-pair-major). Same trunk-sharing trick as documented on
-        `_marginal_leaf_values`.
+        `_marginal_leaf_values`. ``obs`` is the 12-channel sim layout;
+        ``extra_planes``/``aux_tails`` are the frozen vs context.
         """
 
+        obs = self._ctx_obs(np.ascontiguousarray(obs, dtype=np.float32), extra_planes)
         B = int(np.asarray(obs).shape[0])
         net = self.net_dev
         dev = self.device
@@ -967,7 +1858,11 @@ class SearchPolicy:
             n_combo = p.shape[0]
             if self.aux_shim is not None and net.aux_encoder is not None:
                 aux = np.concatenate(
-                    [aux_v1_batch_fast(obs, infos_n), aux_v1_batch_fast(obs, infos_z)], axis=0
+                    [
+                        self._ctx_aux(obs, infos_n, aux_tails),
+                        self._ctx_aux(obs, infos_z, aux_tails),
+                    ],
+                    axis=0,
                 )
                 ae = net.aux_encoder(torch.from_numpy(aux).to(dev))
                 ae_n, ae_z = ae[:B], ae[B:]  # [B,P]
@@ -1266,10 +2161,12 @@ class PonderingSearchPolicy(SearchPolicy):
         viruses_initial: Optional[int] = None,
         frames_used: int = 0,
         deadline_ms: Optional[float] = None,
+        obs_context: Optional[ObsContext] = None,
     ) -> Tuple[int, Dict[str, Any]]:
         t0 = time.perf_counter()
         mask512 = np.asarray(feasible_mask512).reshape(MACRO_ACTIONS).astype(bool)
-        if mask512.any():
+        # Ponder caches are 1P-only: a vs obs context bypasses the cache.
+        if mask512.any() and obs_context is None:
             key = (
                 _board_key(board_bytes128),
                 (int(pill[0]) & 3, int(pill[1]) & 3),
@@ -1327,6 +2224,7 @@ class PonderingSearchPolicy(SearchPolicy):
             viruses_initial=viruses_initial,
             frames_used=frames_used,
             deadline_ms=deadline_ms,
+            obs_context=obs_context,
         )
         info["ponder_hit"] = False
         return action, info
@@ -1760,9 +2658,13 @@ class PonderingSearchPolicy(SearchPolicy):
 
 
 __all__ = [
+    "ObsContext",
     "PonderingSearchPolicy",
     "PonderResult",
     "SearchPolicy",
+    "SearchRequest",
     "aux_v1_batch_fast",
+    "aux_v1_with_tail",
     "backup_block_values",
+    "splice_obs_context",
 ]

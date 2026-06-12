@@ -50,6 +50,29 @@ smdp_ppo:
 
   aux_spec: "v1_vs"
 
+  # Search-amplified training targets (Gumbel-AZ-lite, OFF by default;
+  # docs/SEARCH_DISTILL.md). Compatible with this opponent-obs stack: the
+  # search sims run the learner's own board on the 1P pool; the opponent
+  # planes (obs ch 8..15) and the v1_vs aux tail are frozen at the searched
+  # decision and spliced into every node evaluation (exact at ply 1,
+  # frozen-opponent approximation at ply 2). Searched envs are batched per
+  # vectorized decision.
+  # search_distill:
+  #   enabled: false
+  #   sims: 12               # native sim envs per searched decision
+  #   beam: 8                # ply-1 beam width
+  #   decision_fraction: 0.25
+  #   beta: 1.0              # KL term weight
+  #   value_mix: 0.5         # blend of search Q into value targets (0 = off)
+  #   sigma_scale: 1.0       # c in improved_logits = prior + c * norm(Q)
+  #   opponent_model: none   # none|self — self advances the opponent board
+  #                          # one self-model placement (argmax of these same
+  #                          # weights on the opponent's mirrored obs) for the
+  #                          # ply-2 leaf contexts; O(1) extra sims/search
+  #   act_from_search: false # execute improved-policy samples at searched
+  #                          # decisions (behavior log-prob from the improved
+  #                          # distribution; shifts toward full Gumbel-AZ)
+
   entropy_schedule_end: 0.008
   entropy_schedule_steps: 100000000
   use_gumbel_topk: false
