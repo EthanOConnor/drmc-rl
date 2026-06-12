@@ -35,7 +35,10 @@ prefix.
 
 Reward: terminal +1 win / -1 loss / 0 draw, plus a small shaping term
 ``garbage_reward_coef * garbage_sent_delta`` (half pills sent this decision;
-anneal via ``set_attr("garbage_reward_coef", ...)``).
+anneal via ``set_attr("garbage_reward_coef", ...)``). Optional
+``clear_win_bonus``: extra terminal reward on wins earned by clearing all
+own viruses (vs opponent topout) — reorders HOW to win, never whether
+winning beats losing.
 """
 
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -101,6 +104,7 @@ class DrMarioVsPoolVecEnv:
         speed_setting: int = 2,
         randomize_rng: bool = True,
         garbage_reward_coef: float = 0.05,
+        clear_win_bonus: float = 0.0,
         max_lock_frames: int = 2048,
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
@@ -119,6 +123,7 @@ class DrMarioVsPoolVecEnv:
         self.speed_setting = int(max(0, min(int(speed_setting), 2)))
         self.rng_randomize = bool(randomize_rng)
         self.garbage_reward_coef = float(garbage_reward_coef)
+        self.clear_win_bonus = float(clear_win_bonus)
         self.seed_provider = seed_provider
 
         state_repr_norm = str(state_repr or "").strip().lower().replace("-", "_")
@@ -390,6 +395,12 @@ class DrMarioVsPoolVecEnv:
                 oc = int(outcome[i])
                 if oc == VS_OUTCOME_WIN:
                     r += 1.0
+                    # Clear-win incentive: extra terminal bonus when the win
+                    # came from clearing all own viruses (not opponent topout).
+                    # Keeps the win > loss ordering for any bonus >= 0; only
+                    # reorders HOW to win.
+                    if self.clear_win_bonus and int(v_now[i]) == 0:
+                        r += float(self.clear_win_bonus)
                     outcome_str[i] = "win"
                 elif oc == VS_OUTCOME_LOSS:
                     r -= 1.0
