@@ -5,10 +5,20 @@ Side 0 of every pair is driven by the depth-2 search
 deterministic argmax of the same checkpoint. Reports the search side's win
 rate with a Wilson 95% CI (draws reported separately).
 
+``--a-ponder``: side 0 uses `PonderingSearchPolicy` and side 1 the plain
+*search* (same beam/deadline), i.e. ponder-search vs plain-search. Offline
+dead time is simulated time, so after every side-0 decision the harness runs
+the next-decision ponder job to completion before stepping ("enough wall
+time elapsed") — fair because real dead time between spawns (~0.7-1.5 s) far
+exceeds ponder compute; the report includes the job wall p95 so that premise
+can be checked. Hit rate, hit/miss decide latency, and ponder job wall
+percentiles are reported alongside the win rate.
+
 Usage:
   .venv/bin/python -m tools.vs_head_to_head --matches 60 --level 14 --pairs 6 \
       [--checkpoint PATH] [--beam 8] [--search-deadline-ms 60] [--device mps] \
-      [--a-plain]   # A/A control: side 0 also plain argmax
+      [--a-plain]    # A/A control: side 0 also plain argmax
+      [--a-ponder]   # side 0 ponder-search, side 1 plain-search
 """
 
 from __future__ import annotations
@@ -24,7 +34,7 @@ import numpy as np
 import torch
 
 from models.policy.candidate_packing import pack_feasible_candidates
-from models.policy.search_policy import SearchPolicy
+from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
 from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -125,8 +135,12 @@ def main() -> None:
                     help="search leaf device (auto = mps if available)")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--seed", type=int, default=12345)
-    ap.add_argument("--a-plain", action="store_true",
-                    help="A/A control: side 0 plain argmax instead of search")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--a-plain", action="store_true",
+                      help="A/A control: side 0 plain argmax instead of search")
+    mode.add_argument("--a-ponder", action="store_true",
+                      help="side 0 ponder-search vs side 1 plain-search")
+    ap.add_argument("--ponder-budget-s", type=float, default=1.0)
     ap.add_argument("--json-out", type=str, default=None)
     args = ap.parse_args()
 
@@ -139,7 +153,28 @@ def main() -> None:
     print(f"checkpoint: {ckpt}")
     plain = PlainPolicy(ckpt, device="cpu")
     search: Optional[SearchPolicy] = None
-    if not args.a_plain:
+    search_b: Optional[SearchPolicy] = None  # side-1 plain-search (--a-ponder)
+    if args.a_ponder:
+        search = PonderingSearchPolicy(
+            ckpt,
+            beam=int(args.beam),
+            deadline_ms=float(args.search_deadline_ms),
+            device=device,
+            seed=int(args.seed),
+            ponder_budget_s=float(args.ponder_budget_s),
+        )
+        search_b = SearchPolicy(
+            ckpt,
+            beam=int(args.beam),
+            deadline_ms=float(args.search_deadline_ms),
+            device=device,
+            seed=int(args.seed) + 1,
+        )
+        print(
+            f"A: ponder-search (budget {args.ponder_budget_s}s)  B: plain-search | "
+            f"beam={args.beam} deadline_ms={args.search_deadline_ms} device={device}"
+        )
+    elif not args.a_plain:
         search = SearchPolicy(
             ckpt,
             beam=int(args.beam),
@@ -164,48 +199,95 @@ def main() -> None:
     search_ms: List[float] = []
     agreed = 0
     search_decisions = 0
+    ponder_hits = 0
+    ponder_lat_hit: List[float] = []
+    ponder_lat_miss: List[float] = []
     t_start = time.perf_counter()
+
+    def _search_decide(sp: SearchPolicy, i: int):
+        """Run one per-env search decision; returns (action, sinfo) or None."""
+        info = infos[i]
+        mask = np.asarray(info["placements/feasible_mask"], dtype=bool)
+        if not mask.any():
+            return None  # noop-fall
+        boards = env._runner.buffers.board_bytes
+        pills = env._runner.buffers.pill_colors
+        pv = info["preview_pill"]
+        spd_ups = min(_SPEEDUPS_MAX, base_speed_ups + int(ep_decisions[i]) // 10)
+        return sp.decide(
+            boards[i],
+            (_CANON_TO_RAW[int(pills[i, 0])], _CANON_TO_RAW[int(pills[i, 1])]),
+            (int(pv["first_color"]), int(pv["second_color"])),
+            mask,
+            info["placements/cost_to_lock"],
+            int(args.speed_setting),
+            spd_ups,
+            int(args.level),
+            viruses_initial=int(info.get("drm/viruses_initial", 0)),
+            frames_used=int(info.get("task/frames_used", 0)),
+        )
 
     while wins + losses + draws < int(args.matches):
         need = np.array([bool(i.get("placements/needs_action", False)) for i in infos])
         acts = np.full(S, -1, dtype=np.int32)
 
-        # Side 1 (odd): plain argmax, batched.
+        # Side 1 (odd): plain argmax, batched (or plain-search for --a-ponder).
         odd = [i for i in range(1, S, 2) if need[i]]
-        if odd:
+        if odd and search_b is None:
             acts[odd] = plain.act(obs[odd], [infos[i] for i in odd])
+        else:
+            for i in odd:
+                out = _search_decide(search_b, i)
+                if out is not None and out[0] >= 0:
+                    acts[i] = int(out[0])
 
-        # Side 0 (even): search (or plain for the A/A control).
+        # Side 0 (even): search / ponder-search (or plain for the A/A control).
         even = [i for i in range(0, S, 2) if need[i]]
         if even and search is None:
             acts[even] = plain.act(obs[even], [infos[i] for i in even])
         elif even:
-            boards = env._runner.buffers.board_bytes
-            pills = env._runner.buffers.pill_colors
             for i in even:
-                info = infos[i]
-                mask = np.asarray(info["placements/feasible_mask"], dtype=bool)
-                if not mask.any():
-                    continue  # noop-fall
-                pv = info["preview_pill"]
-                spd_ups = min(_SPEEDUPS_MAX, base_speed_ups + int(ep_decisions[i]) // 10)
-                a, sinfo = search.decide(
-                    boards[i],
-                    (_CANON_TO_RAW[int(pills[i, 0])], _CANON_TO_RAW[int(pills[i, 1])]),
-                    (int(pv["first_color"]), int(pv["second_color"])),
-                    mask,
-                    info["placements/cost_to_lock"],
-                    int(args.speed_setting),
-                    spd_ups,
-                    int(args.level),
-                    viruses_initial=int(info.get("drm/viruses_initial", 0)),
-                    frames_used=int(info.get("task/frames_used", 0)),
-                )
+                out = _search_decide(search, i)
+                if out is None:
+                    continue
+                a, sinfo = out
                 if a >= 0:
                     acts[i] = int(a)
                 search_ms.append(float(sinfo["elapsed_ms"]))
                 agreed += int(bool(sinfo["agreed_with_policy"]))
                 search_decisions += 1
+                if not args.a_ponder:
+                    continue
+                if sinfo.get("ponder_hit"):
+                    ponder_hits += 1
+                    ponder_lat_hit.append(float(sinfo["elapsed_ms"]))
+                else:
+                    ponder_lat_miss.append(float(sinfo["elapsed_ms"]))
+                if a >= 0:
+                    # Offline dead time is simulated: run the next-decision
+                    # ponder to completion before the env advances (real dead
+                    # time >> ponder compute; job wall p95 is reported).
+                    info = infos[i]
+                    pv = info["preview_pill"]
+                    pills = env._runner.buffers.pill_colors
+                    search.start_ponder(
+                        env._runner.buffers.board_bytes[i].copy(),
+                        int(a),
+                        (_CANON_TO_RAW[int(pills[i, 0])], _CANON_TO_RAW[int(pills[i, 1])]),
+                        (int(pv["first_color"]), int(pv["second_color"])),
+                        feasible_mask512=np.asarray(
+                            info["placements/feasible_mask"], dtype=bool
+                        ),
+                        cost_to_lock512=info["placements/cost_to_lock"],
+                        speed_setting=int(args.speed_setting),
+                        speed_ups=min(
+                            _SPEEDUPS_MAX, base_speed_ups + int(ep_decisions[i]) // 10
+                        ),
+                        level=int(args.level),
+                        viruses_initial=int(info.get("drm/viruses_initial", 0)),
+                        frames_used=int(info.get("task/frames_used", 0)),
+                    )
+                    search.wait_ponder_idle(timeout=60.0)
 
         ep_decisions[need] += 1
         obs, _r, term, trunc, infos = env.step(acts)
@@ -232,14 +314,19 @@ def main() -> None:
             )
 
     env.close()
+    ponder_stats = search.ponder_stats() if args.a_ponder else None
     if search is not None:
         search.close()
+    if search_b is not None:
+        search_b.close()
 
     n_dec = wins + losses
     wr = wins / max(1, n_dec)
     lo, hi = wilson_ci(wins, max(1, n_dec))
     result = {
         "checkpoint": str(ckpt),
+        "mode": "ponder-search vs plain-search" if args.a_ponder
+        else ("plain vs plain" if args.a_plain else "search vs plain-argmax"),
         "level": int(args.level),
         "speed_setting": int(args.speed_setting),
         "beam": int(args.beam) if search is not None else 0,
@@ -257,6 +344,22 @@ def main() -> None:
         result["search_ms_p50"] = float(np.percentile(arr, 50))
         result["search_ms_p95"] = float(np.percentile(arr, 95))
         result["search_agreement"] = agreed / max(1, search_decisions)
+    if ponder_stats is not None:
+        result["ponder_hit_rate"] = ponder_hits / max(1, search_decisions)
+        result["ponder_job_wall_s_p50"] = ponder_stats.get("job_wall_s_p50")
+        result["ponder_job_wall_s_p95"] = ponder_stats.get("job_wall_s_p95")
+        result["ponder_jobs_completed"] = ponder_stats.get("jobs_completed")
+        result["ponder_pairs_depth2_frac"] = (
+            ponder_stats["pairs_depth2"] / max(1, ponder_stats["pairs_total"])
+        )
+        if ponder_lat_hit:
+            a2 = np.asarray(ponder_lat_hit)
+            result["decide_hit_ms_p50"] = float(np.percentile(a2, 50))
+            result["decide_hit_ms_p95"] = float(np.percentile(a2, 95))
+        if ponder_lat_miss:
+            a2 = np.asarray(ponder_lat_miss)
+            result["decide_miss_ms_p50"] = float(np.percentile(a2, 50))
+            result["decide_miss_ms_p95"] = float(np.percentile(a2, 95))
     print(json.dumps(result, indent=2))
     if args.json_out:
         Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)

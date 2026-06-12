@@ -52,11 +52,21 @@ default 60) must leave room inside the plan margin (6 frames ~= 100 ms) for
 the v1 planner + script generation; verify with ``--bench``. Everything else
 (v1 script generation, plan.json, replan loop) is unchanged.
 
+Ponder: ``--ponder`` (implies ``--search``) additionally searches the *next*
+decision in the background while the committed script executes
+(`PonderingSearchPolicy`). After every plan write the predicted next root is
+pondered; at the next spawn a cache hit commits instantly with a shrunken
+plan margin (``PONDER_MARGIN`` = 2 frames instead of 6 — planner + script
+p95 is ~10 ms, well inside 33 ms), which preserves placements that a 6-frame
+roll-forward would lose; the decision log reports ``n_options`` at both
+margins on hits. A miss (garbage, desync, replan) falls back to the normal
+deadline search at the normal margin.
+
 Usage:
   .venv/bin/python -m tools.live_agent_server --ipc-dir /tmp/drmc_live \
       [--side 1] [--policy checkpoint|greedy-cost|random] [--checkpoint PATH]
       [--temperature 0.0] [--margin 6] [--dry-run] [--bench 100]
-      [--search 8] [--search-deadline-ms 60] [--device auto]
+      [--search 8] [--search-deadline-ms 60] [--device auto] [--ponder]
 """
 
 from __future__ import annotations
@@ -86,6 +96,7 @@ from tools.annotate_replay_events import POSE_TO_ACTION, build_obs, canonical_co
 GRID_W, GRID_H = 8, 16
 NEUTRAL_ACTION = 0  # 18-action index: neutral dir, no down, no rotation
 DEFAULT_MARGIN = 6  # frames between a state line and its plan's start_frame
+PONDER_MARGIN = 2  # margin on a ponder cache hit (decision precomputed)
 
 # NES button bits (DrMarioPool.cpp).
 BTN_RIGHT, BTN_LEFT, BTN_DOWN, BTN_B, BTN_A = 0x01, 0x02, 0x04, 0x40, 0x80
@@ -185,6 +196,7 @@ class LiveAgentServer:
         search_beam: Optional[int] = None,
         search_deadline_ms: float = 60.0,
         device: str = "auto",
+        ponder: bool = False,
     ) -> None:
         self.dir = Path(ipc_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -192,6 +204,7 @@ class LiveAgentServer:
         self.policy = str(policy)
         self.temperature = float(temperature)
         self.margin = int(margin)
+        self.ponder = bool(ponder)
         self.dry_run = bool(dry_run)
         self.rng = np.random.default_rng(seed)
         self._log_fh = open(log_path, "a") if log_path else None
@@ -214,6 +227,8 @@ class LiveAgentServer:
         self._search = None
         self._search_info: Optional[Dict[str, Any]] = None
         self.checkpoint_name: Optional[str] = None
+        if self.ponder and search_beam is None:
+            search_beam = 8  # --ponder implies --search
         if search_beam is not None:
             if self.policy != "checkpoint":
                 raise ValueError("--search requires --policy checkpoint")
@@ -253,13 +268,14 @@ class LiveAgentServer:
     ) -> None:
         import torch
 
-        from models.policy.search_policy import SearchPolicy
+        from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
 
         torch.set_num_threads(1)  # training runs share this box
         if device == "auto":
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         path = Path(checkpoint) if checkpoint else default_checkpoint()
-        self._search = SearchPolicy(
+        cls = PonderingSearchPolicy if self.ponder else SearchPolicy
+        self._search = cls(
             path,
             beam=beam,
             deadline_ms=deadline_ms,
@@ -275,6 +291,7 @@ class LiveAgentServer:
                 "search_beam": beam,
                 "search_deadline_ms": deadline_ms,
                 "device": device,
+                "ponder": self.ponder,
             }
         )
 
@@ -398,6 +415,7 @@ class LiveAgentServer:
         if idx >= len(self.plan.buttons):
             # Script should have locked by now but the pill is still falling.
             self.plan = None
+            self._ponder_invalidate()
             return self._plan_from(d, reason="replan-late")
 
         # Verification line while the plan is (supposedly) being applied.
@@ -415,8 +433,13 @@ class LiveAgentServer:
                 }
             )
             self.plan = None
+            self._ponder_invalidate()
             return self._plan_from(d, reason="replan-desync")
         return None
+
+    def _ponder_invalidate(self) -> None:
+        if self.ponder and self._search is not None:
+            self._search.ponder_invalidate()
 
     def _plan_from(self, d: Dict[str, Any], *, reason: str) -> Optional[Dict[str, Any]]:
         t0 = time.perf_counter()
@@ -424,6 +447,19 @@ class LiveAgentServer:
         field = field_from_hex(d["field"])
         cols = cols_from_field(field)
         thr = compute_speed_threshold(int(d.get("spd", 2)), int(d.get("spdups", 0)))
+
+        # Instant-commit margin: when the next decision was pondered to
+        # completion, the search is a ~1 ms cache lookup, so only the planner
+        # + script generation (~10 ms) needs to fit inside the margin.
+        margin = self.margin
+        if (
+            self.ponder
+            and self._search is not None
+            and self._search.has_ponder_for(
+                field.reshape(-1), (int(d["pill"][0]), int(d["pill"][1]))
+            )
+        ):
+            margin = min(margin, PONDER_MARGIN)
 
         st = FrameState(
             x=int(d["x"]),
@@ -436,12 +472,34 @@ class LiveAgentServer:
         )
         # Roll forward the latency margin with neutral input: the plan starts
         # at f + margin, and Lua holds neutral until then.
-        for _ in range(self.margin):
+        for _ in range(margin):
             st = simulate_frame(cols, st, NEUTRAL_ACTION, speed_threshold=thr)
             if st.locked:
                 self._log({"type": "skip", "f": f, "pc": self.cur_pc,
                            "msg": "pill locks within latency margin"})
                 return None
+
+        # Feasibility gain measurement: on an early commit, also count the
+        # options that would have survived the default margin.
+        n_options_default_margin: Optional[int] = None
+        if margin < self.margin:
+            st_full = st
+            locked_full = False
+            for _ in range(self.margin - margin):
+                st_full = simulate_frame(cols, st_full, NEUTRAL_ACTION, speed_threshold=thr)
+                if st_full.locked:
+                    locked_full = True
+                    break
+            if locked_full:
+                n_options_default_margin = 0
+            else:
+                reach_full = self.runner.bfs_full(cols, st_full, speed_threshold=thr)
+                feas_full = np.zeros(512, dtype=bool)
+                for pose in np.flatnonzero(reach_full.costs_u16 != 0xFFFF):
+                    a = int(POSE_TO_ACTION[pose])
+                    if a >= 0:
+                        feas_full[a] = True
+                n_options_default_margin = int(feas_full.sum())
 
         reach = self.runner.bfs_full(cols, st, speed_threshold=thr)
 
@@ -484,7 +542,7 @@ class LiveAgentServer:
             )
 
         self.plan_seq += 1
-        start_frame = f + self.margin
+        start_frame = f + margin
         plan = {
             "plan_id": self.plan_seq,
             "spawn": int(d["pc"]),
@@ -515,9 +573,12 @@ class LiveAgentServer:
             "n_options": n_options,
             "script_len": len(buttons),
             "start_frame": start_frame,
+            "margin": margin,
             "latency_ms": round(latency_ms, 3),
             "script": script.tolist(),
         }
+        if n_options_default_margin is not None:
+            self.last_decision["n_options_default_margin"] = n_options_default_margin
         if self._search_info is not None:
             si = self._search_info
             self.last_decision["search"] = {
@@ -529,7 +590,27 @@ class LiveAgentServer:
                 "value_fallback": si.get("value_fallback"),
                 "search_ms": round(float(si.get("elapsed_ms", 0.0)), 3),
             }
+            if self.ponder:
+                self.last_decision["search"]["ponder_hit"] = bool(si.get("ponder_hit", False))
+                if si.get("ponder_depth") is not None:
+                    self.last_decision["search"]["ponder_depth"] = si.get("ponder_depth")
         self._log({k: v for k, v in self.last_decision.items() if k != "script"})
+        # Kick the next-decision ponder while the committed script executes
+        # (newest job wins, so replans automatically supersede stale jobs).
+        if self.ponder and self._search is not None:
+            self._search.start_ponder(
+                field.reshape(-1),
+                int(action),
+                (int(d["pill"][0]), int(d["pill"][1])),
+                (int(d["prev"][0]), int(d["prev"][1])),
+                feasible_mask512=feasible,
+                cost_to_lock512=action_cost,
+                speed_setting=int(d.get("spd", 2)),
+                speed_ups=int(d.get("spdups", 0)),
+                level=int(d.get("level", 0)),
+                viruses_initial=int(self.viruses_initial),
+                frames_used=f - int(self.game_start_f),
+            )
         return plan
 
     # ------------------------------------------------------------- IO
@@ -674,6 +755,10 @@ def main() -> None:
     ap.add_argument("--search-deadline-ms", type=float, default=60.0,
                     help="search anytime deadline; must leave plan-margin room "
                          "for the planner + script generation")
+    ap.add_argument("--ponder", action="store_true",
+                    help="search the next decision during script-execution dead "
+                         "time; cache hits commit instantly with a 2-frame plan "
+                         "margin (implies --search)")
     ap.add_argument("--device", type=str, default="auto",
                     help="torch device for the search nets (auto = mps if available)")
     args = ap.parse_args()
@@ -699,6 +784,7 @@ def main() -> None:
         search_beam=args.search,
         search_deadline_ms=args.search_deadline_ms,
         device=args.device,
+        ponder=args.ponder,
     )
     if args.bench is not None:
         bench(server, int(args.bench))
