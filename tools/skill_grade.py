@@ -188,7 +188,10 @@ def expand(X, base_names=None):
 
 
 def ridge_fit(Z, y, w, alpha):
-    """Weighted ridge on standardized Z; returns (mu, sd, coef, intercept)."""
+    """Weighted ridge on standardized Z; returns (mu, sd, coef, intercept).
+
+    ``alpha`` may be a scalar or a per-column penalty vector.
+    """
     mu = Z.mean(axis=0)
     sd = Z.std(axis=0)
     sd[sd == 0] = 1.0
@@ -196,7 +199,8 @@ def ridge_fit(Z, y, w, alpha):
     sw = np.sqrt(w)
     A = Zs * sw[:, None]
     b = (y - np.average(y, weights=w)) * sw
-    coef = np.linalg.solve(A.T @ A + alpha * np.eye(Z.shape[1]), A.T @ b)
+    pen = np.diag(np.broadcast_to(np.asarray(alpha, float), (Z.shape[1],)))
+    coef = np.linalg.solve(A.T @ A + pen, A.T @ b)
     intercept = np.average(y - Zs @ coef, weights=w)
     return mu, sd, coef, intercept
 
@@ -253,6 +257,27 @@ def self_play_rating(model, X, tol=1.0, max_iter=20):
             return r, True, it
         prev_delta = delta
     return r, False, max_iter
+
+
+SELFPLAY_SLOPE_MAX = 0.7
+
+
+def selfplay_slope(model, X_metrics, y_mean, span=1000.0, step=250.0):
+    """Max |d pred / d opp_whr| of the self-play fixed-point map.
+
+    Evaluated numerically at the given metric rows over opp_whr in
+    [y_mean - span, y_mean + span]. The fixed point r = f(opp_whr=r) is only
+    well-conditioned when this slope stays clearly below 1; corpora with
+    strong matchmaking correlation push fits toward the degenerate
+    "your rating == opponent's rating" shortcut (slope -> 1), which collapses
+    self-play grading.
+    """
+    rs = np.arange(y_mean - span, y_mean + span + 1, step)
+    preds = [float(np.mean(predict_rating(model, X_metrics, opp_whr=r))) for r in rs]
+    return max(
+        abs((preds[i + 1] - preds[i]) / (rs[i + 1] - rs[i]))
+        for i in range(len(rs) - 1)
+    )
 
 
 def group_kfold(groups, k):
@@ -323,11 +348,40 @@ def cmd_fit(args):
 
     print("new config (with opp_whr):")
     Z, feat_names = expand(X, FIT_FEATURES)
-    alpha, cv_mae, resid_std = sweep(Z)
-    print(f"selected alpha={alpha}: CV MAE={cv_mae:.1f} Elo, residual std={resid_std:.1f} Elo")
+    opp_cols = np.asarray([OPP_FEATURE in n for n in feat_names])
+    X_mean = np.average(X[:, : len(BASE_FEATURES)], axis=0, weights=w)[None, :]
+    y_mean = float(np.average(y, weights=w))
+
+    # Sweep (base alpha) x (extra penalty on opp_whr-involving terms); admit
+    # only fits whose self-play map slope stays below SELFPLAY_SLOPE_MAX —
+    # matchmaking correlation otherwise drives the fit toward the degenerate
+    # "rating == opponent rating" shortcut and self-play grading collapses
+    # (observed 2026-06-12: fixed point 2500 -> 312 on a corpus refresh).
+    best = None  # (mae, resid_std, alpha, mult, slope)
+    for mult in (1.0, 3.0, 10.0, 30.0, 100.0, 300.0):
+        for alpha in (0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0):
+            avec = np.where(opp_cols, alpha * mult, alpha)
+            mae, resid_std, _ = cross_validate(Z, y, w, groups, avec)
+            mu, sd, coef, b0 = ridge_fit(Z, y, w, avec)
+            m = {"version": MODEL_VERSION, "base_features": FIT_FEATURES,
+                 "mu": mu.tolist(), "sd": sd.tolist(), "coef": coef.tolist(),
+                 "intercept": float(b0)}
+            slope = selfplay_slope(m, X_mean, y_mean)
+            ok = slope <= SELFPLAY_SLOPE_MAX
+            print(f"  alpha={alpha:<6g} opp_mult={mult:<5g} CV MAE={mae:7.1f}  "
+                  f"slope={slope:.2f}{'' if ok else '  (rejected)'}")
+            if ok and (best is None or mae < best[0]):
+                best = (mae, resid_std, alpha, mult, slope)
+    if best is None:
+        raise SystemExit("no admissible fit: every candidate exceeded "
+                         f"self-play slope {SELFPLAY_SLOPE_MAX}")
+    cv_mae, resid_std, alpha, opp_mult, slope = best
+    print(f"selected alpha={alpha} opp_mult={opp_mult}: CV MAE={cv_mae:.1f} Elo, "
+          f"residual std={resid_std:.1f} Elo, self-play slope={slope:.2f}")
     print(f"CV MAE old (no opp_whr) {cv_mae_old:.1f} -> new (with opp_whr) {cv_mae:.1f} Elo")
 
-    mu, sd, coef, b0 = ridge_fit(Z, y, w, alpha)
+    alpha_vec = np.where(opp_cols, alpha * opp_mult, alpha)
+    mu, sd, coef, b0 = ridge_fit(Z, y, w, alpha_vec)
     j_opp = feat_names.index(OPP_FEATURE)
     print(f"opp_whr standardized coef: {coef[j_opp]:+.1f} Elo per sd "
           f"(sd = {sd[j_opp]:.1f} Elo)")
@@ -342,6 +396,8 @@ def cmd_fit(args):
         "coef": coef.tolist(),
         "intercept": float(b0),
         "alpha": alpha,
+        "opp_alpha_mult": opp_mult,
+        "selfplay_slope": round(slope, 3),
         "cv_mae": round(cv_mae, 2),
         "cv_mae_no_opp": round(cv_mae_old, 2),
         "resid_std": round(resid_std, 2),
