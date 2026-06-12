@@ -174,6 +174,21 @@ block-by-block (best-first) and commits whatever depth the deadline allows;
 use `--device mps`/`auto` on Apple Silicon for full-depth searches inside
 the budget.
 
+## Probe results (2026-06-11)
+
+- **VS acceptance** (`tools/vs_head_to_head.py`, vs2_02 step540020887,
+  level 14 HI, 60 matches, search beam 8 / 60 ms vs plain argmax of the same
+  checkpoint): **49W-11L = 81.7% win rate, Wilson 95% CI [0.70, 0.89]**;
+  the search overrode the policy argmax on ~70% of decisions.
+- **1P** (`tools/eval_policy --search`, champion step535164979, level 20,
+  32 episodes, same seeds): plain 84.4% clear / p50 60986 / p90 108637
+  frames-to-clear; search 59.4% clear / p50 50901 / p90 72325. The search is
+  faithful to the trained objective — the time penalty makes a clear slower
+  than ~90k frames worth less than a topout, so it gambles for speed. For
+  pure-clear-rate use, swap in a reward config with a smaller time penalty /
+  larger topout penalty (the search replicates whatever
+  `DRMARIO_REWARD_CONFIG` loads).
+
 ## Strength dial
 
 `beam` is the notch: 1 ≈ plain policy (plus win/loss detection at ply-1),
