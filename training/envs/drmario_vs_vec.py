@@ -201,16 +201,22 @@ class DrMarioVsPoolVecEnv:
         self._snapshot_every = 0
         self._matches_since_snapshot = 0
         if self._opp_enabled:
-            from training.envs.vs_opponents import OpponentPool, default_seed_paths
+            from training.envs.vs_opponents import OpponentPool, default_seed_paths, parse_league_config
 
+            league = parse_league_config(opp_cfg.get("league"))
             self._snapshot_every = int(opp_cfg.get("snapshot_every_matches", 400))
+            if league.mode == "exploiter":
+                # The exploiter trains exclusively vs the listed main agents;
+                # it never freezes snapshots of itself into the pool.
+                self._snapshot_every = 0
             pool = opp_cfg.get("pool")  # injected pool (tests)
             if pool is None:
                 pool = OpponentPool(
                     opp_cfg.get("dir") or "runs/opponent_pool",
                     max_pool=int(opp_cfg.get("max_pool", 12)),
+                    league=league,
                 )
-                if not pool.entries:
+                if league.mode != "exploiter" and not pool.entries:
                     seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
                     if not seed_paths:
                         raise RuntimeError(
@@ -221,6 +227,10 @@ class DrMarioVsPoolVecEnv:
 
                     protected = [Path(p).name == CHAMPION_CHECKPOINT.name for p in seed_paths]
                     pool.seed(seed_paths, protected=protected)
+                if league.main_agents:
+                    pool.seed_league_targets(league.main_agents)
+            elif "league" in opp_cfg:
+                pool.league = league
             if not pool.entries:
                 raise RuntimeError("opponent_pool enabled but the pool is empty.")
             self._opp_pool = pool
@@ -511,6 +521,23 @@ class DrMarioVsPoolVecEnv:
             if rates:
                 out["vs/pool_winrate_min"] = float(min(rates))
                 out["vs/pool_winrate_max"] = float(max(rates))
+            league = self._opp_pool.league
+            if league.mode != "pfsp":
+                targets = self._opp_pool.league_targets()
+                out["vs/league_targets"] = float(len(targets))
+                played = [t for t in targets if int(t.games) > 0]
+                if played:
+                    # Cumulative learner win rate vs the fixed targets
+                    # (per-target counts persist in the pool manifest).
+                    t_rates = [float(t.wins) / float(t.games) for t in played]
+                    total_games = sum(int(t.games) for t in played)
+                    out["vs/league_win_rate"] = float(
+                        sum(float(t.wins) for t in played) / float(total_games)
+                    )
+                    out["vs/league_win_rate_min"] = float(min(t_rates))
+                    out["vs/league_win_rate_max"] = float(max(t_rates))
+                    for t, r in zip(played, t_rates):
+                        out[f"vs/league_wr_{t.id}"] = float(r)
         return out
 
     def maybe_snapshot(

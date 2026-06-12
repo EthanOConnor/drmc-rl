@@ -9,6 +9,16 @@ win/game counts, so a run is self-contained and restart-safe.
 Sampling is prioritized fictitious self-play (PFSP): opponents the learner
 beats ~50% of the time are sampled most, with a floor so no opponent is ever
 starved. Unplayed opponents get the maximum weight.
+
+League roles (docs/LEAGUE.md) extend the pool with fixed external targets
+("main agents") via `LeagueConfig`:
+
+- ``pfsp`` (default): today's behavior — PFSP over the pool's own history.
+- ``exploiter``: sample exclusively from the listed ``main_agents`` (PFSP
+  weighting over per-target win rates); the learner never faces snapshots of
+  itself.
+- ``mixed``: with probability ``exploiter_fraction`` sample a main agent,
+  otherwise the normal self-history pool.
 """
 
 import json
@@ -27,6 +37,36 @@ _PFSP_FLOOR = 0.05
 _PFSP_MAX_WEIGHT = 0.25**2 + _PFSP_FLOOR
 _MANIFEST_VERSION = 1
 
+_LEAGUE_MODES = ("pfsp", "exploiter", "mixed")
+
+
+@dataclass
+class LeagueConfig:
+    """League roles for the opponent pool (see module docstring)."""
+
+    mode: str = "pfsp"
+    main_agents: List[Path] = field(default_factory=list)
+    exploiter_fraction: float = 0.3
+
+
+def parse_league_config(cfg: Any) -> LeagueConfig:
+    """Parse/validate the `env.opponent_pool.league` config block."""
+
+    if cfg is None:
+        return LeagueConfig()
+    if not isinstance(cfg, dict):
+        raise ValueError(f"opponent_pool.league must be a mapping, got {type(cfg).__name__}")
+    mode = str(cfg.get("mode", "pfsp")).strip().lower()
+    if mode not in _LEAGUE_MODES:
+        raise ValueError(f"opponent_pool.league.mode must be one of {_LEAGUE_MODES}, got {mode!r}")
+    main_agents = [Path(p) for p in (cfg.get("main_agents") or [])]
+    fraction = float(cfg.get("exploiter_fraction", 0.3))
+    if not (0.0 <= fraction <= 1.0):
+        raise ValueError(f"opponent_pool.league.exploiter_fraction must be in [0, 1], got {fraction}")
+    if mode in ("exploiter", "mixed") and not main_agents:
+        raise ValueError(f"opponent_pool.league.mode={mode!r} requires non-empty main_agents")
+    return LeagueConfig(mode=mode, main_agents=main_agents, exploiter_fraction=fraction)
+
 
 @dataclass
 class OpponentEntry:
@@ -35,6 +75,7 @@ class OpponentEntry:
     id: str
     path: Optional[Path]  # None for injected (test-only) nets; not persisted
     protected: bool = False  # never evicted (seed champion)
+    league_target: bool = False  # fixed main agent (exploiter/mixed league modes)
     wins: float = 0.0  # draws count 0.5
     games: int = 0
     net: Any = field(default=None, repr=False)  # lazy-loaded CPU policy net
@@ -76,10 +117,17 @@ def default_seed_paths(runs_dir: Path | str = Path("runs")) -> List[Path]:
 class OpponentPool:
     """PFSP opponent pool persisted under `pool_dir`."""
 
-    def __init__(self, pool_dir: Path | str, *, max_pool: int = 12) -> None:
+    def __init__(
+        self,
+        pool_dir: Path | str,
+        *,
+        max_pool: int = 12,
+        league: Optional[LeagueConfig] = None,
+    ) -> None:
         self.dir = Path(pool_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.max_pool = int(max(1, int(max_pool)))
+        self.league = league if league is not None else LeagueConfig()
         self.entries: List[OpponentEntry] = []
         if self.manifest_path.is_file():
             self._load_manifest()
@@ -110,6 +158,37 @@ class OpponentPool:
             )
         self._save_manifest()
 
+    def seed_league_targets(self, paths: Sequence[Path | str]) -> None:
+        """Register fixed league targets (main agents); idempotent by filename.
+
+        Targets are protected (never evicted). An existing entry with the same
+        checkpoint filename is flagged in place rather than duplicated, so
+        restarts keep the persisted per-target win/game counts.
+        """
+
+        by_name = {e.path.name: e for e in self.entries if e.path is not None}
+        for src in paths:
+            src = Path(src)
+            if not src.is_file():
+                raise FileNotFoundError(f"League target checkpoint not found: {src}")
+            existing = by_name.get(src.name)
+            if existing is not None:
+                existing.league_target = True
+                existing.protected = True
+                continue
+            dst = self.dir / src.name
+            if not dst.is_file():
+                shutil.copy2(src, dst)
+            self._add_entry(
+                OpponentEntry(
+                    id=self._unique_id(src.name.split(".")[0]),
+                    path=dst,
+                    protected=True,
+                    league_target=True,
+                )
+            )
+        self._save_manifest()
+
     def add_loaded(
         self,
         opponent_id: str,
@@ -118,6 +197,7 @@ class OpponentPool:
         aux_dim: int = 0,
         candidate_max: int = 128,
         protected: bool = False,
+        league_target: bool = False,
     ) -> OpponentEntry:
         """Register an already-constructed net (tests); not persisted."""
 
@@ -125,6 +205,7 @@ class OpponentPool:
             id=self._unique_id(opponent_id),
             path=None,
             protected=protected,
+            league_target=league_target,
             net=net,
             aux_dim=int(aux_dim),
             candidate_max=int(candidate_max),
@@ -133,17 +214,42 @@ class OpponentPool:
         return entry
 
     # ------------------------------------------------------------------ PFSP
-    def pfsp_weights(self) -> np.ndarray:
-        """Normalized PFSP sampling weights over `self.entries`."""
+    def pfsp_weights(self, entries: Optional[Sequence[OpponentEntry]] = None) -> np.ndarray:
+        """Normalized PFSP sampling weights over `entries` (default: all)."""
 
-        if not self.entries:
+        entries = self.entries if entries is None else list(entries)
+        if not entries:
             raise RuntimeError("Opponent pool is empty")
-        w = np.asarray([e.pfsp_weight() for e in self.entries], dtype=np.float64)
+        w = np.asarray([e.pfsp_weight() for e in entries], dtype=np.float64)
         return w / w.sum()
 
+    def league_targets(self) -> List[OpponentEntry]:
+        return [e for e in self.entries if e.league_target]
+
+    def _sample_subset(self, rng: np.random.Generator) -> List[OpponentEntry]:
+        """Entries eligible for this sample, per the league mode."""
+
+        mode = self.league.mode
+        if mode == "pfsp":
+            return self.entries
+        targets = self.league_targets()
+        if mode == "exploiter":
+            if not targets:
+                raise RuntimeError("league mode 'exploiter' but the pool has no league targets")
+            return targets
+        # mixed: exploiter_fraction of assignments vs the targets, rest PFSP
+        # over the self-history pool.
+        others = [e for e in self.entries if not e.league_target]
+        if targets and (not others or float(rng.random()) < float(self.league.exploiter_fraction)):
+            return targets
+        if not others:
+            raise RuntimeError("league mode 'mixed' but the pool has no entries")
+        return others
+
     def sample(self, rng: np.random.Generator) -> OpponentEntry:
-        idx = int(rng.choice(len(self.entries), p=self.pfsp_weights()))
-        entry = self.entries[idx]
+        subset = self._sample_subset(rng)
+        idx = int(rng.choice(len(subset), p=self.pfsp_weights(subset)))
+        entry = subset[idx]
         self.ensure_loaded(entry)
         return entry
 
@@ -239,6 +345,7 @@ class OpponentPool:
                     "id": e.id,
                     "file": e.path.name,
                     "protected": bool(e.protected),
+                    "league_target": bool(e.league_target),
                     "wins": float(e.wins),
                     "games": int(e.games),
                 }
@@ -262,10 +369,18 @@ class OpponentPool:
                     id=str(row["id"]),
                     path=path,
                     protected=bool(row.get("protected", False)),
+                    league_target=bool(row.get("league_target", False)),
                     wins=float(row.get("wins", 0.0)),
                     games=int(row.get("games", 0)),
                 )
             )
 
 
-__all__ = ["OpponentEntry", "OpponentPool", "default_seed_paths", "CHAMPION_CHECKPOINT"]
+__all__ = [
+    "LeagueConfig",
+    "OpponentEntry",
+    "OpponentPool",
+    "default_seed_paths",
+    "parse_league_config",
+    "CHAMPION_CHECKPOINT",
+]

@@ -112,6 +112,11 @@ def build_view(run_dir: Path) -> Layout:
     v.add_row("match len (s, p50)", last(series, "vs/match_len_p50_sec", "{:.0f}"))
     v.add_row("matches played", last(series, "vs/matches_total", "{:.0f}"))
     v.add_row("opponent pool size", last(series, "vs/opponent_pool", "{:.0f}"))
+    if vals(series, "vs/league_win_rate"):  # league modes only (docs/LEAGUE.md)
+        v.add_row(
+            "league wr (targets)",
+            last(series, "vs/league_win_rate", "{:.2f}") + "  " + spark(vals(series, "vs/league_win_rate")),
+        )
     vs_panel = Panel(v, title="vs practice", border_style="magenta")
 
     # --- skill panel (WHR scale) ---
