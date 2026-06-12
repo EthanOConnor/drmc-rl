@@ -538,9 +538,20 @@ class _EntryPolicy:
         if not ckpt.exists():
             raise SystemExit(f"entry '{entry.get('name')}': checkpoint not found: {ckpt}")
         self.search = None
+        # Reliance probe: zero the opponent planes (ch 8-15) and the v1_vs aux
+        # tail before the net sees them — measures how much a 20-ch checkpoint
+        # actually uses opponent information (docs/ABLATION_PLAN.md).
+        self.mask_opponent = bool(params.get("mask_opponent", False))
         if self.mode == "plain":
             self.plain = PlainPolicy(ckpt, device=str(params.get("device", "cpu")))
+            if self.mask_opponent and self.plain.in_channels != 20:
+                raise SystemExit(
+                    f"entry '{entry.get('name')}': mask_opponent requires an "
+                    "opponent-obs (20-channel) checkpoint"
+                )
             return
+        if self.mask_opponent:
+            raise SystemExit("mask_opponent is only supported for mode: plain")
         if self.mode not in {"search", "ponder"}:
             raise SystemExit(f"entry '{entry.get('name')}': unknown mode '{self.mode}'")
         from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
@@ -570,7 +581,20 @@ class _EntryPolicy:
         ep_decisions: np.ndarray,
     ) -> np.ndarray:
         if self.mode == "plain":
-            return self.plain.act(obs[idxs], [infos[i] for i in idxs])
+            sub_obs = obs[idxs]
+            sub_infos = [infos[i] for i in idxs]
+            if self.mask_opponent:
+                sub_obs = sub_obs.copy()
+                sub_obs[:, 8:16] = 0
+                sub_infos = [
+                    {
+                        k: v
+                        for k, v in info.items()
+                        if not k.startswith("vs/")
+                    }
+                    for info in sub_infos
+                ]
+            return self.plain.act(sub_obs, sub_infos)
         acts = np.full(len(idxs), -1, dtype=np.int32)
         env = self.runner.env
         base_speed_ups = max(0, self.runner.level - 20)
