@@ -45,10 +45,18 @@ Modes:
   --dry-run       plan + log decisions, never write plan.json
   --bench N       measure spawn->plan-written latency over N synthetic spawns
 
+Search: ``--search [BEAM]`` replaces the plain argmax with the depth-2
+policy-guided search (`models/policy/search_policy.SearchPolicy`,
+docs/SEARCH_DESIGN.md). The search deadline (``--search-deadline-ms``,
+default 60) must leave room inside the plan margin (6 frames ~= 100 ms) for
+the v1 planner + script generation; verify with ``--bench``. Everything else
+(v1 script generation, plan.json, replan loop) is unchanged.
+
 Usage:
   .venv/bin/python -m tools.live_agent_server --ipc-dir /tmp/drmc_live \
       [--side 1] [--policy checkpoint|greedy-cost|random] [--checkpoint PATH]
       [--temperature 0.0] [--margin 6] [--dry-run] [--bench 100]
+      [--search 8] [--search-deadline-ms 60] [--device auto]
 """
 
 from __future__ import annotations
@@ -174,6 +182,9 @@ class LiveAgentServer:
         dry_run: bool = False,
         log_path: Optional[str] = None,
         seed: int = 0,
+        search_beam: Optional[int] = None,
+        search_deadline_ms: float = 60.0,
+        device: str = "auto",
     ) -> None:
         self.dir = Path(ipc_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -200,8 +211,14 @@ class LiveAgentServer:
         self._net = None
         self._aux_shim = None
         self._candidate_max = 128
+        self._search = None
+        self._search_info: Optional[Dict[str, Any]] = None
         self.checkpoint_name: Optional[str] = None
-        if self.policy == "checkpoint":
+        if search_beam is not None:
+            if self.policy != "checkpoint":
+                raise ValueError("--search requires --policy checkpoint")
+            self._load_search(checkpoint, int(search_beam), float(search_deadline_ms), device)
+        elif self.policy == "checkpoint":
             self._load_net(checkpoint)
         elif self.policy not in ("greedy-cost", "random"):
             raise ValueError(f"unknown policy {policy!r}")
@@ -231,6 +248,36 @@ class LiveAgentServer:
             }
         )
 
+    def _load_search(
+        self, checkpoint: Optional[str], beam: int, deadline_ms: float, device: str
+    ) -> None:
+        import torch
+
+        from models.policy.search_policy import SearchPolicy
+
+        torch.set_num_threads(1)  # training runs share this box
+        if device == "auto":
+            device = "mps" if torch.backends.mps.is_available() else "cpu"
+        path = Path(checkpoint) if checkpoint else default_checkpoint()
+        self._search = SearchPolicy(
+            path,
+            beam=beam,
+            deadline_ms=deadline_ms,
+            device=device,
+            seed=int(self.rng.integers(2**31)),
+        )
+        self.checkpoint_name = path.name
+        self._log(
+            {
+                "type": "model",
+                "checkpoint": str(path),
+                "step": self._search.checkpoint_step,
+                "search_beam": beam,
+                "search_deadline_ms": deadline_ms,
+                "device": device,
+            }
+        )
+
     def _choose(
         self,
         d: Dict[str, Any],
@@ -239,6 +286,26 @@ class LiveAgentServer:
         feasible: np.ndarray,
     ) -> int:
         feas_idx = np.flatnonzero(feasible)
+        self._search_info = None
+        if self._search is not None:
+            action, info = self._search.decide(
+                field.reshape(-1),
+                (int(d["pill"][0]), int(d["pill"][1])),
+                (int(d["prev"][0]), int(d["prev"][1])),
+                feasible,
+                action_cost,
+                int(d.get("spd", 2)),
+                int(d.get("spdups", 0)),
+                int(d.get("level", 0)),
+                viruses_initial=int(self.viruses_initial),
+                frames_used=int(d["f"]) - int(self.game_start_f),
+            )
+            self._search_info = info
+            if action < 0:  # search saw no candidates; fall back to cheapest
+                cost = action_cost.astype(np.float64).copy()
+                cost[~feasible] = np.inf
+                return int(np.argmin(cost))
+            return int(action)
         if self.policy == "random":
             return int(self.rng.choice(feas_idx))
         if self.policy == "greedy-cost":
@@ -451,6 +518,17 @@ class LiveAgentServer:
             "latency_ms": round(latency_ms, 3),
             "script": script.tolist(),
         }
+        if self._search_info is not None:
+            si = self._search_info
+            self.last_decision["search"] = {
+                "stage": si.get("stage"),
+                "agreed_with_policy": bool(si.get("agreed_with_policy", True)),
+                "fallback_action": si.get("fallback_action"),
+                "nodes_expanded": si.get("nodes_expanded"),
+                "value_best": si.get("value_best"),
+                "value_fallback": si.get("value_fallback"),
+                "search_ms": round(float(si.get("elapsed_ms", 0.0)), 3),
+            }
         self._log({k: v for k, v in self.last_decision.items() if k != "script"})
         return plan
 
@@ -590,6 +668,14 @@ def main() -> None:
                     help="process state.jsonl from the beginning (default: tail from end)")
     ap.add_argument("--log", type=str, default=None, help="decision log (jsonl)")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--search", type=int, nargs="?", const=8, default=None, metavar="BEAM",
+                    help="enable depth-2 policy-guided search with this beam width "
+                         "(default 8 when given without a value)")
+    ap.add_argument("--search-deadline-ms", type=float, default=60.0,
+                    help="search anytime deadline; must leave plan-margin room "
+                         "for the planner + script generation")
+    ap.add_argument("--device", type=str, default="auto",
+                    help="torch device for the search nets (auto = mps if available)")
     args = ap.parse_args()
 
     ipc_dir = args.ipc_dir
@@ -610,6 +696,9 @@ def main() -> None:
         dry_run=args.dry_run,
         log_path=args.log,
         seed=args.seed,
+        search_beam=args.search,
+        search_deadline_ms=args.search_deadline_ms,
+        device=args.device,
     )
     if args.bench is not None:
         bench(server, int(args.bench))

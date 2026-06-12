@@ -91,6 +91,7 @@ def evaluate_level(
     seed: int,
     strength: Optional[float] = None,
     max_decisions_per_episode: int = 2000,
+    search=None,
 ) -> Dict[str, Any]:
     env = DrMarioPoolVecEnv(
         num_envs=num_envs,
@@ -98,6 +99,7 @@ def evaluate_level(
         level=level,
         speed_setting=speed_setting,
         randomize_rng=True,
+        emit_board=search is not None,
     )
     rng = np.random.default_rng(seed)
     obs, infos = env.reset(seed=seed)
@@ -112,7 +114,30 @@ def evaluate_level(
         masks = np.stack([i["placements/feasible_mask"] for i in infos])
         actions = np.zeros(B, dtype=np.int64)
 
-        if policy == "random":
+        if search is not None:
+            # Depth-2 search per env (models/policy/search_policy.py). The
+            # search takes raw NES colors; pool infos are canonical for the
+            # falling pill (swap 0<->1) and raw already for the preview dict.
+            base_speed_ups = max(0, level - 20)
+            for i in range(B):
+                info = infos[i]
+                pc = info["next_pill_colors"]
+                pv = info["preview_pill"]
+                spd_ups = min(0x31, base_speed_ups + int(ep_decisions[i]) // 10)
+                a, _sinfo = search.decide(
+                    info["board"],
+                    ((1, 0, 2)[int(pc[0])], (1, 0, 2)[int(pc[1])]),
+                    (int(pv["first_color"]), int(pv["second_color"])),
+                    masks[i],
+                    info["placements/cost_to_lock"],
+                    speed_setting,
+                    spd_ups,
+                    level,
+                    viruses_initial=int(info.get("drm/viruses_initial", 0)),
+                    frames_used=int(ep_frames[i]),
+                )
+                actions[i] = int(a) if int(a) >= 0 else 0
+        elif policy == "random":
             for i in range(B):
                 feas = np.flatnonzero(masks[i].reshape(-1))
                 actions[i] = int(rng.choice(feas)) if feas.size else 0
@@ -241,7 +266,25 @@ def main() -> None:
                     help="strength dial in [0,1]; <1 samples among near-best candidates")
     ap.add_argument("--seed", type=int, default=12345)
     ap.add_argument("--json-out", type=str, default=None)
+    ap.add_argument("--search", type=int, nargs="?", const=8, default=None, metavar="BEAM",
+                    help="enable depth-2 policy-guided search (docs/SEARCH_DESIGN.md)")
+    ap.add_argument("--search-deadline-ms", type=float, default=60.0)
     args = ap.parse_args()
+
+    search = None
+    if args.search is not None:
+        if args.policy != "checkpoint" or not args.checkpoint:
+            raise SystemExit("--search requires --policy checkpoint and --checkpoint")
+        from models.policy.search_policy import SearchPolicy
+
+        search = SearchPolicy(
+            args.checkpoint,
+            beam=int(args.search),
+            deadline_ms=float(args.search_deadline_ms),
+            device=args.device,
+            seed=args.seed,
+        )
+        print(f"search enabled: beam={args.search} deadline_ms={args.search_deadline_ms}")
 
     net = None
     aux_shim = None
@@ -276,6 +319,7 @@ def main() -> None:
             temperature=args.temperature,
             seed=args.seed,
             strength=args.strength,
+            search=search,
         )
         results.append(res)
         p50 = res["frames_to_clear_p50"]
