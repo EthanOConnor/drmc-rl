@@ -79,6 +79,8 @@ class _DrmPoolConfig(C.Structure):
         ("obs_spec", C.c_uint32),
         ("max_lock_frames", C.c_uint32),
         ("max_wait_frames", C.c_uint32),
+        ("lazy_decision_outputs", C.c_uint8),
+        ("_cfg_reserved", C.c_uint8 * 3),
     ]
 
 
@@ -108,6 +110,10 @@ class _DrmResetSpec(C.Structure):
         ("checkpoint_hor_velocity", C.c_uint8),
         ("checkpoint_frame_parity", C.c_uint8),
         ("_reserved2", C.c_uint8 * 1),
+        ("inject_plan", C.c_uint8),
+        ("_reserved3", C.c_uint8 * 3),
+        ("inject_feasible", C.c_uint8 * 512),
+        ("inject_costs", C.c_uint16 * 512),
     ]
 
 
@@ -203,6 +209,7 @@ class DrMarioPoolRunner:
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
         emit_board: bool = False,
+        lazy_decision_outputs: bool = False,
     ) -> None:
         self.num_envs = int(max(1, int(num_envs)))
         self.obs_spec = int(obs_spec)
@@ -250,6 +257,7 @@ class DrMarioPoolRunner:
         cfg.obs_spec = int(self.obs_spec)
         cfg.max_lock_frames = int(max(1, int(max_lock_frames)))
         cfg.max_wait_frames = int(max(1, int(max_wait_frames)))
+        cfg.lazy_decision_outputs = 1 if bool(lazy_decision_outputs) else 0
 
         handle = create(C.byref(cfg))
         if not handle:
@@ -475,6 +483,9 @@ def build_reset_spec(
     checkpoint_speed_counter: int = 0,
     checkpoint_hor_velocity: int = 0,
     checkpoint_frame_parity: int = 0xFF,
+    inject_plan: bool = False,
+    inject_feasible: Sequence[int] | np.ndarray | None = None,
+    inject_costs: Sequence[int] | np.ndarray | None = None,
 ) -> _DrmResetSpec:
     spec = _DrmResetSpec()
     spec.struct_size = C.sizeof(_DrmResetSpec)
@@ -493,12 +504,11 @@ def build_reset_spec(
     board = (
         np.full((128,), 0xFF, dtype=np.uint8)
         if checkpoint_board is None
-        else np.asarray(checkpoint_board, dtype=np.uint8).reshape(-1)
+        else np.ascontiguousarray(np.asarray(checkpoint_board, dtype=np.uint8).reshape(-1))
     )
     if board.size != 128:
         raise ValueError(f"checkpoint_board must have 128 entries, got {board.size}")
-    for idx, value in enumerate(board.tolist()):
-        spec.checkpoint_board[idx] = int(value) & 0xFF
+    C.memmove(spec.checkpoint_board, board.ctypes.data, 128)
     spec.checkpoint_falling_colors[0] = int(checkpoint_falling_colors[0]) & 0xFF
     spec.checkpoint_falling_colors[1] = int(checkpoint_falling_colors[1]) & 0xFF
     spec.checkpoint_preview_colors[0] = int(checkpoint_preview_colors[0]) & 0xFF
@@ -509,4 +519,16 @@ def build_reset_spec(
     spec.checkpoint_speed_counter = int(checkpoint_speed_counter) & 0xFF
     spec.checkpoint_hor_velocity = int(checkpoint_hor_velocity) & 0xFF
     spec.checkpoint_frame_parity = int(checkpoint_frame_parity) & 0xFF
+    spec.inject_plan = 1 if bool(inject_plan) else 0
+    if inject_plan:
+        feas = np.ascontiguousarray(
+            np.asarray(inject_feasible, dtype=np.uint8).reshape(-1)
+        )
+        costs = np.ascontiguousarray(
+            np.asarray(inject_costs, dtype=np.uint16).reshape(-1)
+        )
+        if feas.size != 512 or costs.size != 512:
+            raise ValueError("inject_feasible/inject_costs must have 512 entries")
+        C.memmove(spec.inject_feasible, feas.ctypes.data, 512)
+        C.memmove(spec.inject_costs, costs.ctypes.data, 1024)
     return spec
