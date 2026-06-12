@@ -31,6 +31,11 @@ from models.policy.candidate_policy import CandidatePlacementPolicyNet
 from models.policy.placement_dist import MaskedPlacementDist
 from models.policy.placement_heads import PlacementPolicyNet
 from training.algo.base import AlgoAdapter
+from training.algo.search_distill import (
+    SearchDistillConfig,
+    blend_value_targets,
+    masked_distill_kl,
+)
 from training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer, DecisionStep
 from training.utils.checkpoint_io import checkpoint_path, load_checkpoint, save_checkpoint
 from training.utils.reproducibility import git_commit
@@ -217,6 +222,14 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         self.candidate_max = int(max(1, int(self.hparams.candidate_max_candidates)))
 
+        # Search-amplified training targets (docs/SEARCH_DISTILL.md); OFF by
+        # default — the flag-off path must stay bit-identical to plain PPO.
+        sd_dict = ppo_cfg_dict.get("search_distill", {}) or {}
+        if hasattr(sd_dict, "to_dict"):
+            sd_dict = sd_dict.to_dict()
+        self.search_distill_cfg = SearchDistillConfig.from_dict(sd_dict)
+        self._sd_runner = None
+
         # Environment info
         obs_space = getattr(env, "single_observation_space", env.observation_space)
         obs_shape = obs_space.shape  # expected [C, 16, 8] when frame_stack == 1
@@ -314,6 +327,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             gae_lambda=self.hparams.gae_lambda,
             aux_dim=self.aux_dim,
             store_costs_to_lock=(self.policy_type == "candidate"),
+            search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
         )
 
         # Tracking
@@ -354,8 +368,50 @@ class SMDPPPOAdapter(AlgoAdapter):
                 strict=strict_ckpt,
             )
 
+        # Search-distillation rollout runner (built after any checkpoint load
+        # so the first searched rollout uses the loaded weights).
+        if self.search_distill_cfg.enabled:
+            self._sd_runner = self._build_search_distill_runner()
+
         # Entropy annealing
         self._entropy_coef_initial = self.hparams.entropy_coef
+
+    # ----------------------------------------------------- search distillation
+    def _build_search_distill_runner(self):
+        """Validate + build the rollout-side search runner (enabled=true only).
+
+        Phase-1 restrictions (docs/SEARCH_DISTILL.md): candidate policy over the
+        12-channel single-board obs (`bitplane_bottle_conn_mask`); v1_vs aux /
+        opponent-board obs are not searchable with the 1P sim pool.
+        """
+
+        from training.algo.search_distill import SearchDistillRunner
+
+        if self.policy_type != "candidate":
+            raise ValueError("search_distill requires smdp_ppo.policy_type=candidate")
+        obs_space = getattr(self.env, "single_observation_space", self.env.observation_space)
+        in_channels = int(obs_space.shape[0]) if len(obs_space.shape) == 3 else 0
+        if in_channels != 12:
+            raise ValueError(
+                "search_distill requires the 12-channel bitplane_bottle_conn_mask obs "
+                f"(search sims rebuild it natively); got {in_channels} channels."
+            )
+        # VS rollouts: search the learner's own board with the 1P sim pool and
+        # replicate the VS reward (garbage shaping + terminal +-1). 1P rollouts
+        # replicate the configured env reward exactly.
+        reward_mode = "vs" if callable(getattr(self.env, "get_vs_metrics", None)) else "1p"
+        return SearchDistillRunner(
+            self.search_distill_cfg,
+            net=self.net,
+            aux_spec=self.aux_spec,
+            candidate_max=self.candidate_max,
+            num_envs=int(self.env.num_envs),
+            reward_mode=reward_mode,
+            gamma=float(self.hparams.gamma),
+            garbage_reward_coef=float(getattr(self.env, "garbage_reward_coef", 0.05)),
+            device=str(self.device),
+            seed=int(getattr(self.cfg, "seed", 0) or 0),
+        )
 
     # ---------------------------------------------------------------- training
     def train_forever(self) -> None:
@@ -388,6 +444,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                     aux_batch,
                 ) = self._select_actions_batch(decision_obs, decision_info, deterministic=False)
 
+                # Search-amplified targets for a sampled subset of decisions
+                # (the executed action stays the behavior-policy sample above).
+                sd_targets = sd_values = sd_flags = None
+                if self._sd_runner is not None:
+                    sd_targets, sd_values, sd_flags = self._sd_runner.run(
+                        decision_info, masks, costs_to_lock, actions
+                    )
+
                 # Step environment once for the full batch.
                 obs_after, rewards, terminated, truncated, info_after = self.env.step(actions)
 
@@ -403,6 +467,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                     [self._extract_tau(info_after_list[i]) for i in range(self.env.num_envs)],
                     dtype=np.int32,
                 )
+
+                if self._sd_runner is not None:
+                    self._sd_runner.note_dones(terminated_arr | truncated_arr)
 
                 frames_total = int(np.sum(tau_arr))
                 self.global_step += frames_total
@@ -429,6 +496,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                         done=bool(terminated_arr[env_idx] or truncated_arr[env_idx]),
                         env_id=int(env_idx),
                         info=dict(info_i),
+                        search_target=None if sd_targets is None else sd_targets[env_idx],
+                        search_value=0.0 if sd_values is None else float(sd_values[env_idx]),
+                        searched=False if sd_flags is None else bool(sd_flags[env_idx]),
                     )
                     self.buffer.add(step)
 
@@ -511,6 +581,13 @@ class SMDPPPOAdapter(AlgoAdapter):
 
             metrics = self._update_policy(batch)
             metrics.update(candidate_stats)
+
+            if self._sd_runner is not None:
+                metrics.update(self._sd_runner.pop_metrics())
+                # Next rollout's search targets come from the just-updated net.
+                self._sd_runner.refresh_weights(
+                    {k: v.detach().cpu() for k, v in self.net.state_dict().items()}
+                )
 
             self.buffer.clear()
 
@@ -846,6 +923,28 @@ class SMDPPPOAdapter(AlgoAdapter):
         # Current entropy coefficient (annealed)
         entropy_coef = self._get_entropy_coef()
 
+        # Search-distillation targets (docs/SEARCH_DISTILL.md). None unless the
+        # feature is enabled AND this batch contains searched decisions, so the
+        # flag-off path below is bit-identical to plain PPO.
+        sd_targets_t: Optional[torch.Tensor] = None
+        sd_values_t: Optional[torch.Tensor] = None
+        sd_mask_t: Optional[torch.Tensor] = None
+        sd_kl_sum: Optional[torch.Tensor] = None
+        sd_kl_n: Optional[torch.Tensor] = None
+        sd_beta = float(self.search_distill_cfg.beta)
+        sd_value_mix = float(self.search_distill_cfg.value_mix)
+        if (
+            self.search_distill_cfg.enabled
+            and batch.search_targets is not None
+            and batch.search_mask is not None
+            and bool(batch.search_mask.any())
+        ):
+            sd_targets_t = torch.from_numpy(batch.search_targets).to(self.device)
+            sd_values_t = torch.from_numpy(batch.search_values).to(self.device)
+            sd_mask_t = torch.from_numpy(batch.search_mask).to(self.device)
+            sd_kl_sum = torch.zeros((), dtype=torch.float32, device=self.device)
+            sd_kl_n = torch.zeros((), dtype=torch.float32, device=self.device)
+
         # Candidate-packing precompute: build packed candidates once per PPO update batch
         # (instead of re-packing inside each minibatch loop).
         cand_actions_all_t: Optional[torch.Tensor] = None
@@ -942,7 +1041,21 @@ class SMDPPPOAdapter(AlgoAdapter):
                     dist = MaskedPlacementDist(logits, cand_mask_t)
                     log_probs = dist.log_prob(slots)
                     entropy = dist.entropy().mean()
+
+                    # Distillation: KL(pi_target || pi_net) on searched rows only.
+                    if sd_targets_t is not None:
+                        log_probs_all = torch.log(dist.probs + 1e-9)
+                        kl_sum, kl_n = masked_distill_kl(
+                            sd_targets_t[mb_indices], log_probs_all, sd_mask_t[mb_indices]
+                        )
+                        sd_kl_loss = kl_sum / kl_n.clamp(min=1.0)
+                        with torch.no_grad():
+                            sd_kl_sum += kl_sum.detach()
+                            sd_kl_n += kl_n.detach()
+                    else:
+                        sd_kl_loss = None
                 else:
+                    sd_kl_loss = None
                     # Forward pass
                     logits_map, values = self.net(
                         mb_obs, mb_colors, mb_preview, mb_masks, aux=mb_aux
@@ -966,14 +1079,25 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
                 policy_loss = -torch.min(surr1, surr2).mean()
 
-                # Value loss
+                # Value loss (searched decisions optionally blend in the
+                # search-backup value; identical to mb_returns when disabled).
+                mb_value_targets = mb_returns
+                if sd_values_t is not None and sd_value_mix > 0.0:
+                    mb_value_targets = blend_value_targets(
+                        mb_returns,
+                        sd_values_t[mb_indices],
+                        sd_mask_t[mb_indices],
+                        sd_value_mix,
+                    )
                 if self.hparams.value_loss_type == "huber":
-                    value_loss = F.huber_loss(values.squeeze(-1), mb_returns)
+                    value_loss = F.huber_loss(values.squeeze(-1), mb_value_targets)
                 else:
-                    value_loss = F.mse_loss(values.squeeze(-1), mb_returns)
+                    value_loss = F.mse_loss(values.squeeze(-1), mb_value_targets)
 
                 # Total loss
                 loss = policy_loss + self.hparams.value_coef * value_loss - entropy_coef * entropy
+                if sd_kl_loss is not None:
+                    loss = loss + sd_beta * sd_kl_loss
 
                 # Optimize
                 self.optimizer.zero_grad()
@@ -1017,6 +1141,12 @@ class SMDPPPOAdapter(AlgoAdapter):
             stacked = torch.stack(metric_rows).mean(dim=0).cpu()
             for idx, key in enumerate(_UPDATE_METRIC_KEYS):
                 metrics_accum[key] = float(stacked[idx])
+
+        if sd_kl_sum is not None:
+            # On-device accumulation; one host sync for the whole update.
+            metrics_accum["search_distill/kl_target_net"] = float(
+                (sd_kl_sum / sd_kl_n.clamp(min=1.0)).cpu()
+            )
 
         metrics_accum["optim/lr"] = self.optimizer.param_groups[0]["lr"]
         metrics_accum["optim/entropy_coef"] = entropy_coef

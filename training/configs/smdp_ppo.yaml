@@ -74,6 +74,18 @@ smdp_ppo:
   # Loss
   value_loss_type: "huber"  # "mse" or "huber"
 
+  # Search-amplified training targets (Gumbel-AZ-lite phase 1, OFF by default;
+  # docs/SEARCH_DISTILL.md). Adds beta * KL(pi_search || pi_net) on a sampled
+  # fraction of decisions; actions are still sampled from the behavior policy.
+  # search_distill:
+  #   enabled: false
+  #   sims: 12               # native sim envs per searched decision
+  #   beam: 8                # ply-1 beam width
+  #   decision_fraction: 0.25
+  #   beta: 1.0              # KL term weight
+  #   value_mix: 0.5         # blend of search Q into value targets (0 = off)
+  #   sigma_scale: 1.0       # c in improved_logits = prior + c * norm(Q)
+
 # Environment
 env:
   id: "DrMarioPlacementEnv-v0"

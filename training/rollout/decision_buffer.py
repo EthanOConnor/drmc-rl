@@ -30,6 +30,11 @@ class DecisionStep:
     aux: Optional[np.ndarray] = None  # Optional auxiliary vector [aux_dim]
     env_id: int = 0  # Environment index for multi-env rollouts
     info: Dict = field(default_factory=dict)  # Additional metadata
+    # Search-distillation targets (training/algo/search_distill.py); only
+    # stored when the buffer is built with search_target_dim > 0.
+    search_target: Optional[np.ndarray] = None  # [Kmax] float32 improved policy
+    search_value: float = 0.0  # search-consistent value estimate
+    searched: bool = False  # True when this decision was searched
 
 
 @dataclass(slots=True)
@@ -53,6 +58,10 @@ class DecisionBatch:
     advantages: Optional[np.ndarray] = None  # [T] - computed later
     returns: Optional[np.ndarray] = None  # [T] - computed later
     gammas: Optional[np.ndarray] = None  # [T] - γ^τ for each step
+    # Search-distillation targets (None when disabled).
+    search_targets: Optional[np.ndarray] = None  # [T, Kmax] float32
+    search_values: Optional[np.ndarray] = None  # [T] float32
+    search_mask: Optional[np.ndarray] = None  # [T] bool
 
 
 class DecisionRolloutBuffer:
@@ -71,6 +80,7 @@ class DecisionRolloutBuffer:
         gae_lambda: float = 0.95,
         aux_dim: int = 0,
         store_costs_to_lock: bool = False,
+        search_target_dim: int = 0,
     ):
         """Initialize decision rollout buffer.
         
@@ -88,6 +98,7 @@ class DecisionRolloutBuffer:
         self.gae_lambda = gae_lambda
         self.aux_dim = int(max(0, int(aux_dim)))
         self._store_costs_to_lock = bool(store_costs_to_lock)
+        self.search_target_dim = int(max(0, int(search_target_dim)))
         
         # Storage
         self.observations = np.zeros((capacity, *obs_shape), dtype=np.float32)
@@ -108,7 +119,17 @@ class DecisionRolloutBuffer:
         self.observations_next = np.zeros((capacity, *obs_shape), dtype=np.float32)
         self.dones = np.zeros(capacity, dtype=np.bool_)
         self.env_ids = np.zeros(capacity, dtype=np.int32)
-        
+        if self.search_target_dim > 0:
+            self.search_targets: Optional[np.ndarray] = np.zeros(
+                (capacity, self.search_target_dim), dtype=np.float32
+            )
+            self.search_values: Optional[np.ndarray] = np.zeros(capacity, dtype=np.float32)
+            self.search_mask: Optional[np.ndarray] = np.zeros(capacity, dtype=np.bool_)
+        else:
+            self.search_targets = None
+            self.search_values = None
+            self.search_mask = None
+
         self.ptr = 0
         self.size = 0
         
@@ -142,7 +163,20 @@ class DecisionRolloutBuffer:
         self.observations_next[idx] = step.obs_next
         self.dones[idx] = step.done
         self.env_ids[idx] = int(step.env_id)
-        
+        if self.search_targets is not None:
+            if step.search_target is None:
+                self.search_targets[idx] = 0.0
+            else:
+                tgt = np.asarray(step.search_target, dtype=np.float32).reshape(-1)
+                if tgt.shape != (self.search_target_dim,):
+                    raise ValueError(
+                        f"Expected search_target shape ({self.search_target_dim},), "
+                        f"got {tgt.shape!r}"
+                    )
+                self.search_targets[idx] = tgt
+            self.search_values[idx] = float(step.search_value)
+            self.search_mask[idx] = bool(step.searched)
+
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
         
@@ -250,6 +284,9 @@ class DecisionRolloutBuffer:
             advantages=advantages,
             returns=returns,
             gammas=gammas,
+            search_targets=self.search_targets[:T].copy() if self.search_targets is not None else None,
+            search_values=self.search_values[:T].copy() if self.search_values is not None else None,
+            search_mask=self.search_mask[:T].copy() if self.search_mask is not None else None,
         )
         
     def clear(self) -> None:

@@ -72,6 +72,21 @@ smdp_ppo:
   # Loss
   value_loss_type: "huber"
 
+  # Search-amplified training targets (Gumbel-AZ-lite phase 1, OFF by default;
+  # docs/SEARCH_DISTILL.md). VS approximation: the learner's own board is
+  # searched with the 1P sim pool (garbage arrival between decisions ignored
+  # at depth 2 — same as inference-time search). Requires the 12-channel obs
+  # (state_repr bitplane_bottle_conn_mask, aux_spec v1); not compatible with
+  # opponent-board obs (_vs) yet.
+  # search_distill:
+  #   enabled: false
+  #   sims: 12               # native sim envs per searched decision
+  #   beam: 8                # ply-1 beam width
+  #   decision_fraction: 0.25
+  #   beta: 1.0              # KL term weight
+  #   value_mix: 0.5         # blend of search Q into value targets (0 = off)
+  #   sigma_scale: 1.0       # c in improved_logits = prior + c * norm(Q)
+
 # Environment: 2-player VS pool, both sides flattened (num_envs = 2*num_pairs).
 env:
   id: "drmario-vs"

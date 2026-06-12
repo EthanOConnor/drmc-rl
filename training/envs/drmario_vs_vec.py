@@ -821,6 +821,10 @@ class DrMarioVsPoolVecEnv:
             p_left = _canonical_to_raw_color(int(preview_colors[i, 0]))
             p_right = _canonical_to_raw_color(int(preview_colors[i, 1]))
             info["preview_pill"] = {"first_color": int(p_left), "second_color": int(p_right), "rotation": 0}
+            # Own-board NES tile bytes (view into the runner buffer; consumed at
+            # decision time, e.g. by search distillation). Same contract as the
+            # 1P pool env's `info["board"]`.
+            info["board"] = buf.board_bytes[i]
 
             info["level"] = int(self.level)
             info["task_mode"] = "viruses"

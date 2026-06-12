@@ -352,17 +352,11 @@ class SearchPolicy:
         combos9 = np.array([(a, b) for a in range(3) for b in range(3)], dtype=np.int64)
         pill_idx = np.repeat(np.arange(9), 9)
         prev_idx = np.tile(np.arange(9), 9)
-        with torch.inference_mode():
-            p3 = torch.from_numpy(combos9[pill_idx]).to(self.device)
-            p4 = torch.from_numpy(combos9[prev_idx]).to(self.device)
-            p = self.net_dev.pill_fusion(
-                torch.cat(
-                    [self.net_dev.pill_embedding(p3), self.net_dev.preview_embedding(p4)], dim=-1
-                )
-            )
-        self._p_combo = p  # [81, pill_embed_dim]
+        self._combo_pills = combos9[pill_idx]  # [81, 2] canonical pill colors
+        self._combo_prevs = combos9[prev_idx]  # [81, 2] canonical preview colors
         same = combos9[pill_idx][:, 0] == combos9[pill_idx][:, 1]
         self._combo_same = torch.from_numpy(same).to(self.device)  # [81] bool
+        self._refresh_combo_embeddings()
 
         # EMA of marginal-value cost per leaf (ms), seeded by warmup; used to
         # decide whether the leaf stage fits the remaining deadline in one batch.
@@ -370,6 +364,32 @@ class SearchPolicy:
 
         if warmup:
             self._warmup()
+
+    def _refresh_combo_embeddings(self) -> None:
+        """(Re)build the cached [81, P] pill/preview combo embeddings from the
+        current net weights (called at init and after `refresh_weights`)."""
+
+        with torch.inference_mode():
+            p3 = torch.from_numpy(self._combo_pills).to(self.device)
+            p4 = torch.from_numpy(self._combo_prevs).to(self.device)
+            self._p_combo = self.net_dev.pill_fusion(
+                torch.cat(
+                    [self.net_dev.pill_embedding(p3), self.net_dev.preview_embedding(p4)], dim=-1
+                )
+            )
+
+    def refresh_weights(self, state_dict: Dict[str, Any]) -> None:
+        """Reload net weights in place (CPU tensors expected).
+
+        Used by training-time distillation (`training/algo/search_distill.py`)
+        where the guiding net moves every PPO update. Refreshes both net copies
+        and the cached combo embeddings.
+        """
+
+        self.net.load_state_dict(state_dict)
+        if self.net_dev is not self.net:
+            self.net_dev.load_state_dict(state_dict)
+        self._refresh_combo_embeddings()
 
     def close(self) -> None:
         if getattr(self, "_runner", None) is not None:
@@ -418,6 +438,14 @@ class SearchPolicy:
             "value_best": None,
             "value_fallback": None,
             "stage": "fallback",
+            # Distillation exports (training/algo/search_distill.py): filled at
+            # the root forward / commit. None when the search never got there.
+            "value_root": None,
+            "cand_actions": None,
+            "cand_mask": None,
+            "prior_logits": None,
+            "ply1_actions": None,
+            "q_values": None,
         }
 
         def _finish(action: int, stage: str) -> Tuple[int, Dict[str, Any]]:
@@ -485,6 +513,10 @@ class SearchPolicy:
         fallback_action = int(packed0.actions[order[0]])
         info["fallback_action"] = fallback_action
         info["value_fallback"] = float(value0[0])
+        info["value_root"] = float(value0[0])
+        info["cand_actions"] = packed0.actions.copy()
+        info["cand_mask"] = packed0.mask.copy()
+        info["prior_logits"] = lg0.copy()  # -inf on padding slots
 
         if time.perf_counter() >= deadline:
             return _finish(fallback_action, "fallback")
@@ -555,6 +587,10 @@ class SearchPolicy:
                 )
 
         def _commit(stage: str) -> Tuple[int, Dict[str, Any]]:
+            # Per-branch backed-up Qs (aligned with ply1_actions); -inf marks
+            # invalid branches. Consumed by training-time distillation.
+            info["ply1_actions"] = ply1_actions.copy()
+            info["q_values"] = block_values.copy()
             best = int(np.argmax(block_values))
             if not np.isfinite(block_values[best]):
                 return _finish(fallback_action, stage)
