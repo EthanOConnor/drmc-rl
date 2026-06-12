@@ -224,12 +224,35 @@ After committing placement P at decision N (board B, pill, preview):
      depth-1 values (`depth[pair] = 1`).
    - Result cached keyed by (normalized B′ bytes, next-pill colors):
      per-pair Q over the full ply-1 ranking + the root prior argmax.
+
+   Two details were *measured-necessary* (a first build that got them wrong
+   collapsed to 2W–13L vs the plain search in the acceptance probe):
+
+   - the per-pair ply-1 beam is selected by the **pair-conditioned root
+     prior** (one batched B=9 forward), exactly as `decide()`'s beam is.
+     Selecting it by the depth-1 conditioned values instead degraded play —
+     the value head misranks off-distribution ply-1 outcomes (agreement
+     with a fresh plain search on identical states: 0.80 → 0.94 after the
+     change). The full-width sims still pay off: exact ply-1 terminal
+     values for *every* feasible action can win the argmax even outside
+     the prior beam.
+   - the hit-time argmax is restricted to **depth-2-refined entries**
+     (`PonderResult.refined`: backed-up beam Qs and exact ply-1
+     terminals). Mixing in the full-width depth-1 estimates lets the
+     depth-1 bias win the argmax and degenerates the decision toward a
+     depth-1 search (measured 16 % of hits picked an inflated unrefined
+     entry, +0.02 mean Q inflation). Depth-1 estimates never decide: a
+     column whose pair did not reach depth 2, or with no refined entry
+     feasible under the caller's mask, is treated as a **miss** (the
+     depth-1 column's refined entries are terminals only — an argmax
+     restricted to those could commit a topout).
 3. At decision N+1, `decide()` consults the cache first. On a (board hash,
    pill) match the revealed preview pair selects a column and the answer is
-   an argmax restricted to the caller's (mid-fall) feasible mask —
-   **~0.03 ms**. Any mismatch (garbage landed, replan, divergence) is a
-   normal deadline search; the stale job is aborted (`ponder_invalidate()`
-   additionally clears the cache on live desync/late replans).
+   an argmax over that column's depth-2-refined entries restricted to the
+   caller's (mid-fall) feasible mask — **~0.03 ms**. Any mismatch (garbage
+   landed, replan, divergence) or an unrefined column is a normal deadline
+   search; the stale job is aborted (`ponder_invalidate()` additionally
+   clears the cache on live desync/late replans).
 4. **VS wrinkle**: B′ can be perturbed by incoming garbage before the next
    spawn. The board-hash check makes this a safe miss (correctness via
    fallback). A secondary ponder for the garbage case is deliberately *not*
@@ -256,6 +279,19 @@ probe: `tools/vs_head_to_head --a-ponder` (ponder-search vs plain-search,
 side-1 = `SearchPolicy`); dead time is simulated by running each job to
 completion before the env steps, which is fair because real dead time far
 exceeds the measured job wall time.
+
+Acceptance probe verdict (2026-06-12, 30 matches, level 14 HI, beam 8,
+deadline 60 ms, seeds 777/778): the first build lost **2W–13L (13.3 %,
+binomial p ≈ 0.007 vs even)**; after the two fixes above plus the
+unrefined-column → miss gate, the re-probe scored **16W–14L = 53.3 %**,
+Wilson CI95 (0.36, 0.70) — the collapse is excluded (binomial tail 2e-7
+under the old rate) and ponder is statistically indistinguishable from the
+plain search. **Keep the ponder path.** Offline parity is the expected
+ceiling: the probe simulates dead time, so a hit earns no latency credit;
+the payoff is on the live bridge (hit decide p50 0.04 ms vs ~63 ms miss,
+2-frame commit margin → more feasible placements). VS-flow internals from
+the re-probe: hit rate 84.7 % (misses ≈ garbage landing, by design),
+depth-2 pair fraction 99.97 %, job wall p50/p95 0.47/0.51 s.
 
 ## Phase 2 leftovers (future work, deliberately not built)
 

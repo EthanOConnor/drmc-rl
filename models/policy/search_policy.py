@@ -1105,9 +1105,11 @@ class PonderingSearchPolicy(SearchPolicy):
 
     The result is cached keyed by (normalized board bytes, next pill colors).
     `decide()` consults the cache first: on a hit the revealed preview pair
-    selects a column and the answer is an argmax restricted to the caller's
-    feasible mask (~1 ms); any mismatch (garbage, replan, divergence) falls
-    back to the normal deadline search and aborts the stale job.
+    selects a column and the answer is an argmax over that column's
+    depth-2-refined entries restricted to the caller's feasible mask (~1 ms).
+    Any mismatch (garbage, replan, divergence) — or a column without a
+    feasible depth-2-refined entry — falls back to the normal deadline search
+    and aborts the stale job.
     """
 
     # Entries are small (~F*9 floats); the cap only needs to cover the number
@@ -1278,12 +1280,15 @@ class PonderingSearchPolicy(SearchPolicy):
                 cidx = _pair_index(int(preview[0]), int(preview[1]))
                 qcol = res.q[:, cidx]
                 ok = mask512[res.actions] & np.isfinite(qcol)
-                if bool(ok.any()):
-                    # Compare like with like: argmax over depth-2-refined
-                    # entries only; depth-1 estimates are a fallback ranking.
-                    okr = ok & res.refined[:, cidx]
-                    use = okr if bool(okr.any()) else ok
-                    qm = np.where(use, qcol, -np.inf)
+                # Commit only when the revealed pair's column got the ply-2
+                # refinement and a refined entry is still feasible: depth-1
+                # estimates must never decide (their V bias degenerated the
+                # probe to a depth-1 search), and a depth-1 column's refined
+                # entries are terminals only (an argmax restricted to those
+                # can commit a topout). Anything else is a miss -> live search.
+                okr = ok & res.refined[:, cidx]
+                if int(res.depth[cidx]) == 2 and bool(okr.any()):
+                    qm = np.where(okr, qcol, -np.inf)
                     sel = int(np.argmax(qm))
                     action = int(res.actions[sel])
                     fb = int(res.prior_action[cidx])
@@ -1303,7 +1308,7 @@ class PonderingSearchPolicy(SearchPolicy):
                         "stage": "ponder",
                         "ponder_hit": True,
                         "ponder_depth": int(res.depth[cidx]),
-                        "ponder_refined": bool(okr.any()),
+                        "ponder_refined": True,
                     }
                     return action, info
             # Miss (or unusable entry): the running job is for a stale context.

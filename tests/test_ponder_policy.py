@@ -182,9 +182,12 @@ def test_hit_prefers_refined_entries_over_higher_depth1_estimates() -> None:
         assert act == a2  # best refined, not the inflated depth-1 a3
         assert info["ponder_refined"] is True
 
-        # With no refined entry feasible, the depth-1 ranking is the fallback.
-        act2, info2 = sp.decide(board, (1, 2), (0, 1), _mask_for([a3]), cost, 2, 0, 5)
-        assert act2 == a3 and info2["ponder_refined"] is False
+        # With no refined entry feasible the column is not trusted: this is a
+        # miss and the live deadline search decides.
+        act2, info2 = sp.decide(
+            board, (1, 2), (0, 1), _mask_for([a3]), cost, 2, 0, 5, deadline_ms=50.0
+        )
+        assert act2 == a3 and info2["ponder_hit"] is False
     finally:
         sp.close()
 
