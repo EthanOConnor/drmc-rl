@@ -71,14 +71,28 @@ class PlainPolicy:
         from training.utils.checkpoint_io import load_checkpoint
 
         payload = load_checkpoint(checkpoint, map_location="cpu")
+        cfg = payload.get("cfg", {})
+        sp = cfg.get("smdp_ppo", cfg)
+        # 8 board channels -> 12-ch obs; 16 (opponent-obs) -> 20-ch obs.
+        self.in_channels = int(sp.get("candidate_board_channels", 8)) + 4
         self.net, aux_dim, self.candidate_max = _build_net_from_cfg(
-            payload.get("cfg", {}), 12, device
+            cfg, self.in_channels, device
         )
         self.net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
         self.aux_shim = _make_aux_builder(aux_dim)
         self.device = device
 
     def act(self, obs: np.ndarray, infos: List[Dict[str, Any]]) -> np.ndarray:
+        C = int(obs.shape[1])
+        if C != self.in_channels:
+            if C == 20 and self.in_channels == 12:
+                # legacy own-board net on an opponent-obs env: own planes 0-7
+                # + feasible planes 16-19 (docs/VS_OPPONENT_OBS.md layout)
+                obs = np.concatenate([obs[:, :8], obs[:, 16:20]], axis=1)
+            else:
+                raise ValueError(
+                    f"obs has {C} channels but the checkpoint expects {self.in_channels}"
+                )
         B = int(obs.shape[0])
         ca = np.full((B, self.candidate_max), -1, dtype=np.int32)
         cm = np.zeros((B, self.candidate_max), dtype=np.bool_)

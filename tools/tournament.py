@@ -359,6 +359,42 @@ def run_tournament(
 
 
 # ---------------------------------------------------------------- match runner
+def _entry_board_channels(entry: Dict[str, Any]) -> int:
+    """Board-channel count from the entry checkpoint's embedded cfg."""
+    from training.utils.checkpoint_io import load_checkpoint
+
+    ckpt = REPO_ROOT / str(entry["checkpoint"])
+    if not ckpt.exists():
+        ckpt = Path(str(entry["checkpoint"]))
+    payload = load_checkpoint(ckpt, map_location="cpu")
+    cfg = payload.get("cfg", {})
+    sp = cfg.get("smdp_ppo", cfg)
+    return int(sp.get("candidate_board_channels", 8))
+
+
+def pick_state_repr(entries: Sequence[Dict[str, Any]]) -> str:
+    """Opponent-obs (20-ch) env when any entry's net needs it, else legacy.
+
+    Legacy 8-board-channel nets run on the 20-ch env via the slice in
+    `PlainPolicy.act`; search/ponder entries are not yet wired for the
+    opponent-obs obs assembly and are rejected with a clear error.
+    """
+    needs_vs = [e for e in entries if _entry_board_channels(e) >= 16]
+    if not needs_vs:
+        return "bitplane_bottle_conn_mask"
+    bad = [
+        e["name"]
+        for e in needs_vs
+        if str(e.get("mode", "plain")).lower() != "plain"
+    ]
+    if bad:
+        raise SystemExit(
+            "search/ponder modes are not yet supported for opponent-obs "
+            f"checkpoints (entries: {', '.join(bad)})"
+        )
+    return "bitplane_bottle_conn_mask_vs"
+
+
 class VsMatchRunner:
     """Plays scheduled VS games between two roster entries on the native pool.
 
@@ -377,6 +413,7 @@ class VsMatchRunner:
         device: str = "auto",
         threads: int = 4,
         run_seed: int = 0,
+        state_repr: str = "bitplane_bottle_conn_mask",
     ) -> None:
         import torch
 
@@ -397,6 +434,7 @@ class VsMatchRunner:
             speed_setting=self.speed_setting,
             randomize_rng=True,
             seed_provider=self._seed_for_pair,
+            state_repr=state_repr,
         )
         self._policies: Dict[str, Any] = {}
 
@@ -871,6 +909,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             device=args.device,
             threads=args.threads,
             run_seed=args.seed,
+            state_repr=pick_state_repr(roster["entries"]),
         )
         t0 = time.perf_counter()
         try:
@@ -904,6 +943,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             device=args.device,
             threads=args.threads,
             run_seed=args.seed,
+            state_repr=pick_state_repr([entry_a, entry_b]),
         )
         try:
             out = run_sprt(
