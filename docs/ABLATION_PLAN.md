@@ -122,6 +122,35 @@ deterministic argmax on both sides may lengthen matches relative to
 the sampled-action training regime; decision-time stack heights can
 include just-released garbage still falling.
 
+### Correction (2026-06-12, important — earlier framing was wrong)
+
+Do NOT read "no clear-win in 40 matches" as "clears are hard/rare." Two
+things were conflated and corrected here:
+- **Clearing is very achievable.** The 1P speed champion clears L15 ~73%
+  / L20 ~58%. The capability lives in the same architecture and the VS
+  champion's own warm-start lineage. The VS policy not clearing is a
+  *learned pathology of the self-play reward* (camp-and-outlast beats
+  race-to-clear when BOTH sides camp), not a property of the task. VS
+  self-play eroded a clearing skill the lineage demonstrably had.
+- **Humans clear constantly.** Win-by-clear is common in the
+  fightcadeRatings corpus. The start bank's lack of near-clear positions
+  is a SAMPLING artifact of tools/build_start_bank.py (it sampled at
+  volley events + fixed pill-count strata, which stop well before the
+  end-of-game clearing sequence), NOT a fact about human play. The real
+  clear endgames are in the corpus; we just didn't extract them.
+
+Consequences: (1) the clear_win_bonus is sound but had no gradient
+because the agent never *completes* a clear to receive it (cur=0 across
+all training windows is real, not a grading artifact — the grader uses
+the bank-seeded training games). (2) Fix = give the agent reps at the
+closing-out skill via near-clear start states. First cut:
+tools/build_clear_practice_bank.py (real boards, viruses thinned to
+2-8/side, median 5). Better follow-up: extract REAL near-clear endgames
+from the corpus. (3) Open empirical question being probed before any
+restart: does the champion still RETAIN enough clearing skill to finish
+a clear from a 5-virus board? If yes, the bank bootstraps the bonus; if
+no, we need 1P-distillation / BC-imitation to restore the skill first.
+
 ## Standing rules
 
 - Never judge from training-time win rate (it's vs the PFSP pool, a
