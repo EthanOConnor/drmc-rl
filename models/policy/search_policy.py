@@ -2013,13 +2013,22 @@ class PonderingSearchPolicy(SearchPolicy):
     _PONDER_CACHE_CAP = 64
     _PONDER_TIMES_CAP = 512
 
-    def __init__(self, checkpoint_path: str | Path, *, ponder_budget_s: float = 1.0, **kwargs) -> None:
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        *,
+        ponder_budget_s: float = 1.0,
+        ponder_beam: Optional[int] = None,
+        **kwargs,
+    ) -> None:
         super().__init__(checkpoint_path, **kwargs)
         self.ponder_budget_s = float(ponder_budget_s)
+        self.ponder_beam = int(ponder_beam) if ponder_beam else None
 
     def _init_common(self, **kw: Any) -> None:
         # Ponder plumbing must exist before the base warmup calls decide().
         self.ponder_budget_s = 1.0
+        self.ponder_beam = None
         self._ponder_cv = threading.Condition()
         self._ponder_cache: "OrderedDict[Tuple[bytes, Tuple[int, int]], PonderResult]" = OrderedDict()
         self._ponder_pending: Optional[_PonderJob] = None
@@ -2475,8 +2484,11 @@ class PonderingSearchPolicy(SearchPolicy):
         q[alive_idx] = r1[alive_idx, None] + disc1[alive_idx, None] * v9.astype(np.float64)
 
         # ---- depth-2 per preview pair: ply-2 beam + marginalized leaves
+        # Ponder jobs may widen the beam beyond the live-search width: dead
+        # time (~0.7-1.5 s) dwarfs the ~0.5 s a beam-8 job takes, so the idle
+        # budget buys refinement of more ply-1 candidates per preview pair.
         depth = np.ones((9,), dtype=np.int8)
-        K = min(self.beam, int(alive_idx.size), N)
+        K = min(int(self.ponder_beam or self.beam), int(alive_idx.size), N)
         block = max(1, N // K) if K > 0 else 1
         pk_cache: Dict[Tuple[int, bool], Any] = {}
 

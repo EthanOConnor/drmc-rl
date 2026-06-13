@@ -152,6 +152,8 @@ def main() -> None:
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--a-plain", action="store_true",
                       help="A/A control: side 0 plain argmax instead of search")
+    ap.add_argument("--ponder-beam", type=int, default=None,
+                    help="wider ply-2 beam for ponder jobs (default: same as --beam)")
     mode.add_argument("--a-ponder", action="store_true",
                       help="side 0 ponder-search vs side 1 plain-search")
     ap.add_argument("--ponder-budget-s", type=float, default=1.0)
@@ -176,6 +178,7 @@ def main() -> None:
             device=device,
             seed=int(args.seed),
             ponder_budget_s=float(args.ponder_budget_s),
+            ponder_beam=args.ponder_beam,
         )
         search_b = SearchPolicy(
             ckpt,

@@ -197,6 +197,7 @@ class LiveAgentServer:
         search_deadline_ms: float = 60.0,
         device: str = "auto",
         ponder: bool = False,
+        ponder_beam: int | None = None,
     ) -> None:
         self.dir = Path(ipc_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -232,7 +233,8 @@ class LiveAgentServer:
         if search_beam is not None:
             if self.policy != "checkpoint":
                 raise ValueError("--search requires --policy checkpoint")
-            self._load_search(checkpoint, int(search_beam), float(search_deadline_ms), device)
+            self._load_search(checkpoint, int(search_beam), float(search_deadline_ms), device,
+                              ponder_beam=ponder_beam)
         elif self.policy == "checkpoint":
             self._load_net(checkpoint)
         elif self.policy not in ("greedy-cost", "random"):
@@ -264,7 +266,8 @@ class LiveAgentServer:
         )
 
     def _load_search(
-        self, checkpoint: Optional[str], beam: int, deadline_ms: float, device: str
+        self, checkpoint: Optional[str], beam: int, deadline_ms: float, device: str,
+        *, ponder_beam: Optional[int] = None,
     ) -> None:
         import torch
 
@@ -275,12 +278,16 @@ class LiveAgentServer:
             device = "mps" if torch.backends.mps.is_available() else "cpu"
         path = Path(checkpoint) if checkpoint else default_checkpoint()
         cls = PonderingSearchPolicy if self.ponder else SearchPolicy
+        kw = {}
+        if self.ponder and ponder_beam:
+            kw["ponder_beam"] = int(ponder_beam)
         self._search = cls(
             path,
             beam=beam,
             deadline_ms=deadline_ms,
             device=device,
             seed=int(self.rng.integers(2**31)),
+            **kw,
         )
         self.checkpoint_name = path.name
         self._log(
@@ -759,6 +766,8 @@ def main() -> None:
                     help="search the next decision during script-execution dead "
                          "time; cache hits commit instantly with a 2-frame plan "
                          "margin (implies --search)")
+    ap.add_argument("--ponder-beam", type=int, default=None,
+                    help="wider ply-2 beam for ponder jobs (default: same as --search beam)")
     ap.add_argument("--device", type=str, default="auto",
                     help="torch device for the search nets (auto = mps if available)")
     args = ap.parse_args()
@@ -785,6 +794,7 @@ def main() -> None:
         search_deadline_ms=args.search_deadline_ms,
         device=args.device,
         ponder=args.ponder,
+        ponder_beam=args.ponder_beam,
     )
     if args.bench is not None:
         bench(server, int(args.bench))
