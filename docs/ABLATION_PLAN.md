@@ -42,20 +42,39 @@ Decision points (no action before): first read at ~50M frames, verdict
 at ~100-150M or plateau. Verdict = ≥200-game tournament of best
 treatment vs best control checkpoint (equal frames) + SPRT confirmation.
 
+## Opponent-obs verdict (2026-06-12, CLOSED — dropped from vs4)
+
+50M-frame read was decisive against: treatment 18% vs control 49%
+against the champion anchor (non-overlapping CIs), reliance probe
+INVERTED (masked beat unmasked at 20M and 40M), and the 200-game
+head-to-head verdict (vs3@65M vs vs3ctl@50M) was 96-104 — parity
+despite a 15M-frame treatment advantage. Conclusion: at this skill
+level, in the attrition metagame, opponent-board obs is at best
+useless and the extra input pathway interferes with training. Caveat
+recorded for the re-test: this metagame barely uses opponent state;
+inside a clear-race metagame (vs4+) the opponent board is race
+progress — re-queue obs as a later ladder step there. Tournaments:
+vs3_eval_step*, vs3ctl_eval_step*, vs3_verdict_obs_vs_ctl.
+
 ## vs4 component ladder
 
 Components enter ONE AT A TIME on top of the last accepted
 configuration, each gated by SPRT (elo0=0, elo1=5) or a ≥200-game
-tournament against the predecessor's best checkpoint:
+tournament against the predecessor's best checkpoint. REORDERED
+2026-06-12 after the forensics + BC-band + obs results:
 
-1. opponent obs (vs3, running — may be REJECTED per above; ladder
-   continues from whichever of vs3/vs3ctl wins)
-2. search distillation (fraction 0.1; phase 2)
-3. league mixed mode (champion targets, exploiter_fraction 0.2)
-4. BC style seeds in the pool
-5. start-bank resets (fraction 0.25)
-6. opponent_model: self at search leaves
-7. act_from_search (full Gumbel-AZ)
+1. metagame-fix bundle (vs4_01, running): clear_win_bonus 0.25 +
+   start-bank resets 0.25 + BC league seeds + mixed league vs the
+   champion. Bundled deliberately — co-dependent (the bonus is only
+   discoverable from late-strata starts; BC opponents punish ignoring
+   the clear race). Gates: champion tournament AND the BC-band gate
+   (must beat bc-* convincingly) AND clear-win rate > 0 in eval games.
+2. search distillation (fraction 0.1; 12-channel phase-1 path)
+3. opponent obs RE-TEST inside the clear-race metagame (surgery +
+   control twin again)
+4. opponent_model: self at search leaves
+5. act_from_search (full Gumbel-AZ)
+6. exploiter runs against whatever champion emerges
 
 Order rationale: expected Elo per review ranking; cheap-to-revert last.
 If a step fails its gate, drop the component (recording the result) and
