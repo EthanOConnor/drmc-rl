@@ -56,6 +56,30 @@ inside a clear-race metagame (vs4+) the opponent board is race
 progress — re-queue obs as a later ladder step there. Tournaments:
 vs3_eval_step*, vs3ctl_eval_step*, vs3_verdict_obs_vs_ctl.
 
+## Live pipeline to the endpoint (2026-06-12)
+
+The "fully realized endpoint" = one agent with the full stack (clearing
+base + Gumbel-AZ search distillation + re-tested obs + act_from_search)
+that beats the bc-gt2000 human gate. It's gated on training hours, run as
+a sequenced pipeline (each stage = tens of M frames):
+
+1. **A/B warm-start (RUNNING)**: vs5 (camped vs4-best) vs vs1p (1P-clearer
+   535M). Both BC-league + bonus 0.25, no bank. Gate = win rate vs
+   bc-gt2000. Early signal (<1M frames): vs1p clears 2x viruses/ep (24 vs
+   13) and sends half the garbage — the 1P clearing skill survives the
+   warm-start; vs5 stays attrition-style. Hypothesis: camping is a
+   fine-tune trap of the camped champion. Verdict at ~50M frames.
+2. **Distillation (STAGED, training/configs/vsdist_distill.yaml)**:
+   Gumbel-AZ phase-1 search distillation (fraction 0.1, beta 1.0) on the
+   A/B winner. Both A/B nets are 12-channel + aux v1 = distillation-
+   compatible. Launch when a trainer slot frees (init_checkpoint =
+   REPLACE_WITH_AB_WINNER_CHECKPOINT). Gate: SPRT vs the A/B-winner best.
+3. **Opponent-obs re-test** inside the clear-race metagame (surgery +
+   control twin) — only meaningful once an agent actually clears/scouts.
+4. **act_from_search** (full Gumbel-AZ) as the final amplification.
+5. **Fallback if vs1p also camps**: BC-imitation distillation of the
+   clearing skill (supervised, then RL) rather than relying on warm-start.
+
 ## vs4 component ladder
 
 Components enter ONE AT A TIME on top of the last accepted
