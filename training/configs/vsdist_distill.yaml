@@ -20,7 +20,7 @@ algo: ppo_smdp
 train:
   total_steps: 2000000000
   checkpoint_interval: 5000000
-  init_checkpoint: REPLACE_WITH_AB_WINNER_CHECKPOINT
+  init_checkpoint: /Users/ethan/dev/drmario/drmc-rl/runs/best_agents/vs4_best_step20188116.pt.gz
   strict_checkpoint: true
   resume_step: false
   resume_optimizer: false
