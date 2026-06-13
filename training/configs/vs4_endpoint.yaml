@@ -1,16 +1,26 @@
-# vs4 "endpoint" run: every architecture-review item enabled at once.
-# Launch AFTER vs3 (opponent-obs-only) plateaus, warm-started from the best
-# vs3 checkpoint (tournament-verified vs the 530M champion). Sequencing
-# rationale: search distillation costs ~3-4x rollout throughput — pay it once
-# the cheap opponent-obs gains are banked. docs/ARCHITECTURE_REVIEW_2026-06.md.
+# vs4: the "metagame fix" run (rewritten 2026-06-12 after the obs verdict).
+#
+# Evidence (docs/ABLATION_PLAN.md): self-play converged to attrition-at-the-
+# ceiling (0/40 clear-wins), human-style BC nets beat the champion ~90%
+# mostly by full clear, and opponent-board obs FAILED its ablation
+# (treatment 18% vs control 49% against the champion anchor at ~50M;
+# 96-104 head-to-head; reliance probe inverted). So vs4 is 8-channel,
+# warm-started from the original 530M champion, and bundles one coherent
+# intervention: make clear-to-win learnable and punished-if-ignored.
+#   - clear_win_bonus: win-by-clear pays 1.25 vs 1.0 for topout wins
+#   - start_bank: 25% of resets from real human mid/late-game positions
+#     (late strata put clear-wins a few moves away -> the bonus is
+#     discoverable; clean starts never produced one)
+#   - BC human-style league seeds + mixed league vs the fixed champion
+# Later ladder steps (re-test inside the new metagame): search distillation,
+# opponent obs, opponent_model, act_from_search.
 
 algo: ppo_smdp
 
 train:
   total_steps: 2000000000
   checkpoint_interval: 5000000
-  # PLACEHOLDER — set to the tournament-verified best vs3 checkpoint.
-  init_checkpoint: REPLACE_WITH_BEST_VS3_CKPT
+  init_checkpoint: /Users/ethan/dev/drmario/drmc-rl/runs/best_agents/vs_champion_smdp_ppo_step530046434.pt.gz
   strict_checkpoint: true
   resume_step: false
   resume_optimizer: false
@@ -41,13 +51,13 @@ smdp_ppo:
   candidate_cost_embed_dim: 32
   candidate_hidden_dim: 384
   candidate_board_encoder: "cnn"
-  candidate_board_channels: 16
+  candidate_board_channels: 8
   candidate_transformer_layers: 4
   candidate_transformer_heads: 4
   candidate_transformer_ff_mult: 4
   candidate_patch_kernel: 9
 
-  aux_spec: "v1_vs"
+  aux_spec: "v1"
 
   entropy_schedule_end: 0.008
   entropy_schedule_steps: 100000000
@@ -56,38 +66,27 @@ smdp_ppo:
 
   value_loss_type: "huber"
 
-  # Gumbel-AZ phase 2 (docs/SEARCH_DISTILL.md): vs-obs search with frozen
-  # opponent context, batched across envs, self-model opponent at leaves.
-  # decision_fraction 0.1 to start — raise if dec/s headroom allows.
-  search_distill:
-    enabled: true
-    sims: 12
-    beam: 8
-    decision_fraction: 0.1
-    beta: 1.0
-    value_mix: 0.5
-    sigma_scale: 1.0
-    opponent_model: self
-    act_from_search: false   # phase-2b: flip after distillation proves stable
+  # Ladder step 2 candidate (off for vs4_01): Gumbel-AZ distillation,
+  # 12-channel phase-1 path (docs/SEARCH_DISTILL.md).
+  # search_distill:
+  #   enabled: true
+  #   sims: 12
+  #   beam: 8
+  #   decision_fraction: 0.1
+  #   beta: 1.0
+  #   value_mix: 0.5
 
 env:
   id: "drmario-vs"
   obs_mode: state
   backend: cpp-vs-pool
-  state_repr: bitplane_bottle_conn_mask_vs
+  state_repr: bitplane_bottle_conn_mask
   num_pairs: 16
   frame_stack: 1
   randomize_rng: true
   level: 14
   speed_setting: 2
-  # Clear-win incentive — PROMOTED to on-by-default after the 2026-06-12
-  # forensics + BC-band results (docs/ABLATION_PLAN.md): the self-play
-  # metagame never clears (0/40), and human-style BC nets beat the champion
-  # ~90% mostly by full clear. Enters together with start_bank (late strata
-  # make clear-wins discoverable) and the BC league seeds below.
   clear_win_bonus: 0.25
-  # Go-Exploit: a fraction of resets start from real human mid-game positions
-  # (docs/HUMAN_CORPUS_INTEGRATION.md).
   start_bank:
     enabled: true
     path: runs/start_bank/start_bank_v1.npz
@@ -96,15 +95,10 @@ env:
     enabled: true
     max_pool: 12
     snapshot_every_matches: 400
-    # Style seeds: BC human-band opponents (mark protected in manifest —
-    # docs/HUMAN_CORPUS_INTEGRATION.md workaround until a protected_seeds knob
-    # exists).
     seed_paths:
       - runs/bc_opponents/bc_lt1600.pt.gz
       - runs/bc_opponents/bc_1600to2000.pt.gz
       - runs/bc_opponents/bc_gt2000.pt.gz
-    # League depth (docs/LEAGUE.md): mostly self-history PFSP, 20% of matches
-    # vs fixed champions.
     league:
       mode: mixed
       exploiter_fraction: 0.2
