@@ -224,6 +224,12 @@ class DrMarioVsPoolVecEnv:
             from training.envs.vs_opponents import OpponentPool, default_seed_paths, parse_league_config
 
             league = parse_league_config(opp_cfg.get("league"))
+            # Frozen-opponent action temperature. 0 = argmax (eval-matched
+            # strength). The historical default was full sampling (temp 1.0),
+            # which makes soft cross-entropy BC nets play far below their
+            # argmax strength — the learner then trains against weak BC but is
+            # graded against argmax BC. Default to argmax.
+            self._opp_temperature = float(opp_cfg.get("opponent_temperature", 0.0))
             self._snapshot_every = int(opp_cfg.get("snapshot_every_matches", 400))
             if league.mode == "exploiter":
                 # The exploiter trains exclusively vs the listed main agents;
@@ -684,8 +690,13 @@ class DrMarioVsPoolVecEnv:
                 aux=None if aux is None else torch.from_numpy(aux),
             )
             logits_cpu = logits.float().cpu()
-        dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
-        slot, _lp = dist.sample(deterministic=False)
+        temp = getattr(self, "_opp_temperature", 0.0)
+        if temp > 0:
+            dist = MaskedPlacementDist(logits_cpu / temp, torch.from_numpy(cand_mask))
+            slot, _lp = dist.sample(deterministic=False)
+        else:
+            dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
+            slot, _lp = dist.sample(deterministic=True)  # argmax: eval-matched
         slot_np = slot.numpy().reshape(-1).astype(np.int64)
         # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
         return cand_actions[np.arange(B), slot_np].astype(np.int32)
