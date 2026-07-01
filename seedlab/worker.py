@@ -110,9 +110,31 @@ class Solver:
         # checkpoint policy
         import torch
 
-        from models.policy.candidate_packing import pack_feasible_candidates
         from models.policy.placement_dist import MaskedPlacementDist
 
+        cand_actions, cand_mask, logits_cpu = self.candidate_logits(obs, infos)
+
+        mask_t = torch.from_numpy(cand_mask)
+        det_dist = MaskedPlacementDist(logits_cpu, mask_t)
+        det_slots = det_dist.mode().numpy().reshape(-1).astype(np.int64)
+        if self.temperature > 0:
+            samp_dist = MaskedPlacementDist(logits_cpu / self.temperature, mask_t)
+            samp_slots, _lp = samp_dist.sample(deterministic=False)
+            samp_slots = samp_slots.numpy().reshape(-1).astype(np.int64)
+        else:
+            samp_slots = det_slots
+        slots = np.where(deterministic, det_slots, samp_slots)
+        return cand_actions[np.arange(B), slots].astype(np.int64)
+
+    def candidate_logits(self, obs: np.ndarray, infos: Sequence[dict]):
+        """(cand_actions, cand_mask, logits) for the checkpoint policy."""
+
+        import torch
+
+        from models.policy.candidate_packing import pack_feasible_candidates
+
+        B = len(infos)
+        masks = np.stack([i["placements/feasible_mask"] for i in infos])
         costs = np.stack([i["placements/cost_to_lock"] for i in infos]).astype(np.float32)
         pills = np.stack([i["next_pill_colors"] for i in infos]).astype(np.int64)
         previews = np.stack(
@@ -152,18 +174,7 @@ class Solver:
                 aux=None if aux is None else torch.from_numpy(aux).to(self.device),
             )
             logits_cpu = logits.float().cpu()
-
-        mask_t = torch.from_numpy(cand_mask)
-        det_dist = MaskedPlacementDist(logits_cpu, mask_t)
-        det_slots = det_dist.mode().numpy().reshape(-1).astype(np.int64)
-        if self.temperature > 0:
-            samp_dist = MaskedPlacementDist(logits_cpu / self.temperature, mask_t)
-            samp_slots, _lp = samp_dist.sample(deterministic=False)
-            samp_slots = samp_slots.numpy().reshape(-1).astype(np.int64)
-        else:
-            samp_slots = det_slots
-        slots = np.where(deterministic, det_slots, samp_slots)
-        return cand_actions[np.arange(B), slots].astype(np.int64)
+        return cand_actions, cand_mask, logits_cpu
 
 
 class CatalogWorker:

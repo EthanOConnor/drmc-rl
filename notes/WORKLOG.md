@@ -4,6 +4,202 @@ Chronological log of work done. Format: date, actor, brief summary.
 
 ---
 
+## 2026-06-11 (vs-opp-obs) – Coding Agent (Claude) – Opponent-Board Observability for VS Self-Play
+
+- New `state_repr=bitplane_bottle_conn_mask_vs` (20ch): own bottle 0–7
+  unchanged, opponent bottle planes 8–15 (post-reduction copy of the pair
+  partner's own planes), feasible planes moved to 16–19. Built entirely in
+  `training/envs/drmario_vs_vec.py` from state the vspool already exports;
+  no engine changes. Default config stays 12ch — gate is the repr name.
+- `aux_spec: v1_vs` (72 = 57 + 15): v1 prefix bit-identical, appended
+  opponent scalars (opp viruses/84, garbage pending both directions /4,
+  opp pill + preview one-hots) from new `vs/*` info keys.
+- `tools/expand_checkpoint.py`: checkpoint surgery (zero-init stem-conv +
+  aux-encoder slices, coords relocated, both state_dict and ema, optimizer
+  dropped, embedded cfg rewritten). Verified bitwise-identical outputs vs
+  the original net — including the real 535M champion at d192 scale.
+- Frozen-opponent pool handles mixed archs: per-entry `aux_spec`, old
+  8-channel nets read their board prefix from 20ch obs unchanged.
+- Tests: `tests/test_vs_opponent_obs.py` (layout, scalars vs vspool
+  buffers, v1_vs==v1 prefix, surgery equality); full suite 197 passed
+  (1 pre-existing `test_game_engine_demo` failure, also fails on clean
+  tree). Docs: `docs/VS_OPPONENT_OBS.md`.
+
+## 2026-06-11 (ponder) – Coding Agent (Claude) – Dead-Time Pondering for the Search Policy
+
+- `models/policy/search_policy.py`: `PonderingSearchPolicy(SearchPolicy)` —
+  after a placement is committed, a single background worker (own 64-env
+  pool runner, newest job wins) searches the *next* decision during the
+  fall/lock/clear dead time: resolve the committed action (deterministic),
+  full-width ply-1 over every feasible next placement, depth-1 values for
+  all 9 candidate preview pairs in one trunk pass
+  (`_pill_conditioned_values`, preview marginalized per pill pair), then a
+  per-pair ply-2 beam + marginalized leaves + the existing Q backup
+  (budget-checked, `ponder_budget_s` default 1.0). Cache keyed by
+  (normalized post-commit board bytes, next pill); `decide()` consults it
+  first (hit ≈ 0.03 ms, restricted argmax over the caller's mask), miss =
+  normal deadline search + stale-job abort. Refactors: `_step_reward` /
+  `_marginal_leaf_values` take an optional `buf`, `_combo_values` extracted.
+- `tools/live_agent_server.py --ponder` (implies `--search`): kicks
+  `start_ponder` after every plan write; a cache hit at the next spawn
+  commits with `PONDER_MARGIN=2` frames instead of 6 (planner+script p95
+  ~10 ms < 33 ms; measured hit spawn→plan p50 1–8 ms) and logs `n_options`
+  at both margins. Desync/late replans call `ponder_invalidate()`.
+  Feasibility gain at speed-ups 40 HI: mean 28.8 options at margin 2 vs
+  12.2 at margin 6 (+16.6/decision); ~0 at slow early-game gravity.
+- `tools/vs_head_to_head.py --a-ponder`: side 0 ponder-search vs side 1
+  plain-search (a real `SearchPolicy`); offline dead time simulated by
+  running each ponder job to completion before the env steps (fair: job
+  wall p95 < 0.8 s << real spawn-to-spawn dead time, and the report includes
+  it). `tools/bench_search.py --ponder`: job wall + hit/miss decide latency.
+- Measured (M3 Max/MPS, vs2_02 step540020887, level 14 HI, beam 8): job
+  wall p50 0.25–0.7 s / p95 < 0.8 s; hit rate ~97 % in 1P-ish flow; all 9
+  pairs reach depth 2 in budget. Tests: `tests/test_ponder_policy.py`
+  (cache hit/miss/invalidate with stubbed compute, supersede/abort thread
+  lifecycle via events — no sleeps, real end-to-end ponder→hit); full suite
+  minus test_game_engine_demo green (174 passed).
+
+## 2026-06-11 (search) – Coding Agent (Claude) – Inference-Time Search + Live-Bridge Wiring
+
+- `models/policy/search_policy.py`: `SearchPolicy` — depth-2 beam-K
+  policy-guided expectimax over the 1P pool's checkpoint reset
+  (docs/SEARCH_DESIGN.md). Anytime with a between-stages deadline
+  (fallback → ply1 → depth1 → depth2); `inject_plan` round-trips so no board
+  is BFS-planned twice; the unknown pill-after-preview is neutralized by
+  exact analytic marginalization over the 81 (pill, preview) color pairs
+  (single engine sim, fully deterministic decide()); reward-augmented
+  discounted backup `Q = r̂1 + γ^τ1(r̂2 + γ^τ2 V)` with 1P reward replication
+  from `_RewardCfg` and a VS garbage-volley proxy (tiles/4). Key debugging
+  find: a pure value-head backup is anti-clear (V excludes the reward that
+  just moved into the past) — it *lost* to the plain policy until the reward
+  terms were added.
+- Wiring: `tools/live_agent_server.py --search [BEAM] --search-deadline-ms
+  --device`, `tools/eval_policy.py --search`, new `tools/vs_head_to_head.py`
+  (probe) and `tools/bench_search.py` (latency).
+- Quality probe (vs2_02 step540020887, level 14 HI, 60 matches,
+  tools/vs_head_to_head.py): search beat the plain argmax of the same
+  checkpoint **49W-11L = 81.7% win rate, Wilson 95% CI [0.70, 0.89]**
+  (search ms p50 63 / p95 77; agreement with the policy argmax ~= 0.30).
+  1P probe: champion step535164979, level 20, 32 eps, seed 4242 — plain
+  84.4% clear / p50 60986 / p90 108637 frames; search 59.4% clear /
+  p50 50901 / p90 72325. The search faithfully optimizes the trained
+  objective (time penalty makes clears slower than ~90k frames worse than a
+  topout), so it trades clear rate for much faster clears — roughly neutral
+  on the training return, a calibration caveat for pure-clear-rate use
+  (see SCRUTINY).
+  decide() p50 ~= 50 ms, p95 ~= 79 ms at beam 8 (MPS leaves + CPU small
+  forwards); spawn->plan-written p95 ~= 88-94 ms inside the 6-frame margin.
+- Tests: `tests/test_search_policy.py` (pure backup, fast-aux parity vs the
+  adapter shim, decide determinism/deadline/empty-mask; checkpoint-gated on
+  the pool lib).
+
+## 2026-06-11 – Coding Agent (Claude) – Seedlab Per-Seed Search + Jagged Explorer
+
+- Deep-dive design (`docs/SEEDLAB_SEARCH.md`): per-seed optimization is
+  deterministic perfect-information planning (full pill reserve known
+  analytically); exact additive frame costs; O(1) node restore via the
+  pool's extraction-checkpoint reset.
+- `seedlab/search.py`: `SearchEngine` on raw `DrMarioPoolRunner` (batch
+  checkpoint restore + step), policy-guided beam (T2: priors top-M,
+  board-hash dedup, rank g + λ·v_rem + κ·Σ−logπ), exact DFS B&B (T3,
+  anytime, certificate only when closed AND replay-exact). Key debugging
+  find: without the κ policy term the beam degenerates into tau-greedy
+  stacking and never clears (SCRUTINY M3).
+- `seedlab/explore.py` + `python -m seedlab explore`: jagged scheduler —
+  50% uniform / 50% slowest-decile seed sampling, heavy-tailed tier mix
+  (rollouts → beam w8/w32/w128 → exact), `search_log` effort table, thread
+  caps (default 2), replay-verified recording via new `CatalogDB.record_best`
+  (search results don't pollute attempt distributions).
+- Perf: memmove board fill in `build_reset_spec` (was a 128-iteration python
+  loop), cached per-node ctypes specs. Bench (2 threads): level 0 ~120
+  nodes/s (planner-bound; sparse boards are the v4 worst case), level 14
+  ~400–700 nodes/s. Beam already beats pass-0 greedy: seed 0x8988 level 0
+  1651 → 1313 frames (−20%); level 7 W32 −30% vs W8.
+- Tests: `tests/test_seedlab_search.py` (restore parity, beam replay
+  invariant, exact incumbent respect, explorer smoke) — checkpoint-gated.
+- TUI: `seedlab tui` gained a search-activity panel (last-hour/all-time
+  iters · records · nodes/s, per-tier economics incl. rec% and avg Δframes,
+  recent-improvements feed) and coverage columns `searched` (distinct seeds
+  touched by the explorer) and `proven` (certified-optimal solutions).
+- Engine fast path (~3–11× search): additive struct_size-guarded pool
+  features — `DrmResetSpec.inject_*` (checkpoint restores seed the planner
+  cache with the parent node's own outputs; ensure_planner cache-hits, falls
+  back to a real plan on hash/spawn mismatch) and
+  `DrmPoolConfig.lazy_decision_outputs` (step emits exact state-only context,
+  planning deferred to frontier survivors via phase-2 restore). Beam runs on
+  a lazy pool; rollouts/exact/replay on a normal one. Bench level 0 W8:
+  9.0 s → 0.8 s, identical replay frames. Plus pool workers thread split
+  (~2×). Gotcha logged: Makefile header deps are weak — `make clean` after
+  capi changes (and that rebuild surfaced the documented demo-parity drift
+  as two failures; SCRUTINY updated).
+- Explorer scheduling reworked width-first per Ethan: frontier level (lowest
+  with uncovered seeds) gets the bulk, geometric decay above, uniform
+  residue everywhere. TUI/report show best times as frames + NTSC seconds.
+- Second pass per Ethan: priority floor (default level 4 — build up from
+  there, 0–3 random backfill via the uniform residue), new `greedy x1` tier
+  (pass-0 single-argmax-rollout method), and tier selection switched from
+  weighted sampling to an equal-resource wall-time ledger (`pick_tier`:
+  least-spent applicable tier next, seeded from search_log → lifetime 1/n
+  split; a new tier catches up by design — Ethan confirmed that semantics
+  after initially misreading the all-greedy catch-up phase, so the explorer
+  now prints a startup ledger banner naming the laggard tier).
+  Budget-exhausted rollouts now recorded as failed attempts. Observed greedy-argmax dithering at L5+ (stalls at ~2
+  viruses until the decision cap) — policy behavior, documented in
+  docs/SEEDLAB_SEARCH.md, mitigated by the other tiers.
+
+## 2026-06-11 (later) – Coding Agent (Claude) – Admissible Bounds + Polish Tier
+
+- `seedlab/bounds.py`: per-step frame minima measured from the rules-exact
+  engine on extremal boards (grounded checkerboard support → earliest drop
+  failure; min over frame parity; speed_counter=0 matches every real spawn).
+  Continuing 37f (MED/HI) / 58f (LOW); terminal 8f via immediate stage-clear
+  (faster than topout). Pitfall found: floating junk rows settle post-lock
+  and inflate the measurement — supports must be grounded. Admissibility
+  fuzz-asserted (`test_step_bounds_admissible`).
+- `exact_search`: schedule-exact future bound (pill index = step index →
+  speed-ups known per future step), board-aware per-color line-component
+  pills bound, virus-progress DFS ordering. Honest result: still no
+  certificate closures at 300k nodes even on level 0 — floor 37f vs ~50–70f
+  true average + non-optimal incumbents; next unlock is per-node
+  planner-aware bounds (docs/SEEDLAB_SEARCH.md, BACKLOG).
+- Greedy-vs-training clarity (Ethan's question): eval at step ~610M shows
+  argmax clears L5 92% / L10 ~80% but with 8.7k–29k frame medians; the
+  explorer's flat 400-decision rollout cap was truncating real clears.
+  Cap now level-scaled (200 + 80·level): L4 greedy 7/8 clears.
+- New `polish` tier (Ethan): equal-share slice dedicated to the top-5
+  fastest seeds per level; beam width escalates with prior polish visits
+  (32→64→128→256 from search_log) and repeat visits Gumbel-perturb the
+  policy-prior ordering so each visit searches new subtrees. The exact tier
+  also retargets record seeds (only near-optimal incumbents can close).
+- Certificates parked per Ethan ("don't worry about certificates for now");
+  bounds machinery stays (sound, speeds anytime pruning).
+- TUI colors (Ethan): recent-records entries turn orange when they are the
+  current level record; per-level bests turn green when faster than the
+  human IL world record (speedrun.com drmariones, fetched 2026-06-11 into
+  `seedlab/report.py:HUMAN_WR_SECONDS`; realtime-vs-frame-metric caveat
+  noted inline). Level 0 already shows green: 273f = 4.5s vs 7.438s human WR.
+- Polish boosted (Ethan): share-weighted tier ledger (TIER_SHARES; polish
+  3.0 → ~1/3 of compute, others 1/9 each) and the polish field deepened to
+  the top-16 seeds per level.
+- Engine thread lifecycle fixed (Ethan: "no speedup from more threads"):
+  `parallel_for_envs` spawned/joined std::threads PER CALL and each exiting
+  thread freed the planner's ~2-3 MB thread-local BFS ctx (re-malloc'd next
+  call) — fine for training's few big calls/sec, fatal for search's hundreds
+  of small calls/sec. Replaced with a persistent worker pool
+  (`DrMarioPool::run_parallel`, condvar dispatch; ctxs freed once at pool
+  teardown). Scaling restored: L7 beam w32 864→1053→1197 n/s at 1/2/4
+  workers, identical results. Also killed 32 leaked
+  `drmario_engine --wait-start` procs from cpp-engine test runs (~3 cores;
+  SCRUTINY'd).
+- Then profiled the residue: torch.conv2d on 1-thread CPU was 92% of beam
+  wall (10.5s of 11.3s; engine just 2.1s). CPU torch threads make it WORSE
+  at these batch shapes; wider engine batches (E=256) change nothing. Fix:
+  dual solver — wide beams (w32+) run the net on MPS (~35% faster wall,
+  8.0s vs 10.7s), narrow work stays on CPU; torch pinned to 1 thread; beam
+  engine widened to 256 envs so a layer lands in one call. `--device mps`
+  now recommended for the explorer. Smoke: polish on MPS took L12's record
+  20,062 → 5,309 in two escalating visits.
+
 ## 2026-06-10 – Coding Agent (Claude) – Seed Catalog ("seedlab")
 
 - New `seedlab/` package + `docs/SEED_CATALOG.md`: prime95-style exhaustive
@@ -635,6 +831,28 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Updated candidate PPO wiring so the board trunk consumes non-feasibility bottle channels (`candidate_board_channels: 8`) while local raw patches stay on the first four color/virus planes; added validation to reject feasible-mask planes in the board trunk.
 - Added focused unit/smoke coverage for RAM decoder edge planes, plane-name/channel ordering, feasibility injection, candidate forward passes with 12-channel observations, and cpp-pool reset/step behavior for both old and new bottle-mask representations.
 
+## 2026-06-10 – Coding Agent – Fightcade Live-Play Bridge
+
+- Added the live-play bridge so the agent can play real Fightcade matches:
+  `tools/fc_live_agent.lua` (runs inside fcadefbneo: exports per-frame state to
+  `state.jsonl`, applies a frame-indexed NES button script from `plan.json` via
+  `joypad.set`, rollback-safe by construction) and `tools/live_agent_server.py`
+  (tails state lines, plans per pill spawn with `drm_reach_bfs_full` seeded
+  from mid-fall micro-state rolled forward over a latency margin, picks the
+  pose with the candidate policy checkpoint, writes the plan atomically;
+  `--dry-run`/`--bench`/`--once` modes; replans on missed windows and on
+  trajectory-verification desyncs).
+- Local test without Fightcade: `tests/test_live_bridge.py` simulates the Lua
+  side (pool-backend snapshot -> state line -> server -> plan), re-simulates
+  the script via `fast_reach` to assert it locks at the decided pose, and
+  unit-tests the 18-action->button mapping against `DrMarioPool.cpp`.
+- Bench (M-series laptop, two training runs live): spawn->plan-written p50
+  17.4 ms / p95 33.2 ms with the checkpoint policy (greedy: p50 11.9 / p95
+  32.6) — under the 50 ms p95 target.
+- `tools/fc_local_match.sh` documents the real-match launch order; blocked on
+  the fightcadeRatings agent's answers re live-Lua availability (see the ask at
+  the bottom of `../fightcadeRatings/COORDINATION.md`).
+
 ## 2026-06-11 – Coding Agent – VS Opponent Snapshot Pool (PFSP)
 
 - Added `training/envs/vs_opponents.py`: `OpponentPool` of frozen policy
@@ -658,3 +876,106 @@ Chronological log of work done. Format: date, actor, brief summary.
 - 2.5-min CPU smoke (2 pairs, DRMARIO_POOL_WORKERS=2) from the champion
   checkpoint vs the seeded pool: matches completed and per-opponent
   wins/games recorded in the manifest.
+
+## 2026-06-11 (tournament) – Coding Agent (Claude) – Round-Robin Tournaments + SPRT Change Gates
+
+- `tools/tournament.py` (`python -m tools.tournament run|report|sprt`):
+  resumable round-robin VS tournaments over a roster yaml (entries:
+  name/checkpoint/mode plain|search|ponder/params) on the native VS pool,
+  one sqlite row per game (`runs/tournaments/tournaments.sqlite`;
+  tournaments + games tables), deterministic per-game NES rng seeds and
+  alternating side assignments derived from the tournament seed via the
+  env's `seed_provider` hook. `report`: pairwise W-L-D matrix + Wilson 95%
+  CIs (decisive games) + Bradley-Terry/logistic Elo MLE (draws=0.5,
+  mean-zero anchor, ±95 from the Fisher-information Laplacian pinv).
+  `sprt`: sequential A-vs-B fishtest-style BayesElo trinomial LLR gate
+  (zero cells regularized at 0.5 so D=0 doesn't stall; bounds
+  log(β/(1−α)) / log((1−β)/α)), records into the same store, resumes by
+  name. Match running reuses `tools/vs_head_to_head.PlainPolicy` and the
+  per-env `SearchPolicy.decide` convention (ponder: simulated dead time,
+  recommend `--pairs 1`).
+- `tests/test_tournament.py`: 16 tests — Wilson/Elo/SPRT against
+  independently computed references and closed forms (400·log10(W/L),
+  Fisher SE, trinomial LLR constants), store resumability/crash-resume/
+  roster+seed mismatch with a stub runner. `docs/TOURNAMENTS.md`: usage +
+  statistical conventions + game-count guidance (~±10 Elo ≙ ~1000
+  games/pair; SPRT 0-vs-5 Elo resolves in a few hundred games).
+- Smoke: 6 real games vs2-tip (step540020887) vs best-535m
+  (step535164979), level 14 HI, 2 pairs — 5-1-0 for vs2-tip,
+  Elo +139.8 ±186.5, db rows + report + resume-noop verified.
+
+## 2026-06-12 — Search-distillation targets in SMDP-PPO (phase 1, config-gated)
+
+- `training/algo/search_distill.py` + `ppo_smdp.py` wiring: Gumbel-AZ-lite
+  distillation alongside PPO (`smdp_ppo.search_distill`, default OFF; the
+  flag-off update path is bit-identical — regression-guarded). A Bernoulli
+  `decision_fraction` of rollout decisions is re-analyzed by
+  `SearchPolicy.decide` (sim budget = `sims` pool envs, no wall-clock
+  deadline) guided by the current net (refreshed per update via the new
+  `SearchPolicy.refresh_weights`); targets = completed-Q improved policy
+  (`prior + sigma_scale*norm(Q)`, baseline = root V for unevaluated) and
+  `v_search = Σ π_target·Q`. Loss adds `beta·KL(π_target‖π_net)` on searched
+  rows; `value_mix` blends v_search into value targets. Executed actions stay
+  behavior-policy samples (phase 2 = act from search; not implemented).
+- Works in 1P and VS rollouts (vs env now emits `info["board"]`; VS search =
+  own-board 1P sim approximation, terminal ±1, parked sides skipped).
+  Restrictions: candidate policy, 12-ch obs, aux v1 (no v1_vs yet).
+- Measured (16 envs, sims=12 beam=8 frac=0.25): rollout dec/s 1736→428
+  (tiny net) / 263→83 (d192 prod net, MPS leaves; p50 ≈ 39 ms/searched
+  decision); update time unchanged. docs/SEARCH_DISTILL.md has the details.
+- `tests/test_search_distill.py`: 14 tests (target math, KL masking, blending,
+  flag-off bit-identity, 1P+VS end-to-end smokes). Full suite: 212 pass,
+  1 pre-existing fail (game_engine demo NES trace).
+
+## 2026-06-12 — League roles for the VS opponent pool (exploiter/mixed, config-gated)
+
+- `training/envs/vs_opponents.py`: `LeagueConfig` + `parse_league_config`
+  (`env.opponent_pool.league`: mode pfsp|exploiter|mixed, main_agents,
+  exploiter_fraction; default pfsp = unchanged behavior). Entries gain a
+  persisted `league_target` flag (protected from eviction); `sample()` picks
+  the eligible subset per mode — exploiter: targets only, PFSP-weighted by
+  per-target win rate; mixed: exploiter_fraction coin flip vs targets, else
+  the self-history pool. `seed_league_targets` is restart-idempotent by
+  checkpoint filename (per-target win/game counts persist in manifest.json).
+- `training/envs/drmario_vs_vec.py`: league wiring in the pool setup;
+  exploiter mode forces `_snapshot_every=0` (never snapshots itself) and
+  skips self-history seeding. `get_vs_metrics` adds `vs/league_targets`,
+  `vs/league_win_rate[_min|_max]`, `vs/league_wr_<id>`; dashboard gets a
+  conditional "league wr (targets)" row. docs/LEAGUE.md has the contract.
+- `tests/test_vs_league.py`: 9 tests incl. exploiter smoke vs the real
+  best-535m checkpoint on the native vspool. `pytest -k "opponent or vs or
+  league"`: 25 pass.
+
+## 2026-06-12 — BC human-style opponents + Go-Exploit start bank (corpus assets)
+
+- Engine (game_engine @ 6a4215f): `DrmVsResetSpec.checkpoint_*` per-side
+  mid-game checkpoint reset via `GameLogic::loadCheckpoint`; wrapper struct
+  mirrored in `envs/backends/drmario_vs_pool.py` (struct_size checked —
+  rebuild the dylib when pulling: `make -C game_engine libdrmario_pool`).
+- `tools/train_bc_opponent.py`: WHR-banded BC dataset (50k moves/band from
+  98 quarks; corpus now ~1.9M decisions/894 quarks) + per-band small
+  candidate nets (d96, enc2/tx2, aux none) -> runs/bc_opponents/bc_<band>.pt.gz;
+  cfg embedded so OpponentPool loads them unchanged.
+- `tools/build_start_bank.py` + `training/envs/start_bank.py`: 29,744
+  positions (early/mid/late/crisis strata) -> runs/start_bank/start_bank_v1.npz;
+  validated 64/64 byte-exact board round-trip + play-to-terminal.
+  Env gate: `env.start_bank {enabled,path,fraction}` in DrMarioVsPoolVecEnv
+  (disabled = bit-identical resets; no extra RNG draws).
+- Tests: tests/test_bc_opponent.py, tests/test_start_bank.py (+ fixture
+  tests/fixtures/fc_v2_events_small.jsonl); vs/pool suite green (37 passed).
+- drmc-rl commit c3b934a; docs/HUMAN_CORPUS_INTEGRATION.md has rebuild/enable
+  runbooks; dated note appended to ../fightcadeRatings/COORDINATION.md.
+
+## 2026-06-13 — Static internal competition dashboard
+
+- Added `tools/export_competition_web.py` plus `web/pool/` static HTML/CSS/JS.
+  The exporter reads `runs/tournaments/tournaments.sqlite` and opponent-pool
+  manifests, fits static Bradley-Terry ratings for frozen agents, emits
+  `web/pool/data.js`, and renders ratings, pairwise records, tournaments,
+  pool manifests, and a method note.
+- The rating model is intentionally static: frozen checkpoints have one latent
+  skill; estimate movement after re-export comes from added games/opponents or
+  connected-component changes, not modeled calendar drift.
+- Validation: `pytest -q tests/test_competition_web_export.py`,
+  `python3 -m tools.export_competition_web`, `node --check web/pool/app.js`,
+  and browser smoke checks at desktop + 390px mobile width.

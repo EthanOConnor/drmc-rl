@@ -18,9 +18,15 @@ Sequenced plan toward beating strong humans (speedrun + VS):
    agents; round-robin Elo harness (extend tools/eval_policy to head-to-head).
 4. **Strength dial**: value-gap sampling + reaction-time model + optional
    persona conditioning; calibrate notches against the Elo ladder.
-5. **Eval-time shallow search**: depth-2 expectimax over placements × next
-   pill using warp rollouts (~30 µs/sim) with the value head at leaves, for
-   exhibition play.
+5. **Eval-time shallow search**: DONE 2026-06-11 —
+   `models/policy/search_policy.py` + live-bridge/eval wiring
+   (docs/SEARCH_DESIGN.md). Follow-ups:
+   - expose the engine combo counter in pool step outputs so the VS
+     garbage-volley reward proxy (tiles/4 estimate) becomes exact;
+   - phase-2: ponder-during-fall DONE 2026-06-11 (`PonderingSearchPolicy`,
+     `live_agent_server --ponder`; deferred: garbage-case secondary ponder,
+     depth-3 widening); still open: 1-ply opponent model in a VS-pool sim,
+     search-as-training-targets (expert iteration).
 
 ## P0.5: Throughput Tail (post-2026-06-09 substrate)
 
@@ -40,16 +46,27 @@ Sequenced plan toward beating strong humans (speedrun + VS):
 
 ## P1: Seed Catalog ("seedlab") Follow-ups
 
-Base system landed 2026-06-10 (docs/SEED_CATALOG.md). Next:
+Base system landed 2026-06-10 (docs/SEED_CATALOG.md); per-seed search +
+jagged explorer landed 2026-06-11 (docs/SEEDLAB_SEARCH.md). Next:
 
 - Run the pass-0 sweep with the best checkpoint (queue is enqueued: 1,344
-  units, levels 0–20 speed 2), then a sampled pass 1+ for distributions.
-- Adaptive pass scheduling: spend attempts where best-vs-quantile gap or
-  clear variance is highest, instead of uniform passes.
+  units, levels 0–20 speed 2), then `seedlab explore` long-running for
+  jagged deepening.
+- ~~Pool API "skip planning on reset"~~ DONE 2026-06-11 as plan injection +
+  lazy decision outputs (docs/SEEDLAB_SEARCH.md "Engine fast path", 3–11×).
+- Level-aware tier weights in the explorer (W8 useless at level 14+; widen
+  with level), and beam-width escalation on near-miss seeds.
+- ~~Tighter admissible step bound for exact_search~~ DONE 2026-06-11
+  (seedlab/bounds.py: engine-measured extremal-board minima + per-color
+  line-component pills bound + progress-ordered DFS). Certificates still
+  don't close (37f floor vs ~50–70f true average; incumbent gap) — next
+  unlock is a per-node planner-aware bound: lower-bound future steps from
+  the node's own cost_to_lock distribution instead of a global constant.
 - Per-seed optimistic lower bound (sum of per-spawn min lock costs) to flag
-  seeds with remaining headroom; surface "headroom" in report/TUI.
-- Depth-2 expectimax solver pass for record-hunting on frontier seeds
-  (shares the P0 roadmap item #5 machinery).
+  seeds with remaining headroom; surface "headroom" in report/TUI and use it
+  to sharpen the explorer's weighted sampling.
+- Adaptive pass scheduling for the systematic worker (spend attempts where
+  best-vs-quantile gap or clear variance is highest).
 - Byte-exact spot audits of stored solutions via `DRMARIO_POOL_WARP=0`
   replay or v1 oracle (see SCRUTINY 2026-06-10).
 - Cross-machine federation: export/import unit results as JSONL shards.

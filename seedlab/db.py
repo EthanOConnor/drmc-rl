@@ -316,6 +316,73 @@ class CatalogDB:
             raise
         return new_bests
 
+    def record_best(
+        self,
+        *,
+        level: int,
+        speed: int,
+        seed: int,
+        frames: int,
+        spawns: int,
+        solver: str,
+        actions: bytes,
+        certified: bool = False,
+    ) -> bool:
+        """Fold a search-found best without touching attempt/distribution stats.
+
+        Returns True if it improved (or set) the stored best. `certified=True`
+        marks the solution as proven optimal (solutions.verified=2).
+        """
+
+        now = _utc_now_iso()
+        lvl, spd, sd = int(level), int(speed), int(seed)
+        cur = self._conn.cursor()
+        cur.execute("BEGIN IMMEDIATE;")
+        try:
+            row = cur.execute(
+                "SELECT best_frames FROM seed_stats WHERE level=? AND speed=? AND seed=?;",
+                (lvl, spd, sd),
+            ).fetchone()
+            prev_best = None if row is None or row[0] is None else int(row[0])
+            improved = prev_best is None or int(frames) < prev_best
+            if improved:
+                cur.execute(
+                    """
+                    INSERT INTO seed_stats(level, speed, seed, best_frames, best_spawns,
+                      best_solver, best_at, updated_at)
+                    VALUES(?,?,?,?,?,?,?,?)
+                    ON CONFLICT(level, speed, seed) DO UPDATE SET
+                      best_frames=excluded.best_frames,
+                      best_spawns=excluded.best_spawns,
+                      best_solver=excluded.best_solver,
+                      best_at=excluded.best_at,
+                      updated_at=excluded.updated_at;
+                    """,
+                    (lvl, spd, sd, int(frames), int(spawns), str(solver), now, now),
+                )
+            if improved or certified:
+                cur.execute(
+                    """
+                    INSERT INTO solutions(level, speed, seed, frames, spawns, actions,
+                      solver, created_at, verified)
+                    VALUES(?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(level, speed, seed) DO UPDATE SET
+                      frames=excluded.frames,
+                      spawns=excluded.spawns,
+                      actions=excluded.actions,
+                      solver=excluded.solver,
+                      created_at=excluded.created_at,
+                      verified=excluded.verified;
+                    """,
+                    (lvl, spd, sd, int(frames), int(spawns), actions, str(solver), now,
+                     2 if certified else 1),
+                )
+            self._conn.commit()
+            return improved
+        except Exception:
+            self._conn.rollback()
+            raise
+
     # -------------------------------------------------------------- work queue
     def enqueue_units(
         self, *, level: int, speed: int, pass_idx: int, total_seeds: int, chunk: int

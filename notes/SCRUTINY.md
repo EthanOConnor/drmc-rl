@@ -4,6 +4,191 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 
 ---
 
+## 2026-06-11 – PonderingSearchPolicy (dead-time search)
+
+**H (resolved). Depth-mixed argmax / value-ranked beam collapsed play**
+- First build ranked the per-pair ply-1 beam by depth-1 conditioned values
+  and argmaxed q columns mixing depth-1 estimates with depth-2 backups:
+  acceptance probe collapsed to 2W–13L vs plain search. Fixes: beam by the
+  pair-conditioned root *prior* (like decide()), and hit argmax restricted
+  to `PonderResult.refined` entries (depth-1 only as fallback). Agreement
+  with a fresh plain search on identical states went 0.80 → 0.94. Lesson
+  reaffirmed: the value head must not be trusted to *rank* actions, only
+  to evaluate inside a like-for-like backup.
+
+**M. Live miss can overlap torch forwards from two threads**
+- **Location**: `PonderingSearchPolicy.decide` miss path vs the worker
+- **Issue**: a miss sets the job's abort flag and proceeds immediately; the
+  worker only checks the flag *between* stages, so for up to one stage
+  (~tens of ms) CPU/MPS forwards run from both threads on the shared nets.
+  Inference-mode forwards on shared modules are thread-safe and the engines
+  are separate runners, but MPS encodes from two threads concurrently —
+  believed safe on torch 2.9, not proven here.
+- **Validation**: live sessions with `--ponder`; watch for MPS assertion
+  logs / `jobs_failed` + `last_error` in `ponder_stats()`.
+
+**M. Board-byte equality is the hit gate**
+- **Location**: `_board_key` (normalizes tiles >= 0xF0 to 0xFF)
+- **Issue**: a hit requires the live field bytes (incl. connection nibbles)
+  to equal the pool sim's post-resolution board byte-for-byte. Existing
+  warp-parity work makes this hold (97% hit rate measured through the real
+  server code path), but any engine/emulator byte divergence silently turns
+  ponder into dead weight (all misses) rather than an error.
+- **Validation**: hit-rate in the live decision log; if it craters, diff
+  `field` vs the ponder job's predicted board.
+
+**L. Ponder ply-2 priors see a fixed-garbage preview**
+- The ply-1 sims checkpoint the preview as 0xFF, so the per-pair ply-2 prior
+  forward conditions on clamped engine-RNG colors (same "accepted noise"
+  class as the base search's ply-2 priors; values are still marginalized).
+
+**L. Speed-ups drift across the ponder horizon**
+- The job seeds `checkpoint_speed_ups` from decision N for both plies, so
+  the next decision's threshold can be one ramp step stale (same accepted
+  drift as the base search's 2-ply horizon).
+
+## 2026-06-11 – Inference-Time SearchPolicy
+
+**M. VS reward proxy is an estimate, not the NES attack rule**
+- **Location**: `SearchPolicy._step_reward` (reward_mode="vs")
+- **Issue**: volley size is estimated as `min(4, tiles_cleared/4)` when ≥2
+  lines; the real rule adds the full combo counter (per-match count across
+  the cascade). Crosses/5-6-tile lines can mis-estimate by ±1 line
+  (±0.05 reward). The 1P sim has no garbage plumbing, so exact replication
+  needs engine support (BACKLOG: expose combo counter in pool outputs).
+- **Validation**: head-to-head probe (tools/vs_head_to_head.py) is the gate;
+  re-run it whenever the reward proxy or value calibration changes.
+
+**M. Search sim ignores opponent garbage during the 2-ply horizon**
+- **Location**: SearchPolicy (1P pool sim for VS play)
+- **Issue**: incoming garbage between our pills isn't modeled; leaf boards
+  are optimistic. Bias is shared across branches, but branches that leave
+  the spawn column tall are *more* fragile to unseen garbage than the value
+  head (trained on real VS states) can express through a clean board.
+- **Mitigation**: phase-2 1-ply opponent model (docs/SEARCH_DESIGN.md).
+
+**M. 1P search trades clear rate for speed (objective-faithful; check your
+goal)**
+- Level-20 probe (champion, 32 eps, same seeds): plain 84.4% clear / p50
+  60986 frames; search 59.4% / p50 50901 (p90 72325 vs 108637). The trained
+  1P objective's time penalty (-0.001/s at clear) makes a clear slower than
+  ~90k frames worth less than a topout, so the search rationally gambles for
+  fast clears; the value head also under-prices topout risk in tall-stack
+  states it rarely visits (search drifts off the policy's state
+  distribution). For pure-clear-rate use, point DRMARIO_REWARD_CONFIG at a
+  config with a smaller time penalty / larger topout penalty (the search
+  replicates whatever config it loads), or distill search play back into the
+  net (phase-2 expert iteration).
+
+**L. Speed-ups drift in sims**
+- `checkpoint_speed_ups` is seeded from the caller (live: `spdups` RAM;
+  eval/h2h: decisions//10 approximation) and the visible pill counter is not
+  replicated, so a sim can be one +1 speed-up off near a ramp boundary —
+  costs/masks shift slightly vs reality.
+
+**L. Eval-path root obs sees the symmetry-reduced mask**
+- In `tools/eval_policy --search` and the h2h tool the caller mask comes from
+  pool infos *after* in-place symmetry reduction, so root obs ch 10-11 are
+  zeroed for same-color pills (training obs keeps native planes there). The
+  live bridge path passes the unreduced planner mask and is exact.
+
+## 2026-06-11 – Seedlab Search Fast Path (plan injection + lazy outputs)
+
+**M2. Lazy pools violate the normal output contract by design**
+- **Location**: `DrmPoolConfig.lazy_decision_outputs`, `DrMarioPool.cpp`
+- **Issue**: With the flag set, step() emits zeroed feasible masks, saturated
+  costs, and obs without mask planes; `run_until_actionable_decision` also
+  stops at the first decision point without the zero-feasible-spawn skip.
+  Any consumer other than two-phase beam expansion would misbehave silently.
+- **Mitigation**: Flag defaults off everywhere; only `SearchEngine(lazy=True)`
+  sets it, and the explorer keeps a separate normal engine for rollouts,
+  exact search, and replay. Training/eval pools never touch it.
+
+**L. Injected plans change the search-internal tau source**
+- **Location**: `DrmResetSpec.inject_*`, `seedlab/search.py:checkpoint_spec`
+- **Issue**: Warp execution after an injected restore uses the parent-node
+  costs (computed at node creation) instead of a re-plan at the restored
+  state (speed_counter reset). Search-internal frames shift by ~±1 vs the
+  previous behavior; both are ranking-grade approximations of the
+  continuous-game tau.
+- **Mitigation**: Unchanged invariant: only from-reset replay frames enter
+  the catalog; exact-search certificates void on replay mismatch. If an
+  injected cache mismatches the restored state, `ensure_planner` falls back
+  to a normal plan (hash/spawn check).
+
+**L. cpp-engine tests leak `drmario_engine --wait-start` child processes**
+- **Location**: cpp-engine parity/demo tests (spawned standalone engine binary)
+- **Issue**: Each full pytest run left ~8 manual-step engine processes
+  spinning at ~10% CPU each (32 found after four suite runs on 2026-06-11,
+  ~3 cores wasted). Teardown does not reap them.
+- **Mitigation**: `pkill -f "drmario_engine --wait-start"` after suite runs;
+  proper fix is a teardown/atexit reap in the cpp-engine backend fixture.
+
+**L. Stale-object builds masquerade as ABI breakage**
+- **Location**: `game_engine/Makefile`
+- **Issue**: Header changes don't reliably dirty the .o files;
+  `drm_pool_create` then fails struct_size validation (null handle) until a
+  `make clean` rebuild. Cost ~30 min of confusion this session.
+- **Mitigation**: After any capi/header change run `make clean` first.
+
+**L. Demo-parity lane: `make clean` destroyed the legacy `drmario_engine` binary**
+- **Location**: `game_engine/drmario_engine` (untracked build artifact)
+- **Issue**: The previously working demo binary was built from a source state
+  not in the submodule (M1, 2026-06-09). The 2026-06-11 fast-path rebuild ran
+  `make clean`, so the binary is now built from current submodule sources and
+  BOTH demo-parity tests fail (`test_demo_trace_matches_nes_ground_truth`,
+  `test_demo_reset_matches_disassembly`) — same pre-existing drift, now
+  consistently visible instead of partially masked by a stale binary.
+- **Mitigation**: Unchanged plan: recover the working source state from
+  `../drmario-native` history. Keep both failures as tripwires; the training
+  path is parity-checked separately (v4 parity + pool smoke).
+
+## 2026-06-11 – Seedlab Search (beam + exact + explorer)
+
+**M2. Checkpoint-restore drift: search-internal frames ≠ replay frames**
+- **Location**: `seedlab/search.py` (`node_spec`, restore path)
+- **Issue**: Restored nodes reset `speed_counter`/gravity phase and
+  approximate `speed_ups` (`base + depth//10`), so step taus during search
+  can differ from a from-reset replay by a few frames (observed +10 on a
+  level-0 trace, ~0.8%).
+- **Impact**: Beam *ranking* sees small noise; absolute frames would be wrong
+  if recorded raw. Exact-search certificates would be unsound.
+- **Mitigation (implemented)**: Everything recorded goes through
+  `SearchEngine.replay` from a true reset and stores replay frames;
+  `Explorer.run_iteration` voids a certificate unless replay == search
+  frames. Residual risk: drift could occasionally *hide* a true record found
+  in search (replay slower than incumbent) — acceptable, logged via
+  "replay FAILED" lines.
+
+**M3. Beam frontier degeneration without the policy-prior term**
+- **Location**: `seedlab/search.py:beam_search` ranking
+- **Issue**: Ranking by g + λ·viruses alone lets tau-cheap junk placements
+  (high locks, no virus progress) flood constant-virus layers; observed beam
+  running 37 layers on level 0 without ever clearing. κ·Σ(−log π) fixed it.
+- **Impact**: If a future policy checkpoint has poorly calibrated logits, the
+  κ term could over-trust it; κ is a knob (default 35 frames/nat).
+- **Mitigation**: Bench suite (`explore --bench`) makes regressions visible;
+  keep the cost-ordered fallback for debugging only — it cannot clear.
+
+**L. Exact-search certificates: bounds now real, closure still incumbent-limited**
+- **Location**: `seedlab/search.py:exact_search`, `seedlab/bounds.py`
+- **Issue (updated 2026-06-11)**: Per-step frame minima are now
+  engine-measured on extremal boards (continuing 37f at MED/HI, 58f LOW;
+  terminal 8f via immediate stage-clear; fuzz-asserted admissible), and the
+  pills bound is board-aware (per-color line components). Remaining gaps:
+  average true step ≈ 50–70f vs the 37f floor, and incumbents from beam are
+  not optimal, so B&B closure at 400k nodes is still not guaranteed even at
+  level 0.
+- **Soundness notes**: bounds measured with speed_counter=0 (true at every
+  real spawn); the component pills bound relies on the board starting
+  virus-only (every non-virus line cell was caller-placed) and caps
+  cross-line serving at 2 — both engine facts. The earlier extremal-board
+  pitfall (floating junk rows settle post-lock and inflate the "minimum")
+  is documented in `seedlab/bounds.py`; supports must be grounded.
+- **Mitigation**: certificates only matter when `closed AND replay-exact`
+  (already enforced); treat them as opportunistic until a per-node
+  planner-aware bound lands.
+
 ## 2026-06-10 – Seed Catalog ("seedlab")
 
 **M2. Catalog frames are warp-mode planner frames, not emulator-audited frames**
@@ -640,3 +825,27 @@ Critical review and risk tracking. Capture concerns about correctness, performan
 - **Concern**: With external trainer integration removed, all throughput/scaling features must be supported by our in-repo runner + env backends.
 - **Risk**: If we outgrow single-host scaling, we may be tempted to re-introduce a second training stack ad-hoc, re-creating drift and inconsistent checkpoint/log semantics.
 - **Mitigation**: Treat `training.run` + `ppo_smdp` as the only supported training path; if multi-host becomes necessary, add a deliberate, minimal distributed layer (or external orchestrator) that preserves our checkpoint/log contracts rather than forking algorithm code.
+
+## Live bridge (tools/fc_live_agent.lua + tools/live_agent_server.py)
+
+- Planner parity uses `nesf & 1` ($0043) read at the before-frame hook for
+  soft-drop parity; a constant flip is possible and would shift down-hold
+  scripts by one frame. The verification/replan loop corrects it, but it has
+  not been validated against a real fcadefbneo run yet.
+- Re-plans assume a neutral controller at the seed frame; Lua's 1-2 frame plan
+  pickup delay can briefly violate that (DAS edge-press semantics). Desyncs are
+  logged (`type:"desync"`) and corrected by the next verification line.
+- State export may double-emit during GGPO rollback re-execution (input
+  application is frame-indexed and deterministic; export is not gated on a
+  rollback flag because none is confirmed exposed). Server tolerates duplicates.
+
+**R64. Static competition ratings depend on result-graph connectivity**
+- **Concern**: The internal competition dashboard fits static ratings per
+  connected component of the observed tournament graph, while opponent-pool
+  manifest records are learner-perspective training records.
+- **Risk**: A viewer may compare ratings across disconnected components, or
+  treat pool win rates as neutral head-to-head tournament evidence.
+- **Mitigation**: The page labels component ids, notes that cross-component
+  ratings are not directly comparable, and keeps pool records in a separate tab
+  with learner-perspective wording. If tournaments remain fragmented, schedule
+  bridge matches between components before using ratings as promotion gates.

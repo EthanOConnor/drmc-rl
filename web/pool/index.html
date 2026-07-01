@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DrMC Internal Competition Ratings</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Static ratings and tournament records for DrMC internal VS agents and training opponent pools.">
+<meta name="theme-color" content="#f7f4ed">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header id="masthead">
+  <div class="mast-title">
+    <h1>DrMC Internal Competition Ratings</h1>
+    <div class="subtitle">frozen-agent tournaments, opponent pools, and training run signals</div>
+  </div>
+  <div id="mastMeta" class="mast-meta"></div>
+</header>
+
+<nav id="nav">
+  <button data-view="ratings" class="on">Ratings</button>
+  <button data-view="matrix">Matrix</button>
+  <button data-view="tournaments">Tournaments</button>
+  <button data-view="pools">Pools</button>
+  <button data-view="method">Method</button>
+</nav>
+
+<main id="main"></main>
+
+<footer>
+  Static local dashboard generated from <span class="mono">runs/tournaments/tournaments.sqlite</span>
+  and <span class="mono">runs/*/opponent_pool/manifest.json</span>.
+</footer>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

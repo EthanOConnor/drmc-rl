@@ -387,6 +387,8 @@ def main() -> None:
                     help="(re-)annotate this quark only, replacing existing rows")
     ap.add_argument("--dry-run", action="store_true", help="compute + print, no write")
     ap.add_argument("--fcr-root", type=str, default=str(FCR_ROOT))
+    ap.add_argument("--shard", type=str, default=None, metavar="I/M",
+                    help="process only every M-th quark starting at I (parallel workers)")
     args = ap.parse_args()
 
     torch.set_num_threads(1)
@@ -418,6 +420,9 @@ def main() -> None:
         rows = con.execute(
             "SELECT quarkid, sha256 FROM processed_replay ORDER BY quarkid"
         ).fetchall()
+        if args.shard:
+            i, m = (int(x) for x in args.shard.split("/"))
+            rows = rows[i::m]
 
     counters: Dict[str, int] = defaultdict(int)
     all_slacks: List[int] = []

@@ -9,6 +9,35 @@ import numpy as np
 from seedlab import rng as slrng
 from seedlab.db import CatalogDB
 
+NTSC_FPS = 60.0988
+
+# Human world records, speedrun.com Dr. Mario (NES) Individual Levels
+# (game 46w2l76r, category rklv3y8d), fetched 2026-06-11. Realtime seconds;
+# IL timing rules differ slightly from our decision-terminal frame metric,
+# so treat comparisons as a dashboard signal, not a certified claim.
+HUMAN_WR_SECONDS = {
+    0: 7.438, 1: 14.134, 2: 19.0, 3: 28.333, 4: 34.033, 5: 40.974, 6: 49.0,
+    7: 50.54, 8: 51.134, 9: 65.198, 10: 73.233, 11: 80.06, 12: 76.1,
+    13: 85.433, 14: 90.0, 15: 90.557, 16: 96.53, 17: 102.983, 18: 111.633,
+    19: 127.867, 20: 123.567,
+}
+
+
+def beats_human_wr(level: int, frames: object) -> bool:
+    wr = HUMAN_WR_SECONDS.get(int(level))
+    if wr is None or frames is None:
+        return False
+    return int(frames) / NTSC_FPS < float(wr)
+
+
+def fmt_frames(frames: object) -> str:
+    """'1313 (21.8s)' — frames plus NTSC seconds."""
+
+    if frames is None:
+        return "-"
+    f = int(frames)
+    return f"{f} ({f / NTSC_FPS:.1f}s)"
+
 
 def _quantiles(values: List[int], qs=(0.10, 0.50, 0.90)) -> str:
     if not values:
@@ -44,14 +73,13 @@ def print_report(db: CatalogDB, *, speed: int, levels: Optional[List[int]] = Non
 
     print(
         f"{'level':>5} {'census':>7} {'attempted':>9} {'cleared':>8} {'cov%':>6} "
-        f"{'best':>7} {'q10/q50/q90':>16}"
+        f"{'best':>15} {'q10/q50/q90':>16}"
     )
     for lvl in lvls:
         s = level_summary(db, level=lvl, speed=speed)
-        best = s["best"] if s["best"] is not None else "-"
         print(
             f"{s['level']:>5} {s['census']:>7} {s['attempted']:>9} {s['cleared']:>8} "
-            f"{s['coverage_pct']:>6.1f} {best:>7} {s['best_q']:>16}"
+            f"{s['coverage_pct']:>6.1f} {fmt_frames(s['best']):>15} {s['best_q']:>16}"
         )
         if top > 0:
             fastest = db.fastest_seeds(level=lvl, speed=speed, k=top)

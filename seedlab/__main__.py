@@ -93,6 +93,7 @@ def cmd_worker(args) -> None:
             max_decisions=args.max_decisions,
             levels=_parse_levels(args.levels) if args.levels else None,
             seed=args.seed,
+            max_units=args.max_units,
         )
         worker.install_signal_handlers()
         print(f"[seedlab] worker {worker_id} starting (policy={worker.solver.solver_id})")
@@ -159,6 +160,67 @@ def cmd_verify(args) -> None:
         db.close()
 
 
+def cmd_explore(args) -> None:
+    # Thread discipline: explorer coexists with training/interactive use.
+    # The pool gets the full thread budget; torch stays single-threaded —
+    # measured 2026-06-11: CPU conv2d at beam batch sizes gets SLOWER with
+    # more torch threads, and wide-beam forwards run on MPS when --device mps.
+    os.environ.setdefault("DRMARIO_POOL_WORKERS", str(max(1, args.threads)))
+    import torch
+
+    torch.set_num_threads(1)
+
+    from seedlab.explore import Explorer
+
+    db = _open_db(args)
+    try:
+        explorer = Explorer(
+            db=db,
+            levels=_parse_levels(args.levels),
+            speed=args.speed,
+            checkpoint=args.checkpoint,
+            device=args.device,
+            num_envs=args.num_envs,
+            exact_max_level=args.exact_max_level,
+            seed=args.seed,
+            priority_level=None if args.priority_level < 0 else args.priority_level,
+        )
+        explorer.install_signal_handlers()
+        try:
+            if args.bench:
+                _run_bench(explorer)
+            else:
+                explorer.run(
+                    iterations=args.iterations,
+                    duration_sec=None if args.duration_min is None else args.duration_min * 60.0,
+                )
+        finally:
+            explorer.close()
+    finally:
+        db.close()
+
+
+def _run_bench(explorer) -> None:
+    """Fixed benchmark suite; prints a table for docs/SEEDLAB_SEARCH.md."""
+
+    from seedlab.search import beam_search
+
+    print(f"{'level':>5} {'width':>5} {'frames':>7} {'nodes':>7} {'wall_s':>7} {'nodes/s':>8}")
+    for level in (0, 7, 14):
+        for width in (8, 32):
+            res = beam_search(
+                explorer.beam_engine,
+                level=level, speed=explorer.speed, seed=0x8988,
+                width=width, top_m=8,
+                solver=explorer.solver if explorer.solver.policy == "checkpoint" else None,
+                lambda_frames=explorer._lambda_for(level),
+            )
+            print(
+                f"{level:>5} {width:>5} {str(res.frames):>7} {res.nodes:>7} "
+                f"{res.wall_sec:>7.1f} {res.nodes / max(res.wall_sec, 1e-9):>8.0f}"
+            )
+
+
 def cmd_tui(args) -> None:
     from seedlab.dashboard import run_dashboard
 
@@ -201,6 +263,27 @@ def main() -> None:
     p.add_argument("--max-units", type=int, default=None,
                    help="stop after completing this many units")
     p.set_defaults(fn=cmd_worker)
+
+    p = sub.add_parser("explore", help="jagged random-depth search across seeds")
+    p.add_argument("--levels", type=str, default="0-20")
+    p.add_argument("--speed", type=int, default=2)
+    p.add_argument("--checkpoint", type=str, default=None,
+                   help="policy checkpoint (strongly recommended; guides the search)")
+    p.add_argument("--device", type=str, default="cpu")
+    p.add_argument("--num-envs", type=int, default=32)
+    p.add_argument("--iterations", type=int, default=None)
+    p.add_argument("--duration-min", type=float, default=None)
+    p.add_argument("--threads", type=int, default=2,
+                   help="total thread budget (pool workers + torch)")
+    p.add_argument("--exact-max-level", type=int, default=0,
+                   help="exact B&B ceiling; benchmarked 2026-06-11: cannot close "
+                        "level >=1 within budget until the step bound improves")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--priority-level", type=int, default=4,
+                   help="anchor width-first build-up here; lower levels get "
+                        "random backfill only (negative disables)")
+    p.add_argument("--bench", action="store_true", help="run the benchmark suite and exit")
+    p.set_defaults(fn=cmd_explore)
 
     p = sub.add_parser("report", help="print coverage and best-time tables")
     p.add_argument("--speed", type=int, default=2)

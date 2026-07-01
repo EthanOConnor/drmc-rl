@@ -5,6 +5,78 @@ Format: short entries, timestamped, with rationale and trade-offs (ADR-lite).
 
 ---
 
+## 2026-06-11 – VS Opponent-Board Observability (state_repr gate + zero-init surgery)
+
+- **Decision**: opponent obs is gated by the state representation name
+  (`bitplane_bottle_conn_mask_vs`, 20ch), not a separate boolean. The layout
+  inserts the opponent planes *between* the own planes (0–7) and the feasible
+  planes (16–19) so the candidate net's contiguous `board_channels` prefix
+  needs zero forward-pass changes (`candidate_board_channels: 16`) and the
+  trainer's plane-name validation/auto-detect just work. Old 8-channel nets
+  read their prefix from the 20ch obs unchanged → mixed-arch opponent pools
+  are safe.
+- Side i's opponent planes are side i^1's own planes *post* symmetry
+  reduction (the opponent board exactly as the opponent observes it,
+  channel-6/7 same-color quirk included). Own-plane semantics untouched.
+- Opponent scalars ride `aux_spec: v1_vs` (72 = 57 v1 + 15): zeros in 1P
+  envs, sourced from `vs/*` info keys that mirror the vspool's exported
+  per-side buffers (`viruses_rem`, `garbage_pending`, pill/preview colors
+  at index i^1). No engine changes were needed.
+- Warm start: `tools/expand_checkpoint.py` zero-inits the new stem-conv and
+  aux-encoder input slices (coords relocated after the board prefix), so the
+  expanded net is bitwise-identical to the old one at init; optimizer state
+  dropped, embedded `cfg.smdp_ppo` rewritten for pool/eval reconstruction.
+
+## 2026-06-11 – Dead-Time Pondering (PonderingSearchPolicy)
+
+- **Decision**: the next decision is pre-searched during script-execution
+  dead time (`PonderingSearchPolicy` in `models/policy/search_policy.py`):
+  one background worker + dedicated 64-env runner, newest job wins; cache
+  keyed by (normalized post-commit board bytes, next pill colors), the
+  revealed preview pair selects a per-pair Q column at decision time. Hit ≈
+  0.03 ms; miss = the normal deadline search (correctness never depends on
+  the cache — the board-hash gate makes garbage/desync a safe miss).
+- **Key trick**: depth-1 Q for *every* feasible ply-1 action × all 9 preview
+  pairs costs one trunk pass — `_combo_values` gives the [B,81] combo value
+  matrix, mean over the preview axis conditions on the falling pair
+  (`_pill_conditioned_values`). Ply-1 board outcomes don't depend on the
+  unknown preview, so sims are shared across pairs; only the per-pair ply-2
+  subtree (beam-8) is replicated 9×. Job wall ~0.25–0.7 s, p95 < 0.8 s on
+  M3 Max/MPS — inside the ~0.7–1.5 s spawn-to-spawn dead time.
+- **Live payoff** (`tools/live_agent_server --ponder`): hits commit with a
+  2-frame plan margin instead of 6 (planner+script ~10 ms < 33 ms), which
+  preserves placements lost to the 6-frame neutral roll-forward — at
+  speed-ups 40 HI, mean 28.8 feasible options vs 12.2 (+16.6/decision);
+  plus the full-width ply-1 / no-deadline search quality on ~97 % of
+  decisions (1P-ish flow; lower in VS where garbage perturbs the board).
+- **Deliberately deferred**: secondary ponder for the garbage-perturbed
+  board (no cheap signal for the row pattern in the 1P sim; miss path
+  covers it) and depth-3 widening (budget loop is the insertion point).
+
+## 2026-06-11 – Inference-Time Search (SearchPolicy)
+
+- **Decision**: live-play strength comes from `models/policy/search_policy.py`
+  — depth-2, beam-K (strength dial) policy-guided expectimax over the 1P
+  pool's checkpoint reset, leaf = value head; spec in `docs/SEARCH_DESIGN.md`.
+  Anytime: policy argmax is the instant fallback, deadline enforced between
+  stages (default 60 ms inside the live bridge's ~100 ms plan margin).
+- **Backup must be reward-augmented**: `Q = r̂1 + γ^τ1(r̂2 + γ^τ2·V(leaf))`
+  with the training reward replicated from sim event counters (1P:
+  `_RewardCfg` components; VS: garbage proxy = tiles/4 volley estimate +
+  dominating ±8 terminal constants because gamma-1 shaping inflates V to
+  ~[0.5,4.5]). A pure V(leaf) backup is *anti-clear* (the collected reward
+  leaves V) and measurably lost to the plain policy.
+- **Chance-node neutralization**: the pill after the preview is seed garbage
+  in a checkpoint sim; leaf obs is color-independent except cond inputs and
+  the ch-6/7 symmetry-reduction artifact, so the leaf value marginalizes the
+  81 (pill, preview) canonical color pairs analytically (two trunk variants,
+  cheap cond/value MLPs) — one engine sim, decide() exactly deterministic.
+- **Perf shape**: CPU for B≤8 full forwards, `device` (mps) only for the big
+  marginal leaf batch (MPS dispatch round-trips dominate otherwise); native
+  BFS is the other cost — never plan a board twice (`inject_plan` round-trip,
+  ply-1 on K reps, phase-B re-checkpoint fan-out). Near-empty boards are the
+  planner's worst case (~7 ms/env).
+
 ## 2026-06-10 – Seed Catalog ("seedlab") Architecture
 
 - **Decision**: The per-seed clear-time catalog lives in `seedlab/` with its
@@ -1238,3 +1310,19 @@ the rotation can be recovered from the preview mask.
   per opponent id); each restart of the supervisor starts a fresh pool dir
   seeded from the newest `vs2_*` checkpoint + the protected 1P champion, so
   per-opponent history resets across restarts.
+
+---
+
+## 2026-06-13 – Internal Competition Ratings: Static Agent Skill
+
+- **Decision:** Internal frozen-agent tournament dashboards use a static
+  Bradley-Terry/logistic rating fit, not a whole-history or time-varying latent
+  skill model.
+- **Why:** Saved checkpoints and fixed policies do not improve after they are
+  written. Re-running the export may change estimates because new games,
+  opponents, or connected components change the evidence, but that is
+  estimation movement rather than modeled skill drift.
+- **Trade-offs:** Ratings from disconnected result components are centered
+  independently and cannot be compared directly; training-progress charts
+  should be presented as checkpoint lineage or estimate snapshots, not as a
+  drifting latent-skill path for one frozen agent.

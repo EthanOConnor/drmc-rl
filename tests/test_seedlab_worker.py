@@ -34,6 +34,20 @@ def test_worker_machinery_end_to_end(tmp_path) -> None:
     n_seeds = 24
     db.enqueue_units(level=0, speed=2, pass_idx=0, total_seeds=n_seeds, chunk=16)
 
+    # max_units bounds a worker to a fixed number of shards.
+    bounded = CatalogWorker(
+        db=db,
+        worker_id="test-bounded",
+        policy="greedy-cost",
+        attempts_per_seed=2,
+        num_envs=8,
+        max_decisions=300,
+        seed=7,
+        max_units=1,
+    )
+    bounded.run()
+    assert db.unit_counts() == {"done": 1, "todo": 1}
+
     worker = CatalogWorker(
         db=db,
         worker_id="test",
@@ -48,7 +62,8 @@ def test_worker_machinery_end_to_end(tmp_path) -> None:
     assert db.unit_counts() == {"done": 2}
     attempted, _cleared = db.coverage(level=0, speed=2)
     assert attempted == n_seeds
-    assert worker.total_attempts == n_seeds * 2
+    # The bounded worker handled the first 16-seed unit; this one the rest.
+    assert worker.total_attempts == (n_seeds - 16) * 2
 
     row = db._conn.execute(
         "SELECT SUM(n_attempts) FROM seed_stats WHERE level=0 AND speed=2;"
