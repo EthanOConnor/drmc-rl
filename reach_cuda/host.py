@@ -131,6 +131,8 @@ class CudaReach:
             self.module, b"drm_reach_debug_phase12_kernel"))
         self.k_costs = _check(drv.cuModuleGetFunction(
             self.module, b"drm_reach_costs_kernel"))
+        self.k_scripts = _check(drv.cuModuleGetFunction(
+            self.module, b"drm_reach_scripts_kernel"))
         self._k_ws_probe = _check(drv.cuModuleGetFunction(
             self.module, b"drm_reach_ws_size_probe"))
 
@@ -243,6 +245,62 @@ class CudaReach:
         _check(drv.cuStreamSynchronize(self.stream))
         return self.h_costs[:n].copy()
 
+    SCRIPT_BUF_CAP = 24576
+    PARENT_SLOT_U32 = 2 * 6336 * 8 * 64   # must match the kernel
+
+    def _ensure_parent_arena(self):
+        """Parent arena for the scripts re-BFS: ~26 MB per block slot,
+        allocated on first solve_scripts call. No zeroing needed — parent
+        walks are count-bounded and only follow entries written during the
+        same solve."""
+        if getattr(self, "d_parents", None) is None:
+            self.d_parents = _check(drv.cuMemAlloc(
+                self.grid_blocks * self.PARENT_SLOT_U32 * 4))
+        return self.d_parents
+
+    def solve_scripts(self, cols, parity, thr, **spawn):
+        """Costs plus an optimal input script per macro-legal reachable pose.
+
+        Returns (costs (n,512)u16, offsets (n,512)u16, lengths (n,512)u16,
+        scripts (n, 24576)u8, status (n,)i32). status != 0 => fall back to the
+        CPU planner for that instance (bit 1: some pose had no greedy-matched
+        script; bit 2: script buffer overflow; bit 4: parity alarm — a greedy
+        rollout beat the "exact" cost, which should be impossible).
+
+        Scripts are optimal by construction (frame count == exact cost) but
+        not byte-identical to CPU v1's tie-break choice; verify by replay.
+        """
+        n = self._pack_instances(cols, parity, thr, **spawn)
+        d_parents = self._ensure_parent_arena()
+        d_off = _check(drv.cuMemAlloc(n * N_POSES * 2))
+        d_len = _check(drv.cuMemAlloc(n * N_POSES * 2))
+        d_scr = _check(drv.cuMemAlloc(n * self.SCRIPT_BUF_CAP))
+        d_st = _check(drv.cuMemAlloc(n * 4))
+        try:
+            _check(drv.cuMemsetD8Async(self.d_cursor, 0, 8, self.stream))
+            _check(drv.cuMemcpyHtoDAsync(
+                self.d_insts, self._h_insts_ptr, n * INSTANCE_DTYPE.itemsize, self.stream))
+            grid = min(self.grid_blocks, n)
+            self._launch(self.k_scripts,
+                         [self.d_insts, n, self.d_cursor, self.d_ws, d_parents,
+                          self.d_costs, d_off, d_len, d_scr, d_st],
+                         grid, self.block_threads)
+            costs = np.empty((n, N_POSES), dtype=np.uint16)
+            off = np.empty((n, N_POSES), dtype=np.uint16)
+            length = np.empty((n, N_POSES), dtype=np.uint16)
+            scr = np.empty((n, self.SCRIPT_BUF_CAP), dtype=np.uint8)
+            st = np.empty(n, dtype=np.int32)
+            _check(drv.cuStreamSynchronize(self.stream))
+            _check(drv.cuMemcpyDtoH(costs.ctypes.data, self.d_costs, costs.nbytes))
+            _check(drv.cuMemcpyDtoH(off.ctypes.data, d_off, off.nbytes))
+            _check(drv.cuMemcpyDtoH(length.ctypes.data, d_len, length.nbytes))
+            _check(drv.cuMemcpyDtoH(scr.ctypes.data, d_scr, scr.nbytes))
+            _check(drv.cuMemcpyDtoH(st.ctypes.data, d_st, st.nbytes))
+            return costs, off, length, scr, st
+        finally:
+            for d in (d_off, d_len, d_scr, d_st):
+                drv.cuMemFree(d)
+
     def debug_phase12(self, cols, parity, thr, gd_cap: int = 128, **spawn):
         """Run phases 1+2 only; returns (wanted u8 (n,512), ub u16 (n,512),
         gd u8 (n,gd_cap,512), n_wanted i32 (n,)) for parity testing."""
@@ -275,7 +333,7 @@ class CudaReach:
                 drv.cuMemFree(d)
 
     def close(self):
-        for p in ("d_insts", "d_costs", "d_cursor", "d_ws"):
+        for p in ("d_insts", "d_costs", "d_cursor", "d_ws", "d_parents"):
             if getattr(self, p, None) is not None:
                 drv.cuMemFree(getattr(self, p))
                 setattr(self, p, None)

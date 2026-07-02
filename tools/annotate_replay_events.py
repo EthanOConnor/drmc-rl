@@ -133,6 +133,43 @@ def load_planner():
     return fn
 
 
+def make_batch_planner(backend: str):
+    """Batched planner: (cols (n,8)u16, parity (n,)u8, thr (n,)u8) -> (n,512)u16.
+
+    'cuda' runs the bit-exact GPU port (reach_cuda; same costs as CPU v4 on
+    every macro-legal pose, verified by tools/test_reach_cuda_parity).
+    """
+    if backend == "cuda":
+        from reach_cuda import CudaReach
+        ctx = CudaReach(max_batch=8192)
+
+        def solve_cuda(cols, parity, thr):
+            out = np.empty((len(cols), 512), dtype=np.uint16)
+            for s in range(0, len(cols), ctx.max_batch):
+                e = min(s + ctx.max_batch, len(cols))
+                out[s:e] = ctx.solve_costs(cols[s:e], parity[s:e], thr[s:e])
+            return out
+
+        return solve_cuda
+
+    fn = load_planner()
+
+    def solve_cpu(cols, parity, thr):
+        out = np.empty((len(cols), 512), dtype=np.uint16)
+        buf = np.empty(512, dtype=np.uint16)
+        for i in range(len(cols)):
+            row = np.ascontiguousarray(cols[i])
+            rc = fn(row.ctypes.data_as(C.POINTER(C.c_uint16)),
+                    3, 0, 0, 0, 0, 0, int(parity[i]), 0, int(thr[i]), 2048,
+                    buf.ctypes.data_as(C.POINTER(C.c_uint16)))
+            if rc != 0:
+                raise RuntimeError(f"drm_reach_bfs_v4 rc={rc}")
+            out[i] = buf
+        return out
+
+    return solve_cpu
+
+
 def decode_field(b64: str) -> np.ndarray:
     return np.frombuffer(base64.b64decode(b64), dtype=np.uint8).reshape(GRID_H, GRID_W)
 
@@ -235,7 +272,8 @@ def pair_moves(events: Dict[str, list], counters: Dict[str, int]) -> List[Dict[s
 
 
 def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
-                   candidate_max: int, counters: Dict[str, int]) -> List[Dict[str, Any]]:
+                   candidate_max: int, counters: Dict[str, int],
+                   device: str = "cpu") -> List[Dict[str, Any]]:
     events = parse_quark_events(raw)
     if not events["spawn"]:
         counters["quarks_no_v2"] += 1
@@ -243,25 +281,30 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
     moves = pair_moves(events, counters)
     grbs = events["grb"]
 
-    out_costs = np.empty(512, dtype=np.uint16)
     recs: List[Dict[str, Any]] = []
     batch_items: List[dict] = []  # net inputs for rank/value_gap
 
-    for mv in moves:
+    # Planner pre-pass: batch all spawns of the quark through one solver call
+    # (the CUDA backend grinds them in parallel; CPU loops).
+    n_mv = len(moves)
+    work_cols = np.zeros((n_mv, 8), dtype=np.uint16)
+    work_par = np.zeros(n_mv, dtype=np.uint8)
+    work_thr = np.zeros(n_mv, dtype=np.uint8)
+    fields: List[np.ndarray] = []
+    for j, mv in enumerate(moves):
+        sp = mv["spawn"]
+        field = decode_field(sp["field"])
+        fields.append(field)
+        work_cols[j] = occupancy_cols(field)
+        work_par[j] = int(sp["f"]) & 1
+        work_thr[j] = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
+    all_costs = planner(work_cols, work_par, work_thr) if n_mv else None
+
+    for j, mv in enumerate(moves):
         sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
         spawn_f, lock_f = int(sp["f"]), int(lk["f"])
-        field = decode_field(sp["field"])
-        cols = occupancy_cols(field)
-        thr = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
-        out_costs.fill(0xFFFF)
-        rc = planner(
-            cols.ctypes.data_as(C.POINTER(C.c_uint16)),
-            3, 0, 0, 0, 0, 0, spawn_f & 1, 0, thr, 2048,
-            out_costs.ctypes.data_as(C.POINTER(C.c_uint16)),
-        )
-        if rc != 0:
-            counters["planner_error"] += 1
-            continue
+        field = fields[j]
+        out_costs = all_costs[j]
 
         # Pose costs -> macro action costs/feasibility (as in ensure_planner).
         action_cost = np.full(512, 0xFFFF, dtype=np.uint16)
@@ -361,13 +404,13 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
             aux = aux_shim._build_aux_batch(obs, [c["info"] for c in chunk])
         with torch.inference_mode():
             logits, _values = net(
-                torch.from_numpy(obs),
-                torch.from_numpy(pills),
-                torch.from_numpy(prevs),
-                torch.from_numpy(cand_a.astype(np.int32)),
-                torch.from_numpy(cand_c.astype(np.float32)),
-                torch.from_numpy(cand_m),
-                aux=None if aux is None else torch.from_numpy(aux),
+                torch.from_numpy(obs).to(device),
+                torch.from_numpy(pills).to(device),
+                torch.from_numpy(prevs).to(device),
+                torch.from_numpy(cand_a.astype(np.int32)).to(device),
+                torch.from_numpy(cand_c.astype(np.float32)).to(device),
+                torch.from_numpy(cand_m).to(device),
+                aux=None if aux is None else torch.from_numpy(aux).to(device),
             )
             lg = logits.float().cpu().numpy()
         lg[~cand_m] = -np.inf
@@ -389,6 +432,11 @@ def main() -> None:
     ap.add_argument("--fcr-root", type=str, default=str(FCR_ROOT))
     ap.add_argument("--shard", type=str, default=None, metavar="I/M",
                     help="process only every M-th quark starting at I (parallel workers)")
+    ap.add_argument("--planner", choices=("cpu", "cuda"), default="cpu",
+                    help="reach planner backend (cuda = reach_cuda GPU port, "
+                         "bit-exact with cpu v4 on all macro-legal poses)")
+    ap.add_argument("--device", default="cpu",
+                    help="torch device for the champion net (e.g. cuda)")
     args = ap.parse_args()
 
     torch.set_num_threads(1)
@@ -398,13 +446,15 @@ def main() -> None:
     import store  # fightcadeRatings/store.py
 
     payload = load_checkpoint(CHECKPOINT, map_location="cpu")
-    net, aux_dim, candidate_max = _build_net_from_cfg(payload["cfg"], OBS_CHANNELS, "cpu")
+    net, aux_dim, candidate_max = _build_net_from_cfg(payload["cfg"], OBS_CHANNELS, args.device)
     net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
+    net.to(args.device)
     aux_shim = _make_aux_builder(aux_dim)
     model_ver = CHECKPOINT.name
-    print(f"model={model_ver} step={payload.get('step')} planner={PLANNER_VER}")
+    print(f"model={model_ver} step={payload.get('step')} planner={PLANNER_VER} "
+          f"backend={args.planner}")
 
-    planner = load_planner()
+    planner = make_batch_planner(args.planner)
     con = store.connect()
     con.execute(CREATE_TABLE)
     con.commit()
@@ -448,7 +498,8 @@ def main() -> None:
             counters["quarks_blob_missing"] += 1
             continue
 
-        recs = annotate_quark(quarkid, raw, planner, net, aux_shim, candidate_max, counters)
+        recs = annotate_quark(quarkid, raw, planner, net, aux_shim, candidate_max,
+                              counters, device=args.device)
         if not recs:
             continue
         quarks_done += 1

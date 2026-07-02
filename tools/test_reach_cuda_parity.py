@@ -176,6 +176,119 @@ def check_costs(ctx, cases: list[dict], label: str) -> int:
     return bad
 
 
+def _py_v4_step(fm_h, fm_v, thr, s, act):
+    """Python mirror of the C v4_step (exact single-state stepper) for
+    independent script replay verification."""
+    dir_, dn, rot = act // 6, (act % 6) // 3, act % 3
+    def fits(x, y, r):
+        if not (0 <= x < 8 and 0 <= y < 16):
+            return False
+        m = fm_v[y] if (r & 1) else fm_h[y]
+        return bool((m >> x) & 1)
+    press = (dir_ == 1 and s["hd"] != 1) or (dir_ == 2 and s["hd"] != 2)
+    down_only = dn and dir_ == 0
+    drop = False
+    if (s["p"] & 1) == 0 and down_only:
+        drop = True; s["sc"] = 0
+    else:
+        s["sc"] += 1
+        if s["sc"] > thr:
+            drop = True; s["sc"] = 0
+    if drop:
+        ny = s["y"] + 1
+        if ny >= 16 or not fits(s["x"], ny, s["rot"]):
+            s["locked"] = True; s["hd"] = dir_; s["rh"] = rot; s["p"] ^= 1
+            return
+        s["y"] = ny
+    allow = False
+    if press:
+        s["hv"] = 0; allow = True
+    elif dir_ != 0:
+        s["hv"] += 1
+        if s["hv"] >= 0x10:
+            s["hv"] = 0x0A; allow = True
+    if allow and dir_ != 0:
+        nx = s["x"] + (1 if dir_ == 2 else -1)
+        if fits(nx, s["y"], s["rot"]):
+            s["x"] = nx
+        else:
+            s["hv"] = 0x0F
+    if rot != 0 and rot != s["rh"]:
+        r0 = s["rot"] & 3
+        r1 = (r0 - 1) & 3 if rot == 1 else (r0 + 1) & 3
+        if (r1 & 1) == 0:
+            if fits(s["x"], s["y"], r1):
+                if dir_ == 1 and fits(s["x"] - 1, s["y"], r1):
+                    s["x"] -= 1
+                s["rot"] = r1
+            elif fits(s["x"] - 1, s["y"], r1):
+                s["x"] -= 1; s["rot"] = r1
+        else:
+            if fits(s["x"], s["y"], r1):
+                s["rot"] = r1
+    s["hd"] = dir_; s["rh"] = rot; s["p"] ^= 1
+
+
+def _fit_masks(cols):
+    occ = np.zeros(16, dtype=np.uint16)
+    for x in range(8):
+        for y in range(16):
+            if cols[x] & (1 << y):
+                occ[y] |= 1 << x
+    empty = (~occ) & 0xFF
+    fm_h = [(empty[y] & (empty[y] >> 1)) & 0xFF for y in range(16)]
+    fm_v = [empty[0]] + [(empty[y] & empty[y - 1]) & 0xFF for y in range(1, 16)]
+    return fm_h, fm_v
+
+
+def check_scripts(ctx, cases: list[dict], label: str) -> int:
+    """Every emitted script must replay to a lock at its pose in exactly
+    cost frames (independent Python stepper). Also reports the GPU greedy
+    match rate (status==0 fraction)."""
+    from tools.annotate_replay_events import POSE_TO_ACTION
+    legal = POSE_TO_ACTION >= 0
+    cols = np.stack([c["cols"] for c in cases])
+    parity = np.array([c["parity"] for c in cases], dtype=np.uint8)
+    thr = np.array([c["thr"] for c in cases], dtype=np.uint8)
+    kw = {}
+    for f in ("sx", "sy", "srot", "sc", "hv", "hd", "rh"):
+        kw[f] = np.array([c.get(f, 3 if f == "sx" else 0) for c in cases], dtype=np.uint8)
+
+    costs, off, length, scr, st = ctx.solve_scripts(cols, parity, thr, **kw)
+    bad = 0
+    n_replayed = 0
+    for i, c in enumerate(cases):
+        if st[i] & 4:
+            print(f"  PARITY ALARM case {i}: greedy beat exact cost")
+            bad += 1
+            continue
+        fm_h, fm_v = _fit_masks(c["cols"])
+        t = int(thr[i])
+        for pose in np.flatnonzero((length[i] > 0) & legal):
+            script = scr[i, off[i, pose]: off[i, pose] + length[i, pose]]
+            s = dict(x=int(kw["sx"][i]), y=int(kw["sy"][i]),
+                     rot=int(kw["srot"][i]), sc=min(int(kw["sc"][i]), t),
+                     hv=int(kw["hv"][i]) & 0x0F, hd=int(kw["hd"][i]),
+                     p=int(parity[i]), rh=int(kw["rh"][i]), locked=False)
+            for act in script:
+                if s["locked"]:
+                    break
+                _py_v4_step(fm_h, fm_v, min(t, 127), s, int(act))
+            ok = (s["locked"] and len(script) == costs[i, pose]
+                  and (s["rot"] & 3) * 128 + s["y"] * 8 + s["x"] == pose)
+            n_replayed += 1
+            if not ok:
+                bad += 1
+                if bad <= 3:
+                    print(f"  SCRIPT BAD case {i} pose {pose}: locked={s['locked']} "
+                          f"end=({s['x']},{s['y']},{s['rot'] & 3}) len={len(script)} "
+                          f"cost={costs[i, pose]}")
+    matched = float((st == 0).mean())
+    print(f"[scripts/{label}] {n_replayed} scripts replayed, {bad} bad; "
+          f"greedy-matched instances: {matched:.4f}")
+    return bad
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--quarks", type=int, default=3)
@@ -193,10 +306,12 @@ def main() -> int:
     print(f"corpus cases: {len(corpus_cases)}")
     bad += check_phase12(ctx, corpus_cases, "corpus")
     bad += check_costs(ctx, corpus_cases, "corpus")
+    bad += check_scripts(ctx, corpus_cases[:600], "corpus")
 
     fz = fuzz_cases(args.fuzz, rng)
     bad += check_phase12(ctx, fz, "fuzz")
     bad += check_costs(ctx, fz, "fuzz")
+    bad += check_scripts(ctx, fz, "fuzz")
 
     ctx.close()
     if bad:
