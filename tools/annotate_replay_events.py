@@ -430,6 +430,45 @@ def derive_lock_poses(events: Dict[str, list], moves: List[Dict[str, Any]],
     return out
 
 
+def resolve_lock_pose(lk: Dict[str, Any], d: Optional[Dict[str, Any]],
+                      out_costs: np.ndarray,
+                      counters: Dict[str, int]) -> tuple:
+    """Chosen pose from a lock record, verified/repaired against the
+    field-diff ground truth `d` (one entry of derive_lock_poses; drm_replay
+    sometimes samples lock coords one frame/stage off — see
+    fightcadeRatings/docs/drm-replay-lock-record-issues.md).
+
+    Returns (x, y_top, rot, lock_verified, (rec_x, rec_y_top, rec_rot)) where
+    lock_verified is 1 = record matched the field diff, 0 = repaired from the
+    field diff, None = underivable (record used as-is).
+    """
+    rec_x, rec_rot = int(lk["x"]), int(lk["rot"]) & 3
+    rec_y_top = (GRID_H - 1) - int(lk["y"])
+    x, y_top, rot = rec_x, rec_y_top, rec_rot
+    lock_verified: Optional[int] = None
+    if d is not None:
+        rots = d["rot_choices"]
+        if len(rots) > 1:
+            # monochrome pill: color order can't disambiguate; prefer the
+            # recorded rot, else the planner-feasible one.
+            if rec_rot in rots and (rec_x, rec_y_top) == (d["x"], d["y_top"]):
+                use_rot = rec_rot
+            else:
+                use_rot = rots[0]
+                for rr in rots:
+                    if out_costs[rr * 128 + d["y_top"] * 8 + d["x"]] != 0xFFFF:
+                        use_rot = rr
+                        break
+        else:
+            use_rot = rots[0]
+        lock_verified = int((rec_x, rec_y_top) == (d["x"], d["y_top"])
+                            and rec_rot in rots)
+        x, y_top, rot = d["x"], d["y_top"], use_rot
+        if not lock_verified:
+            counters["lock_repaired"] += 1
+    return x, y_top, rot, lock_verified, (rec_x, rec_y_top, rec_rot)
+
+
 def pair_moves(events: Dict[str, list], counters: Dict[str, int]) -> List[Dict[str, Any]]:
     """Pair each spawn with the next same-player lock within the same game."""
     timeline: List[tuple] = []
@@ -535,33 +574,9 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
         opt_best = int(action_cost[feasible_512].min()) if n_options else None
 
         # Chosen pose: lock record, verified/repaired against the field-diff
-        # ground truth (drm_replay sometimes samples lock coords one
-        # frame/stage off; see fightcadeRatings/docs/drm-replay-lock-record-issues.md).
-        rec_x, rec_rot = int(lk["x"]), int(lk["rot"]) & 3
-        rec_y_top = (GRID_H - 1) - int(lk["y"])
-        x, y_top, rot = rec_x, rec_y_top, rec_rot
-        lock_verified: Optional[int] = None
-        d = derived[j]
-        if d is not None:
-            rots = d["rot_choices"]
-            if len(rots) > 1:
-                # monochrome pill: color order can't disambiguate; prefer the
-                # recorded rot, else the planner-feasible one.
-                if rec_rot in rots and (rec_x, rec_y_top) == (d["x"], d["y_top"]):
-                    use_rot = rec_rot
-                else:
-                    use_rot = rots[0]
-                    for rr in rots:
-                        if out_costs[rr * 128 + d["y_top"] * 8 + d["x"]] != 0xFFFF:
-                            use_rot = rr
-                            break
-            else:
-                use_rot = rots[0]
-            lock_verified = int((rec_x, rec_y_top) == (d["x"], d["y_top"])
-                                and rec_rot in rots)
-            x, y_top, rot = d["x"], d["y_top"], use_rot
-            if not lock_verified:
-                counters["lock_repaired"] += 1
+        # ground truth.
+        x, y_top, rot, lock_verified, (rec_x, rec_y_top, rec_rot) = \
+            resolve_lock_pose(lk, derived[j], out_costs, counters)
         chosen_action = -1
         chosen_cost: Optional[int] = None
         if 0 <= x < GRID_W and 0 <= y_top < GRID_H:

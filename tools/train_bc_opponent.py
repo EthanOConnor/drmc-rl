@@ -19,12 +19,17 @@ onto its o0/o1 equivalent.
 WHR bands (player's WHR-C ``eC`` at the game's day, nearest-day join like
 tools/skill_grade.py): lt1600 (<1600), 1600to2000, gt2000 (>=2000).
 
-Usage (single-threaded + nice on purpose; training runs share this box):
+Lock poses are verified/repaired against next-spawn field diffs and the
+planner is seeded with the true spawn state from v2.1 blobs when present
+(--spawn-state events, the default) — the same treatment as annotation.
+
+Usage (--planner cuda / --device cuda on a GPU box; nice on shared boxes):
   nice -n 19 .venv/bin/python -m tools.train_bc_opponent extract \
-      [--out data/human_vs/bc_dataset_v1.npz] [--max-moves-per-band 50000]
+      [--out data/human_vs/bc_dataset_v1.npz] [--max-moves-per-band 50000] \
+      [--planner cuda]
   nice -n 19 .venv/bin/python -m tools.train_bc_opponent train \
       [--dataset data/human_vs/bc_dataset_v1.npz] [--epochs 4] \
-      [--out-dir runs/bc_opponents]
+      [--out-dir runs/bc_opponents] [--device cuda]
 """
 
 from __future__ import annotations
@@ -50,10 +55,13 @@ from tools.annotate_replay_events import (
     POSE_TO_ACTION,
     build_obs,
     decode_field,
-    load_planner,
+    derive_lock_poses,
+    derive_spawn_state,
+    make_batch_planner,
     occupancy_cols,
     pair_moves,
     parse_quark_events,
+    resolve_lock_pose,
 )
 
 BANDS = ("lt1600", "1600to2000", "gt2000")
@@ -138,42 +146,65 @@ def extract_moves_from_events(
     planner,
     *,
     sides: Optional[set] = None,
-    max_lock_frames: int = 2048,
+    spawn_mode: str = "events",
+    counters: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     """(state -> placement) rows from one quark's v2 event blob.
 
+    `planner` is a batched solver from make_batch_planner. Lock poses are
+    verified/repaired against the next-spawn field diff (derive_lock_poses),
+    and the planner is seeded with the true spawn state when the blob carries
+    the v2.1 keys (spawn_mode="events") — same treatment as annotation.
     Returns one dict per feasible human move whose chosen placement survives
     candidate packing. Deterministic for a fixed blob.
     """
 
     from collections import defaultdict
 
-    counters: Dict[str, int] = defaultdict(int)
+    if counters is None:
+        counters = defaultdict(int)
     events = parse_quark_events(raw)
     if not events["spawn"]:
         return []
     moves = pair_moves(events, counters)
+    if sides is not None:
+        moves = [mv for mv in moves if mv["p"] in sides]
+    if not moves:
+        return []
 
-    out_costs = np.empty(512, dtype=np.uint16)
-    rows: List[Dict[str, Any]] = []
-    import ctypes as C
-
-    for mv in moves:
-        sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
-        if sides is not None and p not in sides:
-            continue
-        spawn_f = int(sp["f"])
+    # Batched planner pre-pass (one call per quark; CUDA grinds in parallel).
+    n_mv = len(moves)
+    work_cols = np.zeros((n_mv, 8), dtype=np.uint16)
+    work_par = np.zeros(n_mv, dtype=np.uint8)
+    work_thr = np.zeros(n_mv, dtype=np.uint8)
+    work_sc = np.zeros(n_mv, dtype=np.uint8)
+    work_hv = np.zeros(n_mv, dtype=np.uint8)
+    work_hd = np.zeros(n_mv, dtype=np.uint8)
+    work_rh = np.zeros(n_mv, dtype=np.uint8)
+    fields: List[np.ndarray] = []
+    for j, mv in enumerate(moves):
+        sp = mv["spawn"]
         field = decode_field(sp["field"])
-        cols = occupancy_cols(field)
-        thr = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
-        out_costs.fill(0xFFFF)
-        rc = planner(
-            cols.ctypes.data_as(C.POINTER(C.c_uint16)),
-            3, 0, 0, 0, 0, 0, spawn_f & 1, 0, thr, int(max_lock_frames),
-            out_costs.ctypes.data_as(C.POINTER(C.c_uint16)),
-        )
-        if rc != 0:
-            continue
+        fields.append(field)
+        work_cols[j] = occupancy_cols(field)
+        ss = derive_spawn_state(sp, spawn_mode)
+        work_par[j] = ss["parity"]
+        work_sc[j] = ss["sc"]
+        work_hv[j] = ss["hv"]
+        work_hd[j] = ss["hd"]
+        work_rh[j] = ss["rh"]
+        counters[f"spawn_src_{ss['src']}"] += 1
+        work_thr[j] = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
+    all_costs = planner(work_cols, work_par, work_thr,
+                        sc=work_sc, hv=work_hv, hd=work_hd, rh=work_rh)
+    derived = derive_lock_poses(events, moves, counters)
+
+    rows: List[Dict[str, Any]] = []
+    for j, mv in enumerate(moves):
+        sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
+        spawn_f = int(sp["f"])
+        field = fields[j]
+        out_costs = all_costs[j]
 
         action_cost = np.full(512, 0xFFFF, dtype=np.uint16)
         for pose in np.flatnonzero(out_costs != 0xFFFF):
@@ -181,14 +212,15 @@ def extract_moves_from_events(
             if a >= 0:
                 action_cost[a] = out_costs[pose]
 
-        # Chosen pose from the lock record (NES y counts from the bottom).
-        x, rot = int(lk["x"]), int(lk["rot"]) & 3
-        y_top = (GRID_H - 1) - int(lk["y"])
+        # Chosen pose: lock record, verified/repaired against the field diff.
+        x, y_top, rot, _lock_verified, _rec = resolve_lock_pose(
+            lk, derived[j], out_costs, counters)
         if not (0 <= x < GRID_W and 0 <= y_top < GRID_H):
             continue
         pose = rot * 128 + y_top * 8 + x
         chosen_action = int(POSE_TO_ACTION[pose])
         if chosen_action < 0 or out_costs[pose] == 0xFFFF:
+            counters["infeasible_chosen"] += 1
             continue  # infeasible under our movement model (desync canary)
 
         pill = (int(sp["pill"][0]) & 0x03, int(sp["pill"][1]) & 0x03)
@@ -221,7 +253,7 @@ def extract_moves_from_events(
                 "prev": prev,
                 "spd": int(sp["spd"]),
                 "spdups": int(sp["spdups"]),
-                "parity": spawn_f & 1,
+                "parity": int(work_par[j]),
                 "chosen_action": chosen_action,
                 "chosen_slot": int(slot[0]),
                 "cand_actions": packed.actions.astype(np.int16).copy(),
@@ -336,6 +368,7 @@ def train_band(
     train_idx = np.flatnonzero(~val_mask)
     val_idx = np.flatnonzero(val_mask)
 
+    dev = torch.device(device)
     net = build_bc_net(device)
     net.train()
     opt = torch.optim.Adam(net.parameters(), lr=float(lr))
@@ -348,17 +381,18 @@ def train_band(
         for start in range(0, order.shape[0], batch_size):
             idx = order[start : start + batch_size]
             obs, pills, prevs, ca, cc, cm, slot = batch_inputs(arrays, idx)
+            cm_t = torch.from_numpy(cm).to(dev)
             logits, _values = net(
-                torch.from_numpy(obs),
-                torch.from_numpy(pills),
-                torch.from_numpy(prevs),
-                torch.from_numpy(ca),
-                torch.from_numpy(cc),
-                torch.from_numpy(cm),
+                torch.from_numpy(obs).to(dev),
+                torch.from_numpy(pills).to(dev),
+                torch.from_numpy(prevs).to(dev),
+                torch.from_numpy(ca).to(dev),
+                torch.from_numpy(cc).to(dev),
+                cm_t,
                 aux=None,
             )
-            logits = logits.masked_fill(~torch.from_numpy(cm), -1e9)
-            loss = F.cross_entropy(logits, torch.from_numpy(slot))
+            logits = logits.masked_fill(~cm_t, -1e9)
+            loss = F.cross_entropy(logits, torch.from_numpy(slot).to(dev))
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -379,16 +413,17 @@ def train_band(
             for start in range(0, idx_all.shape[0], 512):
                 idx = idx_all[start : start + 512]
                 obs, pills, prevs, ca, cc, cm, slot = batch_inputs(arrays, idx)
+                cm_t = torch.from_numpy(cm).to(dev)
                 logits, _ = net(
-                    torch.from_numpy(obs),
-                    torch.from_numpy(pills),
-                    torch.from_numpy(prevs),
-                    torch.from_numpy(ca),
-                    torch.from_numpy(cc),
-                    torch.from_numpy(cm),
+                    torch.from_numpy(obs).to(dev),
+                    torch.from_numpy(pills).to(dev),
+                    torch.from_numpy(prevs).to(dev),
+                    torch.from_numpy(ca).to(dev),
+                    torch.from_numpy(cc).to(dev),
+                    cm_t,
                     aux=None,
                 )
-                lg = logits.masked_fill(~torch.from_numpy(cm), -1e9).numpy()
+                lg = logits.masked_fill(~cm_t, -1e9).cpu().numpy()
                 ranks = (lg > lg[np.arange(len(idx)), slot][:, None]).sum(axis=1)
                 top1 += int((ranks == 0).sum())
                 top3 += int((ranks <= 2).sum())
@@ -407,8 +442,11 @@ def cmd_extract(args) -> None:
     sys.path.insert(0, str(Path(args.fcr_root)))
     import store  # fightcadeRatings/store.py
 
+    from collections import defaultdict
+
     rate = rating_lookup(Path(args.players))
-    planner = load_planner()
+    planner = make_batch_planner(args.planner)
+    counters: Dict[str, int] = defaultdict(int)
 
     con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     quarks = con.execute(
@@ -445,7 +483,9 @@ def cmd_extract(args) -> None:
             raw = store.get_blob(sha)
         except FileNotFoundError:
             continue
-        rows = extract_moves_from_events(raw, planner, sides=set(side_band))
+        rows = extract_moves_from_events(raw, planner, sides=set(side_band),
+                                         spawn_mode=args.spawn_state,
+                                         counters=counters)
         if not rows:
             continue
         quark_names.append(str(quarkid))
@@ -473,6 +513,7 @@ def cmd_extract(args) -> None:
     np.savez_compressed(out_path, **out)
     sizes = {b: len(per_band[b]) for b in BANDS}
     print(f"wrote {out_path} moves={sizes} quarks={n_quarks} wall={time.time()-t0:.0f}s")
+    print(f"counters: {dict(sorted(counters.items()))}")
 
 
 def cmd_train(args) -> None:
@@ -504,6 +545,7 @@ def cmd_train(args) -> None:
             lr=float(args.lr),
             seed=int(args.seed),
             val_mask=val_mask,
+            device=args.device,
         )
         path = out_dir / f"bc_{b}.pt.gz"
         save_checkpoint(
@@ -538,6 +580,10 @@ def main() -> None:
     ex.add_argument("--out", default=str(REPO_ROOT / "data" / "human_vs" / "bc_dataset_v1.npz"))
     ex.add_argument("--max-moves-per-band", type=int, default=50000)
     ex.add_argument("--seed", type=int, default=0)
+    ex.add_argument("--planner", default="cpu", choices=("cpu", "cuda"),
+                    help="reachability backend (cuda = reach_cuda, bit-exact)")
+    ex.add_argument("--spawn-state", default="events", choices=("events", "assumed"),
+                    help="seed the planner with true spawn state from v2.1 blobs")
     ex.set_defaults(fn=cmd_extract)
 
     tr = sub.add_parser("train", help="train one BC net per band")
@@ -548,6 +594,8 @@ def main() -> None:
     tr.add_argument("--lr", type=float, default=3e-4)
     tr.add_argument("--seed", type=int, default=0)
     tr.add_argument("--threads", type=int, default=2)
+    tr.add_argument("--device", default="cpu",
+                    help="torch device for training (e.g. cuda)")
     tr.add_argument("--out-dir", default=str(REPO_ROOT / "runs" / "bc_opponents"))
     tr.set_defaults(fn=cmd_train)
 
