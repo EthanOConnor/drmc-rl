@@ -47,10 +47,17 @@ underivable) + `lock_rec` (the original event coords). The sqlite schema is
 unchanged. Standalone corpus scan: tools/audit_lock_records.py.
 
 Known approximations (documented, deliberate for phase 1):
-  - Planner spawn state assumes neutral controller at spawn (hold_dir=0,
-    rot_hold=0, hv=0, sc=0); held buttons at spawn are not in the v2 records.
-  - parity = spawn_f & 1 uses the harness frame index, not NES $0043; a
-    constant parity flip costs at most ~1 frame on soft-drop timing.
+  - OLD-format blobs only (records without the fc/held/hv/scnt spawn-state
+    keys, i.e. the pre-upgrade corpus): the planner spawn state assumes a
+    neutral controller at spawn (hold_dir=0, rot_hold=0, hv=0, sc=0) and
+    parity = spawn_f & 1 from the harness frame index, not NES $0043 (a
+    constant parity flip costs at most ~1 frame on soft-drop timing).
+    NEW-format blobs carry the exact NES state at end of the spawn frame
+    (fc = frameCounter $0043, held = buttons-held byte, hv = horVelocity,
+    scnt = speedCounter) and the planner is seeded with the true state; see
+    derive_spawn_state(). Per-move provenance lands in the blob records as
+    `spawn_src` ("events" / "assumed"); --spawn-state assumed forces the old
+    behavior everywhere (reproducibility escape hatch).
   - Collision occupancy follows the engine (DrMarioPool::build_cols_u16):
     occupied = tile != 0x00 and tile < 0xF0 (mid-clear $Bx counts occupied).
   - aux_v1 inputs mirror training semantics where derivable from the replay
@@ -133,6 +140,77 @@ def _pose_to_action_map() -> np.ndarray:
 
 POSE_TO_ACTION = _pose_to_action_map()
 
+# NES controller bit layout, verified against the disassembly
+# (dr-mario-disassembly/defines/drmario_constants.asm:145-152):
+#   btn_right=$01 btn_left=$02 btn_down=$04 btn_up=$08
+#   btn_start=$10 btn_select=$20 btn_b=$40 btn_a=$80
+BTN_RIGHT, BTN_LEFT, BTN_DOWN = 0x01, 0x02, 0x04
+BTN_B, BTN_A = 0x40, 0x80
+
+# v2.1 spawn records carry the exact NES state at end of the spawn frame.
+SPAWN_STATE_KEYS = ("fc", "held", "hv", "scnt")
+
+
+def held_to_hd_rh(held: int) -> tuple:
+    """Buttons-held byte -> planner (hold_dir, rot_hold).
+
+    hold_dir: 0 neutral, 1 left, 2 right (fast_reach.HoldDir values).
+    rot_hold: 0 none, 1 A/CW, 2 B/CCW (fast_reach.Rotation values).
+
+    Edge cases (deliberate rules):
+      - L+R both held: impossible on a real NES pad, representable in replay
+        bytes. Resolve to RIGHT, mirroring fallingPill_checkXMove, which
+        checks btn_right before btn_left once a move fires
+        (drmario_prg_game_logic.asm @checkInput_right, ~line 311) -- the
+        game's own held-repeat would move right.
+      - A+B both held: fallingPill_checkRotate applies A then B independently
+        on the same frame (drmario_prg_game_logic.asm lines 368-382, "if both
+        A and B are pressed ... both will be taken into account"), so neither
+        wins in-game and rot_hold has no "both" value. Pick A (checked first);
+        worst case the planner models a same-frame B edge as available when
+        it is not (<= 1 rotation-retry frame of cost error).
+      - btn_down held maps to NO spawn-state dimension: the BFS chooses every
+        future frame's inputs freely (including down), so a currently-held
+        down button carries no state. Ignored on purpose.
+    """
+    held &= 0xFF
+    if held & BTN_RIGHT:
+        hd = 2
+    elif held & BTN_LEFT:
+        hd = 1
+    else:
+        hd = 0
+    if held & BTN_A:
+        rh = 1
+    elif held & BTN_B:
+        rh = 2
+    else:
+        rh = 0
+    return hd, rh
+
+
+def derive_spawn_state(sp: Dict[str, Any], mode: str = "events") -> Dict[str, Any]:
+    """Planner spawn state for one spawn record.
+
+    Returns {parity, sc, hv, hd, rh, src}. src == "events" when mode is
+    "events" AND the record carries the v2.1 spawn-state keys
+    (fc/held/hv/scnt); otherwise the phase-1 assumptions (neutral controller,
+    parity from the harness frame index) with src == "assumed".
+    """
+    if mode == "events" and all(k in sp for k in SPAWN_STATE_KEYS):
+        hd, rh = held_to_hd_rh(int(sp["held"]))
+        return {
+            "parity": int(sp["fc"]) & 1,   # NES $0043 bit0 (exact soft-drop gate)
+            "sc": int(sp["scnt"]) & 0xFF,  # planner clamps to speed threshold
+            # planner state stores 4 bits; drm_reach_full.c sanitizes with
+            # hor_velocity &= 0x0F ("state space stores 4 bits in the Python
+            # packer") -- match that here so both backends see the same value.
+            "hv": int(sp["hv"]) & 0x0F,
+            "hd": hd, "rh": rh, "src": "events",
+        }
+    return {"parity": int(sp["f"]) & 1, "sc": 0, "hv": 0, "hd": 0, "rh": 0,
+            "src": "assumed"}
+
 
 def load_planner():
     lib = C.CDLL(str(default_library_path()))
@@ -143,33 +221,52 @@ def load_planner():
 
 
 def make_batch_planner(backend: str):
-    """Batched planner: (cols (n,8)u16, parity (n,)u8, thr (n,)u8) -> (n,512)u16.
+    """Batched planner: solve(cols (n,8)u16, parity (n,)u8, thr (n,)u8,
+    sc=None, hv=None, hd=None, rh=None) -> (n,512)u16.
+
+    The optional kwargs are per-move (n,)u8 spawn-state arrays (speed_counter,
+    hor_velocity, hold_dir, rot_hold, from derive_spawn_state); None means
+    all-zero, i.e. the phase-1 neutral assumption. The spawn pose is fixed at
+    (x=3, y=0, rot=0) for annotation.
 
     'cuda' runs the bit-exact GPU port (reach_cuda; same costs as CPU v4 on
-    every macro-legal pose, verified by tools/test_reach_cuda_parity).
+    every macro-legal pose and arbitrary spawn states, verified by
+    tools/test_reach_cuda_parity).
     """
     if backend == "cuda":
         from reach_cuda import CudaReach
         ctx = CudaReach(max_batch=8192)
 
-        def solve_cuda(cols, parity, thr):
-            out = np.empty((len(cols), 512), dtype=np.uint16)
-            for s in range(0, len(cols), ctx.max_batch):
-                e = min(s + ctx.max_batch, len(cols))
-                out[s:e] = ctx.solve_costs(cols[s:e], parity[s:e], thr[s:e])
+        def solve_cuda(cols, parity, thr, sc=None, hv=None, hd=None, rh=None):
+            n = len(cols)
+            zeros = np.zeros(n, dtype=np.uint8)
+            sc_, hv_, hd_, rh_ = (zeros if a is None else np.asarray(a, dtype=np.uint8)
+                                  for a in (sc, hv, hd, rh))
+            out = np.empty((n, 512), dtype=np.uint16)
+            for s in range(0, n, ctx.max_batch):
+                e = min(s + ctx.max_batch, n)
+                out[s:e] = ctx.solve_costs(cols[s:e], parity[s:e], thr[s:e],
+                                           sc=sc_[s:e], hv=hv_[s:e],
+                                           hd=hd_[s:e], rh=rh_[s:e])
             return out
 
         return solve_cuda
 
     fn = load_planner()
 
-    def solve_cpu(cols, parity, thr):
+    def solve_cpu(cols, parity, thr, sc=None, hv=None, hd=None, rh=None):
         out = np.empty((len(cols), 512), dtype=np.uint16)
         buf = np.empty(512, dtype=np.uint16)
         for i in range(len(cols)):
             row = np.ascontiguousarray(cols[i])
             rc = fn(row.ctypes.data_as(C.POINTER(C.c_uint16)),
-                    3, 0, 0, 0, 0, 0, int(parity[i]), 0, int(thr[i]), 2048,
+                    3, 0, 0,
+                    0 if sc is None else int(sc[i]),
+                    0 if hv is None else int(hv[i]),
+                    0 if hd is None else int(hd[i]),
+                    int(parity[i]),
+                    0 if rh is None else int(rh[i]),
+                    int(thr[i]), 2048,
                     buf.ctypes.data_as(C.POINTER(C.c_uint16)))
             if rc != 0:
                 raise RuntimeError(f"drm_reach_bfs_v4 rc={rc}")
@@ -378,7 +475,8 @@ def pair_moves(events: Dict[str, list], counters: Dict[str, int]) -> List[Dict[s
 
 def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
                    candidate_max: int, counters: Dict[str, int],
-                   device: str = "cpu") -> List[Dict[str, Any]]:
+                   device: str = "cpu",
+                   spawn_mode: str = "events") -> List[Dict[str, Any]]:
     events = parse_quark_events(raw)
     if not events["spawn"]:
         counters["quarks_no_v2"] += 1
@@ -395,15 +493,28 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
     work_cols = np.zeros((n_mv, 8), dtype=np.uint16)
     work_par = np.zeros(n_mv, dtype=np.uint8)
     work_thr = np.zeros(n_mv, dtype=np.uint8)
+    work_sc = np.zeros(n_mv, dtype=np.uint8)
+    work_hv = np.zeros(n_mv, dtype=np.uint8)
+    work_hd = np.zeros(n_mv, dtype=np.uint8)
+    work_rh = np.zeros(n_mv, dtype=np.uint8)
+    spawn_srcs: List[str] = []
     fields: List[np.ndarray] = []
     for j, mv in enumerate(moves):
         sp = mv["spawn"]
         field = decode_field(sp["field"])
         fields.append(field)
         work_cols[j] = occupancy_cols(field)
-        work_par[j] = int(sp["f"]) & 1
+        ss = derive_spawn_state(sp, spawn_mode)
+        work_par[j] = ss["parity"]
+        work_sc[j] = ss["sc"]
+        work_hv[j] = ss["hv"]
+        work_hd[j] = ss["hd"]
+        work_rh[j] = ss["rh"]
+        spawn_srcs.append(ss["src"])
         work_thr[j] = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
-    all_costs = planner(work_cols, work_par, work_thr) if n_mv else None
+    all_costs = (planner(work_cols, work_par, work_thr,
+                         sc=work_sc, hv=work_hv, hd=work_hd, rh=work_rh)
+                 if n_mv else None)
     derived = derive_lock_poses(events, moves, counters)
 
     for j, mv in enumerate(moves):
@@ -487,11 +598,16 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
             "rank": None, "n_options": n_options, "value_gap": None,
             "tuck": tuck, "kick": 0,
             "feasible": int(feasible), "interrupted": int(interrupted),
+            # provenance: "events" = planner seeded with the exact NES spawn
+            # state from the v2.1 record, "assumed" = phase-1 neutral state.
+            "spawn_src": spawn_srcs[j],
         }
         recs.append(rec)
         counters["moves"] += 1
         counters["feasible"] += int(feasible)
         counters["interrupted"] += int(interrupted)
+        if spawn_srcs[j] == "events":
+            counters["spawn_state_events"] += 1
         if not feasible:
             continue
 
@@ -572,6 +688,12 @@ def main() -> None:
                          "bit-exact with cpu v4 on all macro-legal poses)")
     ap.add_argument("--device", default="cpu",
                     help="torch device for the champion net (e.g. cuda)")
+    ap.add_argument("--spawn-state", choices=("events", "assumed"), default="events",
+                    help="'events' seeds the planner with the exact NES spawn "
+                         "state when the record has the v2.1 fc/held/hv/scnt "
+                         "keys (falls back to assumptions otherwise); "
+                         "'assumed' forces the phase-1 neutral-state behavior "
+                         "everywhere (reproducibility escape hatch)")
     args = ap.parse_args()
 
     torch.set_num_threads(1)
@@ -634,7 +756,8 @@ def main() -> None:
             continue
 
         recs = annotate_quark(quarkid, raw, planner, net, aux_shim, candidate_max,
-                              counters, device=args.device)
+                              counters, device=args.device,
+                              spawn_mode=args.spawn_state)
         if not recs:
             continue
         quarks_done += 1
@@ -681,6 +804,8 @@ def main() -> None:
     print("--- summary ---")
     print(f"quarks annotated: {quarks_done}  moves: {moves}")
     print(f"feasible: {counters['feasible']}/{moves} = {feas_frac:.4f}")
+    print(f"spawn_state: events {counters.get('spawn_state_events', 0)}/{moves} "
+          f"(rest assumed)")
     print(f"interrupted: {counters['interrupted']}")
     print(f"slack: median {np.median(slacks):.0f}  p10 {np.percentile(slacks,10):.0f}  "
           f"p90 {np.percentile(slacks,90):.0f}")
