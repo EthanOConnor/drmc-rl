@@ -37,6 +37,15 @@ Fields (per the accepted schema):
   model_ver          champion checkpoint filename.
   blob_sha           sha256 of this quark's annotation JSONL blob.
 
+Lock-record verification/repair: drm_replay sometimes samples the lock
+event's x/y/rot one frame or pipeline stage off the actual placement (see
+fightcadeRatings/docs/drm-replay-lock-record-issues.md). Every move's pose is
+therefore checked against the next same-player spawn-field diff (authoritative
+when clean) and repaired when the event disagrees; per-move provenance lands
+in the blob records as `lock_verified` (1 verified / 0 repaired / null
+underivable) + `lock_rec` (the original event coords). The sqlite schema is
+unchanged. Standalone corpus scan: tools/audit_lock_records.py.
+
 Known approximations (documented, deliberate for phase 1):
   - Planner spawn state assumes neutral controller at spawn (hold_dir=0,
     rot_hold=0, hv=0, sc=0); held buttons at spawn are not in the v2 records.
@@ -228,6 +237,102 @@ def parse_quark_events(raw: bytes) -> Dict[str, list]:
     return {"init": inits, "spawn": spawns, "lock": locks, "grb": grbs}
 
 
+PILL_HALF_TYPES = {0x40, 0x50, 0x60, 0x70}  # connected pill-half tile codes
+
+
+def derive_lock_poses(events: Dict[str, list], moves: List[Dict[str, Any]],
+                      counters: Dict[str, int]) -> List[Optional[Dict[str, Any]]]:
+    """Field-diff ground truth for each move's lock pose.
+
+    The next same-player spawn field is authoritative: when nothing vanished
+    (no clear resolved) and exactly two cells were added forming a domino of
+    pill-half tiles whose colors match the spawn's `pill` record, those cells
+    ARE the placement — independent of the lock event's x/y/rot, which
+    drm_replay sometimes samples one frame/stage off (see
+    fightcadeRatings/docs/drm-replay-lock-record-issues.md).
+
+    Returns a list aligned with `moves`: None when underivable (clear/garbage
+    in the window, game end, non-domino diff), else
+    {"x", "y_top", "rot_choices": (rot,) or (rotA, rotB) when the pill is
+    monochrome and color order cannot disambiguate}.
+    """
+    init_fs = sorted(int(e["f"]) for e in events["init"])
+    spawns_by_p: Dict[int, List[tuple]] = {1: [], 2: []}
+    for e in events["spawn"]:
+        spawns_by_p[int(e["p"])].append((int(e["f"]), e))
+    for p in spawns_by_p:
+        spawns_by_p[p].sort(key=lambda t: t[0])
+
+    import bisect
+    out: List[Optional[Dict[str, Any]]] = []
+    for mv in moves:
+        sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
+        lock_f = int(lk["f"])
+        sp_list = spawns_by_p[p]
+        k = bisect.bisect_right([t[0] for t in sp_list], lock_f)
+        if k >= len(sp_list):
+            counters["fielddiff_no_next_spawn"] += 1
+            out.append(None)
+            continue
+        next_f, next_sp = sp_list[k]
+        j = bisect.bisect_right(init_fs, lock_f)
+        if j < len(init_fs) and init_fs[j] <= next_f:
+            counters["fielddiff_game_boundary"] += 1
+            out.append(None)
+            continue
+        f0 = decode_field(sp["field"])
+        f1 = decode_field(next_sp["field"])
+        occ0 = (f0 != 0x00) & (f0 < 0xF0)
+        occ1 = (f1 != 0x00) & (f1 < 0xF0)
+        if (occ0 & ~occ1).any():
+            counters["fielddiff_cells_vanished"] += 1
+            out.append(None)
+            continue
+        added = np.argwhere(~occ0 & occ1)
+        if len(added) != 2:
+            counters["fielddiff_not_two_cells"] += 1
+            out.append(None)
+            continue
+        (r1, c1), (r2, c2) = sorted(map(tuple, added.tolist()))
+        t1, t2 = int(f1[r1, c1]) & 0xF0, int(f1[r2, c2]) & 0xF0
+        if t1 not in PILL_HALF_TYPES or t2 not in PILL_HALF_TYPES:
+            counters["fielddiff_not_pill_tiles"] += 1
+            out.append(None)
+            continue
+        col1, col2 = int(f1[r1, c1]) & 0x03, int(f1[r2, c2]) & 0x03
+        pill = [int(sp["pill"][0]) & 0x03, int(sp["pill"][1]) & 0x03]
+        if r1 == r2 and c2 == c1 + 1:
+            # horizontal; ROT_OFFSETS: rot0 half1 = left cell, rot2 = swapped
+            if pill[0] == pill[1]:
+                rots = (0, 2)
+            elif (col1, col2) == (pill[0], pill[1]):
+                rots = (0,)
+            elif (col1, col2) == (pill[1], pill[0]):
+                rots = (2,)
+            else:
+                counters["fielddiff_color_mismatch"] += 1
+                out.append(None)
+                continue
+            out.append({"x": c1, "y_top": r1, "rot_choices": rots})
+        elif c1 == c2 and r2 == r1 + 1:
+            # vertical; base = bottom cell. rot1 half1 = bottom, rot3 = top.
+            if pill[0] == pill[1]:
+                rots = (1, 3)
+            elif (col2, col1) == (pill[0], pill[1]):   # bottom, top
+                rots = (1,)
+            elif (col1, col2) == (pill[0], pill[1]):
+                rots = (3,)
+            else:
+                counters["fielddiff_color_mismatch"] += 1
+                out.append(None)
+                continue
+            out.append({"x": c1, "y_top": r2, "rot_choices": rots})
+        else:
+            counters["fielddiff_not_domino"] += 1
+            out.append(None)
+    return out
+
+
 def pair_moves(events: Dict[str, list], counters: Dict[str, int]) -> List[Dict[str, Any]]:
     """Pair each spawn with the next same-player lock within the same game."""
     timeline: List[tuple] = []
@@ -299,6 +404,7 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
         work_par[j] = int(sp["f"]) & 1
         work_thr[j] = compute_speed_threshold(int(sp["spd"]), int(sp["spdups"]))
     all_costs = planner(work_cols, work_par, work_thr) if n_mv else None
+    derived = derive_lock_poses(events, moves, counters)
 
     for j, mv in enumerate(moves):
         sp, lk, p = mv["spawn"], mv["lock"], mv["p"]
@@ -317,9 +423,34 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
         n_options = int(feasible_512.sum())
         opt_best = int(action_cost[feasible_512].min()) if n_options else None
 
-        # Chosen pose from the lock record (NES y counts from the bottom).
-        x, rot = int(lk["x"]), int(lk["rot"]) & 3
-        y_top = (GRID_H - 1) - int(lk["y"])
+        # Chosen pose: lock record, verified/repaired against the field-diff
+        # ground truth (drm_replay sometimes samples lock coords one
+        # frame/stage off; see fightcadeRatings/docs/drm-replay-lock-record-issues.md).
+        rec_x, rec_rot = int(lk["x"]), int(lk["rot"]) & 3
+        rec_y_top = (GRID_H - 1) - int(lk["y"])
+        x, y_top, rot = rec_x, rec_y_top, rec_rot
+        lock_verified: Optional[int] = None
+        d = derived[j]
+        if d is not None:
+            rots = d["rot_choices"]
+            if len(rots) > 1:
+                # monochrome pill: color order can't disambiguate; prefer the
+                # recorded rot, else the planner-feasible one.
+                if rec_rot in rots and (rec_x, rec_y_top) == (d["x"], d["y_top"]):
+                    use_rot = rec_rot
+                else:
+                    use_rot = rots[0]
+                    for rr in rots:
+                        if out_costs[rr * 128 + d["y_top"] * 8 + d["x"]] != 0xFFFF:
+                            use_rot = rr
+                            break
+            else:
+                use_rot = rots[0]
+            lock_verified = int((rec_x, rec_y_top) == (d["x"], d["y_top"])
+                                and rec_rot in rots)
+            x, y_top, rot = d["x"], d["y_top"], use_rot
+            if not lock_verified:
+                counters["lock_repaired"] += 1
         chosen_action = -1
         chosen_cost: Optional[int] = None
         if 0 <= x < GRID_W and 0 <= y_top < GRID_H:
@@ -346,6 +477,10 @@ def annotate_quark(quarkid: str, raw: bytes, planner, net, aux_shim,
         rec = {
             "p": p, "spawn_f": spawn_f, "lock_f": lock_f,
             "lock_x": x, "lock_y_top": y_top, "lock_rot": rot,
+            # provenance: 1 = lock event matched field diff, 0 = repaired from
+            # field diff, None = underivable (clear/garbage window, game end)
+            "lock_verified": lock_verified,
+            "lock_rec": [rec_x, rec_y_top, rec_rot],
             "opt_frames_chosen": chosen_cost,
             "opt_frames_best": opt_best,
             "slack": (lock_f - spawn_f - chosen_cost) if feasible else None,
