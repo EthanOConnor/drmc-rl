@@ -14,7 +14,7 @@ are not built natively — Python builds them from ``board_bytes``.
 
 import ctypes as C
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 
@@ -27,7 +27,30 @@ from envs.backends.drmario_pool import (
     resolve_library_path,
 )
 
-DRMARIO_VSPOOL_PROTOCOL_VERSION = 1
+DRMARIO_VSPOOL_PROTOCOL_VERSION = 2
+
+# Planner inputs for one parked side (mirrors DrmVsPlanState; feed to
+# drm_reach_bfs_v4 or a bit-exact equivalent such as reach_cuda).
+PLAN_STATE_DTYPE = np.dtype(
+    [
+        ("cols", "<u2", (8,)),
+        ("x", "u1"),
+        ("y_top", "u1"),
+        ("rot", "u1"),
+        ("sc", "u1"),
+        ("hv", "u1"),
+        ("hd", "u1"),
+        ("parity", "u1"),
+        ("rh", "u1"),
+        ("thr", "u1"),
+        ("_pad", "u1", (3,)),
+    ]
+)
+assert PLAN_STATE_DTYPE.itemsize == 28
+
+# Batched planner: solver(plan_states[n]) -> (n, 512) u16 pose costs
+# (0xFFFF = unreachable), bit-exact drm_reach_bfs_v4 semantics.
+PlanSolver = Callable[[np.ndarray], np.ndarray]
 
 # Outcome codes (per side).
 VS_OUTCOME_NONE = 0
@@ -43,6 +66,8 @@ class _DrmVsPoolConfig(C.Structure):
         ("num_pairs", C.c_uint32),
         ("max_lock_frames", C.c_uint32),
         ("max_wait_frames", C.c_uint32),
+        ("defer_planning", C.c_uint8),
+        ("_pad0", C.c_uint8 * 3),
     ]
 
 
@@ -107,6 +132,9 @@ class _DrmVsPoolOutputs(C.Structure):
         ("volleys", C.POINTER(_DrmVsVolley)),
         ("volley_capacity", C.c_uint32),
         ("volley_count", C.POINTER(C.c_uint32)),
+        # deferred planning
+        ("plan_needed", C.POINTER(C.c_uint8)),
+        ("plan_state", C.POINTER(C.c_uint8)),  # [2N] packed DrmVsPlanState (28 B)
     ]
 
 
@@ -148,6 +176,9 @@ class VsPoolBuffers:
     terminated: np.ndarray  # (N,) uint8
     truncated: np.ndarray  # (N,) uint8
 
+    plan_needed: np.ndarray  # (2N,) uint8 (deferred planning; always 0 otherwise)
+    plan_state: np.ndarray  # (2N,) PLAN_STATE_DTYPE
+
 
 class DrMarioVsPoolRunner:
     """Owns the native VS pool handle and numpy output buffers."""
@@ -160,9 +191,11 @@ class DrMarioVsPoolRunner:
         max_wait_frames: int = 6000,
         volley_capacity: int = 256,
         lib_path: Optional[str] = None,
+        plan_solver: Optional[PlanSolver] = None,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
         self.num_sides = 2 * self.num_pairs
+        self._plan_solver = plan_solver
 
         path = resolve_library_path(lib_path)
         if not path.is_file():
@@ -177,8 +210,14 @@ class DrMarioVsPoolRunner:
         destroy = getattr(self._lib, "drm_vspool_destroy", None)
         reset = getattr(self._lib, "drm_vspool_reset", None)
         step = getattr(self._lib, "drm_vspool_step", None)
+        inject = getattr(self._lib, "drm_vspool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
             raise DrMarioPoolError(f"{path} does not export the required drm_vspool_* symbols")
+        if plan_solver is not None and inject is None:
+            raise DrMarioPoolError(
+                f"{path} predates deferred planning (no drm_vspool_inject_plans); "
+                "rebuild it with: make -C game_engine libdrmario_pool"
+            )
 
         create.argtypes = [C.POINTER(_DrmVsPoolConfig)]
         create.restype = C.c_void_p
@@ -199,10 +238,19 @@ class DrMarioVsPoolRunner:
             C.POINTER(_DrmVsPoolOutputs),
         ]
         step.restype = C.c_int
+        if inject is not None:
+            inject.argtypes = [
+                C.c_void_p,
+                C.POINTER(C.c_uint8),
+                C.POINTER(C.c_uint16),
+                C.POINTER(_DrmVsPoolOutputs),
+            ]
+            inject.restype = C.c_int
 
         self._destroy_fn = destroy
         self._reset_fn = reset
         self._step_fn = step
+        self._inject_fn = inject
 
         cfg = _DrmVsPoolConfig()
         cfg.protocol_version = DRMARIO_VSPOOL_PROTOCOL_VERSION
@@ -210,6 +258,7 @@ class DrMarioVsPoolRunner:
         cfg.num_pairs = self.num_pairs
         cfg.max_lock_frames = int(max(1, int(max_lock_frames)))
         cfg.max_wait_frames = int(max(1, int(max_wait_frames)))
+        cfg.defer_planning = 1 if plan_solver is not None else 0
 
         handle = create(C.byref(cfg))
         if not handle:
@@ -222,6 +271,10 @@ class DrMarioVsPoolRunner:
 
         self.buffers = self._allocate_buffers()
         self._out = self._build_outputs_struct(self.buffers)
+
+        self.max_lock_frames = int(max(1, int(max_lock_frames)))
+        self._inject_costs_buf = np.full((self.num_sides, MACRO_ACTIONS), 0xFFFF, dtype=np.uint16)
+        self._inject_mask_buf = np.zeros((self.num_sides,), dtype=np.uint8)
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)
@@ -259,6 +312,8 @@ class DrMarioVsPoolRunner:
             invalid_action=np.full((S,), -1, dtype=np.int32),
             terminated=np.zeros((N,), dtype=np.uint8),
             truncated=np.zeros((N,), dtype=np.uint8),
+            plan_needed=np.zeros((S,), dtype=np.uint8),
+            plan_state=np.zeros((S,), dtype=PLAN_STATE_DTYPE),
         )
 
     def _build_outputs_struct(self, buffers: VsPoolBuffers) -> _DrmVsPoolOutputs:
@@ -290,6 +345,9 @@ class DrMarioVsPoolRunner:
         out.volleys = self._volley_buf
         out.volley_capacity = self.volley_capacity
         out.volley_count = C.pointer(self._volley_count)
+
+        out.plan_needed = _ptr(buffers.plan_needed, C.c_uint8)
+        out.plan_state = buffers.plan_state.ctypes.data_as(C.POINTER(C.c_uint8))
         return out
 
     # ------------------------------------------------------------------ calls
@@ -312,6 +370,7 @@ class DrMarioVsPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_vspool_reset failed with rc={rc}")
         _ = specs_arr, mask_u8  # keep alive until after call
+        self._solve_deferred()
 
     def step(
         self,
@@ -346,6 +405,45 @@ class DrMarioVsPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_vspool_step failed with rc={rc}")
         _ = specs_arr, mask_u8, acts  # keep alive until after call
+        self._solve_deferred()
+
+    def _solve_deferred(self) -> None:
+        """Solve plan_needed sides via the external planner and inject costs.
+
+        Volley outputs are untouched by the inject call, so the event log from
+        the preceding reset/step stays valid.
+        """
+
+        if self._plan_solver is None:
+            return
+        buf = self.buffers
+        idx = np.flatnonzero(buf.plan_needed)
+        if idx.size == 0:
+            return
+
+        costs = self._plan_solver(buf.plan_state[idx])
+        costs = np.asarray(costs, dtype=np.uint16)
+        if costs.shape != (idx.size, MACRO_ACTIONS):
+            raise DrMarioPoolError(
+                f"plan_solver returned shape {costs.shape}, expected {(idx.size, MACRO_ACTIONS)}"
+            )
+
+        full = self._inject_costs_buf
+        full[idx] = costs
+        mask = self._inject_mask_buf
+        mask.fill(0)
+        mask[idx] = 1
+
+        rc = int(
+            self._inject_fn(
+                self._handle,
+                mask.ctypes.data_as(C.POINTER(C.c_uint8)),
+                full.ctypes.data_as(C.POINTER(C.c_uint16)),
+                C.byref(self._out),
+            )
+        )
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_inject_plans failed with rc={rc}")
 
     def volleys(self) -> List[VsVolley]:
         """Volley events recorded during the last reset/step call."""
@@ -449,6 +547,8 @@ def build_vs_reset_spec(
 
 __all__ = [
     "DRMARIO_VSPOOL_PROTOCOL_VERSION",
+    "PLAN_STATE_DTYPE",
+    "PlanSolver",
     "VS_OUTCOME_NONE",
     "VS_OUTCOME_WIN",
     "VS_OUTCOME_LOSS",

@@ -19,10 +19,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "fc_v2_events_small.jsonl"
 
 def _fixture_rows():
     from tools.train_bc_opponent import extract_moves_from_events
-    from tools.annotate_replay_events import load_planner
+    from tools.annotate_replay_events import make_batch_planner
 
     raw = FIXTURE.read_bytes()
-    planner = load_planner()
+    planner = make_batch_planner("cpu")
     return extract_moves_from_events(raw, planner)
 
 

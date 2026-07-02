@@ -1326,3 +1326,28 @@ the rotation can be recovered from the preview mask.
   independently and cannot be compared directly; training-progress charts
   should be presented as checkpoint lineage or estimate snapshots, not as a
   drifting latent-skill path for one frozen agent.
+
+---
+
+## 2026-07-02 – Deferred GPU planning for the VS pool (design decision)
+
+- **Decision:** rollout reachability planning is decoupled from the native
+  step. `DrmVsPoolConfig.defer_planning=1` -> parked sides export exact
+  planner inputs (`DrmVsPlanState`: cols/pose/sc/hv/hd/parity/rh/thr) via
+  `plan_needed`/`plan_state` outputs; the caller batch-solves (reach_cuda,
+  bit-exact vs drm_reach_bfs_v4) and returns pose costs through
+  `drm_vspool_inject_plans`, which fills the PlannerCache and rewrites
+  outputs. One GPU batch per decision wave. VSPOOL protocol v2.
+- **Why:** on the tf3090 training host (4 cores) the CPU planner looked like
+  the dominant cost from synthetic-board estimates (11.9 ms/solve). Bench
+  verdict: throughput-neutral at 16 pairs (loop is Python-latency-bound),
+  but frees ~15-20% CPU, +13% fps at 32 pairs, and makes GPU-batched search
+  (many more solves/decision) affordable — kept ON. The GPU does the same
+  solves bit-exactly for ~zero CPU.
+- **Invariants:** the CPU path (defer off) remains the parity oracle —
+  tests/test_vs_gpu_planner.py must stay green when touching either side.
+  Cache-fill via `finalize_cache` is the single shared derivation of
+  feasible/cost_to_lock from pose costs. A masked side that is no longer
+  parked is skipped and keeps plan_needed=1 (caller degrades to noop-fall).
+- **Config:** `env.gpu_planner: true` (vec env `gpu_planner=` kwarg); the
+  training default lives in training/configs/vs6_tf3090.yaml.

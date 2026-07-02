@@ -979,3 +979,35 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Validation: `pytest -q tests/test_competition_web_export.py`,
   `python3 -m tools.export_competition_web`, `node --check web/pool/app.js`,
   and browser smoke checks at desktop + 390px mobile width.
+
+## 2026-07-02 — VS training standup on tf3090 + deferred GPU planning
+
+- Training moved Mac -> tf3090 (RTX 3090, 4 cores). New config
+  `training/configs/vs6_tf3090.yaml`: vs6 design with local checkpoint paths
+  (init + league anchor = best-535m; the Mac's vs1p_gatebest/vs_champion_530m
+  are not on this box), checkpoint_interval 25M, and the new
+  `train.checkpoint_keep_last` retention (ppo_smdp `_prune_checkpoints`,
+  keeps newest N `smdp_ppo_step*.pt.gz` in the run's own checkpoints/ only).
+  Smoke verified: ~12k fps / ~223 dec/s, pool seeded (3 BC bands + champion),
+  PPO updating sanely.
+- Estimated from synthetic dense boards that the CPU planner would be the
+  dominant training cost (~11.9 ms/solve); the honest measured result below
+  corrected this — typical in-play solves are far cheaper.
+- **Deferred GPU planning** (drmario-native + drmc-rl): vs pool config
+  `defer_planning` parks sides without running the CPU BFS, exports exact
+  planner inputs (`DrmVsPlanState`, plan_needed/plan_state outputs), and
+  `drm_vspool_inject_plans` fills the per-side planner cache from
+  externally computed pose costs and rewrites outputs. VSPOOL protocol v2.
+  Python: `DrMarioVsPoolRunner(plan_solver=...)` solves each decision wave
+  in ONE batched call; `DrMarioVsPoolVecEnv(gpu_planner=True)` (cfg key
+  `env.gpu_planner`) wires reach_cuda (`solve_costs` with full spawn state,
+  max_frames=max_lock_frames). Parity gate: tests/test_vs_gpu_planner.py —
+  120 decision waves x 4 pairs bit-identical (masks/costs/boards) vs the CPU
+  path + vec-env smoke. Full vs/pool suite: 44 passed.
+- Fixed test regression from 41a0350: tests/test_bc_opponent.py now builds
+  the batched planner via make_batch_planner("cpu") (extract_moves_from_events
+  no longer accepts a raw ctypes fn).
+- Design review of the whole vs-player approach: docs/DESIGN_REVIEW_2026-07.md
+  (R1 GPU rollout planning [this entry], R4 real clear-endgame bank, R8 GPU
+  search distillation, R10 full-corpus BC bands, R11 corpus-calibrated
+  strength dial, etc.).

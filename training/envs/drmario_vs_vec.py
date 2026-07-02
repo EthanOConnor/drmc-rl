@@ -84,6 +84,31 @@ def _canonical_to_raw_color(canonical: int) -> int:
     return 0
 
 
+def _make_gpu_plan_solver(max_lock_frames: int):
+    """Batched reach_cuda solver matching the runner's PlanSolver contract."""
+
+    from reach_cuda import CudaReach
+
+    ctx = CudaReach(max_batch=2048)  # decision waves are <= 2*num_pairs
+
+    def solve(ps: np.ndarray) -> np.ndarray:
+        return ctx.solve_costs(
+            np.ascontiguousarray(ps["cols"]),
+            np.ascontiguousarray(ps["parity"]),
+            np.ascontiguousarray(ps["thr"]),
+            sx=np.ascontiguousarray(ps["x"]),
+            sy=np.ascontiguousarray(ps["y_top"]),
+            srot=np.ascontiguousarray(ps["rot"]),
+            sc=np.ascontiguousarray(ps["sc"]),
+            hv=np.ascontiguousarray(ps["hv"]),
+            hd=np.ascontiguousarray(ps["hd"]),
+            rh=np.ascontiguousarray(ps["rh"]),
+            max_frames=int(max_lock_frames),
+        )
+
+    return solve
+
+
 class DrMarioVsPoolVecEnv:
     """Self-play VS vector environment backed by the native VS pool library.
 
@@ -111,6 +136,7 @@ class DrMarioVsPoolVecEnv:
         seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
         opponent_pool_cfg: Optional[Dict[str, Any]] = None,
         start_bank_cfg: Optional[Dict[str, Any]] = None,
+        gpu_planner: bool = False,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
         self.num_sides = 2 * self.num_pairs
@@ -161,12 +187,22 @@ class DrMarioVsPoolVecEnv:
             self._start_bank = StartBank(path)
             self._start_bank_fraction = float(bank_cfg.get("fraction", 0.25))
 
+        # Deferred planning: rollout reachability solved on the GPU in one
+        # batch per decision wave (bit-exact vs the in-pool CPU planner; see
+        # tests/test_vs_gpu_planner.py) instead of per-side CPU BFS inside the
+        # native step. On CPU-lean hosts the CPU planner dominates training
+        # cost, so this frees most of the pool's compute for frame stepping.
+        plan_solver = None
+        if bool(gpu_planner):
+            plan_solver = _make_gpu_plan_solver(int(max_lock_frames))
+
         self._runner = DrMarioVsPoolRunner(
             num_pairs=self.num_pairs,
             max_lock_frames=int(max_lock_frames),
             max_wait_frames=int(max_wait_frames),
             volley_capacity=max(64, 8 * self.num_pairs),
             lib_path=lib_path,
+            plan_solver=plan_solver,
         )
 
         # Views (no copies) into runner-owned buffers.

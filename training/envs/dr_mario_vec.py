@@ -222,6 +222,7 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             opponent_pool_cfg=opp_cfg,
             start_bank_cfg=env_cfg.start_bank,
             clear_win_bonus=float(getattr(env_cfg, "clear_win_bonus", 0.0) or 0.0),
+            gpu_planner=bool(getattr(env_cfg, "gpu_planner", False) or False),
         )
 
     real_ids = {

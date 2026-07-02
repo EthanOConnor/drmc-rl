@@ -6,6 +6,7 @@ actions span variable durations τ and credit assignment uses γ^τ.
 
 from __future__ import annotations
 
+import re
 import time
 from collections import Counter, deque
 from dataclasses import dataclass, field
@@ -335,6 +336,9 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.decision_step = 0  # Total decisions made
         self.total_steps = int(getattr(cfg.train, "total_steps", 5000000))
         self.checkpoint_interval = int(getattr(cfg.train, "checkpoint_interval", 100000))
+        # 0 = keep everything (historical behavior). N > 0 = after each save,
+        # delete this run's oldest step checkpoints beyond the newest N.
+        self.checkpoint_keep_last = int(getattr(cfg.train, "checkpoint_keep_last", 0))
         self._episodes_total = 0
         self._curriculum_last_level: Optional[int] = None
         self._curriculum_last_frames: int = 0
@@ -2016,6 +2020,30 @@ class SMDPPPOAdapter(AlgoAdapter):
             "checkpoint", step=self.global_step, path=str(path), walltime=time.time()
         )
         self._next_checkpoint += self.checkpoint_interval
+        self._prune_checkpoints()
+
+    def _prune_checkpoints(self) -> None:
+        """Keep only the newest `checkpoint_keep_last` step checkpoints of this run.
+
+        Only touches smdp_ppo_step<N>.pt(.gz) files inside this run's own
+        checkpoints/ dir; anything else there (renamed/gate-best copies) is
+        left alone. Opponent-pool snapshots live elsewhere and hold their own
+        copies, so pruning never invalidates the pool manifest.
+        """
+        if self.checkpoint_keep_last <= 0:
+            return
+        pat = re.compile(r"^smdp_ppo_step(\d+)\.pt(\.gz)?$")
+        found = []
+        for p in self.checkpoint_dir.iterdir():
+            m = pat.match(p.name)
+            if m:
+                found.append((int(m.group(1)), p))
+        found.sort()
+        for _, p in found[: max(0, len(found) - self.checkpoint_keep_last)]:
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 
 __all__ = ["SMDPPPOAdapter", "SMDPPPOConfig"]
