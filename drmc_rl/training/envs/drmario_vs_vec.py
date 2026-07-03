@@ -666,8 +666,16 @@ class DrMarioVsPoolVecEnv:
                 continue
             groups.setdefault(entry.id, []).append(gi)
             entries[entry.id] = entry
-        for entry_id, side_idxs in groups.items():
-            chosen = self._forward_opponent(entries[entry_id], side_idxs)
+        # Two phases so all entry-group forwards are queued on the device
+        # before the first synchronizing copy-back: one small forward per
+        # entry with an eager .cpu() each serializes the wave on GPU round
+        # trips (measured ~3 ms/group under load — the dominant wave cost).
+        launched = [
+            (side_idxs, self._forward_opponent_launch(entries[entry_id], side_idxs))
+            for entry_id, side_idxs in groups.items()
+        ]
+        for side_idxs, pending in launched:
+            chosen = self._sample_opponent_actions(*pending)
             for k, gi in enumerate(side_idxs):
                 acts[gi // 2] = int(chosen[k])
         return acts
@@ -675,10 +683,14 @@ class DrMarioVsPoolVecEnv:
     def _forward_opponent(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
         """Sample macro actions for `side_idxs` from one frozen opponent net."""
 
+        return self._sample_opponent_actions(*self._forward_opponent_launch(entry, side_idxs))
+
+    def _forward_opponent_launch(self, entry: Any, side_idxs: List[int]):
+        """Queue one entry-group forward; no host synchronization."""
+
         import torch
 
         from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
-        from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 
         B = len(side_idxs)
         obs = np.ascontiguousarray(self._obs[side_idxs], dtype=np.float32)
@@ -713,7 +725,18 @@ class DrMarioVsPoolVecEnv:
                 torch.from_numpy(cand_mask).to(dev),
                 aux=None if aux is None else torch.from_numpy(aux).to(dev),
             )
-            logits_cpu = logits.float().cpu()
+        # No .cpu() here: the copy-back in _sample_opponent_actions is the
+        # only synchronization point, after every group's forward is queued.
+        return logits, cand_actions, cand_mask
+
+    def _sample_opponent_actions(
+        self, logits: Any, cand_actions: np.ndarray, cand_mask: np.ndarray
+    ) -> np.ndarray:
+        import torch
+
+        from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
+
+        logits_cpu = logits.float().cpu()
         temp = getattr(self, "_opp_temperature", 0.0)
         if temp > 0:
             dist = MaskedPlacementDist(logits_cpu / temp, torch.from_numpy(cand_mask))
@@ -722,6 +745,7 @@ class DrMarioVsPoolVecEnv:
             dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
             slot, _lp = dist.sample(deterministic=True)  # argmax: eval-matched
         slot_np = slot.numpy().reshape(-1).astype(np.int64)
+        B = cand_actions.shape[0]
         # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
         return cand_actions[np.arange(B), slot_np].astype(np.int32)
 
