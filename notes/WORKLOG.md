@@ -1066,3 +1066,23 @@ Chronological log of work done. Format: date, actor, brief summary.
 - Staged gated configs: training/configs/vs8_capacity_tf3090.yaml (capacity
   step; init placeholder = grafted gated-best) after vsdist2_tf3090.yaml.
   Ladder order: vs6_tf metagame gate -> vsdist2 -> vs8 capacity.
+
+## 2026-07-02 (night) — vs6tf_03 cutover: real endgame bank + BC v2 + fast opponent path
+
+- **Clear-endgame bank BUILT** (tools/build_clear_endgame_bank.py, R4):
+  40,000 rows (20k real near-clear positions x2 side-mirrors) from 20,029
+  quarks; full 29,176-quark scan found 259,319 candidate positions in 28 min.
+  Strata (closer-side viruses): 1-2: 14,670 / 3-5: 13,998 / 6-8: 11,332.
+  Every row load-checked in the native pool (40k/40k clean); 64 played to
+  terminal, 0 board mismatches. runs/start_bank/clear_endgame_v1.npz (1.8MB)
+  + .json meta. Tests: tests/test_clear_endgame_bank.py (fixture-based,
+  7 passed with test_start_bank). NB strata sentinels 0/1/2 here vs
+  Go-Exploit 0-3 / clear_practice 9.
+- **vs6tf_03 RESTART** (config cutover): start_bank ENABLED
+  (clear_endgame_v1, fraction 0.35 — first run where clear_win_bonus has a
+  real gradient), opponent seeds -> runs/bc_opponents_v2 (4 bands, d128,
+  val top1 ~0.53), opponent_pool.device auto (GPU), gpu_planner rollouts,
+  single-upload opponent fast path. vs6tf_02 stopped at ~55M steps (its
+  checkpoints retained under runs/vs6_tf/vs6tf_02).
+- Wave-time record (loaded box): 142 ms -> 106 (single-sync) -> 55.7
+  (single-upload). Clean numbers recorded below after restart.
