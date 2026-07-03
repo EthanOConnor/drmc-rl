@@ -126,6 +126,7 @@ class SMDPPPOConfig:
     candidate_cost_embed_dim: int = 32
     candidate_hidden_dim: int = 256
     candidate_transformer_layers: int = 4
+    candidate_cross_layers: int = 0
     candidate_transformer_heads: int = 4
     candidate_transformer_ff_mult: int = 4
     candidate_patch_kernel: int = 3
@@ -188,6 +189,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_cost_embed_dim=int(ppo_cfg_dict.get("candidate_cost_embed_dim", 32)),
             candidate_hidden_dim=int(ppo_cfg_dict.get("candidate_hidden_dim", 256)),
             candidate_transformer_layers=int(ppo_cfg_dict.get("candidate_transformer_layers", 4)),
+            candidate_cross_layers=int(ppo_cfg_dict.get("candidate_cross_layers", 0)),
             candidate_transformer_heads=int(ppo_cfg_dict.get("candidate_transformer_heads", 4)),
             candidate_transformer_ff_mult=int(ppo_cfg_dict.get("candidate_transformer_ff_mult", 4)),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
@@ -296,6 +298,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                 cost_embed_dim=self.hparams.candidate_cost_embed_dim,
                 cand_hidden_dim=self.hparams.candidate_hidden_dim,
                 transformer_layers=self.hparams.candidate_transformer_layers,
+                cross_layers=self.hparams.candidate_cross_layers,
                 transformer_heads=self.hparams.candidate_transformer_heads,
                 transformer_ff_mult=self.hparams.candidate_transformer_ff_mult,
                 patch_kernel=self.hparams.candidate_patch_kernel,

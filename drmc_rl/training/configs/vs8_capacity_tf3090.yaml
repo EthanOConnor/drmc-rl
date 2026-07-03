@@ -1,0 +1,108 @@
+# vs8: the one deliberate capacity bump (networks report recs 2+3).
+#
+# STAGED, DO NOT LAUNCH until its predecessor ladder step has a verdict
+# (order per docs/ABLATION_PLAN.md + DESIGN_REVIEW: metagame gate -> vsdist2
+# -> this). Prepare the init by grafting the then-best checkpoint:
+#
+#   python -m tools.expand_checkpoint \
+#       --in  runs/best_agents/<gated_best>.pt.gz \
+#       --out runs/best_agents/<gated_best>_enc6x2.pt.gz \
+#       --config training/configs/vs8_capacity_tf3090.yaml
+#
+# The graft is function-preserving (bit-identical logits at init; gate:
+# tests/test_capacity_graft.py): +2 trunk resblocks (zero-init residuals)
+# and 2 cross-candidate attention layers (zero-init output projections) —
+# 3.32M -> 5.32M params. Width (d_model) intentionally unchanged: no net2net.
+#
+# Cross-candidate attention is the structural change: candidates finally see
+# each other before scoring, instead of pointwise dot-products vs one global
+# context vector (docs/NETWORKS_REPORT_2026-07.md §2).
+
+algo: ppo_smdp
+
+train:
+  total_steps: 2000000000
+  checkpoint_interval: 25000000
+  checkpoint_keep_last: 6
+  init_checkpoint: REPLACE_WITH_GRAFTED_GATED_BEST
+  strict_checkpoint: true
+  resume_step: false
+  resume_optimizer: false
+
+smdp_ppo:
+  lr: 3.5e-5
+  gamma: 1.0
+  gae_lambda: 0.98
+
+  clip_epsilon: 0.15
+  value_coef: 0.5
+  entropy_coef: 0.008
+  max_grad_norm: 0.7
+
+  decisions_per_update: 4096
+  num_epochs: 2
+  minibatch_size: 512
+
+  policy_type: "candidate"
+  head_type: "dense"
+  pill_embed_dim: 128
+  pill_embed_type: "ordered_pair"
+  encoder_blocks: 6
+
+  candidate_max_candidates: 128
+  candidate_d_model: 192
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 384
+  candidate_board_encoder: "cnn"
+  candidate_board_channels: 8
+  candidate_transformer_layers: 4
+  candidate_transformer_heads: 4
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
+  candidate_cross_layers: 2
+
+  aux_spec: "v1"
+
+  entropy_schedule_end: 0.008
+  entropy_schedule_steps: 100000000
+  use_gumbel_topk: false
+  gumbel_k: 2
+
+  value_loss_type: "huber"
+
+env:
+  id: "drmario-vs"
+  obs_mode: state
+  backend: cpp-vs-pool
+  state_repr: bitplane_bottle_conn_mask
+  num_pairs: 32
+  gpu_planner: true
+  frame_stack: 1
+  randomize_rng: true
+  level: 14
+  speed_setting: 2
+  clear_win_bonus: 0.25
+  start_bank:
+    enabled: true
+    path: runs/start_bank/clear_endgame_v1.npz
+    fraction: 0.35
+  opponent_pool:
+    enabled: true
+    max_pool: 12
+    snapshot_every_matches: 400
+    device: auto
+    seed_paths:
+      - runs/bc_opponents/bc_lt1600.pt.gz
+      - runs/bc_opponents/bc_1600to2000.pt.gz
+      - runs/bc_opponents/bc_gt2000.pt.gz
+    league:
+      mode: mixed
+      exploiter_fraction: 0.2
+      main_agents:
+        - runs/best_agents/smdp_ppo_step535164979.pt.gz
+
+curriculum:
+  enabled: false
+
+logdir: runs/vs8_tf
