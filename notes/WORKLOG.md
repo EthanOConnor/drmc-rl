@@ -1086,3 +1086,10 @@ Chronological log of work done. Format: date, actor, brief summary.
   checkpoints retained under runs/vs6_tf/vs6tf_02).
 - Wave-time record (loaded box): 142 ms -> 106 (single-sync) -> 55.7
   (single-upload). Clean numbers recorded below after restart.
+- Clean post-restart throughput (quiet box, 32 pairs): **24.6k frames/s,
+  435 dec/s** — ~2x the pre-fix clean best (13.6k/254) and ~2.8x dps vs the
+  Mac-shape 16-pair standup (12k/224). update_sec 1.2 per 4096 decisions is
+  now ~11% of wall and the next optimization target (profile before
+  touching). vs6tf_03 early health: pool at 7 entries, KL 0.001, value loss
+  0.18; viruses/ep reads lower (~26) partly because 35% of episodes now
+  START near-clear.
