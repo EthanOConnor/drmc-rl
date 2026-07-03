@@ -192,6 +192,36 @@ class _BoardColumnTransformer(nn.Module):
         return x
 
 
+class _ZeroInitCrossBlock(nn.Module):
+    """Pre-LN self-attention + MLP over candidate tokens, identity at init.
+
+    Both residual branches end in zero-initialized linear layers, so a
+    freshly constructed block is an exact no-op: grafting these onto a
+    trained checkpoint leaves its outputs unchanged until training moves
+    the zeros.
+    """
+
+    def __init__(self, d_model: int, *, nhead: int = 4, ff_mult: int = 2) -> None:
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = nn.MultiheadAttention(d_model, nhead, batch_first=True)
+        self.out = nn.Linear(d_model, d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ff1 = nn.Linear(d_model, ff_mult * d_model)
+        self.ff2 = nn.Linear(ff_mult * d_model, d_model)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+        nn.init.zeros_(self.ff2.weight)
+        nn.init.zeros_(self.ff2.bias)
+
+    def forward(self, e: "torch.Tensor", key_padding_mask: "torch.Tensor") -> "torch.Tensor":
+        y = self.ln1(e)
+        y, _ = self.attn(y, y, y, key_padding_mask=key_padding_mask, need_weights=False)
+        e = e + self.out(y)
+        e = e + self.ff2(F.relu(self.ff1(self.ln2(e))))
+        return e
+
+
 class CandidatePlacementPolicyNet(nn.Module):
     """Global board embedding + per-candidate scorer."""
 
@@ -213,6 +243,7 @@ class CandidatePlacementPolicyNet(nn.Module):
         transformer_layers: int = 4,
         transformer_heads: int = 4,
         transformer_ff_mult: int = 4,
+        cross_layers: int = 0,
         patch_kernel: int = 7,
         cost_norm_denom: float = 64.0,
         use_trunk_gather: bool = True,
@@ -334,6 +365,17 @@ class CandidatePlacementPolicyNet(nn.Module):
             nn.Linear(cand_in_dim, int(cand_hidden_dim)),
             nn.ReLU(inplace=True),
             nn.Linear(int(cand_hidden_dim), self.d_model),
+        )
+
+        # Cross-candidate attention (default OFF): pre-LN self-attention over
+        # the candidate tokens before the pointwise dot-product scorer, so
+        # candidates can be compared to each other rather than scored blind.
+        # Output projections are zero-initialized -> the blocks are exact
+        # identities at init, so grafting onto an existing checkpoint
+        # preserves its logits bit-for-bit (see tools/expand_checkpoint.py).
+        self.cross_layers = int(max(0, cross_layers))
+        self.cross_blocks = nn.ModuleList(
+            [_ZeroInitCrossBlock(self.d_model, nhead=4) for _ in range(self.cross_layers)]
         )
 
         self.value_head = nn.Sequential(
@@ -514,6 +556,14 @@ class CandidatePlacementPolicyNet(nn.Module):
         else:
             cand_in = torch.cat([pos, cost_e, patch], dim=-1)
         e = self.cand_mlp(cand_in) + cond_m.unsqueeze(1)  # [B,K,D]
+
+        if self.cross_layers:
+            pad = ~cand_mask.bool()
+            # A fully-masked row would NaN inside attention; rows like that
+            # only occur for terminal envs whose logits are ignored anyway.
+            safe_pad = pad & ~pad.all(dim=1, keepdim=True)
+            for blk in self.cross_blocks:
+                e = blk(e, safe_pad)
 
         logits = (e * g.unsqueeze(1)).sum(dim=-1) / float(np.sqrt(max(1, self.d_model)))
         logits = logits.masked_fill(~cand_mask.bool(), -1e9)

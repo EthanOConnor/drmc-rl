@@ -260,6 +260,7 @@ class DrMarioVsPoolVecEnv:
                     opp_cfg.get("dir") or "runs/opponent_pool",
                     max_pool=int(opp_cfg.get("max_pool", 12)),
                     league=league,
+                    device=str(opp_cfg.get("device", "auto")),
                 )
                 if league.mode != "exploiter" and not pool.entries:
                     seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
@@ -698,15 +699,16 @@ class DrMarioVsPoolVecEnv:
             shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
             aux = shim._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
 
+        dev = getattr(entry, "device", "cpu")
         with torch.inference_mode():
             logits, _values = entry.net(
-                torch.from_numpy(obs),
-                torch.from_numpy(pills),
-                torch.from_numpy(previews),
-                torch.from_numpy(cand_actions),
-                torch.from_numpy(cand_cost),
-                torch.from_numpy(cand_mask),
-                aux=None if aux is None else torch.from_numpy(aux),
+                torch.from_numpy(obs).to(dev),
+                torch.from_numpy(pills).to(dev),
+                torch.from_numpy(previews).to(dev),
+                torch.from_numpy(cand_actions).to(dev),
+                torch.from_numpy(cand_cost).to(dev),
+                torch.from_numpy(cand_mask).to(dev),
+                aux=None if aux is None else torch.from_numpy(aux).to(dev),
             )
             logits_cpu = logits.float().cpu()
         temp = getattr(self, "_opp_temperature", 0.0)

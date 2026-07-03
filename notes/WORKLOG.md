@@ -1043,3 +1043,26 @@ Chronological log of work done. Format: date, actor, brief summary.
   (tools/build_clear_endgame_bank.py -> runs/start_bank/clear_endgame_v1.npz)
   and full-corpus BC bands v2 (data/human_vs/bc_dataset_v2.npz written,
   114 MB; training to runs/bc_opponents_v2/).
+
+## 2026-07-02 (evening) — networks-report recommendations implemented
+
+- **Opponent forwards on GPU** (rec 5): OpponentPool gains `device`
+  ("auto" = cuda when available; cfg `env.opponent_pool.device`); loaded
+  entries carry `entry.device` and `_forward_opponent` moves inputs there.
+  Pool/league/BC tests: 19 passed.
+- **Cross-candidate attention** (rec 3): `candidate_cross_layers` (cfg) adds
+  pre-LN self-attention blocks over candidate tokens before the pointwise
+  dot-product scorer (`_ZeroInitCrossBlock`: zero-init output projections =
+  exact identity at init). Fully-masked rows guarded. Threaded through
+  ppo_smdp hparams + eval_policy builder.
+- **Function-preserving capacity graft** (rec 2): tools/expand_checkpoint
+  gains `graft_state_dict` (+auto-detect in expand_checkpoint_payload):
+  deeper trunk (appended resblocks conv2-zeroed; identity after ReLU) and/or
+  cross-attention layers grafted onto an existing checkpoint with
+  bit-identical outputs. Width changes rejected loudly (net2net not
+  implemented). Verified end-to-end on the champion: 3.32M -> 5.32M params
+  (enc6 + cross2), logits/value torch.equal. Gate:
+  tests/test_capacity_graft.py (4 tests).
+- Staged gated configs: training/configs/vs8_capacity_tf3090.yaml (capacity
+  step; init placeholder = grafted gated-best) after vsdist2_tf3090.yaml.
+  Ladder order: vs6_tf metagame gate -> vsdist2 -> vs8 capacity.

@@ -58,6 +58,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
         cost_embed_dim=int(g("candidate_cost_embed_dim", 32)),
         cand_hidden_dim=int(g("candidate_hidden_dim", 256)),
         transformer_layers=int(g("candidate_transformer_layers", 4)),
+        cross_layers=int(g("candidate_cross_layers", 0)),
         transformer_heads=int(g("candidate_transformer_heads", 4)),
         transformer_ff_mult=int(g("candidate_transformer_ff_mult", 4)),
         patch_kernel=int(g("candidate_patch_kernel", 9)),

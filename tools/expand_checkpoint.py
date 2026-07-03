@@ -76,6 +76,66 @@ def expand_state_dict(
     return out
 
 
+def graft_state_dict(
+    sd: Dict[str, torch.Tensor],
+    *,
+    new_smdp_cfg: Dict[str, Any],
+    in_channels: int = 12,
+) -> Dict[str, torch.Tensor]:
+    """Function-preserving capacity graft: deeper trunk and/or cross-attention.
+
+    Builds a fresh net from ``new_smdp_cfg`` (which may raise
+    ``encoder_blocks`` and/or ``candidate_cross_layers`` vs the checkpoint)
+    and overlays the old weights. The new modules are identities at init —
+    appended `_ResBlock`s have conv2 zero-init'd (and sit after a ReLU, so
+    the residual ReLU is transparent), `_ZeroInitCrossBlock`s zero their
+    output projections — so the grafted net's outputs equal the old net's
+    exactly. Width changes (d_model) are NOT supported (net2net surgery).
+    """
+
+    from tools.eval_policy import _build_net_from_cfg
+
+    net, _aux, _cmax = _build_net_from_cfg({"smdp_ppo": dict(new_smdp_cfg)}, in_channels, "cpu")
+    # Zero-init conv2 of any resblock beyond those covered by the old sd so
+    # appended depth is identity (fresh _ResBlock conv2 is randomly init'd).
+    old_block_ids = {
+        int(k.split(".")[2])
+        for k in sd
+        if k.startswith("board_trunk.blocks.") and k.endswith(".conv2.weight")
+    }
+    for name, module in net.named_modules():
+        if name.startswith("board_trunk.blocks."):
+            parts = name.split(".")
+            if len(parts) == 3 and int(parts[2]) not in old_block_ids:
+                torch.nn.init.zeros_(module.conv1.bias)
+                torch.nn.init.zeros_(module.conv2.weight)
+                torch.nn.init.zeros_(module.conv2.bias)
+
+    missing, unexpected = net.load_state_dict(
+        {k: v for k, v in sd.items() if torch.is_tensor(v)}, strict=False
+    )
+    if unexpected:
+        raise ValueError(f"old checkpoint has keys the new cfg cannot host: {unexpected[:6]}")
+    allowed = ("board_trunk.blocks.", "cross_blocks.")
+    stray = [k for k in missing if not k.startswith(allowed)]
+    if stray:
+        raise ValueError(f"graft would freshly initialize non-capacity keys: {stray[:6]}")
+    return {k: v.detach().clone() for k, v in net.state_dict().items()}
+
+
+def _needs_graft(sd: Dict[str, torch.Tensor], new_smdp_cfg: Dict[str, Any]) -> bool:
+    old_blocks = len({
+        k.split(".")[2] for k in sd
+        if k.startswith("board_trunk.blocks.") and k.endswith(".conv2.weight")
+    })
+    old_cross = len({
+        k.split(".")[1] for k in sd if k.startswith("cross_blocks.")
+    })
+    return int(new_smdp_cfg.get("encoder_blocks", old_blocks)) > old_blocks or int(
+        new_smdp_cfg.get("candidate_cross_layers", old_cross)
+    ) > old_cross
+
+
 def expand_checkpoint_payload(
     payload: Dict[str, Any],
     *,
@@ -88,9 +148,12 @@ def expand_checkpoint_payload(
     for key in ("state_dict", "ema_state_dict"):
         sd = payload.get(key)
         if sd is not None:
-            payload[key] = expand_state_dict(
+            sd = expand_state_dict(
                 sd, new_board_channels=new_board_channels, new_aux_dim=new_aux_dim
             )
+            if new_smdp_cfg is not None and _needs_graft(sd, new_smdp_cfg):
+                sd = graft_state_dict(sd, new_smdp_cfg=new_smdp_cfg)
+            payload[key] = sd
     # Optimizer moment shapes no longer match the expanded weights.
     payload.pop("optimizer", None)
     # Keep the embedded cfg loadable by the opponent pool / eval tools.

@@ -110,14 +110,15 @@ def test_bc_checkpoint_loads_through_opponent_pool(tmp_path):
 
     arrays = rows_to_arrays(_fixture_rows())
     obs, pills, prevs, ca, cc, cm, _slot = batch_inputs(arrays, np.arange(4))
+    dev = entry.device  # pool device is "auto" (cuda when available)
     with torch.inference_mode():
         logits, values = entry.net(
-            torch.from_numpy(obs),
-            torch.from_numpy(pills),
-            torch.from_numpy(prevs),
-            torch.from_numpy(ca),
-            torch.from_numpy(cc),
-            torch.from_numpy(cm),
+            torch.from_numpy(obs).to(dev),
+            torch.from_numpy(pills).to(dev),
+            torch.from_numpy(prevs).to(dev),
+            torch.from_numpy(ca).to(dev),
+            torch.from_numpy(cc).to(dev),
+            torch.from_numpy(cm).to(dev),
             aux=None,
         )
     assert logits.shape == (4, 128)
