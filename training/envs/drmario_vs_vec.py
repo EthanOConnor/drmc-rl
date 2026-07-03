@@ -85,28 +85,11 @@ def _canonical_to_raw_color(canonical: int) -> int:
 
 
 def _make_gpu_plan_solver(max_lock_frames: int):
-    """Batched reach_cuda solver matching the runner's PlanSolver contract."""
+    """Batched reach_cuda solver (shared impl in envs/backends/gpu_plan_solver)."""
 
-    from reach_cuda import CudaReach
+    from envs.backends.gpu_plan_solver import make_gpu_plan_solver
 
-    ctx = CudaReach(max_batch=2048)  # decision waves are <= 2*num_pairs
-
-    def solve(ps: np.ndarray) -> np.ndarray:
-        return ctx.solve_costs(
-            np.ascontiguousarray(ps["cols"]),
-            np.ascontiguousarray(ps["parity"]),
-            np.ascontiguousarray(ps["thr"]),
-            sx=np.ascontiguousarray(ps["x"]),
-            sy=np.ascontiguousarray(ps["y_top"]),
-            srot=np.ascontiguousarray(ps["rot"]),
-            sc=np.ascontiguousarray(ps["sc"]),
-            hv=np.ascontiguousarray(ps["hv"]),
-            hd=np.ascontiguousarray(ps["hd"]),
-            rh=np.ascontiguousarray(ps["rh"]),
-            max_frames=int(max_lock_frames),
-        )
-
-    return solve
+    return make_gpu_plan_solver(int(max_lock_frames))
 
 
 class DrMarioVsPoolVecEnv:

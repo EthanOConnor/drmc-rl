@@ -198,12 +198,18 @@ class LiveAgentServer:
         device: str = "auto",
         ponder: bool = False,
         ponder_beam: int | None = None,
+        strength: Optional[float] = None,
+        planner: str = "cpu",
     ) -> None:
         self.dir = Path(ipc_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.side = int(side)
         self.policy = str(policy)
         self.temperature = float(temperature)
+        # Value-gap strength dial in [0,1]; None/1.0 = full strength. Applied
+        # on the plain path over policy logits and on the search path over the
+        # searched Q values (docs/MATCH_AGENT.md).
+        self.strength = None if strength is None else max(0.0, min(1.0, float(strength)))
         self.margin = int(margin)
         self.ponder = bool(ponder)
         self.dry_run = bool(dry_run)
@@ -213,6 +219,16 @@ class LiveAgentServer:
         self.runner = NativeReachabilityRunner(
             max_frames=int(max_frames), lib_path=str(pool_library_path())
         )
+        # GPU planner (reach_cuda scripts mode): one call returns exact costs
+        # plus a replay-verified optimal input script per pose. Any nonzero
+        # per-instance status falls back to the CPU planner for that decision.
+        self.planner = str(planner)
+        self._cuda_reach = None
+        self._max_frames = int(max_frames)
+        if self.planner == "cuda":
+            from reach_cuda import CudaReach
+
+            self._cuda_reach = CudaReach(max_batch=16)
 
         # Per-spawn decision state.
         self.cur_pc: Optional[int] = None
@@ -329,6 +345,23 @@ class LiveAgentServer:
                 cost = action_cost.astype(np.float64).copy()
                 cost[~feasible] = np.inf
                 return int(np.argmin(cost))
+            if (
+                self.strength is not None
+                and self.strength < 1.0
+                and info.get("q_values") is not None
+                and info.get("ply1_actions") is not None
+            ):
+                # Value-gap dial over the searched Q values: sample uniformly
+                # among root candidates within delta of the best, delta growing
+                # as strength drops. Beam preselection keeps even strength=0
+                # picks plausible.
+                q = np.asarray(info["q_values"], dtype=np.float64)
+                acts = np.asarray(info["ply1_actions"], dtype=np.int64)
+                if q.size and acts.size == q.size:
+                    span = float(q.max() - q.min())
+                    delta = (1.0 - self.strength) * max(span, 1e-6)
+                    idx = np.flatnonzero(q >= q.max() - delta)
+                    return int(acts[int(self.rng.choice(idx))])
             return int(action)
         if self.policy == "random":
             return int(self.rng.choice(feas_idx))
@@ -383,6 +416,16 @@ class LiveAgentServer:
             )
             logits_cpu = logits.float().cpu()
         mask_t = torch.from_numpy(packed.mask[None])
+        if self.strength is not None and self.strength < 1.0:
+            # Value-gap dial over policy logits (same rule as tools/eval_policy
+            # --strength): uniform among candidates within delta of the best.
+            lg = logits_cpu.numpy().reshape(-1).copy()
+            lg[~packed.mask] = -np.inf
+            finite = np.isfinite(lg)
+            span = float(lg[finite].max() - lg[finite].min()) if finite.any() else 0.0
+            delta = (1.0 - self.strength) * max(span, 1e-6)
+            idx = np.flatnonzero(lg >= lg[finite].max() - delta) if finite.any() else np.array([0])
+            return int(packed.actions[int(self.rng.choice(idx))])
         if self.temperature > 0:
             dist = MaskedPlacementDist(logits_cpu / self.temperature, mask_t)
             slot, _lp = dist.sample(deterministic=False)
@@ -392,6 +435,40 @@ class LiveAgentServer:
         return int(packed.actions[int(slot.reshape(-1)[0])])
 
     # ------------------------------------------------------------- planning
+    def _solve_plan(self, cols: np.ndarray, st: "FrameState", thr: int, f: int):
+        """Exact pose costs (u16[512]) + optional GPU per-pose scripts.
+
+        Returns (costs_u16, gpu_scripts) where gpu_scripts is
+        (offsets[512], lengths[512], script_buf) or None when the CPU planner
+        produced the result (its scripts come from self._cpu_reach). A nonzero
+        reach_cuda status falls back to the CPU planner for this decision.
+        """
+
+        self._cpu_reach = None
+        if self._cuda_reach is not None:
+            hd = int(getattr(st.hold_dir, "value", st.hold_dir)) & 0x3
+            rh = int(getattr(st.rot_hold, "value", st.rot_hold)) & 0x3
+            costs, off, length, scr, status = self._cuda_reach.solve_scripts(
+                cols[None].astype(np.uint16),
+                np.array([st.frame_parity & 1], dtype=np.uint8),
+                np.array([thr], dtype=np.uint8),
+                sx=np.array([st.x], dtype=np.uint8),
+                sy=np.array([st.y], dtype=np.uint8),
+                srot=np.array([st.rot & 3], dtype=np.uint8),
+                sc=np.array([st.speed_counter], dtype=np.uint8),
+                hv=np.array([st.hor_velocity & 0x0F], dtype=np.uint8),
+                hd=np.array([hd], dtype=np.uint8),
+                rh=np.array([rh], dtype=np.uint8),
+                max_frames=self._max_frames,
+            )
+            if int(status[0]) == 0:
+                return costs[0], (off[0], length[0], scr[0])
+            self._log({"type": "warn", "f": f,
+                       "msg": f"reach_cuda status {int(status[0])}; CPU fallback"})
+
+        self._cpu_reach = self.runner.bfs_full(cols, st, speed_threshold=thr)
+        return self._cpu_reach.costs_u16, None
+
     def process_line(self, d: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Handle one state line; returns the plan dict if one was written."""
         if int(d.get("na", 1)) != 0:
@@ -508,14 +585,14 @@ class LiveAgentServer:
                         feas_full[a] = True
                 n_options_default_margin = int(feas_full.sum())
 
-        reach = self.runner.bfs_full(cols, st, speed_threshold=thr)
+        costs_u16, gpu_scripts = self._solve_plan(cols, st, thr, f)
 
         action_cost = np.full(512, 0xFFFF, dtype=np.uint16)
-        finite = np.flatnonzero(reach.costs_u16 != 0xFFFF)
+        finite = np.flatnonzero(costs_u16 != 0xFFFF)
         for pose in finite:
             a = int(POSE_TO_ACTION[pose])
             if a >= 0:
-                action_cost[a] = reach.costs_u16[pose]
+                action_cost[a] = costs_u16[pose]
         feasible = action_cost != 0xFFFF
         n_options = int(feasible.sum())
         if n_options == 0:
@@ -525,11 +602,20 @@ class LiveAgentServer:
         action = self._choose(d, field, action_cost, feasible)
         pose_idx = int(ACTION_TO_POSE[action])
         px, py, prot = pose_idx & 7, (pose_idx >> 3) & 15, (pose_idx >> 7) & 3
-        script = reach.script_for_pose(px, py, prot)
+        if gpu_scripts is not None:
+            off, length, scr = gpu_scripts
+            script = (
+                scr[off[pose_idx]: off[pose_idx] + length[pose_idx]].copy()
+                if length[pose_idx] > 0
+                else None
+            )
+        else:
+            script = self._cpu_reach.script_for_pose(px, py, prot)
+            if script is not None:
+                script = np.array(script, dtype=np.uint8)  # copy: runner reuses buffers
         if script is None:
             self._log({"type": "error", "f": f, "msg": f"no script for chosen pose {pose_idx}"})
             return None
-        script = np.array(script, dtype=np.uint8)  # copy: runner reuses buffers
         buttons = [ACTION_TO_BUTTONS[int(a)] for a in script]
 
         # Predicted per-frame states for desync verification.
@@ -746,6 +832,12 @@ def main() -> None:
                     help="default: newest runs/vs_push_01/checkpoints/*.pt.gz, "
                          "else runs/best_agents/smdp_ppo_step535164979.pt.gz")
     ap.add_argument("--temperature", type=float, default=0.0, help="0 = deterministic argmax")
+    ap.add_argument("--strength", type=float, default=None,
+                    help="value-gap strength dial in [0,1]; 1.0 = full strength "
+                         "(plain path: over logits; search path: over searched Q)")
+    ap.add_argument("--planner", default="cpu", choices=("cpu", "cuda"),
+                    help="reachability/scripts backend; cuda = reach_cuda scripts mode "
+                         "with per-decision CPU fallback on nonzero status")
     ap.add_argument("--margin", type=int, default=DEFAULT_MARGIN,
                     help="frames between a state line and the plan's start_frame")
     ap.add_argument("--dry-run", action="store_true", help="log decisions, never write plan.json")
@@ -795,6 +887,8 @@ def main() -> None:
         device=args.device,
         ponder=args.ponder,
         ponder_beam=args.ponder_beam,
+        strength=args.strength,
+        planner=args.planner,
     )
     if args.bench is not None:
         bench(server, int(args.bench))

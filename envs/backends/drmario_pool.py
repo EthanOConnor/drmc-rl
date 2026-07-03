@@ -17,7 +17,7 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 
@@ -25,7 +25,30 @@ GRID_H = 16
 GRID_W = 8
 MACRO_ACTIONS = 4 * GRID_H * GRID_W  # 512
 
-DRMARIO_POOL_PROTOCOL_VERSION = 2
+DRMARIO_POOL_PROTOCOL_VERSION = 3
+
+# Planner inputs for one parked env (mirrors DrmPlanState; feed to
+# drm_reach_bfs_v4 or a bit-exact equivalent such as reach_cuda).
+PLAN_STATE_DTYPE = np.dtype(
+    [
+        ("cols", "<u2", (8,)),
+        ("x", "u1"),
+        ("y_top", "u1"),
+        ("rot", "u1"),
+        ("sc", "u1"),
+        ("hv", "u1"),
+        ("hd", "u1"),
+        ("parity", "u1"),
+        ("rh", "u1"),
+        ("thr", "u1"),
+        ("_pad", "u1", (3,)),
+    ]
+)
+assert PLAN_STATE_DTYPE.itemsize == 28
+
+# Batched planner: solver(plan_states[n]) -> (n, 512) u16 pose costs
+# (0xFFFF = unreachable), bit-exact drm_reach_bfs_v4 semantics.
+PlanSolver = Callable[[np.ndarray], np.ndarray]
 
 
 class DrMarioPoolError(RuntimeError):
@@ -80,7 +103,8 @@ class _DrmPoolConfig(C.Structure):
         ("max_lock_frames", C.c_uint32),
         ("max_wait_frames", C.c_uint32),
         ("lazy_decision_outputs", C.c_uint8),
-        ("_cfg_reserved", C.c_uint8 * 3),
+        ("defer_planning", C.c_uint8),
+        ("_cfg_reserved", C.c_uint8 * 2),
     ]
 
 
@@ -146,6 +170,9 @@ class _DrmPoolOutputs(C.Structure):
         ("lock_x", C.POINTER(C.c_int16)),
         ("lock_y", C.POINTER(C.c_int16)),
         ("lock_rot", C.POINTER(C.c_int16)),
+        # deferred planning
+        ("plan_needed", C.POINTER(C.c_uint8)),
+        ("plan_state", C.POINTER(C.c_uint8)),  # [N] packed DrmPlanState (28 B)
     ]
 
 
@@ -195,6 +222,9 @@ class PoolBuffers:
     lock_y: np.ndarray  # (N,) int16
     lock_rot: np.ndarray  # (N,) int16
 
+    plan_needed: np.ndarray  # (N,) uint8 (deferred planning; always 0 otherwise)
+    plan_state: np.ndarray  # (N,) PLAN_STATE_DTYPE
+
 
 class DrMarioPoolRunner:
     """Owns the native pool handle and numpy output buffers."""
@@ -210,10 +240,12 @@ class DrMarioPoolRunner:
         lib_path: Optional[str] = None,
         emit_board: bool = False,
         lazy_decision_outputs: bool = False,
+        plan_solver: Optional[PlanSolver] = None,
     ) -> None:
         self.num_envs = int(max(1, int(num_envs)))
         self.obs_spec = int(obs_spec)
         self.obs_channels = int(max(0, int(obs_channels)))
+        self._plan_solver = plan_solver
 
         path = resolve_library_path(lib_path)
         if not path.is_file():
@@ -228,8 +260,14 @@ class DrMarioPoolRunner:
         destroy = getattr(self._lib, "drm_pool_destroy", None)
         reset = getattr(self._lib, "drm_pool_reset", None)
         step = getattr(self._lib, "drm_pool_step", None)
+        inject = getattr(self._lib, "drm_pool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
             raise DrMarioPoolError(f"{path} does not export the required drm_pool_* symbols")
+        if plan_solver is not None and inject is None:
+            raise DrMarioPoolError(
+                f"{path} predates deferred planning (no drm_pool_inject_plans); "
+                "rebuild it with: make -C game_engine libdrmario_pool"
+            )
 
         create.argtypes = [C.POINTER(_DrmPoolConfig)]
         create.restype = C.c_void_p
@@ -245,10 +283,19 @@ class DrMarioPoolRunner:
             C.POINTER(_DrmPoolOutputs),
         ]
         step.restype = C.c_int
+        if inject is not None:
+            inject.argtypes = [
+                C.c_void_p,
+                C.POINTER(C.c_uint8),
+                C.POINTER(C.c_uint16),
+                C.POINTER(_DrmPoolOutputs),
+            ]
+            inject.restype = C.c_int
 
         self._destroy_fn = destroy
         self._reset_fn = reset
         self._step_fn = step
+        self._inject_fn = inject
 
         cfg = _DrmPoolConfig()
         cfg.protocol_version = DRMARIO_POOL_PROTOCOL_VERSION
@@ -258,6 +305,7 @@ class DrMarioPoolRunner:
         cfg.max_lock_frames = int(max(1, int(max_lock_frames)))
         cfg.max_wait_frames = int(max(1, int(max_wait_frames)))
         cfg.lazy_decision_outputs = 1 if bool(lazy_decision_outputs) else 0
+        cfg.defer_planning = 1 if plan_solver is not None else 0
 
         handle = create(C.byref(cfg))
         if not handle:
@@ -266,6 +314,10 @@ class DrMarioPoolRunner:
 
         self.buffers = self._allocate_buffers(emit_board=bool(emit_board))
         self._out = self._build_outputs_struct(self.buffers)
+
+        self.max_lock_frames = int(max(1, int(max_lock_frames)))
+        self._inject_costs_buf = np.full((self.num_envs, MACRO_ACTIONS), 0xFFFF, dtype=np.uint16)
+        self._inject_mask_buf = np.zeros((self.num_envs,), dtype=np.uint8)
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)
@@ -341,6 +393,8 @@ class DrMarioPoolRunner:
             lock_x=lock_x,
             lock_y=lock_y,
             lock_rot=lock_rot,
+            plan_needed=np.zeros((N,), dtype=np.uint8),
+            plan_state=np.zeros((N,), dtype=PLAN_STATE_DTYPE),
         )
 
     def _build_outputs_struct(self, buffers: PoolBuffers) -> _DrmPoolOutputs:
@@ -381,6 +435,9 @@ class DrMarioPoolRunner:
         out.lock_x = _ptr(buffers.lock_x, C.c_int16)
         out.lock_y = _ptr(buffers.lock_y, C.c_int16)
         out.lock_rot = _ptr(buffers.lock_rot, C.c_int16)
+
+        out.plan_needed = _ptr(buffers.plan_needed, C.c_uint8)
+        out.plan_state = buffers.plan_state.ctypes.data_as(C.POINTER(C.c_uint8))
         return out
 
     def reset(self, reset_mask: Optional[np.ndarray], reset_specs: Optional[np.ndarray]) -> None:
@@ -405,6 +462,7 @@ class DrMarioPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_pool_reset failed with rc={rc}")
         _ = specs_arr  # keep alive until after call
+        self._solve_deferred()
 
     def step(
         self,
@@ -436,6 +494,47 @@ class DrMarioPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_pool_step failed with rc={rc}")
         _ = specs_arr  # keep alive until after call
+        self._solve_deferred()
+
+    def _solve_deferred(self) -> None:
+        """Solve plan_needed envs via the external planner and inject costs.
+
+        Loops because an injected all-infeasible plan auto-skips that spawn
+        natively and the env may park at a later spawn needing another plan
+        (bounded by max_wait_frames; in practice one extra round is rare).
+        """
+
+        if self._plan_solver is None:
+            return
+        buf = self.buffers
+        for _ in range(64):  # generous cap; each round consumes >=1 spawn per env
+            idx = np.flatnonzero(buf.plan_needed)
+            if idx.size == 0:
+                return
+
+            costs = np.asarray(self._plan_solver(buf.plan_state[idx]), dtype=np.uint16)
+            if costs.shape != (idx.size, MACRO_ACTIONS):
+                raise DrMarioPoolError(
+                    f"plan_solver returned shape {costs.shape}, "
+                    f"expected {(idx.size, MACRO_ACTIONS)}"
+                )
+
+            self._inject_costs_buf[idx] = costs
+            mask = self._inject_mask_buf
+            mask.fill(0)
+            mask[idx] = 1
+
+            rc = int(
+                self._inject_fn(
+                    self._handle,
+                    mask.ctypes.data_as(C.POINTER(C.c_uint8)),
+                    self._inject_costs_buf.ctypes.data_as(C.POINTER(C.c_uint16)),
+                    C.byref(self._out),
+                )
+            )
+            if rc != 0:
+                raise DrMarioPoolError(f"drm_pool_inject_plans failed with rc={rc}")
+        raise DrMarioPoolError("deferred planning did not converge (plan_needed persists)")
 
 
 def _build_reset_spec_array(reset_specs: object, num_envs: int) -> object:

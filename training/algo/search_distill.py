@@ -86,6 +86,10 @@ class SearchDistillConfig:
     # 1P reward replication carries its own terminal bonuses).
     win_value: float = 1.0
     loss_value: float = -1.0
+    # Solve the search sims' reachability on the GPU (reach_cuda, bit-exact;
+    # tests/test_pool_gpu_planner.py). Frees the CPU BFS from every ply-1/
+    # ply-2 replan — the enabler for high decision_fraction / deep beams.
+    gpu_planner: bool = False
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "SearchDistillConfig":
@@ -102,6 +106,7 @@ class SearchDistillConfig:
             act_from_search=bool(d.get("act_from_search", False)),
             win_value=float(d.get("win_value", 1.0)),
             loss_value=float(d.get("loss_value", -1.0)),
+            gpu_planner=bool(d.get("gpu_planner", False)),
         )
         if cfg.enabled:
             if cfg.sims < 1 or cfg.beam < 1:
@@ -291,6 +296,7 @@ class SearchDistillRunner:
             opponent_model=str(cfg.opponent_model),
             seed=int(seed),
             warmup=False,
+            gpu_planner=bool(cfg.gpu_planner),
         )
         self._rng = np.random.default_rng(int(seed))
         # Decisions since episode start, per env (speed_ups approximation).

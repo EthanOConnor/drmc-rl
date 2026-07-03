@@ -302,6 +302,7 @@ class SearchPolicy:
         opponent_model: str = "none",
         seed: int = 0,
         warmup: bool = True,
+        gpu_planner: bool = False,
     ) -> None:
         from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
         from training.utils.checkpoint_io import load_checkpoint
@@ -340,6 +341,7 @@ class SearchPolicy:
             opponent_model=opponent_model,
             seed=seed,
             warmup=warmup,
+            gpu_planner=gpu_planner,
         )
 
     @classmethod
@@ -363,6 +365,7 @@ class SearchPolicy:
         opponent_model: str = "none",
         seed: int = 0,
         warmup: bool = False,
+        gpu_planner: bool = False,
     ) -> "SearchPolicy":
         """Build from an in-memory net (tests / callers that loaded their own)."""
 
@@ -387,6 +390,7 @@ class SearchPolicy:
             opponent_model=opponent_model,
             seed=seed,
             warmup=warmup,
+            gpu_planner=gpu_planner,
         )
         return self
 
@@ -410,6 +414,7 @@ class SearchPolicy:
         opponent_model: str = "none",
         seed: int = 0,
         warmup: bool = False,
+        gpu_planner: bool = False,
     ) -> None:
         # Keep the ambient `_vs` representation when set (the live VS env owns
         # it; the first 12 channels are layout-compatible) — otherwise pin the
@@ -459,12 +464,25 @@ class SearchPolicy:
             self._reward_cfg = None
         self._rng = np.random.default_rng(seed)
 
+        # Deferred GPU planning: every sim step's reachability (ply-1 branch
+        # spawns, ply-2 leaf boards) is solved in one batched reach_cuda call
+        # instead of per-env CPU BFS inside the native step. Bit-exact
+        # (tests/test_pool_gpu_planner.py); biggest win on sparse boards where
+        # the CPU BFS is most expensive.
+        self._gpu_planner = bool(gpu_planner)
+        self._plan_solver = None
+        if self._gpu_planner:
+            from envs.backends.gpu_plan_solver import make_gpu_plan_solver
+
+            self._plan_solver = make_gpu_plan_solver()
+
         self._runner = DrMarioPoolRunner(
             num_envs=self.num_sim_envs,
             obs_spec=4,  # DRM_POOL_OBS_BITPLANE_BOTTLE_CONN_MASK
             obs_channels=12,
             lib_path=lib_path,
             emit_board=True,
+            plan_solver=self._plan_solver,
         )
 
         # Precompute the 81 (pill, preview) canonical color-pair conditioning
@@ -2054,6 +2072,7 @@ class PonderingSearchPolicy(SearchPolicy):
             obs_channels=12,
             lib_path=kw.get("lib_path"),
             emit_board=True,
+            plan_solver=self._plan_solver,
         )
         self._ponder_thread = threading.Thread(
             target=self._ponder_loop, name="ponder-worker", daemon=True

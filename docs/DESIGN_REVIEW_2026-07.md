@@ -58,9 +58,11 @@ Within the fixed architecture, three implementation recommendations:
   (obs build + packing are numpy-per-side today; opponent forwards are
   CPU-torch). num_pairs scan measured: 16→32 pairs = 12.0k→13.6k fps
   (+13%); diminishing beyond (Python serial section is the wall).
-- **R3: keep warp execution for training; scripts only at the edges.**
-  reach_cuda scripts mode is replay-verified — use it for the live bridge
-  and any frame-exact exhibition, not in the training loop.
+- **R3 (done 2026-07-02): warp execution for training; scripts at the edges.**
+  The live bridge now supports `--planner cuda` (reach_cuda scripts mode:
+  exact costs + replay-verified optimal input script per pose, per-decision
+  CPU fallback on nonzero status). Training keeps warp. See
+  docs/MATCH_AGENT.md.
 
 ### 1.2 Environment & reward (the metagame problem — highest design risk)
 
@@ -124,11 +126,14 @@ config-gated but unproven — the ladder stalled when the Mac era ended, partly
 because search was CPU-expensive (39 ms/searched decision, and VS search runs
 on a 1P approximation of the own board).
 
-- **R8: after R1, wire reach_cuda into SearchPolicy's per-branch replans and
-  raise the sims budget.** Search cost is planner-dominated; on GPU the
-  vsdist config's sims=12/frac=0.1 becomes cheap enough to run at
-  frac=0.25-0.5 or deeper beams. This is the highest-Elo algorithmic step on
-  the books, and it composes with everything else.
+- **R8 (plumbing done 2026-07-02): reach_cuda wired into search.** The 1P
+  pool gained the same deferred-planning mode as the VS pool (protocol v3,
+  `plan_needed`/`plan_state` + `drm_pool_inject_plans`; zero-feasible spawns
+  auto-skip inside inject to preserve step semantics exactly).
+  `SearchPolicy(gpu_planner=True)` batches every ply-1/ply-2 sim replan on
+  the GPU — search decisions verified bit-identical to the CPU path
+  (tests/test_pool_gpu_planner.py). Remaining: raise the vsdist sims budget
+  (frac 0.25-0.5 / deeper beams) and run the gated vsdist rev B.
 - **R9: the vsdist → vsact ladder stays the plan**, gated exactly as
   ABLATION_PLAN specifies (anchored tournaments, SPRT, bc-gt2000 gate). The
   vsact config's init placeholder must be filled from the vsdist verdict.

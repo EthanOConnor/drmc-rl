@@ -17,7 +17,11 @@ reduction: orientations 2/3 are masked and the chosen action is canonicalized
 onto its o0/o1 equivalent.
 
 WHR bands (player's WHR-C ``eC`` at the game's day, nearest-day join like
-tools/skill_grade.py): lt1600 (<1600), 1600to2000, gt2000 (>=2000).
+tools/skill_grade.py): lt1500 (<1500), 1500to1800, 1800to2000, gt2000
+(>=2000). The top band keeps the historical "gt2000" name/edge so the
+acceptance-gate tooling built against v1 keeps working. (v1 used
+lt1600/1600to2000/gt2000; `train` infers band names from the dataset file,
+so v1 datasets still train.)
 
 Lock poses are verified/repaired against next-spawn field diffs and the
 planner is seeded with the true spawn state from v2.1 blobs when present
@@ -64,7 +68,7 @@ from tools.annotate_replay_events import (
     resolve_lock_pose,
 )
 
-BANDS = ("lt1600", "1600to2000", "gt2000")
+BANDS = ("lt1500", "1500to1800", "1800to2000", "gt2000")
 KMAX = 128  # candidate_max_candidates (matches training envs)
 
 # Net config embedded in the checkpoints; `_build_net_from_cfg(cfg, 12, dev)`
@@ -90,12 +94,31 @@ BC_NET_CFG: Dict[str, Any] = {
     }
 }
 
+# --capacity overrides (deep-merged into a copy of BC_NET_CFG["smdp_ppo"]).
+CAPACITY_OVERRIDES: Dict[str, Dict[str, Any]] = {
+    "small": {},  # v1 architecture: d96 / enc2 / tx2 / hidden192
+    "medium": {   # d128 / enc3 / tx3 / hidden256
+        "candidate_d_model": 128,
+        "encoder_blocks": 3,
+        "candidate_transformer_layers": 3,
+        "candidate_hidden_dim": 256,
+    },
+}
+
+
+def bc_net_cfg(capacity: str = "small") -> Dict[str, Any]:
+    inner = dict(BC_NET_CFG["smdp_ppo"])
+    inner.update(CAPACITY_OVERRIDES[capacity])
+    return {"smdp_ppo": inner}
+
 
 def band_of(whr: float) -> str:
-    if whr < 1600.0:
-        return "lt1600"
+    if whr < 1500.0:
+        return "lt1500"
+    if whr < 1800.0:
+        return "1500to1800"
     if whr < 2000.0:
-        return "1600to2000"
+        return "1800to2000"
     return "gt2000"
 
 
@@ -337,10 +360,10 @@ def batch_inputs(arrays: Dict[str, np.ndarray], idx: np.ndarray):
     return obs, pills, prevs, cand_actions, cand_costs, cand_mask, chosen_slot
 
 
-def build_bc_net(device: str = "cpu"):
+def build_bc_net(device: str = "cpu", cfg: Optional[Dict[str, Any]] = None):
     from tools.eval_policy import _build_net_from_cfg
 
-    net, aux_dim, _kmax = _build_net_from_cfg(BC_NET_CFG, 12, device)
+    net, aux_dim, _kmax = _build_net_from_cfg(cfg or BC_NET_CFG, 12, device)
     assert aux_dim == 0
     return net
 
@@ -355,6 +378,7 @@ def train_band(
     val_mask: Optional[np.ndarray] = None,
     device: str = "cpu",
     log_every: int = 200,
+    cfg: Optional[Dict[str, Any]] = None,
 ) -> tuple:
     """Train one BC net on `arrays`; returns (net, metrics dict)."""
 
@@ -369,7 +393,7 @@ def train_band(
     val_idx = np.flatnonzero(val_mask)
 
     dev = torch.device(device)
-    net = build_bc_net(device)
+    net = build_bc_net(device, cfg)
     net.train()
     opt = torch.optim.Adam(net.parameters(), lr=float(lr))
     rng = np.random.default_rng(int(seed))
@@ -461,12 +485,20 @@ def cmd_extract(args) -> None:
     per_band_extra: Dict[str, Dict[str, list]] = {
         b: {"whr": [], "quark_idx": [], "side": []} for b in BANDS
     }
+    # Bands are compacted to packed arrays as soon as they hit the cap so
+    # multi-million-row extractions don't hold every row dict in RAM.
+    finished: Dict[str, Dict[str, np.ndarray]] = {}
+    band_count: Dict[str, int] = {b: 0 for b in BANDS}
+
+    def band_full(b: str) -> bool:
+        return b in finished or band_count[b] >= cap
+
     quark_names: List[str] = []
     t0 = time.time()
     n_quarks = 0
 
     for oi in order:
-        if all(len(per_band[b]) >= cap for b in BANDS):
+        if all(band_full(b) for b in BANDS):
             break
         quarkid, sha, p1, p2, day = quarks[oi]
         side_band: Dict[int, tuple] = {}
@@ -475,7 +507,7 @@ def cmd_extract(args) -> None:
             if whr is None:
                 continue
             b = band_of(whr)
-            if len(per_band[b]) < cap:
+            if not band_full(b):
                 side_band[p] = (b, whr)
         if not side_band:
             continue
@@ -493,25 +525,36 @@ def cmd_extract(args) -> None:
         n_quarks += 1
         for r in rows:
             b, whr = side_band[r["p"]]
-            if len(per_band[b]) >= cap:
+            if band_full(b):
                 continue
             per_band[b].append(r)
             per_band_extra[b]["whr"].append(whr)
             per_band_extra[b]["quark_idx"].append(qidx)
             per_band_extra[b]["side"].append(r["p"])
+            band_count[b] += 1
+        for b in BANDS:
+            if b not in finished and band_count[b] >= cap:
+                finished[b] = rows_to_arrays(per_band[b], per_band_extra[b])
+                per_band[b] = []
+                per_band_extra[b] = {}
+                print(f"[{b}] full at {band_count[b]} moves, compacted "
+                      f"({time.time()-t0:.0f}s)")
         if n_quarks % 25 == 0:
-            sizes = {b: len(per_band[b]) for b in BANDS}
-            print(f"{n_quarks} quarks, moves {sizes} ({time.time()-t0:.0f}s)")
+            print(f"{n_quarks} quarks, moves {band_count} ({time.time()-t0:.0f}s)")
 
     out: Dict[str, np.ndarray] = {"quark_names": np.asarray(quark_names)}
     for b in BANDS:
-        arrays = rows_to_arrays(per_band[b], per_band_extra[b])
+        arrays = finished.pop(b, None)
+        if arrays is None:
+            arrays = rows_to_arrays(per_band[b], per_band_extra[b])
+        per_band[b] = []
+        per_band_extra[b] = {}
         for key, arr in arrays.items():
             out[f"{b}/{key}"] = arr
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(out_path, **out)
-    sizes = {b: len(per_band[b]) for b in BANDS}
+    sizes = dict(band_count)
     print(f"wrote {out_path} moves={sizes} quarks={n_quarks} wall={time.time()-t0:.0f}s")
     print(f"counters: {dict(sorted(counters.items()))}")
 
@@ -525,8 +568,17 @@ def cmd_train(args) -> None:
     data = np.load(args.dataset, allow_pickle=False)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    net_cfg = bc_net_cfg(args.capacity)
 
-    bands = BANDS if args.band == "all" else (args.band,)
+    # Band names come from the dataset file, so v1 datasets (lt1600/...)
+    # keep training after a BANDS change.
+    file_bands = list(dict.fromkeys(k.split("/")[0] for k in data.files if "/" in k))
+    if args.band == "all":
+        bands = tuple(file_bands)
+    else:
+        if args.band not in file_bands:
+            raise SystemExit(f"band {args.band!r} not in dataset (has {file_bands})")
+        bands = (args.band,)
     summary = {}
     for b in bands:
         keys = [k[len(b) + 1 :] for k in data.files if k.startswith(f"{b}/")]
@@ -546,17 +598,19 @@ def cmd_train(args) -> None:
             seed=int(args.seed),
             val_mask=val_mask,
             device=args.device,
+            cfg=net_cfg,
         )
         path = out_dir / f"bc_{b}.pt.gz"
         save_checkpoint(
             {
                 "state_dict": {k: v.cpu() for k, v in net.state_dict().items()},
-                "cfg": BC_NET_CFG,
+                "cfg": net_cfg,
                 "step": 0,
                 "bc_meta": {
                     "band": b,
                     "moves": int(n),
                     "dataset": str(args.dataset),
+                    "capacity": args.capacity,
                     "metrics": metrics,
                     "whr_mean": float(arrays["whr"].mean()),
                     "trained_at": time.time(),
@@ -588,7 +642,10 @@ def main() -> None:
 
     tr = sub.add_parser("train", help="train one BC net per band")
     tr.add_argument("--dataset", default=str(REPO_ROOT / "data" / "human_vs" / "bc_dataset_v1.npz"))
-    tr.add_argument("--band", default="all", choices=("all",) + BANDS)
+    tr.add_argument("--band", default="all",
+                    help='band name from the dataset file, or "all"')
+    tr.add_argument("--capacity", default="small", choices=tuple(CAPACITY_OVERRIDES),
+                    help="net size: small = v1 d96/enc2/tx2, medium = d128/enc3/tx3")
     tr.add_argument("--epochs", type=int, default=4)
     tr.add_argument("--batch-size", type=int, default=256)
     tr.add_argument("--lr", type=float, default=3e-4)

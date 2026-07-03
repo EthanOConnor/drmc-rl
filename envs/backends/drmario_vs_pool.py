@@ -14,7 +14,7 @@ are not built natively — Python builds them from ``board_bytes``.
 
 import ctypes as C
 from dataclasses import dataclass
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -22,35 +22,14 @@ from envs.backends.drmario_pool import (
     GRID_H,
     GRID_W,
     MACRO_ACTIONS,
+    PLAN_STATE_DTYPE,
     DrMarioPoolError,
+    PlanSolver,
     _load_cdll,
     resolve_library_path,
 )
 
 DRMARIO_VSPOOL_PROTOCOL_VERSION = 2
-
-# Planner inputs for one parked side (mirrors DrmVsPlanState; feed to
-# drm_reach_bfs_v4 or a bit-exact equivalent such as reach_cuda).
-PLAN_STATE_DTYPE = np.dtype(
-    [
-        ("cols", "<u2", (8,)),
-        ("x", "u1"),
-        ("y_top", "u1"),
-        ("rot", "u1"),
-        ("sc", "u1"),
-        ("hv", "u1"),
-        ("hd", "u1"),
-        ("parity", "u1"),
-        ("rh", "u1"),
-        ("thr", "u1"),
-        ("_pad", "u1", (3,)),
-    ]
-)
-assert PLAN_STATE_DTYPE.itemsize == 28
-
-# Batched planner: solver(plan_states[n]) -> (n, 512) u16 pose costs
-# (0xFFFF = unreachable), bit-exact drm_reach_bfs_v4 semantics.
-PlanSolver = Callable[[np.ndarray], np.ndarray]
 
 # Outcome codes (per side).
 VS_OUTCOME_NONE = 0

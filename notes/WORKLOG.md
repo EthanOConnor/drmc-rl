@@ -1011,3 +1011,35 @@ Chronological log of work done. Format: date, actor, brief summary.
   (R1 GPU rollout planning [this entry], R4 real clear-endgame bank, R8 GPU
   search distillation, R10 full-corpus BC bands, R11 corpus-calibrated
   strength dial, etc.).
+
+## 2026-07-02 (later) — GPU search planning, match agent, staged assets
+
+- **1P pool deferred planning** (drmario-native 3eb34f1, POOL protocol v3):
+  same plan_needed/plan_state + drm_pool_inject_plans mechanism as the VS
+  pool; zero-feasible spawns auto-skip inside inject_plans so trajectories
+  stay bit-identical to plan-at-decision mode. Python runner gains
+  plan_solver (shared factory envs/backends/gpu_plan_solver.py).
+- **SearchPolicy(gpu_planner=True)**: every ply-1/ply-2 sim replan batched
+  on reach_cuda (main + ponder runners). Decision parity vs CPU verified
+  (tests/test_pool_gpu_planner.py — trajectory + 20+ real search decisions,
+  bit-identical). search_distill gains `gpu_planner` cfg knob (14 tests
+  green). Staged training/configs/vsdist2_tf3090.yaml (sims 24, frac 0.25,
+  gpu everywhere) — DO NOT LAUNCH until the vs6_tf metagame gate passes;
+  init_checkpoint is a deliberate placeholder.
+- **Live match agent** (tools/live_agent_server.py, docs/MATCH_AGENT.md):
+  `--planner cuda` = reach_cuda solve_scripts (exact costs + replay-verified
+  per-pose input scripts, per-decision CPU fallback on nonzero status);
+  `--strength` value-gap dial on the plain path (over logits, same rule as
+  eval_policy) AND the search path (over searched Q of the beam's root
+  candidates). Bench mode verified: CUDA path decisions identical to CPU,
+  in-server script re-simulation clean.
+- docs/NETWORKS_REPORT_2026-07.md: champion is 3.32M params (CNN trunk 80%;
+  candidate scorer is POINTWISE — the transformer cfg knobs are inactive
+  with the cnn encoder); capacity-bump probe d320/enc6 = 12.4M params,
+  ~10 ms @ B=32 on the 3090 (nearly free); opponent-pool forwards run on
+  CPU inside env.step — flagged as the next Python-path win.
+- Full pool/vs/search/reach regression: 90 passed.
+- In flight (subagents): real clear-endgame start bank from the corpus
+  (tools/build_clear_endgame_bank.py -> runs/start_bank/clear_endgame_v1.npz)
+  and full-corpus BC bands v2 (data/human_vs/bc_dataset_v2.npz written,
+  114 MB; training to runs/bc_opponents_v2/).
