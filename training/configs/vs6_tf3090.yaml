@@ -91,6 +91,13 @@ env:
     enabled: true
     max_pool: 12
     snapshot_every_matches: 400
+    # Gate-best protection: collapsed policies (short-match equilibrium /
+    # anchor-wr collapse) cannot enter the pool — breaks the self-poisoning
+    # spiral that killed vs6tf_03 at ~145M steps.
+    snapshot_gate:
+      enabled: true
+      min_match_len_sec: 60
+      league_wr_frac: 0.5
     device: auto
     # Full-corpus BC bands v2 (R10): 750k moves/band, d128, val top1 ~0.53.
     seed_paths:

@@ -1114,3 +1114,20 @@ Chronological log of work done. Format: date, actor, brief summary.
   doesn't depend on an interactive session. If vs6tf_04 re-collapses at the
   same region, escalate: candidate levers = snapshot_every_matches up (less
   self-mirror), entropy_coef schedule, garbage shaping anneal.
+
+## 2026-07-02 (later) — gate-best snapshot protection (in-repo, anti-collapse)
+
+- `opponent_pool.snapshot_gate` (cfg; default off, ON in vs6_tf3090):
+  maybe_snapshot admits a learner snapshot into the pool only while the
+  policy is healthy — fast trigger: rolling match_len_p50 >= 60s (the
+  topout equilibrium trips this within one window); slow backstop:
+  cumulative league-anchor win rate >= 0.5x its own best (min 50 games).
+  Blocked snapshots retry at the next hook; `vs/snapshots_blocked` metric.
+  tests/test_vs_snapshot_gate.py (2) + vs subset: 39 passed.
+- This is the structural fix for the vs6tf_03 collapse: the pool can no
+  longer be poisoned by a collapsing self, so the champion/BC opponents keep
+  punishing the exploit and the gradient pulls back. Escalation levers if a
+  gated run still degrades: anchor decision-share floor, asymmetric
+  self-topout penalty (forensics-classified), vsdist search targets.
+- Run restarted as vs6tf_05b from the pre-collapse 125M checkpoint, fresh
+  pool, gate enabled; collapse watchdog + gate-activity monitors armed.

@@ -239,6 +239,16 @@ class DrMarioVsPoolVecEnv:
         self._aux_shim: Optional[Any] = None
         self._snapshot_every = 0
         self._matches_since_snapshot = 0
+        # Gate-best snapshot protection (anti-collapse): a snapshot only
+        # enters the pool while the policy is healthy, so a collapsing
+        # learner cannot poison its own opponent distribution (the lock-in
+        # mechanism of the 2026-07-02 vs6tf_03 mutual-fast-topout collapse:
+        # match_len_p50 224s -> 14s, then the pool filled with collapsed
+        # selves and nothing punished the exploit). Blocked snapshots retry
+        # at the next hook, so recovery resumes snapshotting automatically.
+        self._snapshot_gate_cfg: Dict[str, float] = {}
+        self._league_wr_best = 0.0
+        self._snapshots_blocked = 0
         if self._opp_enabled:
             from training.envs.vs_opponents import OpponentPool, default_seed_paths, parse_league_config
 
@@ -250,6 +260,13 @@ class DrMarioVsPoolVecEnv:
             # graded against argmax BC. Default to argmax.
             self._opp_temperature = float(opp_cfg.get("opponent_temperature", 0.0))
             self._snapshot_every = int(opp_cfg.get("snapshot_every_matches", 400))
+            gate = opp_cfg.get("snapshot_gate")
+            if isinstance(gate, dict) and bool(gate.get("enabled", False)):
+                self._snapshot_gate_cfg = {
+                    "min_match_len_sec": float(gate.get("min_match_len_sec", 60.0)),
+                    "league_wr_frac": float(gate.get("league_wr_frac", 0.5)),
+                    "league_wr_min_games": float(gate.get("league_wr_min_games", 50)),
+                }
             if league.mode == "exploiter":
                 # The exploiter trains exclusively vs the listed main agents;
                 # it never freezes snapshots of itself into the pool.
@@ -567,6 +584,8 @@ class DrMarioVsPoolVecEnv:
             out["vs/draw_rate"] = float(np.mean(self._draws))
         if self._match_len_sec:
             out["vs/match_len_p50_sec"] = float(np.median(self._match_len_sec))
+        if self._snapshot_gate_cfg:
+            out["vs/snapshots_blocked"] = float(self._snapshots_blocked)
         if self._opp_pool is not None:
             out["vs/opponent_pool"] = float(len(self._opp_pool.entries))
             rates = [float(e.wins) / float(e.games) for e in self._opp_pool.entries if int(e.games) > 0]
@@ -609,8 +628,35 @@ class DrMarioVsPoolVecEnv:
             return False
         if self._matches_since_snapshot < self._snapshot_every:
             return False
+        if not self._snapshot_healthy():
+            self._snapshots_blocked += 1
+            return False
         self._opp_pool.snapshot(state_dict_getter(), dict(cfg or {}), int(step))
         self._matches_since_snapshot = 0
+        return True
+
+    def _snapshot_healthy(self) -> bool:
+        """Gate-best check: block pool admission while the policy looks
+        collapsed. Fast trigger: rolling median match length under the floor
+        (the topout equilibrium shows up here within one window). Slow
+        backstop: cumulative league-anchor win rate falling below a fraction
+        of its own best."""
+
+        gate = self._snapshot_gate_cfg
+        if not gate:
+            return True
+        m = self.get_vs_metrics()
+        ml = m.get("vs/match_len_p50_sec")
+        if ml is not None and float(ml) < gate["min_match_len_sec"]:
+            return False
+        lw = m.get("vs/league_win_rate")
+        games = sum(
+            int(t.games) for t in self._opp_pool.league_targets()
+        ) if self._opp_pool is not None else 0
+        if lw is not None and games >= gate["league_wr_min_games"]:
+            self._league_wr_best = max(self._league_wr_best, float(lw))
+            if float(lw) < gate["league_wr_frac"] * self._league_wr_best:
+                return False
         return True
 
     def skill_games_pending(self) -> int:
