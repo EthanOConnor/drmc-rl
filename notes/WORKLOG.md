@@ -1093,3 +1093,24 @@ Chronological log of work done. Format: date, actor, brief summary.
   touching). vs6tf_03 early health: pool at 7 entries, KL 0.001, value loss
   0.18; viruses/ep reads lower (~26) partly because 35% of episodes now
   START near-clear.
+
+## 2026-07-02 (late) — vs6tf_03 COLLAPSE at ~145-150M; rolled back as vs6tf_04
+
+- vs6tf_03 collapsed into mutual-fast-topout between 128M and 152M steps:
+  match_len_p50 224s -> 14s, entropy spike 1.09 -> 1.46, return_mean -> neg,
+  cur (clear-win rate) 0.08 -> ~0.01, league_wr vs best-535m 15.7% -> 4.3%
+  over the following 40M steps. Same failure family the Mac vs6 "collapse
+  watchdog + gate-best protection" guarded against — that tooling never
+  existed in this repo's loop.
+- Recovery: stopped; relaunched as vs6tf_04 from the pre-onset 125M
+  checkpoint (runs/vs6_tf/vs6tf_03/checkpoints/smdp_ppo_step125161550.pt.gz,
+  optimizer resumed) with a FRESH opponent pool (BC v2 x4 + champion —
+  post-collapse snapshots would have re-taught the exploit). Verified:
+  match_len_p50 back to ~124s, league_wr ~12%, 23.5k fps. NB resume_step
+  override didn't take (step counter restarted from 0) — cosmetic.
+- Armed a session collapse watchdog (match_len_p50 < 60s or sps stall ->
+  alert). TODO (port of the Mac idea, R-follow-up): in-repo watchdog +
+  gate-best protection in the trainer or a supervisor script, so recovery
+  doesn't depend on an interactive session. If vs6tf_04 re-collapses at the
+  same region, escalate: candidate levers = snapshot_every_matches up (less
+  self-mirror), entropy_coef schedule, garbage shaping anneal.
