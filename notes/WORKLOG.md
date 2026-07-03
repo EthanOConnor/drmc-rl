@@ -1043,3 +1043,91 @@ Chronological log of work done. Format: date, actor, brief summary.
   (tools/build_clear_endgame_bank.py -> runs/start_bank/clear_endgame_v1.npz)
   and full-corpus BC bands v2 (data/human_vs/bc_dataset_v2.npz written,
   114 MB; training to runs/bc_opponents_v2/).
+
+## 2026-07-02 (evening) — networks-report recommendations implemented
+
+- **Opponent forwards on GPU** (rec 5): OpponentPool gains `device`
+  ("auto" = cuda when available; cfg `env.opponent_pool.device`); loaded
+  entries carry `entry.device` and `_forward_opponent` moves inputs there.
+  Pool/league/BC tests: 19 passed.
+- **Cross-candidate attention** (rec 3): `candidate_cross_layers` (cfg) adds
+  pre-LN self-attention blocks over candidate tokens before the pointwise
+  dot-product scorer (`_ZeroInitCrossBlock`: zero-init output projections =
+  exact identity at init). Fully-masked rows guarded. Threaded through
+  ppo_smdp hparams + eval_policy builder.
+- **Function-preserving capacity graft** (rec 2): tools/expand_checkpoint
+  gains `graft_state_dict` (+auto-detect in expand_checkpoint_payload):
+  deeper trunk (appended resblocks conv2-zeroed; identity after ReLU) and/or
+  cross-attention layers grafted onto an existing checkpoint with
+  bit-identical outputs. Width changes rejected loudly (net2net not
+  implemented). Verified end-to-end on the champion: 3.32M -> 5.32M params
+  (enc6 + cross2), logits/value torch.equal. Gate:
+  tests/test_capacity_graft.py (4 tests).
+- Staged gated configs: training/configs/vs8_capacity_tf3090.yaml (capacity
+  step; init placeholder = grafted gated-best) after vsdist2_tf3090.yaml.
+  Ladder order: vs6_tf metagame gate -> vsdist2 -> vs8 capacity.
+
+## 2026-07-02 (night) — vs6tf_03 cutover: real endgame bank + BC v2 + fast opponent path
+
+- **Clear-endgame bank BUILT** (tools/build_clear_endgame_bank.py, R4):
+  40,000 rows (20k real near-clear positions x2 side-mirrors) from 20,029
+  quarks; full 29,176-quark scan found 259,319 candidate positions in 28 min.
+  Strata (closer-side viruses): 1-2: 14,670 / 3-5: 13,998 / 6-8: 11,332.
+  Every row load-checked in the native pool (40k/40k clean); 64 played to
+  terminal, 0 board mismatches. runs/start_bank/clear_endgame_v1.npz (1.8MB)
+  + .json meta. Tests: tests/test_clear_endgame_bank.py (fixture-based,
+  7 passed with test_start_bank). NB strata sentinels 0/1/2 here vs
+  Go-Exploit 0-3 / clear_practice 9.
+- **vs6tf_03 RESTART** (config cutover): start_bank ENABLED
+  (clear_endgame_v1, fraction 0.35 — first run where clear_win_bonus has a
+  real gradient), opponent seeds -> runs/bc_opponents_v2 (4 bands, d128,
+  val top1 ~0.53), opponent_pool.device auto (GPU), gpu_planner rollouts,
+  single-upload opponent fast path. vs6tf_02 stopped at ~55M steps (its
+  checkpoints retained under runs/vs6_tf/vs6tf_02).
+- Wave-time record (loaded box): 142 ms -> 106 (single-sync) -> 55.7
+  (single-upload). Clean numbers recorded below after restart.
+- Clean post-restart throughput (quiet box, 32 pairs): **24.6k frames/s,
+  435 dec/s** — ~2x the pre-fix clean best (13.6k/254) and ~2.8x dps vs the
+  Mac-shape 16-pair standup (12k/224). update_sec 1.2 per 4096 decisions is
+  now ~11% of wall and the next optimization target (profile before
+  touching). vs6tf_03 early health: pool at 7 entries, KL 0.001, value loss
+  0.18; viruses/ep reads lower (~26) partly because 35% of episodes now
+  START near-clear.
+
+## 2026-07-02 (late) — vs6tf_03 COLLAPSE at ~145-150M; rolled back as vs6tf_04
+
+- vs6tf_03 collapsed into mutual-fast-topout between 128M and 152M steps:
+  match_len_p50 224s -> 14s, entropy spike 1.09 -> 1.46, return_mean -> neg,
+  cur (clear-win rate) 0.08 -> ~0.01, league_wr vs best-535m 15.7% -> 4.3%
+  over the following 40M steps. Same failure family the Mac vs6 "collapse
+  watchdog + gate-best protection" guarded against — that tooling never
+  existed in this repo's loop.
+- Recovery: stopped; relaunched as vs6tf_04 from the pre-onset 125M
+  checkpoint (runs/vs6_tf/vs6tf_03/checkpoints/smdp_ppo_step125161550.pt.gz,
+  optimizer resumed) with a FRESH opponent pool (BC v2 x4 + champion —
+  post-collapse snapshots would have re-taught the exploit). Verified:
+  match_len_p50 back to ~124s, league_wr ~12%, 23.5k fps. NB resume_step
+  override didn't take (step counter restarted from 0) — cosmetic.
+- Armed a session collapse watchdog (match_len_p50 < 60s or sps stall ->
+  alert). TODO (port of the Mac idea, R-follow-up): in-repo watchdog +
+  gate-best protection in the trainer or a supervisor script, so recovery
+  doesn't depend on an interactive session. If vs6tf_04 re-collapses at the
+  same region, escalate: candidate levers = snapshot_every_matches up (less
+  self-mirror), entropy_coef schedule, garbage shaping anneal.
+
+## 2026-07-02 (later) — gate-best snapshot protection (in-repo, anti-collapse)
+
+- `opponent_pool.snapshot_gate` (cfg; default off, ON in vs6_tf3090):
+  maybe_snapshot admits a learner snapshot into the pool only while the
+  policy is healthy — fast trigger: rolling match_len_p50 >= 60s (the
+  topout equilibrium trips this within one window); slow backstop:
+  cumulative league-anchor win rate >= 0.5x its own best (min 50 games).
+  Blocked snapshots retry at the next hook; `vs/snapshots_blocked` metric.
+  tests/test_vs_snapshot_gate.py (2) + vs subset: 39 passed.
+- This is the structural fix for the vs6tf_03 collapse: the pool can no
+  longer be poisoned by a collapsing self, so the champion/BC opponents keep
+  punishing the exploit and the gradient pulls back. Escalation levers if a
+  gated run still degrades: anchor decision-share floor, asymmetric
+  self-topout penalty (forensics-classified), vsdist search targets.
+- Run restarted as vs6tf_05b from the pre-collapse 125M checkpoint, fresh
+  pool, gate enabled; collapse watchdog + gate-activity monitors armed.

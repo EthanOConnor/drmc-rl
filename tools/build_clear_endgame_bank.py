@@ -249,7 +249,7 @@ def _spec_for_row(arrays: Dict[str, np.ndarray], i: int, rng: np.random.Generato
 
 
 def pool_load_mask(
-    arrays: Dict[str, np.ndarray], *, batch_pairs: int = 64, seed: int = 0
+    arrays: Dict[str, np.ndarray], *, batch_pairs: int = 64, seed: int = 0, progress: int = 0
 ) -> np.ndarray:
     """Per-row bool mask: the row loads cleanly into the native VS pool
     (board round-trips exactly, both sides parked at a live decision with
@@ -262,7 +262,9 @@ def pool_load_mask(
     rng = np.random.default_rng(seed)
     runner = DrMarioVsPoolRunner(num_pairs=batch_pairs)
     try:
-        for lo in range(0, n, batch_pairs):
+        for batch_no, lo in enumerate(range(0, n, batch_pairs)):
+            if progress and batch_no % progress == 0:
+                print(f"pool load check: row {lo}/{n}", flush=True)
             idx = list(range(lo, min(lo + batch_pairs, n)))
             padded = idx + [idx[-1]] * (batch_pairs - len(idx))
             runner.reset(None, [_spec_for_row(arrays, i, rng) for i in padded])
@@ -299,67 +301,85 @@ def main() -> None:
     ap.add_argument("--time-budget", type=float, default=9000.0, help="scan budget in seconds (0 = unlimited)")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--validate", type=int, default=64, help="rows to play to completion (0 = skip)")
+    ap.add_argument(
+        "--prescan-cache",
+        default=None,
+        help="npz path: save pre-pool-check rows there after the scan, or resume from it if it exists",
+    )
     args = ap.parse_args()
 
-    import sqlite3
+    cache_path = Path(args.prescan_cache) if args.prescan_cache else None
+    if cache_path is not None and cache_path.is_file():
+        print(f"resuming from prescan cache {cache_path}", flush=True)
+        cached = np.load(cache_path, allow_pickle=False)
+        arrays = {k: cached[k] for k in cached.files}
+        quark_names = [str(q) for q in arrays.pop("quark_names")]
+        n_prescan = int(arrays["boards"].shape[0])
+    else:
+        import sqlite3
 
-    sys.path.insert(0, str(Path(args.fcr_root)))
-    import store  # fightcadeRatings/store.py
+        sys.path.insert(0, str(Path(args.fcr_root)))
+        import store  # fightcadeRatings/store.py
 
-    con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
-    quarks = con.execute("SELECT quarkid, sha256 FROM processed_replay ORDER BY quarkid").fetchall()
-    if args.max_quarks:
-        quarks = quarks[: int(args.max_quarks)]
+        con = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
+        quarks = con.execute("SELECT quarkid, sha256 FROM processed_replay ORDER BY quarkid").fetchall()
+        if args.max_quarks:
+            quarks = quarks[: int(args.max_quarks)]
 
-    rng = np.random.default_rng(int(args.seed))
-    positions: List[Dict[str, Any]] = []
-    pos_quark_idx: List[int] = []
-    quark_names: List[str] = []
-    t0 = time.time()
-    deadline = t0 + float(args.time_budget) if args.time_budget else None
-    for quarkid, sha in quarks:
-        if deadline is not None and time.time() > deadline:
-            print(f"time budget hit after {len(quark_names)} quarks; capping scan here")
-            break
-        try:
-            raw = store.get_blob(sha)
-        except FileNotFoundError:
-            continue
-        got = extract_clear_endgame_positions(
-            raw,
-            per_game_side=int(args.per_game_side),
-            min_virus=int(args.min_virus),
-            max_virus=int(args.max_virus),
-            rng=rng,
-        )
-        if not got:
-            continue
-        quark_names.append(str(quarkid))
-        qidx = len(quark_names) - 1
-        positions.extend(got)
-        pos_quark_idx.extend([qidx] * len(got))
-        if len(quark_names) % 100 == 0:
-            print(f"{len(quark_names)} quarks -> {len(positions)} positions ({time.time()-t0:.0f}s)")
+        rng = np.random.default_rng(int(args.seed))
+        positions: List[Dict[str, Any]] = []
+        pos_quark_idx: List[int] = []
+        quark_names = []
+        t0 = time.time()
+        deadline = t0 + float(args.time_budget) if args.time_budget else None
+        for quarkid, sha in quarks:
+            if deadline is not None and time.time() > deadline:
+                print(f"time budget hit after {len(quark_names)} quarks; capping scan here", flush=True)
+                break
+            try:
+                raw = store.get_blob(sha)
+            except FileNotFoundError:
+                continue
+            got = extract_clear_endgame_positions(
+                raw,
+                per_game_side=int(args.per_game_side),
+                min_virus=int(args.min_virus),
+                max_virus=int(args.max_virus),
+                rng=rng,
+            )
+            if not got:
+                continue
+            quark_names.append(str(quarkid))
+            qidx = len(quark_names) - 1
+            positions.extend(got)
+            pos_quark_idx.extend([qidx] * len(got))
+            if len(quark_names) % 100 == 0:
+                print(f"{len(quark_names)} quarks -> {len(positions)} positions ({time.time()-t0:.0f}s)", flush=True)
 
-    # Cap to --max-rows post-mirror rows (deterministic subsample of positions).
-    max_positions = int(args.max_rows) // 2
-    if len(positions) > max_positions:
-        keep = np.sort(rng.choice(len(positions), size=max_positions, replace=False))
-        positions = [positions[i] for i in keep]
-        pos_quark_idx = [pos_quark_idx[i] for i in keep]
-        print(f"subsampled to {len(positions)} positions (--max-rows {args.max_rows})")
+        # Cap to --max-rows post-mirror rows (deterministic subsample of positions).
+        max_positions = int(args.max_rows) // 2
+        if len(positions) > max_positions:
+            keep = np.sort(rng.choice(len(positions), size=max_positions, replace=False))
+            positions = [positions[i] for i in keep]
+            pos_quark_idx = [pos_quark_idx[i] for i in keep]
+            print(f"subsampled to {len(positions)} positions (--max-rows {args.max_rows})", flush=True)
 
-    rows, extra = mirror_expand(positions, pos_quark_idx)
-    arrays = positions_to_arrays(rows, extra)
+        rows, extra = mirror_expand(positions, pos_quark_idx)
+        arrays = positions_to_arrays(rows, extra)
+        n_prescan = len(rows)
+        if cache_path is not None and n_prescan:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(cache_path, quark_names=np.asarray(quark_names), **arrays)
+            print(f"saved prescan cache {cache_path} ({n_prescan} rows)", flush=True)
 
     # Drop position pairs where either orientation fails to load in the pool.
-    if rows:
-        ok = pool_load_mask(arrays, seed=int(args.seed))
+    if n_prescan:
+        ok = pool_load_mask(arrays, seed=int(args.seed), progress=100)
         pair_ok = ok.reshape(-1, 2).all(axis=1)
         row_keep = np.repeat(pair_ok, 2)
         dropped = int((~row_keep).sum())
         if dropped:
-            print(f"pool load check dropped {dropped} rows ({int((~pair_ok).sum())} position pairs)")
+            print(f"pool load check dropped {dropped} rows ({int((~pair_ok).sum())} position pairs)", flush=True)
         arrays = _slice_rows(arrays, row_keep)
 
     arrays["quark_names"] = np.asarray(quark_names)
@@ -369,14 +389,14 @@ def main() -> None:
     n_rows = int(arrays["boards"].shape[0])
     strata = {CLEAR_STRATA[s]: int((arrays["stratum"] == s).sum()) for s in range(len(CLEAR_STRATA))}
     print(f"wrote {out_path}: {n_rows} rows ({n_rows // 2} positions x2 mirror) "
-          f"from {len(quark_names)} quarks, strata={strata}")
+          f"from {len(quark_names)} quarks, strata={strata}", flush=True)
 
     if int(args.validate) > 0 and n_rows:
         half = max(1, int(args.validate) // 2)
         stats_orig = validate_bank(_slice_rows(arrays, np.asarray(arrays["mirror"] == 0)), n=half, seed=int(args.seed))
         stats_mirr = validate_bank(_slice_rows(arrays, np.asarray(arrays["mirror"] == 1)), n=half, seed=int(args.seed))
         print(f"validation (original rows): {stats_orig}")
-        print(f"validation (mirrored rows): {stats_mirr}")
+        print(f"validation (mirrored rows): {stats_mirr}", flush=True)
         meta = {
             "rows": n_rows,
             "quarks": len(quark_names),

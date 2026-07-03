@@ -78,7 +78,8 @@ class OpponentEntry:
     league_target: bool = False  # fixed main agent (exploiter/mixed league modes)
     wins: float = 0.0  # draws count 0.5
     games: int = 0
-    net: Any = field(default=None, repr=False)  # lazy-loaded CPU policy net
+    net: Any = field(default=None, repr=False)  # lazy-loaded policy net
+    device: str = "cpu"  # where `net` lives (pool.device at load time)
     aux_dim: int = 0
     aux_spec: str = "v1"
     candidate_max: int = 128
@@ -123,11 +124,20 @@ class OpponentPool:
         *,
         max_pool: int = 12,
         league: Optional[LeagueConfig] = None,
+        device: str = "auto",
     ) -> None:
         self.dir = Path(pool_dir)
         self.dir.mkdir(parents=True, exist_ok=True)
         self.max_pool = int(max(1, int(max_pool)))
         self.league = league if league is not None else LeagueConfig()
+        # Where frozen opponent nets forward. "auto" = cuda when available:
+        # on CPU-lean hosts the per-step opponent forwards are real serial
+        # time in env.step (docs/NETWORKS_REPORT_2026-07.md rec 5).
+        self.device = str(device)
+        if self.device == "auto":
+            import torch
+
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.entries: List[OpponentEntry] = []
         if self.manifest_path.is_file():
             self._load_manifest()
@@ -303,10 +313,12 @@ class OpponentPool:
         net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
         sd = payload.get("ema_state_dict") or payload["state_dict"]
         net.load_state_dict({k: v.detach().cpu() for k, v in sd.items()})
+        net = net.to(self.device)
         net.eval()
         for p in net.parameters():
             p.requires_grad_(False)
         entry.net = net
+        entry.device = self.device
         entry.aux_dim = int(aux_dim)
         entry.aux_spec = str(cfg.get("smdp_ppo", cfg).get("aux_spec", "v1")).strip().lower()
         entry.candidate_max = int(candidate_max)
