@@ -666,10 +666,19 @@ class DrMarioVsPoolVecEnv:
                 continue
             groups.setdefault(entry.id, []).append(gi)
             entries[entry.id] = entry
-        # Two phases so all entry-group forwards are queued on the device
-        # before the first synchronizing copy-back: one small forward per
-        # entry with an eager .cpu() each serializes the wave on GPU round
-        # trips (measured ~3 ms/group under load — the dominant wave cost).
+        if not groups:
+            return acts
+        # Fast path (all-CUDA pool): ONE host->device upload for every parked
+        # opponent side, per-entry forwards on device-side slices, GPU argmax,
+        # and one tiny device->host copy of the chosen slots. The old
+        # per-group tensor builds + copy-backs serialized the wave on GPU
+        # round trips (the dominant wave cost by far).
+        devices = {getattr(entries[eid], "device", "cpu") for eid in groups}
+        temp = float(getattr(self, "_opp_temperature", 0.0))
+        if devices == {"cuda"} and temp <= 0.0:
+            for gi, action in self._opponent_actions_cuda(groups, entries):
+                acts[gi // 2] = int(action)
+            return acts
         launched = [
             (side_idxs, self._forward_opponent_launch(entries[entry_id], side_idxs))
             for entry_id, side_idxs in groups.items()
@@ -679,6 +688,103 @@ class DrMarioVsPoolVecEnv:
             for k, gi in enumerate(side_idxs):
                 acts[gi // 2] = int(chosen[k])
         return acts
+
+    def _opponent_actions_cuda(self, groups: Dict[str, List[int]], entries: Dict[str, Any]):
+        """Deterministic opponent actions with a single H2D and a single D2H.
+
+        Numerically identical to the per-group path (same nets, same inputs,
+        same argmax over the same -1e9-masked logits); only the transfer
+        schedule differs.
+        """
+
+        import torch
+
+        from models.policy.candidate_packing import pack_feasible_candidates
+
+        order: List[int] = []
+        spans: List[Tuple[Any, int, int]] = []
+        for entry_id, side_idxs in groups.items():
+            spans.append((entries[entry_id], len(order), len(order) + len(side_idxs)))
+            order.extend(side_idxs)
+        n = len(order)
+
+        buf = self._opp_staging(n)
+        buf["obs"][:n] = self._obs[order]
+        buf["pills"][:n] = self._runner.buffers.pill_colors[order]
+        buf["previews"][:n] = self._runner.buffers.preview_colors[order]
+        kmax = buf["actions"].shape[1]
+        for k, gi in enumerate(order):
+            packed = pack_feasible_candidates(
+                self._mask[gi].astype(bool), self._cost[gi], max_candidates=kmax, sort_by_cost=True
+            )
+            buf["actions"][k] = packed.actions
+            buf["mask"][k] = packed.mask
+            buf["cost"][k] = packed.cost
+        aux_rows = [
+            (k, gi, entry)
+            for entry, lo, hi in spans
+            if int(entry.aux_dim) > 0
+            for k, gi in zip(range(lo, hi), order[lo:hi])
+        ]
+        if aux_rows:
+            for entry, lo, hi in spans:
+                if int(entry.aux_dim) > 0:
+                    shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
+                    rows = shim._build_aux_batch(
+                        buf["obs"][lo:hi], [self._infos[gi] for gi in order[lo:hi]]
+                    )
+                    buf["aux"][lo:hi, : rows.shape[1]] = rows
+
+        dev = {}
+        for name in ("obs", "pills", "previews", "actions", "cost", "mask", "aux"):
+            dev[name] = buf[f"{name}_t"][:n].to("cuda", non_blocking=True)
+
+        slots = torch.empty(n, dtype=torch.int64, device="cuda")
+        with torch.inference_mode():
+            for entry, lo, hi in spans:
+                aux = dev["aux"][lo:hi, : int(entry.aux_dim)] if int(entry.aux_dim) > 0 else None
+                logits, _values = entry.net(
+                    dev["obs"][lo:hi],
+                    dev["pills"][lo:hi],
+                    dev["previews"][lo:hi],
+                    dev["actions"][lo:hi, : int(entry.candidate_max)],
+                    dev["cost"][lo:hi, : int(entry.candidate_max)],
+                    dev["mask"][lo:hi, : int(entry.candidate_max)],
+                    aux=aux,
+                )
+                # logits are already -1e9 on masked slots -> plain argmax.
+                slots[lo:hi] = logits.argmax(dim=1)
+        slot_np = slots.cpu().numpy()  # the single synchronization point
+        # Empty mask -> slot 0 -> padding action -1 (noop-fall), as before.
+        return [
+            (gi, int(buf["actions"][k, slot_np[k]])) for k, gi in enumerate(order)
+        ]
+
+    def _opp_staging(self, n: int) -> Dict[str, Any]:
+        """Pinned staging buffers (numpy views + torch pinned tensors)."""
+
+        import torch
+
+        cur = getattr(self, "_opp_staging_buf", None)
+        kmax = 128
+        aux_max = 64
+        if cur is not None and cur["obs"].shape[0] >= n:
+            return cur
+        cap = max(self.num_sides, n)
+        C = self._obs.shape[1]
+        t = {
+            "obs_t": torch.empty((cap, C, GRID_H, GRID_W), dtype=torch.float32).pin_memory(),
+            "pills_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
+            "previews_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
+            "actions_t": torch.empty((cap, kmax), dtype=torch.int32).pin_memory(),
+            "cost_t": torch.empty((cap, kmax), dtype=torch.float32).pin_memory(),
+            "mask_t": torch.empty((cap, kmax), dtype=torch.bool).pin_memory(),
+            "aux_t": torch.zeros((cap, aux_max), dtype=torch.float32).pin_memory(),
+        }
+        buf = {k[:-2]: v.numpy() for k, v in t.items()}
+        buf.update(t)
+        self._opp_staging_buf = buf
+        return buf
 
     def _forward_opponent(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
         """Sample macro actions for `side_idxs` from one frozen opponent net."""
