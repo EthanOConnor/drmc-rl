@@ -1148,10 +1148,11 @@ class DrMarioVsShardedVecEnv:
         base, extra = divmod(int(num_pairs), shard_count)
         sizes = [base + (1 if i < extra else 0) for i in range(shard_count)]
 
-        # Each shard is itself submitted from one executor thread. Giving each
-        # native pool one worker avoids multiplying the host's thread count.
+        # Keep total native workers near the machine's CPU count rather than
+        # multiplying the full hardware count by the number of shards.
         old_workers = os.environ.get("DRMARIO_POOL_WORKERS")
-        os.environ["DRMARIO_POOL_WORKERS"] = "1"
+        workers_per_shard = max(1, int(os.cpu_count() or 1) // shard_count)
+        os.environ["DRMARIO_POOL_WORKERS"] = str(workers_per_shard)
         try:
             first = DrMarioVsPoolVecEnv(num_pairs=sizes[0], **kwargs)
             self.shards = [first]
