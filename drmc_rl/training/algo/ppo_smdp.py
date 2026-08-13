@@ -1369,11 +1369,38 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         out = np.zeros((B, self.aux_dim), dtype=np.float32)
 
-        # Batched plane features.
-        virus_mask = np.stack([ram_specs.get_virus_mask(frames[i]) for i in range(B)])
-        occ = np.stack([ram_specs.get_occupancy_mask(frames[i]) for i in range(B)])
+        # Batched plane features. Keep this equivalent to ram_to_state's
+        # single-frame helpers without crossing Python once per environment.
+        idx = ram_specs.STATE_IDX
+        if ram_specs.STATE_USE_BITPLANES:
+            colors = frames[:, list(idx.color_channels)]
+            virus_mask = frames[:, int(idx.virus_mask)] > 0.5
+            falling_idx = getattr(idx, "falling_mask", None)
+            falling = (
+                frames[:, int(falling_idx)] > 0.5
+                if falling_idx is not None
+                else np.zeros_like(virus_mask)
+            )
+            preview_idx = getattr(idx, "preview_mask", None)
+            preview = (
+                frames[:, int(preview_idx)] > 0.5
+                if preview_idx is not None
+                else np.zeros_like(virus_mask)
+            )
+            locked_idx = getattr(idx, "locked_mask", None)
+            if locked_idx is not None:
+                locked = frames[:, int(locked_idx)] > 0.5
+            else:
+                locked = (colors > 0.5).any(axis=1) & ~virus_mask & ~falling & ~preview
+            occ = locked | virus_mask | falling | preview
+            virus_planes = colors * frames[:, int(idx.virus_mask), None]
+        else:
+            virus_planes = frames[:, list(idx.virus_color_channels)]
+            virus_mask = (virus_planes > 0.1).any(axis=1)
+            static = (frames[:, list(idx.static_color_channels)] > 0.1).any(axis=1)
+            falling = (frames[:, list(idx.falling_color_channels)] > 0.1).any(axis=1)
+            occ = static | virus_mask | falling
         virus_total = virus_mask.reshape(B, -1).sum(axis=1).astype(np.float32)
-        virus_planes = np.stack([ram_specs.get_virus_color_planes(frames[i]) for i in range(B)])
         virus_by_color = (virus_planes > 0.5).reshape(B, 3, -1).sum(axis=2).astype(np.float32)
 
         def _heights(masks_b: np.ndarray) -> np.ndarray:
