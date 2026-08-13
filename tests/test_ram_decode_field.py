@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
+import drmc_rl.game.specs.ram_to_state as ram_specs
 
 
 @pytest.mark.parametrize("state_repr", ["extended", "bitplane"])

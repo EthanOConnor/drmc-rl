@@ -11,7 +11,7 @@ and randomly THIN each side's viruses down to a small count, so a full clear
 is genuinely a few good moves away. The board structure (pill debris, height)
 is preserved — closing out a near-clear on a tall board is exactly the
 endgame skill the attrition metagame never teaches. Same npz schema as the
-Go-Exploit bank, so training/envs/start_bank.StartBank loads it unchanged.
+Go-Exploit bank, so drmc_rl/training/envs/start_bank.StartBank loads it unchanged.
 
 Usage:
   python -m tools.build_clear_practice_bank \

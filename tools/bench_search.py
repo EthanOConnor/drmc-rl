@@ -22,8 +22,8 @@ import argparse
 import numpy as np
 import torch
 
-from envs.backends.drmario_pool import DrMarioPoolRunner, build_reset_spec
-from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
+from drmc_rl.envs.backends.drmario_pool import DrMarioPoolRunner, build_reset_spec
+from drmc_rl.models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
 
 _CANON_TO_RAW = (1, 0, 2)
 

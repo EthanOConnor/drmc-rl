@@ -27,7 +27,7 @@ The upstream nightly URL is:
 Run a parity/debug session:
 
 ```bash
-python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
+python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui debug \
   --backend libretro --core quicknes --rom-path "$DRMARIO_ROM_PATH" \
   --num_envs 1
 ```

@@ -13,11 +13,11 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import build_reset_spec, is_library_present
-from models.policy.candidate_packing import pack_feasible_candidates
-from training.algo.search_distill import SearchDistillConfig
-from training.utils.cfg import to_config_node
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import build_reset_spec, is_library_present
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.training.algo.search_distill import SearchDistillConfig
+from drmc_rl.training.utils.cfg import to_config_node
 
 needs_pool = pytest.mark.skipif(
     not is_library_present(),
@@ -31,7 +31,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -41,13 +41,13 @@ def _has_vspool_symbols() -> bool:
 
 needs_vspool = pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
 # ----------------------------------------------------------- obs/aux splice
 def test_splice_obs_context_layout_bit_exact() -> None:
-    from models.policy.search_policy import splice_obs_context
+    from drmc_rl.models.policy.search_policy import splice_obs_context
 
     rng = np.random.default_rng(0)
     sim = (rng.random((5, 12, 16, 8)) > 0.5).astype(np.float32)
@@ -67,7 +67,7 @@ def test_splice_obs_context_layout_bit_exact() -> None:
 
 
 def test_aux_v1_with_tail_prefix_and_tail() -> None:
-    from models.policy.search_policy import aux_v1_batch_fast, aux_v1_with_tail
+    from drmc_rl.models.policy.search_policy import aux_v1_batch_fast, aux_v1_with_tail
 
     rng = np.random.default_rng(1)
     B = 4
@@ -115,7 +115,7 @@ def test_config_validation_phase2() -> None:
 
 # ------------------------------------------------------------- net builders
 def _tiny_net(in_channels: int, board_channels: int, aux_dim: int, seed: int = 0):
-    from models.policy.candidate_policy import CandidatePlacementPolicyNet
+    from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 
     torch.manual_seed(seed)
     return CandidatePlacementPolicyNet(
@@ -135,7 +135,7 @@ def _tiny_net(in_channels: int, board_channels: int, aux_dim: int, seed: int = 0
 
 
 def _tiny_policy(*, vs: bool = False, seed: int = 0, **kw):
-    from models.policy.search_policy import SearchPolicy
+    from drmc_rl.models.policy.search_policy import SearchPolicy
     from tools.eval_policy import _make_aux_builder
 
     net = _tiny_net(20 if vs else 12, 16 if vs else 8, 72 if vs else 57, seed=0)
@@ -181,7 +181,7 @@ def _plan_root(sp, board: np.ndarray, pill_raw, prev_raw):
 # --------------------------------------------------- batched == serial search
 @needs_pool
 def test_decide_batch_matches_serial() -> None:
-    from models.policy.search_policy import SearchRequest
+    from drmc_rl.models.policy.search_policy import SearchRequest
 
     prev_repr = ram_specs.get_state_representation()
     sp_serial = _tiny_policy(beam=2, num_sim_envs=96)
@@ -253,7 +253,7 @@ def test_decide_batch_matches_serial() -> None:
 def test_decide_vs_context_changes_outputs() -> None:
     """The frozen opponent context must flow into the net evaluations."""
 
-    from models.policy.search_policy import ObsContext
+    from drmc_rl.models.policy.search_policy import ObsContext
 
     prev_repr = ram_specs.get_state_representation()
     sp = _tiny_policy(vs=True, beam=2, num_sim_envs=16)
@@ -284,7 +284,7 @@ def test_decide_vs_context_changes_outputs() -> None:
 # ------------------------------------------------------ opponent self-model
 @needs_pool
 def test_opponent_model_self_advances_and_falls_back() -> None:
-    from models.policy.search_policy import ObsContext, _build_obs_from_board
+    from drmc_rl.models.policy.search_policy import ObsContext, _build_obs_from_board
 
     prev_repr = ram_specs.get_state_representation()
     sp = _tiny_policy(vs=True, beam=2, num_sim_envs=16, opponent_model="self")
@@ -348,8 +348,8 @@ def test_act_from_search_logprob_bookkeeping(tmp_path) -> None:
     """Searched rows execute an improved-policy sample whose stored log-prob
     matches the improved distribution (PPO ratio 1 against the behavior)."""
 
-    from training.algo.search_distill import SearchDistillRunner
-    from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+    from drmc_rl.training.algo.search_distill import SearchDistillRunner
+    from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv
 
     prev_repr = ram_specs.get_state_representation()
     env = DrMarioPoolVecEnv(
@@ -477,8 +477,8 @@ def _vs_obs_cfg(tmp_path, extra_sd=None) -> object:
 
 
 def _run_vs_obs_update(tmp_path, extra_sd=None):
-    from training.algo.ppo_smdp import SMDPPPOAdapter
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.algo.ppo_smdp import SMDPPPOAdapter
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     prev_repr = ram_specs.get_state_representation()
     env = DrMarioVsPoolVecEnv(

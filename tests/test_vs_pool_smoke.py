@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 
 def _has_vspool_symbols() -> bool:
@@ -13,7 +13,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -23,7 +23,7 @@ def _has_vspool_symbols() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
@@ -42,7 +42,7 @@ def _random_feasible_actions(infos, rng) -> np.ndarray:
 
 def test_vs_pool_smoke() -> None:
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     num_pairs = 2
     env = DrMarioVsPoolVecEnv(
@@ -138,7 +138,7 @@ def test_vs_pool_runner_need_action_noop() -> None:
     """Direct runner check: -1 (noop-fall) is accepted for parked sides and
     sides that are not parked ignore their action slot."""
 
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
 
     runner = DrMarioVsPoolRunner(num_pairs=1)
     try:

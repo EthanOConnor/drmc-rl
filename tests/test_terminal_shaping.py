@@ -1,6 +1,6 @@
 import numpy as np
 
-from envs.reward_shaping import PotentialShaper
+from drmc_rl.game.rewards import PotentialShaper
 
 
 class DummyEval:

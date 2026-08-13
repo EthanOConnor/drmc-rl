@@ -7,17 +7,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = pytest.mark.skipif(
     not is_library_present(),
-    reason="native pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="native pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
 def _cuda_available() -> bool:
     try:
-        from reach_cuda import CudaReach  # noqa: F401
+        from drmc_rl.planning.cuda import CudaReach  # noqa: F401
 
         return True
     except Exception:
@@ -25,8 +25,8 @@ def _cuda_available() -> bool:
 
 
 def _make_runners(num_pairs: int):
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
-    from training.envs.drmario_vs_vec import _make_gpu_plan_solver
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
+    from drmc_rl.training.envs.drmario_vs_vec import _make_gpu_plan_solver
 
     cpu = DrMarioVsPoolRunner(num_pairs=num_pairs)
     gpu = DrMarioVsPoolRunner(num_pairs=num_pairs, plan_solver=_make_gpu_plan_solver(2048))
@@ -34,7 +34,7 @@ def _make_runners(num_pairs: int):
 
 
 def _reset_specs(num_pairs: int):
-    from envs.backends.drmario_vs_pool import build_vs_reset_spec
+    from drmc_rl.envs.backends.drmario_vs_pool import build_vs_reset_spec
 
     return [
         build_vs_reset_spec(
@@ -96,7 +96,7 @@ def test_gpu_planner_trajectory_parity():
 def test_gpu_planner_vec_env_smoke():
     """DrMarioVsPoolVecEnv(gpu_planner=True) steps and produces sane masks."""
 
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     env = DrMarioVsPoolVecEnv(num_pairs=2, level=14, speed_setting=2, gpu_planner=True)
     obs, infos = env.reset()
@@ -113,3 +113,36 @@ def test_gpu_planner_vec_env_smoke():
         obs, rew, term, trunc, infos = env.step(acts)
     env.close()
     assert saw_feasible, "GPU-planned env never produced a feasible action"
+
+
+def test_gpu_planner_survives_runner_config_projection(monkeypatch):
+    """The public YAML/factory path must not silently drop gpu_planner."""
+
+    import drmc_rl.training.envs.drmario_vs_vec as vs_vec
+    from drmc_rl.training.envs.dr_mario_vec import make_vec_env
+
+    captured = {}
+
+    class FakeVsEnv:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(vs_vec, "DrMarioVsPoolVecEnv", FakeVsEnv)
+    make_vec_env(
+        {
+            "env": {
+                "id": "drmario-vs",
+                "backend": "cpp-vs-pool",
+                "num_pairs": 2,
+                "gpu_planner": True,
+            }
+        }
+    )
+    assert captured["gpu_planner"] is True
+
+
+def test_unknown_env_config_is_rejected() -> None:
+    from drmc_rl.training.envs.dr_mario_vec import make_vec_env
+
+    with pytest.raises(ValueError, match="Unknown env configuration keys: typo"):
+        make_vec_env({"env": {"id": "Dummy-v0", "typo": True}})

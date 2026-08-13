@@ -1,6 +1,6 @@
 import numpy as np
 
-from envs.retro.fast_reach import (
+from drmc_rl.planning.fast_reach import (
     FrameState,
     HoldDir,
     ReachabilityConfig,
@@ -9,7 +9,7 @@ from envs.retro.fast_reach import (
     frame_action_from_index,
     simulate_frame,
 )
-from envs.retro.placement_actions import GRID_HEIGHT, GRID_WIDTH
+from drmc_rl.planning.placement_actions import GRID_HEIGHT, GRID_WIDTH
 
 
 def _empty_columns() -> np.ndarray:

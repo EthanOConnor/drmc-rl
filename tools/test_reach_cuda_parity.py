@@ -25,10 +25,14 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
-from envs.backends.drmario_pool import default_library_path
-from envs.retro.fast_reach import compute_speed_threshold
+from drmc_rl.envs.backends.drmario_pool import default_library_path
+from drmc_rl.planning.fast_reach import compute_speed_threshold
 from tools.annotate_replay_events import (
-    decode_field, occupancy_cols, parse_quark_events, pair_moves)
+    decode_field,
+    occupancy_cols,
+    pair_moves,
+    parse_quark_events,
+)
 
 
 def load_cpu_debug():
@@ -297,7 +301,7 @@ def main() -> int:
     args = ap.parse_args()
     rng = np.random.default_rng(args.seed)
 
-    from reach_cuda import CudaReach
+    from drmc_rl.planning.cuda import CudaReach
     ctx = CudaReach(max_batch=16384)
 
     bad = 0

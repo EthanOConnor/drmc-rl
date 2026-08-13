@@ -88,12 +88,12 @@ import torch
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
-from envs.backends.drmario_pool import default_library_path
-from envs.retro.fast_reach import compute_speed_threshold
-from envs.specs.ram_to_state import COLOR_VALUE_TO_INDEX
-from models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.envs.backends.drmario_pool import default_library_path
+from drmc_rl.planning.fast_reach import compute_speed_threshold
+from drmc_rl.game.specs.ram_to_state import COLOR_VALUE_TO_INDEX
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
-from training.utils.checkpoint_io import load_checkpoint
+from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
 PLANNER_VER = "v4"
 CHECKPOINT = REPO_ROOT / "runs" / "best_agents" / "smdp_ppo_step535164979.pt.gz"
@@ -234,7 +234,7 @@ def make_batch_planner(backend: str):
     tools/test_reach_cuda_parity).
     """
     if backend == "cuda":
-        from reach_cuda import CudaReach
+        from drmc_rl.planning.cuda import CudaReach
         ctx = CudaReach(max_batch=8192)
 
         def solve_cuda(cols, parity, thr, sc=None, hv=None, hd=None, rh=None):

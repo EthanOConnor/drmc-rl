@@ -4,12 +4,12 @@ import glob
 
 import pytest
 
-from seedlab.db import CatalogDB
+from drmc_rl.seedlab.db import CatalogDB
 
 
 def _is_pool_present() -> bool:
     try:
-        from envs.backends.drmario_pool import is_library_present
+        from drmc_rl.envs.backends.drmario_pool import is_library_present
 
         return bool(is_library_present())
     except Exception:
@@ -28,7 +28,7 @@ def _latest_checkpoint() -> str | None:
 def test_worker_machinery_end_to_end(tmp_path) -> None:
     """Queue lifecycle + aggregates with a weak baseline (clears not required)."""
 
-    from seedlab.worker import CatalogWorker
+    from drmc_rl.seedlab.worker import CatalogWorker
 
     db = CatalogDB(tmp_path / "catalog.sqlite3")
     n_seeds = 24
@@ -79,8 +79,8 @@ def test_worker_machinery_end_to_end(tmp_path) -> None:
 def test_worker_checkpoint_clears_and_verify(tmp_path) -> None:
     """Trained policy clears level 0 seeds; stored solutions replay exactly."""
 
-    from seedlab.verify import verify_and_mark
-    from seedlab.worker import CatalogWorker
+    from drmc_rl.seedlab.verify import verify_and_mark
+    from drmc_rl.seedlab.worker import CatalogWorker
 
     db = CatalogDB(tmp_path / "catalog.sqlite3")
     n_seeds = 8

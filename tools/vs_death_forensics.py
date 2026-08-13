@@ -34,9 +34,9 @@ from typing import Any, Dict, List
 import numpy as np
 import torch
 
-from envs.backends.drmario_vs_pool import GRID_H, GRID_W
+from drmc_rl.envs.backends.drmario_vs_pool import GRID_H, GRID_W
 from tools.vs_head_to_head import PlainPolicy
-from training.envs.drmario_vs_vec import NES_FPS, DrMarioVsPoolVecEnv
+from drmc_rl.training.envs.drmario_vs_vec import NES_FPS, DrMarioVsPoolVecEnv
 
 WINDOW_S = 15.0
 WINDOW_FRAMES = int(round(WINDOW_S * NES_FPS))

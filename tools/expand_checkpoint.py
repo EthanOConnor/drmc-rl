@@ -16,7 +16,7 @@ Example:
     python -m tools.expand_checkpoint \
         --in runs/best_agents/smdp_ppo_step535164979.pt.gz \
         --out runs/best_agents/smdp_ppo_step535164979_vsobs.pt.gz \
-        --config training/configs/vs_selfplay.yaml
+        --config drmc_rl/training/configs/vs_selfplay.yaml
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ from typing import Any, Dict
 import torch
 import yaml
 
-from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC
-from training.utils.checkpoint_io import load_checkpoint, save_checkpoint
+from drmc_rl.training.algo.ppo_smdp import _AUX_DIM_BY_SPEC
+from drmc_rl.training.utils.checkpoint_io import load_checkpoint, save_checkpoint
 
 _STEM_KEY = "board_trunk.stem.0.weight"
 _AUX_KEY = "aux_encoder.0.weight"

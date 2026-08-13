@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from training.envs.dr_mario_vec import DummyVecEnv, VecEnvConfig
+from drmc_rl.training.envs.dr_mario_vec import DummyVecEnv, VecEnvConfig
 
 
 def test_env_info_schema() -> None:

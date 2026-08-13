@@ -1,0 +1,56 @@
+{
+  "bottle": {
+    "base_addr": "0x0400",
+    "stride": 8
+  },
+  "falling_pill": {
+    "row_addr": "0x0306",
+    "col_addr": "0x0305",
+    "orient_addr": "0x0325",
+    "size_addr": "0x0326",
+    "left_color_addr": "0x0301",
+    "right_color_addr": "0x0302"
+  },
+  "preview_pill": {
+    "left_color_addr": "0x031A",
+    "right_color_addr": "0x031B",
+    "rotation_addr": "0x0322",
+    "size_addr": "0x0323"
+  },
+  "gravity_lock": {
+    "gravity_counter_addr": "0x0312",
+    "lock_counter_addr": "0x0307",
+    "speed_index_addr": "0x0320",
+    "speed_setting_addr": "0x030B"
+  },
+  "mode": {
+    "addr": "0x0046",
+    "playing_value": "0x04"
+  },
+  "players": {
+    "addr": "0x0727"
+  },
+  "stage_clear": {
+    "flag_addr": "0x0055",
+    "cleared_value": "0x01"
+  },
+  "ending": {
+    "addr": "0x005E",
+    "non_ending_value": "0x00"
+  },
+  "pill_counter": {
+    "addr": "0x0310"
+  },
+  "level": {
+    "addr": "0x0316"
+  },
+  "viruses": {
+    "remaining_addr": "0x0324"
+  },
+  "rng": {
+    "state_addrs": [
+      "0x0017",
+      "0x0018"
+    ]
+  }
+}

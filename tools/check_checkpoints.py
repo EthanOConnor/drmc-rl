@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Iterable, List
 
-import training.utils.checkpoint_io as checkpoint_io
+import drmc_rl.training.utils.checkpoint_io as checkpoint_io
 
 
 def _iter_checkpoints(path: Path) -> List[Path]:

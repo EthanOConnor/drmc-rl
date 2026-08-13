@@ -27,7 +27,7 @@ suboptimal clear times**. Consumers:
 - Levels 0–20 canonical ((level+1)*4 viruses, capped tables). Speed HI
   (`speed_setting=2`) is the default catalog dimension; schema carries speed
   so MED/LOW sweeps can be added.
-- `seedlab/rng.py` mirrors pill/virus generation in Python (parity-tested
+- `drmc_rl/seedlab/rng.py` mirrors pill/virus generation in Python (parity-tested
   against the engine) and computes `game_hash` = sha1(virus board ‖ pill ids)
   for dedup/cross-referencing. Census result (2026-06-10): **zero hash
   collisions** — every (level, seed) pair in levels 0–20 is a unique game,
@@ -66,7 +66,7 @@ shards cleanly across processes/machines.
 Existing `data/best_times.sqlite3` (trainer's opportunistic per-curriculum-
 level bests) stays as-is; the catalog is a separate, canonical-level artifact.
 
-## Search worker (`python -m seedlab worker`)
+## Search worker (`python -m drmc_rl.seedlab worker`)
 
 - Claims a work unit, runs every seed in it through K attempts on a
   `DrMarioPoolVecEnv` (per-env exact seeds via `seed_provider`):
@@ -82,12 +82,12 @@ level bests) stays as-is; the catalog is a separate, canonical-level artifact.
 
 ## Reporting / UI
 
-- `python -m seedlab report` — coverage per level, best/q10/q50/q90 frames,
+- `python -m drmc_rl.seedlab report` — coverage per level, best/q10/q50/q90 frames,
   fastest seeds, recent records.
-- `python -m seedlab grade --level L --frames F [--seed S]` — percentile of a
+- `python -m drmc_rl.seedlab grade --level L --frames F [--seed S]` — percentile of a
   given clear time vs the catalog (the human-assessment hook).
-- `python -m seedlab verify` — replay stored solutions, assert frame counts.
-- `python -m seedlab tui` — live dashboard (coverage bars, throughput,
+- `python -m drmc_rl.seedlab verify` — replay stored solutions, assert frame counts.
+- `python -m drmc_rl.seedlab tui` — live dashboard (coverage bars, throughput,
   record feed, active leases), `tools/vs_dashboard.py` style.
 
 ## Verification semantics

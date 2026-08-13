@@ -3,11 +3,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 torch = pytest.importorskip("torch")
 
-from models.policy.search_policy import (  # noqa: E402
+from drmc_rl.models.policy.search_policy import (  # noqa: E402
     _BLOCK_ALIVE,
     _BLOCK_INVALID,
     _BLOCK_TERMINAL,
@@ -62,8 +62,8 @@ def test_backup_terminal_and_invalid_blocks() -> None:
 
 # --------------------------------------------------------------- fast aux v1
 def test_aux_v1_fast_matches_adapter_shim() -> None:
-    import envs.specs.ram_to_state as ram_specs
-    from models.policy.search_policy import aux_v1_batch_fast
+    import drmc_rl.game.specs.ram_to_state as ram_specs
+    from drmc_rl.models.policy.search_policy import aux_v1_batch_fast
     from tools.eval_policy import _make_aux_builder
 
     ram_specs.set_state_representation("bitplane_bottle_conn_mask")
@@ -93,7 +93,7 @@ def test_aux_v1_fast_matches_adapter_shim() -> None:
 
 # ------------------------------------------------------------- decide() paths
 def _tiny_search(**kw) -> SearchPolicy:
-    from models.policy.candidate_policy import CandidatePlacementPolicyNet
+    from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 
     torch.manual_seed(0)
     net = CandidatePlacementPolicyNet(
@@ -118,7 +118,7 @@ def _root_state(sp: SearchPolicy):
     board[12:, 1] = 0xD0
     board[13:, 5] = 0xD1
     board = board.reshape(-1)
-    from envs.backends.drmario_pool import build_reset_spec
+    from drmc_rl.envs.backends.drmario_pool import build_reset_spec
 
     spec = build_reset_spec(
         level=5,

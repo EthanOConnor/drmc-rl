@@ -1,6 +1,6 @@
 # Inference-Time Search (Policy-Guided Truncated Expectimax)
 
-Status: implemented (`models/policy/search_policy.py`), including the phase-2
+Status: implemented (`drmc_rl/models/policy/search_policy.py`), including the phase-2
 dead-time ponder (`PonderingSearchPolicy`, section below). This doc is the
 design spec plus the calibration/measurement notes that fixed its free
 parameters.
@@ -37,7 +37,7 @@ commits. Beam width is the strength-dial notch.
 
 ## Simulation primitive
 
-`envs/backends/drmario_pool.py::build_reset_spec(checkpoint_enabled=True, ...)`
+`drmc_rl/envs/backends/drmario_pool.py::build_reset_spec(checkpoint_enabled=True, ...)`
 resets a pool env to an arbitrary observed state: `checkpoint_board[128]` (NES
 tile bytes, row 0 = top), `checkpoint_falling_colors` / `checkpoint_preview_colors`
 (**raw** NES colors 0=Y,1=R,2=B), `checkpoint_speed_ups`, etc. After the reset
@@ -118,7 +118,7 @@ constructor args.
 
 **1P mode** (γ=0.998-style discounted SMDP training): r̂ replicates
 `DrMarioPoolVecEnv`'s reward exactly from the pool's event counters
-(virus-clear / non-virus / adjacency bonuses from `envs/specs/
+(virus-clear / non-virus / adjacency bonuses from `drmc_rl/game/specs/
 reward_config.json` via `_RewardCfg.load()`, terminal clear bonus + time
 penalty, topout penalty). Terminal sims have no future value, so their Q is
 just the replicated terminal-inclusive reward — env semantics are the

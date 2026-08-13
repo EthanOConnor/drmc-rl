@@ -1,6 +1,6 @@
 # RAM → State Mapper (visible info only)
 
-The RAM→state mapper in `envs/specs/ram_to_state.py` decodes only *currently
+The RAM→state mapper in `drmc_rl/game/specs/ram_to_state.py` decodes only *currently
 visible* gameplay information:
 - Bottle tiles (viruses + locked pill halves)
 - Current falling pill pose + colors (from RAM registers)
@@ -8,7 +8,7 @@ visible* gameplay information:
 - Optional scalar broadcasts (in the higher-dimensional representations)
 
 Representation selection
-- Set via `DrMarioRetroEnv(..., state_repr="...")` or `envs.specs.ram_to_state.set_state_representation(...)`.
+- Set via `DrMarioLibretroEnv(..., state_repr="...")` or `drmc_rl.game.specs.ram_to_state.set_state_representation(...)`.
 - Supported modes (all emit `(C,16,8)` float32 per frame):
   - `extended` (16ch): explicit virus/static/falling by color + scalars
   - `bitplane_bottle` (4ch): bottle-only type-blind colors + virus mask

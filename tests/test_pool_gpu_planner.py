@@ -10,17 +10,17 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = pytest.mark.skipif(
     not is_library_present(),
-    reason="native pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="native pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
 def _cuda_available() -> bool:
     try:
-        from reach_cuda import CudaReach  # noqa: F401
+        from drmc_rl.planning.cuda import CudaReach  # noqa: F401
 
         return True
     except Exception:
@@ -28,8 +28,8 @@ def _cuda_available() -> bool:
 
 
 def _make_runner(num_envs: int, gpu: bool):
-    from envs.backends.drmario_pool import DrMarioPoolRunner
-    from envs.backends.gpu_plan_solver import make_gpu_plan_solver
+    from drmc_rl.envs.backends.drmario_pool import DrMarioPoolRunner
+    from drmc_rl.envs.backends.gpu_plan_solver import make_gpu_plan_solver
 
     return DrMarioPoolRunner(
         num_envs=num_envs,
@@ -41,7 +41,7 @@ def _make_runner(num_envs: int, gpu: bool):
 
 
 def _reset_specs(num_envs: int):
-    from envs.backends.drmario_pool import build_reset_spec
+    from drmc_rl.envs.backends.drmario_pool import build_reset_spec
 
     return [
         build_reset_spec(
@@ -103,7 +103,7 @@ def test_search_policy_gpu_planner_decision_parity():
     if not Path(CHAMPION).is_file():
         pytest.skip("champion checkpoint not staged")
 
-    from models.policy.search_policy import SearchPolicy
+    from drmc_rl.models.policy.search_policy import SearchPolicy
 
     kw = dict(beam=4, num_sim_envs=16, deadline_ms=10_000.0, seed=0, warmup=False)
     sp_cpu = SearchPolicy(CHAMPION, gpu_planner=False, **kw)
@@ -112,7 +112,7 @@ def test_search_policy_gpu_planner_decision_parity():
     # Drive real states from a CPU-planned pool and compare decisions.
     env = _make_runner(4, gpu=False)
     env.reset(None, _reset_specs(4))
-    rng = np.random.default_rng(3)
+    np.random.default_rng(3)
     compared = 0
     for _ in range(12):
         buf = env.buffers

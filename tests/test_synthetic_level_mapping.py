@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from envs.retro.drmario_env import DrMarioRetroEnv
+from drmc_rl.envs.libretro.gym_env import DrMarioLibretroEnv
 
 
 def test_negative_level_task_mapping_matches_and_viruses() -> None:
-    env = DrMarioRetroEnv(obs_mode="state", backend="mock", auto_start=False)
+    env = DrMarioLibretroEnv(obs_mode="state", backend="mock", auto_start=False)
 
     env.level = -15
     env._configure_task_from_level()

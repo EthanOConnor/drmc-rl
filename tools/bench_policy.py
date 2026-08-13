@@ -23,9 +23,9 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     torch = None  # type: ignore
 
-from models.policy.candidate_packing import pack_feasible_candidates
-from models.policy.candidate_policy import CandidatePlacementPolicyNet
-from models.policy.placement_heads import PlacementPolicyNet
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
+from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
 
 GRID_H = 16
 GRID_W = 8
@@ -80,7 +80,7 @@ def _preview_colors(info: Dict[str, Any]) -> np.ndarray:
 def _collect_cpp_pool_batch(
     batch_size: int, seed: int, *, state_repr: str
 ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
-    from training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
+    from drmc_rl.training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
 
     cfg = VecEnvConfig(
         id="DrMarioPlacementEnv-v0",

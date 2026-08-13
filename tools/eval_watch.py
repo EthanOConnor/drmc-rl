@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from tools.eval_policy import _build_net_from_cfg, _make_aux_builder, evaluate_level
-from training.utils.checkpoint_io import load_checkpoint
+from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
 _CHANNELS = {
     "bitplane_bottle": 4,

@@ -247,7 +247,7 @@ def validate_bank(arrays: Dict[str, np.ndarray], *, n: int = 64, seed: int = 0) 
     """Load `n` random bank rows into the native VS pool and play each pair to
     completion with random feasible actions. Raises on pool errors."""
 
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
 
     rng = np.random.default_rng(seed)
     total = arrays["boards"].shape[0]

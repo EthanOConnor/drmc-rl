@@ -4,7 +4,7 @@
 infrastructure: resumable round-robin tournaments, a sqlite results store,
 Wilson/Elo reporting, and a sequential SPRT gate for "is change X better?"
 questions. Matches run on the native VS pool
-(`training/envs/drmario_vs_vec.DrMarioVsPoolVecEnv`) at level 14 / speed HI by
+(`drmc_rl/training/envs/drmario_vs_vec.DrMarioVsPoolVecEnv`) at level 14 / speed HI by
 default, reusing the head-to-head machinery from `tools/vs_head_to_head.py`.
 
 ## Defining a roster

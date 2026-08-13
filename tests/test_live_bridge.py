@@ -4,7 +4,7 @@ Simulates the Lua side in Python: synthesizes state.jsonl lines from a
 DrMarioPoolVecEnv reset (board bytes + spawn state), runs the server over the
 file IPC, and asserts that plans arrive with valid frame-indexed button
 scripts. Also unit-tests the 18-action -> NES-button mapping against the
-table in game_engine/DrMarioPool.cpp (buttons_mask_from_reach_action).
+table in vendor/drmario_native/DrMarioPool.cpp (buttons_mask_from_reach_action).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import json
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present as pool_lib_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present as pool_lib_present
 
 # Transcribed from DrMarioPool::buttons_mask_from_reach_action:
 #   idx = hold_dir*6 + hold_down*3 + rot
@@ -43,7 +43,7 @@ def test_action_to_buttons_matches_pool_table() -> None:
     reason="cpp-pool library missing (build with: python -m tools.build_drmario_pool)",
 )
 def test_live_bridge_plan_roundtrip(tmp_path) -> None:
-    from envs.retro.fast_reach import (
+    from drmc_rl.planning.fast_reach import (
         FrameState,
         HoldDir,
         compute_speed_threshold,
@@ -55,7 +55,7 @@ def test_live_bridge_plan_roundtrip(tmp_path) -> None:
         cols_from_field,
         field_from_hex,
     )
-    from training.envs.drmario_pool_vec import DrMarioPoolVecEnv, _canonical_to_raw_color
+    from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv, _canonical_to_raw_color
 
     # Take one real decision-time snapshot from the pool backend (light: 1 env).
     env = DrMarioPoolVecEnv(

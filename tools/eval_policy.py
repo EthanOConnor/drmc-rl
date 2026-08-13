@@ -22,15 +22,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
-
 import torch
 
-from envs.specs import ram_to_state as ram_specs  # noqa: F401  (layout side effects)
-from models.policy.candidate_packing import pack_feasible_candidates
-from models.policy.candidate_policy import CandidatePlacementPolicyNet
-from models.policy.placement_dist import MaskedPlacementDist
-from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
-from training.utils.checkpoint_io import load_checkpoint
+from drmc_rl.game.specs import ram_to_state as ram_specs  # noqa: F401  (layout side effects)
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
+from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
+from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
 
 def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
@@ -39,7 +38,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     def g(key: str, default):
         return sp.get(key, default)
 
-    from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC
+    from drmc_rl.training.algo.ppo_smdp import _AUX_DIM_BY_SPEC
 
     aux_dim = int(_AUX_DIM_BY_SPEC.get(str(g("aux_spec", "none")).strip().lower(), 0))
     if str(g("policy_type", "candidate")).lower() != "candidate":
@@ -69,7 +68,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
 def _make_aux_builder(aux_dim: int):
     if aux_dim <= 0:
         return None
-    from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
+    from drmc_rl.training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
 
     shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
     spec = next((s for s, d in _AUX_DIM_BY_SPEC.items() if int(d) == int(aux_dim)), "v1")
@@ -118,7 +117,7 @@ def evaluate_level(
         actions = np.zeros(B, dtype=np.int64)
 
         if search is not None:
-            # Depth-2 search per env (models/policy/search_policy.py). The
+            # Depth-2 search per env (drmc_rl/models/policy/search_policy.py). The
             # search takes raw NES colors; pool infos are canonical for the
             # falling pill (swap 0<->1) and raw already for the preview dict.
             base_speed_ups = max(0, level - 20)
@@ -278,7 +277,7 @@ def main() -> None:
     if args.search is not None:
         if args.policy != "checkpoint" or not args.checkpoint:
             raise SystemExit("--search requires --policy checkpoint and --checkpoint")
-        from models.policy.search_policy import SearchPolicy
+        from drmc_rl.models.policy.search_policy import SearchPolicy
 
         search = SearchPolicy(
             args.checkpoint,

@@ -6,10 +6,10 @@ import gymnasium as gym
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.retro.placement_env import DrMarioPlacementEnv
-from envs.retro.placement_planner import SpawnReachability
-from envs.retro.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.libretro.placement_env import DrMarioPlacementEnv
+from drmc_rl.planning.planner import SpawnReachability
+from drmc_rl.planning.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS
 
 
 class _TrivialPlanner:

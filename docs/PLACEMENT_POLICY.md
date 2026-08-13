@@ -14,7 +14,7 @@ The placement policy system replaces per-frame REINFORCE training with:
 
 ### 1. Policy Heads
 
-Three interchangeable architectures are provided in `models/policy/placement_heads.py`:
+Three interchangeable architectures are provided in `drmc_rl/models/policy/placement_heads.py`:
 
 #### A. Dense Conv Heatmaps (baseline)
 ```python
@@ -59,9 +59,9 @@ smdp_ppo:
 ```
 
 Implementation:
-- `models/policy/candidate_packing.py` packs `placements/feasible_mask` +
+- `drmc_rl/models/policy/candidate_packing.py` packs `placements/feasible_mask` +
   `placements/cost_to_lock`/`placements/costs` into fixed-size candidate arrays.
-- `models/policy/candidate_policy.py` scores candidates and outputs `[B, K]` logits.
+- `drmc_rl/models/policy/candidate_policy.py` scores candidates and outputs `[B, K]` logits.
 
 Heatmap heads (dense / shift_score / factorized):
 - Accept `[B, C, 16, 8]` board state
@@ -77,7 +77,7 @@ Candidate-scoring head:
 
 ### 2. Masked Distribution
 
-`models/policy/placement_dist.py` provides:
+`drmc_rl/models/policy/placement_dist.py` provides:
 - `MaskedPlacementDist`: Categorical distribution over 512 placement actions
 - Invalid action masking (sets logits to -∞)
 - Safe softmax with numerical guards
@@ -85,7 +85,7 @@ Candidate-scoring head:
 
 ### 3. Decision-Level Rollout Buffer
 
-`training/rollout/decision_buffer.py` stores:
+`drmc_rl/training/rollout/decision_buffer.py` stores:
 - One transition per **decision** (not frame)
 - Each decision includes:
   - `obs`: Board state at decision time
@@ -100,7 +100,7 @@ Candidate-scoring head:
 
 ### 4. SMDP-PPO Trainer
 
-`training/algo/ppo_smdp.py` implements:
+`drmc_rl/training/algo/ppo_smdp.py` implements:
 - PPO with SMDP discounting
 - GAE with Γ_t = γ^τ_t
 - Entropy annealing
@@ -134,8 +134,8 @@ L_total = L_policy + β_v * L_value - β_h * H[π(·|s_t)]
 ### Quick Start
 
 ```python
-from models.policy.placement_heads import PlacementPolicyNet
-from models.policy.placement_dist import MaskedPlacementDist
+from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
+from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 
 # Create policy
 net = PlacementPolicyNet(
@@ -160,28 +160,20 @@ action_idx, log_prob = dist.sample()
 ### Training
 
 ```bash
-# Fast training (recommended; default `training/configs/smdp_ppo.yaml` uses
+# Fast training (recommended; default `drmc_rl/training/configs/smdp_ppo.yaml` uses
 # `cpp-pool` + candidate scoring)
-python -m training.run --cfg training/configs/smdp_ppo.yaml --ui tui \
+python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui tui \
   --backend cpp-pool --num_envs 16
 
-# Annotated candidate-scoring policy experiment
-python -m training.run --cfg training/configs/smdp_ppo_candidate.yaml --ui headless \
-  --backend cpp-pool
-
-# Dense heatmap baseline
-python -m training.run --cfg training/configs/smdp_ppo_heatmap.yaml --ui headless \
-  --backend cpp-pool
-
 # Emulator parity/debugging (requires a libretro core + ROM)
-python -m training.run --cfg training/configs/smdp_ppo.yaml --ui headless \
+python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui headless \
   --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes
 ```
 
 Interactive board visualization + speed control:
 
 ```bash
-python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
+python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui debug \
   --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
   --env-id DrMarioPlacementEnv-v0 --num_envs 1
 ```
@@ -196,12 +188,9 @@ python -m training.run --cfg training/configs/smdp_ppo.yaml --ui debug \
 - **Time goals after mastery**: once a level is mastered (perfect streak long enough for `time_budget_mastery_sigmas/time_budget_mastery_target`), the curriculum enables `task_max_frames` / `task_max_spawns` budgets and tightens them gradually. Budgets are “soft”: over-budget clears terminate normally but don’t count as `goal_achieved` and get a negative shaped terminal bonus.
 - **Best-known times DB**: clears are recorded (best per `(level, rng_seed)`) in `data/best_times.sqlite3` (override via `DRMARIO_BEST_TIMES_DB`). Use `python tools/report_best_times.py` to inspect per-level distributions.
 
-Troubleshooting:
-- If a crash/forced termination leaves orphaned `drmario_engine` processes, `training.run` writes pidfiles under `$logdir/engine_pids` and reaps them on exit.
-
 ### Configuration
 
-Default candidate-scoring config in `training/configs/smdp_ppo.yaml`:
+Default candidate-scoring config in `drmc_rl/training/configs/smdp_ppo.yaml`:
 
 ```yaml
 smdp_ppo:
@@ -271,9 +260,9 @@ Track these during training:
 
 ### Placement Wrapper
 
-The current `cpp-pool` vector env (`training/envs/drmario_pool_vec.py`) provides
+The current `cpp-pool` vector env (`drmc_rl/training/envs/drmario_pool_vec.py`) provides
 the same placement contract directly from the native pool. The emulator wrapper
-(`envs/retro/placement_env.py`) provides the same contract for parity/debug runs:
+(`drmc_rl/envs/libretro/placement_env.py`) provides the same contract for parity/debug runs:
 - `info["placements/feasible_mask"]`: Boolean mask [4, 16, 8]
 - `info["placements/legal_mask"]`: Boolean mask [4, 16, 8] (in-bounds-only)
 - `info["placements/cost_to_lock"]`: UInt16 costs [4, 16, 8] for `cpp-pool` (`0xFFFF` sentinel)
@@ -336,7 +325,7 @@ else:
 ## Curriculum Learning
 
 The unified runner supports a simple scripted curriculum (enabled in
-`training/configs/smdp_ppo.yaml` by default):
+`drmc_rl/training/configs/smdp_ppo.yaml` by default):
 
 - **Synthetic levels**: `-15..0` are represented by setting `env.level` negative.
 - **Match-count staging** (0 viruses; applied by patching the bottle RAM at reset time):
@@ -357,7 +346,7 @@ The unified runner supports a simple scripted curriculum (enabled in
 Disable the curriculum with:
 
 ```bash
-python -m training.run --cfg training/configs/smdp_ppo.yaml --override curriculum.enabled=false
+python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --override curriculum.enabled=false
 ```
 
 ## Troubleshooting

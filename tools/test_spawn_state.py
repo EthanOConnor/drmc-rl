@@ -23,7 +23,7 @@ from pathlib import Path
 
 import numpy as np
 
-from envs.retro.fast_reach import compute_speed_threshold
+from drmc_rl.planning.fast_reach import compute_speed_threshold
 from tools.annotate_replay_events import (
     BTN_A,
     BTN_B,

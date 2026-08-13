@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Plot curriculum success metrics vs steps per level from a training run.
 
-This script is designed for the `training.run` JSONL log format:
+This script is designed for the `drmc_rl.training.run` JSONL log format:
   - run directory contains `metrics.jsonl.gz` written by `training/diagnostics/logger.py`
   - curriculum-enabled runs log:
       - `curriculum/current_level` (int-like)
@@ -17,7 +17,6 @@ import argparse
 import gzip
 import io
 import json
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path

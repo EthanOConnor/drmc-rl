@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # Allow running as a script from repo root without installation.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -424,7 +424,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             child.destroy()
         except Exception:
             pass
-    app = LivePlotApp(
+    LivePlotApp(
         root,
         metrics_path=metrics_path,
         default_metric=metric,

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from envs.retro.drmario_env import DrMarioRetroEnv
-from envs.specs import ram_to_state as ram_specs
-from envs.state_core import build_state
+from drmc_rl.envs.libretro.gym_env import DrMarioLibretroEnv
+from drmc_rl.game.specs import ram_to_state as ram_specs
+from drmc_rl.game.state import build_state
 
 
-def _make_env_with_bottle(bottle: bytes) -> DrMarioRetroEnv:
+def _make_env_with_bottle(bottle: bytes) -> DrMarioLibretroEnv:
     assert len(bottle) == 16 * 8
-    env = DrMarioRetroEnv(obs_mode="state", backend="mock", auto_start=False)
+    env = DrMarioLibretroEnv(obs_mode="state", backend="mock", auto_start=False)
     ram = bytearray([0x00] * 0x800)
     ram[0x0400 : 0x0400 + len(bottle)] = bottle
     env._state_cache = build_state(

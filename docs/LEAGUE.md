@@ -1,9 +1,9 @@
 # League Roles for VS Self-Play
 
-League-depth training (item 4 in `docs/ARCHITECTURE_REVIEW_2026-06.md`):
+League training extends the frozen-opponent pool with explicit roles:
 exploiter agents vs the champion, not just PFSP over the run's own history.
 Config-gated under `env.opponent_pool.league`; default off — the stock PFSP
-pool (`training/envs/vs_opponents.py`) is unchanged.
+pool (`drmc_rl/training/envs/vs_opponents.py`) is unchanged.
 
 ## Config
 

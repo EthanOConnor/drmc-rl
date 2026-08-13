@@ -5,6 +5,7 @@ __pycache__/
 *.swo
 *.swx
 .venv/
+.uv-cache/
 .venv-*/
 venv/
 .env

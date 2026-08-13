@@ -12,9 +12,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
-from training.envs.vs_opponents import (
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
+from drmc_rl.training.envs.vs_opponents import (
     LeagueConfig,
     OpponentPool,
     parse_league_config,
@@ -29,7 +29,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -136,7 +136,7 @@ def test_exploiter_pfsp_weighting_over_targets(tmp_path) -> None:
 # ------------------------------------------------------------------ manifest
 def test_manifest_roundtrip_with_league_state(tmp_path) -> None:
     torch = pytest.importorskip("torch")
-    from training.utils.checkpoint_io import save_checkpoint
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     target_ckpt = tmp_path / "champ_step530.pt.gz"
     save_checkpoint({"state_dict": {"w": torch.zeros(1)}, "cfg": {}, "step": 530}, target_ckpt)
@@ -169,7 +169,7 @@ def test_manifest_roundtrip_with_league_state(tmp_path) -> None:
 # ------------------------------------------------------------------ env integration
 @pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 @pytest.mark.skipif(
     not CHAMPION_TARGET.is_file(),
@@ -178,7 +178,7 @@ def test_manifest_roundtrip_with_league_state(tmp_path) -> None:
 def test_exploiter_env_smoke_vs_real_champion(tmp_path) -> None:
     pytest.importorskip("torch")
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     num_pairs = 2
     env = DrMarioVsPoolVecEnv(

@@ -105,7 +105,7 @@ def _print_confidence_table(*, targets: List[float], sigmas_list: List[float]) -
         "near_min_rate",
         "perfect_n",
     )
-    print(" ".join(f\"{h:>14}\" for h in headers))
+    print(" ".join(f"{h:>14}" for h in headers))
     for t in targets:
         for s in sigmas_list:
             near_n = _confidence_window_size(target=float(t), sigmas=float(s))
@@ -113,12 +113,12 @@ def _print_confidence_table(*, targets: List[float], sigmas_list: List[float]) -
             near_min_rate = float(near_k) / float(near_n) if near_n > 0 else 0.0
             perfect_n = _perfect_streak_window_size(target=float(t), sigmas=float(s))
             print(
-                f\"{float(t):>14.4f}\"
-                f\"{float(s):>14.2f}\"
-                f\"{int(near_n):>14}\"
-                f\"{int(near_k):>14}\"
-                f\"{near_min_rate:>14.4f}\"
-                f\"{int(perfect_n):>14}\"
+                f"{float(t):>14.4f}"
+                f"{float(s):>14.2f}"
+                f"{int(near_n):>14}"
+                f"{int(near_k):>14}"
+                f"{near_min_rate:>14.4f}"
+                f"{int(perfect_n):>14}"
             )
 
 

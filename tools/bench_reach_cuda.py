@@ -52,7 +52,7 @@ def main() -> None:
           f"({1000/cpu_rate:.2f} ms/solve; 4-core ~{4*cpu_rate:.0f}/s)")
 
     # --- GPU ---
-    from reach_cuda import CudaReach
+    from drmc_rl.planning.cuda import CudaReach
     ctx = CudaReach(max_batch=65536)
     _ = ctx.solve_costs(cols[:256], parity[:256], thr[:256])  # warm/JIT
 

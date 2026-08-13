@@ -53,9 +53,8 @@ try:
 except ImportError:  # pragma: no cover - runtime guard
     RICH_AVAILABLE = False
 
-from game_engine.engine_shm import SHM_SIZE, open_shared_memory
-from training.ui.board_viewer import BoardState, parse_board_bytes, render_board_panel
-
+from drmc_rl.native.shm import SHM_SIZE, open_shared_memory
+from drmc_rl.training.ui.board_viewer import BoardState, parse_board_bytes, render_board_panel
 
 MODE_DEMO = 0x00
 MODE_PLAYING = 0x04
@@ -582,7 +581,7 @@ def _bench_tui_only_replay(max_frames: int, render_ui: bool) -> Tuple[float, int
 
     board = bytearray(transcript.initial_board)
     frame_count = 0
-    last_render = time.perf_counter()
+    time.perf_counter()
 
     renders = 0
 
@@ -600,14 +599,13 @@ def _bench_tui_only_replay(max_frames: int, render_ui: bool) -> Tuple[float, int
                     for idx, _old, new in fs.board_changes:
                         board[idx] = new
 
-                now = time.perf_counter()
+                time.perf_counter()
                 # Render *every frame* to measure the full UI pipeline throughput.
                 board_state = BoardState(board=parse_board_bytes(memoryview(board)), frame_count=frame_count)
                 board_panel = render_board_panel(board_state, title="TUI-only replay (bench)")
                 stats_panel = Panel(Text(f"frame={frame_count}", style="dim"), border_style="green")
                 bench_console.print(_render_layout(board_panel, stats_panel, dummy_ui))
                 renders += 1
-                last_render = now
     else:
         for fs in transcript.frames:
             frame_count = fs.frame
@@ -929,7 +927,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument(
         "--engine",
         type=Path,
-        default=Path("game_engine/drmario_engine"),
+        default=Path("vendor/drmario_native/drmario_engine"),
         help="Path to engine binary",
     )
     parser.add_argument(
@@ -972,7 +970,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     repo_root = Path(__file__).parent.parent
     engine_path = (repo_root / args.engine).resolve()
     if not engine_path.exists():
-        print(f"Engine not found at {engine_path}. Build with: make -C game_engine")
+        print(f"Engine not found at {engine_path}. Build with: make -C vendor/drmario_native")
         return 1
 
     if args.benchmark:

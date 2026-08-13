@@ -7,19 +7,19 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = pytest.mark.skipif(
     not is_library_present(),
-    reason="native pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="native pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fc_v2_events_small.jsonl"
 
 
 def _fixture_rows():
-    from tools.train_bc_opponent import extract_moves_from_events
     from tools.annotate_replay_events import make_batch_planner
+    from tools.train_bc_opponent import extract_moves_from_events
 
     raw = FIXTURE.read_bytes()
     planner = make_batch_planner("cpu")
@@ -87,8 +87,8 @@ def test_bc_training_loss_decreases():
 
 def test_bc_checkpoint_loads_through_opponent_pool(tmp_path):
     from tools.train_bc_opponent import BC_NET_CFG, build_bc_net
-    from training.envs.vs_opponents import OpponentPool
-    from training.utils.checkpoint_io import save_checkpoint
+    from drmc_rl.training.envs.vs_opponents import OpponentPool
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     net = build_bc_net()
     ckpt = tmp_path / "bc_test_band.pt.gz"

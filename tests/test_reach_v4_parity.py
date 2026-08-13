@@ -14,7 +14,7 @@ import ctypes as C
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import default_library_path
+from drmc_rl.envs.backends.drmario_pool import default_library_path
 
 GRID_W, GRID_H = 8, 16
 SCRIPT_CAP = 512 * 2048

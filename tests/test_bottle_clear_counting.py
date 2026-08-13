@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from envs.specs import ram_to_state as r2s
+from drmc_rl.game.specs import ram_to_state as r2s
 
 
 def test_count_tile_removals_counts_virus_and_pill() -> None:

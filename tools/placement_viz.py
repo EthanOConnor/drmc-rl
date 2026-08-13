@@ -9,8 +9,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from envs.retro.placement_actions import PLACEMENT_EDGES
-from envs.retro.placement_planner import BoardState, PillSnapshot, PlacementPlanner
+from drmc_rl.planning.placement_actions import PLACEMENT_EDGES
+from drmc_rl.planning.planner import BoardState, PillSnapshot, PlacementPlanner
 
 ARROW_CHARS = {"U": "^", "D": "v", "L": "<", "R": ">"}
 

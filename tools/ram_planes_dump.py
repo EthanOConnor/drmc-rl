@@ -3,20 +3,21 @@
 
 Usage:
   python tools/ram_planes_dump.py --ram path/to/ram.bin \
-      [--offsets envs/specs/ram_offsets.json]
+      [--offsets drmc_rl/game/specs/ram_offsets.json]
 
 The RAM snapshot must be exactly 0x800 bytes (CPU RAM $0000-$07FF).
 """
-import argparse, json, sys, os
-import numpy as np
+import argparse
+import json
+import sys
 
-import envs.specs.ram_to_state as ram_specs
+import drmc_rl.game.specs.ram_to_state as ram_specs
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ram', required=True, help='Path to 0x800-byte RAM file')
-    ap.add_argument('--offsets', default='envs/specs/ram_offsets.json', help='Offsets JSON')
+    ap.add_argument('--offsets', default='drmc_rl/game/specs/ram_offsets.json', help='Offsets JSON')
     ap.add_argument('--state-repr', choices=['extended', 'bitplane'], default='extended')
     args = ap.parse_args()
 

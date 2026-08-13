@@ -1,8 +1,13 @@
 import numpy as np
 
-from envs.retro.fast_reach import Rotation
-from envs.retro.placement_planner import BoardState, PillSnapshot, PlacementPlanner
-from envs.retro.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS, TOTAL_ACTIONS, invalid_boundary_mask
+from drmc_rl.planning.fast_reach import Rotation
+from drmc_rl.planning.planner import BoardState, PillSnapshot, PlacementPlanner
+from drmc_rl.planning.placement_space import (
+    GRID_HEIGHT,
+    GRID_WIDTH,
+    ORIENTATIONS,
+    invalid_boundary_mask,
+)
 
 
 def test_invalid_boundary_mask_shape_and_count():

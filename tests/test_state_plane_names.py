@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
+import drmc_rl.game.specs.ram_to_state as ram_specs
 
 
 @pytest.mark.parametrize(

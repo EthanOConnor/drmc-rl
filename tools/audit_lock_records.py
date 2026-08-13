@@ -32,10 +32,16 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
-from envs.retro.fast_reach import compute_speed_threshold
+from drmc_rl.planning.fast_reach import compute_speed_threshold
 from tools.annotate_replay_events import (
-    GRID_H, GRID_W, decode_field, derive_lock_poses, occupancy_cols,
-    pair_moves, parse_quark_events)
+    GRID_H,
+    GRID_W,
+    decode_field,
+    derive_lock_poses,
+    occupancy_cols,
+    pair_moves,
+    parse_quark_events,
+)
 
 
 def main() -> int:
@@ -61,7 +67,7 @@ def main() -> int:
 
     ctx = None
     if args.planner == "cuda":
-        from reach_cuda import CudaReach
+        from drmc_rl.planning.cuda import CudaReach
         ctx = CudaReach(max_batch=8192)
 
     counters: dict = collections.defaultdict(int)

@@ -1,14 +1,14 @@
+import gymnasium as gym
 import numpy as np
 
-from envs.retro.intent_wrapper import DrMarioIntentEnv, IntentAction
-from envs.retro.register_env import register_env_id
-import gymnasium as gym
+from drmc_rl.envs.libretro.intent_env import DrMarioIntentEnv, IntentAction
+from drmc_rl.envs.libretro.registration import register_env_id
 
 
 def make_mock_env():
     register_env_id()
     env = gym.make(
-        "DrMarioRetroEnv-v0",
+        "DrMarioLibretroEnv-v0",
         obs_mode="state",
         backend="mock",
         include_risk_tau=False,

@@ -46,7 +46,7 @@ Modes:
   --bench N       measure spawn->plan-written latency over N synthetic spawns
 
 Search: ``--search [BEAM]`` replaces the plain argmax with the depth-2
-policy-guided search (`models/policy/search_policy.SearchPolicy`,
+policy-guided search (`drmc_rl/models/policy/search_policy.SearchPolicy`,
 docs/SEARCH_DESIGN.md). The search deadline (``--search-deadline-ms``,
 default 60) must leave room inside the plan margin (6 frames ~= 100 ms) for
 the v1 planner + script generation; verify with ``--bench``. Everything else
@@ -83,14 +83,14 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-from envs.backends.drmario_pool import default_library_path as pool_library_path
-from envs.retro.fast_reach import (
+from drmc_rl.envs.backends.drmario_pool import default_library_path as pool_library_path
+from drmc_rl.planning.fast_reach import (
     FrameState,
     HoldDir,
     compute_speed_threshold,
     simulate_frame,
 )
-from envs.retro.reach_native import NativeReachabilityRunner
+from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.annotate_replay_events import POSE_TO_ACTION, build_obs, canonical_color
 
 GRID_W, GRID_H = 8, 16
@@ -226,7 +226,7 @@ class LiveAgentServer:
         self._cuda_reach = None
         self._max_frames = int(max_frames)
         if self.planner == "cuda":
-            from reach_cuda import CudaReach
+            from drmc_rl.planning.cuda import CudaReach
 
             self._cuda_reach = CudaReach(max_batch=16)
 
@@ -261,7 +261,7 @@ class LiveAgentServer:
         import torch
 
         from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
-        from training.utils.checkpoint_io import load_checkpoint
+        from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
         torch.set_num_threads(1)  # training runs share this box
         path = Path(checkpoint) if checkpoint else default_checkpoint()
@@ -287,7 +287,7 @@ class LiveAgentServer:
     ) -> None:
         import torch
 
-        from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
+        from drmc_rl.models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
 
         torch.set_num_threads(1)  # training runs share this box
         if device == "auto":
@@ -374,8 +374,8 @@ class LiveAgentServer:
         # tools/eval_policy.py's checkpoint branch.
         import torch
 
-        from models.policy.candidate_packing import pack_feasible_candidates
-        from models.policy.placement_dist import MaskedPlacementDist
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+        from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 
         obs = build_obs(field, feasible)[None]
         pills = np.array(

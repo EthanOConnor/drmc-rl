@@ -9,11 +9,11 @@ import statistics
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-import numpy as np
 import gymnasium as gym
+import numpy as np
 
-from envs.retro.register_env import register_env_id, register_placement_env_id
-from envs.retro.placement_wrapper import DrMarioPlacementEnv
+from drmc_rl.envs.libretro.placement_env import DrMarioPlacementEnv
+from drmc_rl.envs.libretro.registration import register_env_id, register_placement_env_id
 
 
 @dataclass
@@ -90,14 +90,12 @@ def run_episode(
         step += 1
         episode_reward += float(reward)
         stats.record_step(step_info, reward, float(diag.get("plan_latency_ms", float("nan"))), int(trans_info["placements/options"]))
-        obs = next_obs
-        info = step_info
     stats.episodes += 1
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Placement planner diagnostic runner")
-    parser.add_argument("--env-id", default="DrMarioRetroEnv-v0", help="Base Gymnasium environment id")
+    parser.add_argument("--env-id", default="DrMarioLibretroEnv-v0", help="Base Gymnasium environment id")
     parser.add_argument("--episodes", type=int, default=1, help="Episodes to run")
     parser.add_argument("--max-steps", type=int, default=120, help="Placement decisions per episode")
     parser.add_argument("--greedy", action="store_true", help="Always take the first feasible action")

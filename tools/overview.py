@@ -8,7 +8,7 @@ grade; characterization trajectories from the tournament store (the
 *_eval_step<N> tournaments the evalwatch records — treatment vs champion,
 control vs champion, and the mask_opponent reliance probe). Deeper views:
 `tools.vs_dashboard <run>` (live TUI), `tools.run_status <run> --history`,
-`tools.tournament report --tournament <name>`, docs/ABLATION_PLAN.md.
+`tools.tournament report --tournament <name>`.
 """
 
 from __future__ import annotations
@@ -135,7 +135,7 @@ def main() -> None:
     show_trajectories()
     print(
         "\ndeeper: tools.vs_dashboard <run> | tools.run_status <run> --history | "
-        "tools.tournament report --tournament <name> | docs/ABLATION_PLAN.md"
+        "tools.tournament report --tournament <name>"
     )
 
 

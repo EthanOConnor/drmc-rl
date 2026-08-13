@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-import envs.specs.ram_to_state as ram_specs
+import drmc_rl.game.specs.ram_to_state as ram_specs
 
 
 def test_reduced_bitplane_static_mask_is_derived_by_exclusion() -> None:

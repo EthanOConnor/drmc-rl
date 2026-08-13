@@ -5,12 +5,12 @@ import glob
 import numpy as np
 import pytest
 
-from seedlab.db import CatalogDB
+from drmc_rl.seedlab.db import CatalogDB
 
 
 def _is_pool_present() -> bool:
     try:
-        from envs.backends.drmario_pool import is_library_present
+        from drmc_rl.envs.backends.drmario_pool import is_library_present
 
         return bool(is_library_present())
     except Exception:
@@ -35,7 +35,7 @@ ckpt_required = pytest.mark.skipif(
 def test_level_weights_width_first() -> None:
     import numpy as np
 
-    from seedlab.explore import level_weights
+    from drmc_rl.seedlab.explore import level_weights
 
     levels = [0, 1, 2, 3, 4]
     w = level_weights(levels, 0)
@@ -56,14 +56,14 @@ def test_level_weights_width_first() -> None:
 
 
 def test_fmt_frames_seconds() -> None:
-    from seedlab.report import fmt_frames
+    from drmc_rl.seedlab.report import fmt_frames
 
     assert fmt_frames(None) == "-"
     assert fmt_frames(1313) == "1313 (21.8s)"
 
 
 def test_pick_tier_share_weighted_wall_time() -> None:
-    from seedlab.explore import DEFAULT_TIERS, TIER_SHARES, pick_tier
+    from drmc_rl.seedlab.explore import DEFAULT_TIERS, TIER_SHARES, pick_tier
 
     spent: dict = {}
     # Simulate iterations: greedy 0.3s, rollouts 2s, beams 3/10/40s, exact 60s.
@@ -92,7 +92,7 @@ def test_pick_tier_share_weighted_wall_time() -> None:
 
 
 def test_frontier_index_priority_floor() -> None:
-    from seedlab.explore import frontier_index
+    from drmc_rl.seedlab.explore import frontier_index
 
     levels = list(range(21))
     total = 100
@@ -122,9 +122,9 @@ def test_step_bounds_admissible() -> None:
     torch.set_num_threads(2)
     import numpy as np
 
-    from seedlab.bounds import StepBounds
-    from seedlab.search import SearchEngine, _aux_infos
-    from seedlab.worker import Solver
+    from drmc_rl.seedlab.bounds import StepBounds
+    from drmc_rl.seedlab.search import SearchEngine, _aux_infos
+    from drmc_rl.seedlab.worker import Solver
 
     solver = Solver(
         policy="checkpoint", checkpoint=_latest_checkpoint(), device="cpu",
@@ -136,7 +136,7 @@ def test_step_bounds_admissible() -> None:
 
     violations = []
     for level, seed_idx in ((0, 11), (2, 222), (4, 4444)):
-        from seedlab import rng as slrng
+        from drmc_rl.seedlab import rng as slrng
 
         seed = slrng.orbit()[seed_idx]
         node = eng.root(level=level, speed=2, seed=seed)
@@ -163,7 +163,7 @@ def test_step_bounds_admissible() -> None:
 
 @pool_required
 def test_checkpoint_restore_matches_reset() -> None:
-    from seedlab.search import SearchEngine
+    from drmc_rl.seedlab.search import SearchEngine
 
     eng = SearchEngine(num_envs=2)
     try:
@@ -187,8 +187,8 @@ def test_beam_improves_and_replays() -> None:
     import torch
 
     torch.set_num_threads(2)
-    from seedlab.search import SearchEngine, beam_search
-    from seedlab.worker import Solver
+    from drmc_rl.seedlab.search import SearchEngine, beam_search
+    from drmc_rl.seedlab.worker import Solver
 
     solver = Solver(
         policy="checkpoint", checkpoint=_latest_checkpoint(), device="cpu",
@@ -218,8 +218,8 @@ def test_exact_search_respects_incumbent() -> None:
     import torch
 
     torch.set_num_threads(2)
-    from seedlab.search import SearchEngine, beam_search, exact_search
-    from seedlab.worker import Solver
+    from drmc_rl.seedlab.search import SearchEngine, beam_search, exact_search
+    from drmc_rl.seedlab.worker import Solver
 
     solver = Solver(
         policy="checkpoint", checkpoint=_latest_checkpoint(), device="cpu",
@@ -251,7 +251,7 @@ def test_explorer_iteration_smoke(tmp_path) -> None:
     import torch
 
     torch.set_num_threads(2)
-    from seedlab.explore import Explorer
+    from drmc_rl.seedlab.explore import Explorer
 
     db = CatalogDB(tmp_path / "catalog.sqlite3")
     explorer = Explorer(
@@ -268,7 +268,7 @@ def test_explorer_iteration_smoke(tmp_path) -> None:
         # Dashboard renders the search-activity panel from this data.
         from rich.console import Console
 
-        from seedlab.dashboard import build_view
+        from drmc_rl.seedlab.dashboard import build_view
 
         console = Console(width=140, height=40, file=open("/dev/null", "w"))
         console.print(build_view(db, 2))

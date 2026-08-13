@@ -1,4 +1,4 @@
-"""REAL human clear-endgame start bank (DESIGN_REVIEW_2026-07 R4).
+"""Build a start bank from real human clear-endgame states.
 
 The Go-Exploit bank (tools/build_start_bank.py) samples mid-game positions
 whose strata stop well before end-of-game clearing sequences, and
@@ -6,7 +6,7 @@ tools/build_clear_practice_bank.py fakes near-clear boards by thinning
 viruses. This tool extracts the REAL thing from the fightcadeRatings corpus:
 spawn events where one side is genuinely 1..8 viruses from curing out while
 the opponent is still alive (>= 1 virus). Same npz schema as the Go-Exploit
-bank, so training/envs/start_bank.StartBank loads it unchanged.
+bank, so drmc_rl/training/envs/start_bank.StartBank loads it unchanged.
 
 Selection (per game, per side, capped at --per-game-side positions):
   - sampled side's spawn snapshot has 1..8 virus tiles ((tile & 0xF0) == 0xD0)
@@ -231,7 +231,7 @@ def mirror_expand(
 
 
 def _spec_for_row(arrays: Dict[str, np.ndarray], i: int, rng: np.random.Generator):
-    from envs.backends.drmario_vs_pool import build_vs_reset_spec
+    from drmc_rl.envs.backends.drmario_vs_pool import build_vs_reset_spec
 
     return build_vs_reset_spec(
         level=(int(arrays["levels"][i, 0]), int(arrays["levels"][i, 1])),
@@ -255,7 +255,7 @@ def pool_load_mask(
     (board round-trips exactly, both sides parked at a live decision with
     feasible placements)."""
 
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
 
     n = arrays["boards"].shape[0]
     ok = np.zeros((n,), dtype=bool)
