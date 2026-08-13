@@ -1,9 +1,9 @@
 # Human VS Corpus Integration (fightcadeRatings ↔ drmc-rl)
 
-Status: spec, 2026-06-10. Counterpart doc:
+Status: operational boundary, 2026-08-13. Counterpart doc:
 `../fightcadeRatings/docs/DRMC_RL_INTEGRATION.md`.
 
-`../fightcadeRatings` is building a corpus of ranked Fightcade `nes_drmario`
+`fightcadeRatings` owns a corpus of ranked Fightcade `nes_drmario`
 VS games: raw GGPO replay streams (content-addressed), local re-emulation
 through a headless fcadefbneo harness that emits JSONL RAM-change events,
 crown/game segmentation with DrMC metrics, and Whole-History Ratings per
@@ -11,6 +11,36 @@ player. This document specs how drmc-rl consumes that corpus and what we
 provide back. Division of labor in one line: **they own replay acquisition
 and re-emulation truth; we own game-rules intelligence (planner, native
 engine, RAM semantics) layered on top.**
+
+## Access contract
+
+drmc-rl must not import `fightcadeRatings.store`, open its live SQLite
+database, or walk its source blob store. `fightcadeRatings/corpus_export.py`
+publishes immutable monthly Parquet shards plus a content-hashed manifest on
+mombox. tf3090 mounts the release root read-only over SSHFS:
+
+```sh
+uv sync --extra corpus
+python -m tools.human_corpus mount
+python -m tools.human_corpus status
+python -m tools.human_corpus verify          # fast size verification
+python -m tools.human_corpus sample --rows 2
+```
+
+The default mount is `~/.cache/drmc-rl/human-corpus`; override it with
+`DRMC_HUMAN_CORPUS_ROOT`. `drmc_rl.data.HumanCorpus` is the application API.
+It validates schema and manifest paths, exposes Arrow datasets/batches, and
+can restrict scans to monthly shards. Full hash verification is explicit
+because reading every byte across SSH is expensive.
+
+The core schema stores source facts. Planner feasible sets, policy ranks,
+native exact-reset checkpoints, and model-ready observations are separate
+derived releases keyed by core release id and tool/model version.
+
+The initial opponent-board column is explicitly `latest_spawn` or `game_init`
+and includes its source frame and age. It must not be presented as a
+frame-synchronized checkpoint. A later exact-state derived layer will supply
+native resets without changing the core source schema.
 
 ## What the corpus is for (drmc-rl side)
 
@@ -32,8 +62,10 @@ Priority order:
    and known-strength players: "win from here vs a 1700-rated human style"
    probes before any exhibition.
 
-A few thousand games (~1-2M decisions) is far too small to be the primary
-training signal and that is fine — self-play remains the strength engine.
+The corpus now contains tens of millions of decisions across hundreds of
+thousands of games. It is large enough for representation, policy, value,
+skill-conditioned opponent, and timing pretraining. Self-play remains the
+policy-improvement and adversarial-robustness engine.
 
 ## Event schema v2 (harness additions, fightcadeRatings side)
 
@@ -60,7 +92,12 @@ extraction needs four additions (all cheap: a handful of extra
 Everything else (crowns, whoWon, combos, volleys) stays as-is. Fields are
 b64 to keep lines compact; 128 bytes/snapshot ≈ 172 chars.
 
-## drmc-rl ingestion (new tools, this repo)
+## Legacy direct-ingestion tools
+
+The older tools below predate immutable releases. They remain for reproducing
+existing BC/start-bank artifacts, but new corpus work should consume
+`HumanCorpus`. Direct sibling-SQLite paths are compatibility code, not the
+supported data boundary.
 
 1. `tools/ingest_fc_corpus.py` — reads `fightcadeRatings/data/drmario.sqlite`
    (`processed_replay` blobs with v2 events + `crown` rows) and the WHR

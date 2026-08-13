@@ -250,6 +250,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+corpus = [
+    { name = "pyarrow" },
+]
 eval = [
     { name = "matplotlib" },
     { name = "pandas" },
@@ -279,13 +282,14 @@ requires-dist = [
     { name = "opencv-python-headless", marker = "extra == 'viz'", specifier = ">=5,<6" },
     { name = "pandas", marker = "extra == 'eval'", specifier = ">=3.0,<4" },
     { name = "pillow", marker = "extra == 'viz'", specifier = ">=12.3,<13" },
+    { name = "pyarrow", marker = "extra == 'corpus'", specifier = ">=25,<26" },
     { name = "pyarrow", marker = "extra == 'eval'", specifier = ">=25,<26" },
     { name = "rich", specifier = ">=15,<16" },
     { name = "tensorboard", marker = "extra == 'rl'", specifier = ">=2.21,<3" },
     { name = "torch", marker = "extra == 'rl'", specifier = ">=2.13,<2.14" },
     { name = "wandb", marker = "extra == 'rl'", specifier = ">=0.28,<0.29" },
 ]
-provides-extras = ["rl", "viz", "eval"]
+provides-extras = ["rl", "viz", "eval", "corpus"]
 
 [package.metadata.requires-dev]
 dev = [
