@@ -142,6 +142,7 @@ class SMDPPPOConfig:
 
     # Misc
     value_loss_type: str = "mse"  # mse or huber
+    compile_mode: str = "off"  # off|default|max-autotune-no-cudagraphs
 
 
 class SMDPPPOAdapter(AlgoAdapter):
@@ -199,6 +200,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
+            compile_mode=str(ppo_cfg_dict.get("compile_mode", "off")),
         )
 
         policy_type_norm = str(self.hparams.policy_type or "heatmap").strip().lower()
@@ -313,6 +315,16 @@ class SMDPPPOAdapter(AlgoAdapter):
                 num_colors=3,
                 aux_dim=self.aux_dim,
             ).to(self.device)
+
+        compile_mode = str(self.hparams.compile_mode).strip().lower()
+        if compile_mode not in {"off", "default", "max-autotune-no-cudagraphs"}:
+            raise ValueError(f"Unknown smdp_ppo.compile_mode: {self.hparams.compile_mode!r}")
+        if compile_mode != "off":
+            if torch.device(self.device).type != "cuda":
+                raise ValueError("smdp_ppo.compile_mode requires a CUDA device")
+            # Learner rollout and minibatch shapes are stable. Opponent nets
+            # remain eager because their PFSP group sizes change every wave.
+            self.net.compile(mode=compile_mode, dynamic=False)
 
         optimizer_kwargs = {"fused": True} if torch.device(self.device).type == "cuda" else {}
         self.optimizer = optim.Adam(
