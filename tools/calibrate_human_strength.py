@@ -81,6 +81,7 @@ class LadderPolicy:
         infos: list[dict[str, Any]],
         ratings: np.ndarray,
         opponent_ratings: np.ndarray,
+        search_weights: np.ndarray,
         histories: list[list[dict[str, float | int]]],
         decisions: np.ndarray,
         *,
@@ -122,7 +123,8 @@ class LadderPolicy:
             valid_actions = packed.actions[packed.mask]
             valid_logits = logits[packed.mask]
             scores = valid_logits
-            if self.search is not None:
+            side_search_weight = float(search_weights[side])
+            if self.search is not None and side_search_weight > 0.0:
                 sinfo = self.search.analyze(
                     board_planes=obs[side, :8],
                     opponent_board_planes=obs[side, 8:16],
@@ -142,7 +144,7 @@ class LadderPolicy:
                 scores = blend_human_and_search(
                     valid_logits,
                     competitive_scores(valid_actions, sinfo),
-                    weight=self.search_weight,
+                    weight=side_search_weight,
                 )
             actions_out[side] = int(valid_actions[int(np.argmax(scores))])
         return actions_out
@@ -185,6 +187,9 @@ def run_probe(
     for pair, side in enumerate(probe_side):
         ratings[2 * pair + int(side)] = rating
     opponent_ratings = ratings[np.arange(sides) ^ 1]
+    search_weights = np.zeros(sides, dtype=np.float32)
+    for pair, side in enumerate(probe_side):
+        search_weights[2 * pair + int(side)] = search_weight
     histories: list[list[dict[str, float | int]]] = [[] for _ in range(sides)]
     decisions = np.zeros(sides, dtype=np.int64)
     wins = losses = draws = 0
@@ -196,6 +201,7 @@ def run_probe(
                 infos,
                 ratings,
                 opponent_ratings,
+                search_weights,
                 histories,
                 decisions,
                 speed=speed,
