@@ -29,7 +29,7 @@ except ImportError:
     get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
-from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
@@ -39,7 +39,7 @@ from drmc_rl.training.algo.search_distill import (
     blend_value_targets,
     masked_distill_kl,
 )
-from drmc_rl.training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer, DecisionStep
+from drmc_rl.training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer
 from drmc_rl.training.utils.checkpoint_io import checkpoint_path, load_checkpoint, save_checkpoint
 from drmc_rl.training.utils.reproducibility import git_commit
 
@@ -126,6 +126,7 @@ class SMDPPPOConfig:
     candidate_cost_embed_dim: int = 32
     candidate_hidden_dim: int = 256
     candidate_transformer_layers: int = 4
+    candidate_cross_layers: int = 0
     candidate_transformer_heads: int = 4
     candidate_transformer_ff_mult: int = 4
     candidate_patch_kernel: int = 3
@@ -141,6 +142,7 @@ class SMDPPPOConfig:
 
     # Misc
     value_loss_type: str = "mse"  # mse or huber
+    compile_mode: str = "off"  # off|default
 
 
 class SMDPPPOAdapter(AlgoAdapter):
@@ -188,6 +190,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_cost_embed_dim=int(ppo_cfg_dict.get("candidate_cost_embed_dim", 32)),
             candidate_hidden_dim=int(ppo_cfg_dict.get("candidate_hidden_dim", 256)),
             candidate_transformer_layers=int(ppo_cfg_dict.get("candidate_transformer_layers", 4)),
+            candidate_cross_layers=int(ppo_cfg_dict.get("candidate_cross_layers", 0)),
             candidate_transformer_heads=int(ppo_cfg_dict.get("candidate_transformer_heads", 4)),
             candidate_transformer_ff_mult=int(ppo_cfg_dict.get("candidate_transformer_ff_mult", 4)),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
@@ -197,6 +200,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
+            compile_mode=str(ppo_cfg_dict.get("compile_mode", "off")),
         )
 
         policy_type_norm = str(self.hparams.policy_type or "heatmap").strip().lower()
@@ -296,6 +300,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                 cost_embed_dim=self.hparams.candidate_cost_embed_dim,
                 cand_hidden_dim=self.hparams.candidate_hidden_dim,
                 transformer_layers=self.hparams.candidate_transformer_layers,
+                cross_layers=self.hparams.candidate_cross_layers,
                 transformer_heads=self.hparams.candidate_transformer_heads,
                 transformer_ff_mult=self.hparams.candidate_transformer_ff_mult,
                 patch_kernel=self.hparams.candidate_patch_kernel,
@@ -310,6 +315,16 @@ class SMDPPPOAdapter(AlgoAdapter):
                 num_colors=3,
                 aux_dim=self.aux_dim,
             ).to(self.device)
+
+        compile_mode = str(self.hparams.compile_mode).strip().lower()
+        if compile_mode not in {"off", "default"}:
+            raise ValueError(f"Unknown smdp_ppo.compile_mode: {self.hparams.compile_mode!r}")
+        if compile_mode != "off":
+            if torch.device(self.device).type != "cuda":
+                raise ValueError("smdp_ppo.compile_mode requires a CUDA device")
+            # Learner rollout and minibatch shapes are stable. Opponent nets
+            # remain eager because their PFSP group sizes change every wave.
+            self.net.compile(mode=compile_mode, dynamic=False)
 
         optimizer_kwargs = {"fused": True} if torch.device(self.device).type == "cuda" else {}
         self.optimizer = optim.Adam(
@@ -336,6 +351,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             store_costs_to_lock=(self.policy_type == "candidate"),
             search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
         )
+        self._rollout_env_ids = np.arange(env.num_envs, dtype=np.int32)
 
         # Tracking
         self.global_step = 0  # Total environment steps (frames)
@@ -507,45 +523,44 @@ class SMDPPPOAdapter(AlgoAdapter):
                     dtype=np.int32,
                 )
 
+                done_arr = terminated_arr | truncated_arr
                 if self._sd_runner is not None:
-                    self._sd_runner.note_dones(terminated_arr | truncated_arr)
+                    self._sd_runner.note_dones(done_arr)
 
                 frames_total = int(np.sum(tau_arr))
                 self.global_step += frames_total
                 self.decision_step += int(self.env.num_envs)
                 decisions_collected += int(self.env.num_envs)
 
+                self.buffer.add_arrays(
+                    observations=decision_obs,
+                    masks=masks,
+                    costs_to_lock=costs_to_lock,
+                    pill_colors=pill_colors,
+                    preview_pill_colors=preview_pill_colors,
+                    aux=aux_batch,
+                    actions=actions,
+                    log_probs=log_probs,
+                    values=values,
+                    taus=tau_arr,
+                    rewards=rewards_arr,
+                    observations_next=obs_after_arr,
+                    dones=done_arr,
+                    env_ids=self._rollout_env_ids,
+                    search_targets=sd_targets,
+                    search_values=sd_values,
+                    search_mask=sd_flags,
+                )
+
                 advance_from: Optional[int] = None
                 advance_to: Optional[int] = None
                 for env_idx in range(self.env.num_envs):
                     info_i = info_after_list[env_idx] if env_idx < len(info_after_list) else {}
-                    step = DecisionStep(
-                        obs=decision_obs[env_idx],
-                        mask=masks[env_idx],
-                        cost_to_lock=costs_to_lock[env_idx],
-                        pill_colors=pill_colors[env_idx],
-                        preview_pill_colors=preview_pill_colors[env_idx],
-                        aux=None if aux_batch is None else aux_batch[env_idx],
-                        action=int(actions[env_idx]),
-                        log_prob=float(log_probs[env_idx]),
-                        value=float(values[env_idx]),
-                        tau=int(tau_arr[env_idx]),
-                        reward=float(rewards_arr[env_idx]),
-                        obs_next=obs_after_arr[env_idx],
-                        done=bool(terminated_arr[env_idx] or truncated_arr[env_idx]),
-                        env_id=int(env_idx),
-                        info=dict(info_i),
-                        search_target=None if sd_targets is None else sd_targets[env_idx],
-                        search_value=0.0 if sd_values is None else float(sd_values[env_idx]),
-                        searched=False if sd_flags is None else bool(sd_flags[env_idx]),
-                    )
-                    self.buffer.add(step)
-
                     # Track episodes
-                    if step.done:
+                    if bool(done_arr[env_idx]):
                         self._episodes_total += 1
-                        ep_info = step.info.get("episode", {})
-                        drm_info = step.info.get("drm", {})
+                        ep_info = info_i.get("episode", {})
+                        drm_info = info_i.get("drm", {})
 
                         self.batch_returns.append(float(ep_info.get("r", 0.0)))
                         self.batch_lengths.append(int(ep_info.get("l", 0)))
@@ -811,16 +826,12 @@ class SMDPPPOAdapter(AlgoAdapter):
             aux_batch = self._build_aux_batch(obs_arr, infos)
 
         if self.policy_type == "candidate":
-            cand_actions = np.full((num_envs, self.candidate_max), -1, dtype=np.int32)
-            cand_mask = np.zeros((num_envs, self.candidate_max), dtype=np.bool_)
-            cand_cost = np.zeros((num_envs, self.candidate_max), dtype=np.float32)
-            for i in range(num_envs):
-                packed = pack_feasible_candidates(
-                    masks[i], costs_to_lock[i], max_candidates=self.candidate_max, sort_by_cost=True
-                )
-                cand_actions[i] = packed.actions
-                cand_mask[i] = packed.mask
-                cand_cost[i] = packed.cost
+            packed = pack_feasible_candidates_batch(
+                masks, costs_to_lock, max_candidates=self.candidate_max, sort_by_cost=True
+            )
+            cand_actions = packed.actions
+            cand_mask = packed.mask
+            cand_cost = packed.cost
 
             t0 = time.perf_counter()
             with torch.inference_mode():
@@ -996,20 +1007,13 @@ class SMDPPPOAdapter(AlgoAdapter):
                     "DecisionBatch.costs_to_lock is required for policy_type=candidate"
                 )
             kmax = int(self.candidate_max)
-            cand_actions_all = np.full((T, kmax), -1, dtype=np.int64)
-            cand_mask_all = np.zeros((T, kmax), dtype=np.bool_)
-            cand_cost_all = np.zeros((T, kmax), dtype=np.float32)
             feasible_counts_np = masks_np.reshape(T, -1).sum(axis=1).astype(np.int32, copy=False)
-            for t in range(T):
-                packed = pack_feasible_candidates(
-                    masks_np[t], costs_to_lock_np[t], max_candidates=kmax, sort_by_cost=True
-                )
-                cand_actions_all[t] = packed.actions
-                cand_mask_all[t] = packed.mask
-                cand_cost_all[t] = packed.cost
-            cand_actions_all_t = torch.from_numpy(cand_actions_all).to(self.device)
-            cand_mask_all_t = torch.from_numpy(cand_mask_all).to(self.device)
-            cand_cost_all_t = torch.from_numpy(cand_cost_all).to(self.device)
+            packed = pack_feasible_candidates_batch(
+                masks_np, costs_to_lock_np, max_candidates=kmax, sort_by_cost=True
+            )
+            cand_actions_all_t = torch.from_numpy(packed.actions).to(self.device)
+            cand_mask_all_t = torch.from_numpy(packed.mask).to(self.device)
+            cand_cost_all_t = torch.from_numpy(packed.cost).to(self.device)
 
         # Multiple epochs over the batch
         metrics_accum = {key: 0.0 for key in _UPDATE_METRIC_KEYS}
@@ -1377,11 +1381,38 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         out = np.zeros((B, self.aux_dim), dtype=np.float32)
 
-        # Batched plane features.
-        virus_mask = np.stack([ram_specs.get_virus_mask(frames[i]) for i in range(B)])
-        occ = np.stack([ram_specs.get_occupancy_mask(frames[i]) for i in range(B)])
+        # Batched plane features. Keep this equivalent to ram_to_state's
+        # single-frame helpers without crossing Python once per environment.
+        idx = ram_specs.STATE_IDX
+        if ram_specs.STATE_USE_BITPLANES:
+            colors = frames[:, list(idx.color_channels)]
+            virus_mask = frames[:, int(idx.virus_mask)] > 0.5
+            falling_idx = getattr(idx, "falling_mask", None)
+            falling = (
+                frames[:, int(falling_idx)] > 0.5
+                if falling_idx is not None
+                else np.zeros_like(virus_mask)
+            )
+            preview_idx = getattr(idx, "preview_mask", None)
+            preview = (
+                frames[:, int(preview_idx)] > 0.5
+                if preview_idx is not None
+                else np.zeros_like(virus_mask)
+            )
+            locked_idx = getattr(idx, "locked_mask", None)
+            if locked_idx is not None:
+                locked = frames[:, int(locked_idx)] > 0.5
+            else:
+                locked = (colors > 0.5).any(axis=1) & ~virus_mask & ~falling & ~preview
+            occ = locked | virus_mask | falling | preview
+            virus_planes = colors * frames[:, int(idx.virus_mask), None]
+        else:
+            virus_planes = frames[:, list(idx.virus_color_channels)]
+            virus_mask = (virus_planes > 0.1).any(axis=1)
+            static = (frames[:, list(idx.static_color_channels)] > 0.1).any(axis=1)
+            falling = (frames[:, list(idx.falling_color_channels)] > 0.1).any(axis=1)
+            occ = static | virus_mask | falling
         virus_total = virus_mask.reshape(B, -1).sum(axis=1).astype(np.float32)
-        virus_planes = np.stack([ram_specs.get_virus_color_planes(frames[i]) for i in range(B)])
         virus_by_color = (virus_planes > 0.5).reshape(B, 3, -1).sum(axis=2).astype(np.float32)
 
         def _heights(masks_b: np.ndarray) -> np.ndarray:

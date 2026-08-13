@@ -238,6 +238,16 @@ class DrMarioVsPoolVecEnv:
         self._aux_shim: Optional[Any] = None
         self._snapshot_every = 0
         self._matches_since_snapshot = 0
+        # Gate-best snapshot protection (anti-collapse): a snapshot only
+        # enters the pool while the policy is healthy, so a collapsing
+        # learner cannot poison its own opponent distribution (the lock-in
+        # mechanism of the 2026-07-02 vs6tf_03 mutual-fast-topout collapse:
+        # match_len_p50 224s -> 14s, then the pool filled with collapsed
+        # selves and nothing punished the exploit). Blocked snapshots retry
+        # at the next hook, so recovery resumes snapshotting automatically.
+        self._snapshot_gate_cfg: Dict[str, float] = {}
+        self._league_wr_best = 0.0
+        self._snapshots_blocked = 0
         if self._opp_enabled:
             from drmc_rl.training.envs.vs_opponents import (
                 OpponentPool,
@@ -253,6 +263,13 @@ class DrMarioVsPoolVecEnv:
             # graded against argmax BC. Default to argmax.
             self._opp_temperature = float(opp_cfg.get("opponent_temperature", 0.0))
             self._snapshot_every = int(opp_cfg.get("snapshot_every_matches", 400))
+            gate = opp_cfg.get("snapshot_gate")
+            if isinstance(gate, dict) and bool(gate.get("enabled", False)):
+                self._snapshot_gate_cfg = {
+                    "min_match_len_sec": float(gate.get("min_match_len_sec", 60.0)),
+                    "league_wr_frac": float(gate.get("league_wr_frac", 0.5)),
+                    "league_wr_min_games": float(gate.get("league_wr_min_games", 50)),
+                }
             if league.mode == "exploiter":
                 # The exploiter trains exclusively vs the listed main agents;
                 # it never freezes snapshots of itself into the pool.
@@ -263,6 +280,7 @@ class DrMarioVsPoolVecEnv:
                     opp_cfg.get("dir") or "runs/opponent_pool",
                     max_pool=int(opp_cfg.get("max_pool", 12)),
                     league=league,
+                    device=str(opp_cfg.get("device", "auto")),
                 )
                 if league.mode != "exploiter" and not pool.entries:
                     seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
@@ -569,6 +587,8 @@ class DrMarioVsPoolVecEnv:
             out["vs/draw_rate"] = float(np.mean(self._draws))
         if self._match_len_sec:
             out["vs/match_len_p50_sec"] = float(np.median(self._match_len_sec))
+        if self._snapshot_gate_cfg:
+            out["vs/snapshots_blocked"] = float(self._snapshots_blocked)
         if self._opp_pool is not None:
             out["vs/opponent_pool"] = float(len(self._opp_pool.entries))
             rates = [float(e.wins) / float(e.games) for e in self._opp_pool.entries if int(e.games) > 0]
@@ -611,8 +631,35 @@ class DrMarioVsPoolVecEnv:
             return False
         if self._matches_since_snapshot < self._snapshot_every:
             return False
+        if not self._snapshot_healthy():
+            self._snapshots_blocked += 1
+            return False
         self._opp_pool.snapshot(state_dict_getter(), dict(cfg or {}), int(step))
         self._matches_since_snapshot = 0
+        return True
+
+    def _snapshot_healthy(self) -> bool:
+        """Gate-best check: block pool admission while the policy looks
+        collapsed. Fast trigger: rolling median match length under the floor
+        (the topout equilibrium shows up here within one window). Slow
+        backstop: cumulative league-anchor win rate falling below a fraction
+        of its own best."""
+
+        gate = self._snapshot_gate_cfg
+        if not gate:
+            return True
+        m = self.get_vs_metrics()
+        ml = m.get("vs/match_len_p50_sec")
+        if ml is not None and float(ml) < gate["min_match_len_sec"]:
+            return False
+        lw = m.get("vs/league_win_rate")
+        games = sum(
+            int(t.games) for t in self._opp_pool.league_targets()
+        ) if self._opp_pool is not None else 0
+        if lw is not None and games >= gate["league_wr_min_games"]:
+            self._league_wr_best = max(self._league_wr_best, float(lw))
+            if float(lw) < gate["league_wr_frac"] * self._league_wr_best:
+                return False
         return True
 
     def skill_games_pending(self) -> int:
@@ -665,53 +712,183 @@ class DrMarioVsPoolVecEnv:
                 continue
             groups.setdefault(entry.id, []).append(gi)
             entries[entry.id] = entry
-        for entry_id, side_idxs in groups.items():
-            chosen = self._forward_opponent(entries[entry_id], side_idxs)
+        if not groups:
+            return acts
+        # Fast path (all-CUDA pool): ONE host->device upload for every parked
+        # opponent side, per-entry forwards on device-side slices, GPU argmax,
+        # and one tiny device->host copy of the chosen slots. The old
+        # per-group tensor builds + copy-backs serialized the wave on GPU
+        # round trips (the dominant wave cost by far).
+        devices = {getattr(entries[eid], "device", "cpu") for eid in groups}
+        temp = float(getattr(self, "_opp_temperature", 0.0))
+        if devices == {"cuda"} and temp <= 0.0:
+            for gi, action in self._opponent_actions_cuda(groups, entries):
+                acts[gi // 2] = int(action)
+            return acts
+        launched = [
+            (side_idxs, self._forward_opponent_launch(entries[entry_id], side_idxs))
+            for entry_id, side_idxs in groups.items()
+        ]
+        for side_idxs, pending in launched:
+            chosen = self._sample_opponent_actions(*pending)
             for k, gi in enumerate(side_idxs):
                 acts[gi // 2] = int(chosen[k])
         return acts
 
-    def _forward_opponent(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
-        """Sample macro actions for `side_idxs` from one frozen opponent net."""
+    def _opponent_actions_cuda(self, groups: Dict[str, List[int]], entries: Dict[str, Any]):
+        """Deterministic opponent actions with a single H2D and a single D2H.
+
+        Numerically identical to the per-group path (same nets, same inputs,
+        same argmax over the same -1e9-masked logits); only the transfer
+        schedule differs.
+        """
 
         import torch
 
-        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
-        from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 
-        B = len(side_idxs)
+        order: List[int] = []
+        spans: List[Tuple[Any, int, int]] = []
+        for entry_id, side_idxs in groups.items():
+            spans.append((entries[entry_id], len(order), len(order) + len(side_idxs)))
+            order.extend(side_idxs)
+        n = len(order)
+
+        buf = self._opp_staging(n)
+        buf["obs"][:n] = self._obs[order]
+        buf["pills"][:n] = self._runner.buffers.pill_colors[order]
+        buf["previews"][:n] = self._runner.buffers.preview_colors[order]
+        kmax = buf["actions"].shape[1]
+        packed = pack_feasible_candidates_batch(
+            self._mask[order].astype(bool, copy=False),
+            self._cost[order],
+            max_candidates=kmax,
+            sort_by_cost=True,
+        )
+        buf["actions"][:n] = packed.actions
+        buf["mask"][:n] = packed.mask
+        buf["cost"][:n] = packed.cost
+        aux_rows = [
+            (k, gi, entry)
+            for entry, lo, hi in spans
+            if int(entry.aux_dim) > 0
+            for k, gi in zip(range(lo, hi), order[lo:hi])
+        ]
+        if aux_rows:
+            for entry, lo, hi in spans:
+                if int(entry.aux_dim) > 0:
+                    shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
+                    rows = shim._build_aux_batch(
+                        buf["obs"][lo:hi], [self._infos[gi] for gi in order[lo:hi]]
+                    )
+                    buf["aux"][lo:hi, : rows.shape[1]] = rows
+
+        dev = {}
+        for name in ("obs", "pills", "previews", "actions", "cost", "mask", "aux"):
+            dev[name] = buf[f"{name}_t"][:n].to("cuda", non_blocking=True)
+
+        slots = torch.empty(n, dtype=torch.int64, device="cuda")
+        with torch.inference_mode():
+            for entry, lo, hi in spans:
+                aux = dev["aux"][lo:hi, : int(entry.aux_dim)] if int(entry.aux_dim) > 0 else None
+                logits, _values = entry.net(
+                    dev["obs"][lo:hi],
+                    dev["pills"][lo:hi],
+                    dev["previews"][lo:hi],
+                    dev["actions"][lo:hi, : int(entry.candidate_max)],
+                    dev["cost"][lo:hi, : int(entry.candidate_max)],
+                    dev["mask"][lo:hi, : int(entry.candidate_max)],
+                    aux=aux,
+                )
+                # logits are already -1e9 on masked slots -> plain argmax.
+                slots[lo:hi] = logits.argmax(dim=1)
+        slot_np = slots.cpu().numpy()  # the single synchronization point
+        # Empty mask -> slot 0 -> padding action -1 (noop-fall), as before.
+        return [
+            (gi, int(buf["actions"][k, slot_np[k]])) for k, gi in enumerate(order)
+        ]
+
+    def _opp_staging(self, n: int) -> Dict[str, Any]:
+        """Pinned staging buffers (numpy views + torch pinned tensors)."""
+
+        import torch
+
+        cur = getattr(self, "_opp_staging_buf", None)
+        kmax = 128
+        aux_max = 64
+        if cur is not None and cur["obs"].shape[0] >= n:
+            return cur
+        cap = max(self.num_sides, n)
+        C = self._obs.shape[1]
+        t = {
+            "obs_t": torch.empty((cap, C, GRID_H, GRID_W), dtype=torch.float32).pin_memory(),
+            "pills_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
+            "previews_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
+            "actions_t": torch.empty((cap, kmax), dtype=torch.int32).pin_memory(),
+            "cost_t": torch.empty((cap, kmax), dtype=torch.float32).pin_memory(),
+            "mask_t": torch.empty((cap, kmax), dtype=torch.bool).pin_memory(),
+            "aux_t": torch.zeros((cap, aux_max), dtype=torch.float32).pin_memory(),
+        }
+        buf = {k[:-2]: v.numpy() for k, v in t.items()}
+        buf.update(t)
+        self._opp_staging_buf = buf
+        return buf
+
+    def _forward_opponent(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
+        """Sample macro actions for `side_idxs` from one frozen opponent net."""
+
+        return self._sample_opponent_actions(*self._forward_opponent_launch(entry, side_idxs))
+
+    def _forward_opponent_launch(self, entry: Any, side_idxs: List[int]):
+        """Queue one entry-group forward; no host synchronization."""
+
+        import torch
+
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
+
         obs = np.ascontiguousarray(self._obs[side_idxs], dtype=np.float32)
         pills = self._runner.buffers.pill_colors[side_idxs].astype(np.int64)
         previews = self._runner.buffers.preview_colors[side_idxs].astype(np.int64)
 
         kmax = int(entry.candidate_max)
-        cand_actions = np.full((B, kmax), -1, dtype=np.int32)
-        cand_mask = np.zeros((B, kmax), dtype=np.bool_)
-        cand_cost = np.zeros((B, kmax), dtype=np.float32)
-        for k, gi in enumerate(side_idxs):
-            packed = pack_feasible_candidates(
-                self._mask[gi].astype(bool), self._cost[gi], max_candidates=kmax, sort_by_cost=True
-            )
-            cand_actions[k] = packed.actions
-            cand_mask[k] = packed.mask
-            cand_cost[k] = packed.cost
+        packed = pack_feasible_candidates_batch(
+            self._mask[side_idxs].astype(bool, copy=False),
+            self._cost[side_idxs],
+            max_candidates=kmax,
+            sort_by_cost=True,
+        )
+        cand_actions = packed.actions
+        cand_mask = packed.mask
+        cand_cost = packed.cost
 
         aux = None
         if int(entry.aux_dim) > 0:
             shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
             aux = shim._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
 
+        dev = getattr(entry, "device", "cpu")
         with torch.inference_mode():
             logits, _values = entry.net(
-                torch.from_numpy(obs),
-                torch.from_numpy(pills),
-                torch.from_numpy(previews),
-                torch.from_numpy(cand_actions),
-                torch.from_numpy(cand_cost),
-                torch.from_numpy(cand_mask),
-                aux=None if aux is None else torch.from_numpy(aux),
+                torch.from_numpy(obs).to(dev),
+                torch.from_numpy(pills).to(dev),
+                torch.from_numpy(previews).to(dev),
+                torch.from_numpy(cand_actions).to(dev),
+                torch.from_numpy(cand_cost).to(dev),
+                torch.from_numpy(cand_mask).to(dev),
+                aux=None if aux is None else torch.from_numpy(aux).to(dev),
             )
-            logits_cpu = logits.float().cpu()
+        # No .cpu() here: the copy-back in _sample_opponent_actions is the
+        # only synchronization point, after every group's forward is queued.
+        return logits, cand_actions, cand_mask
+
+    def _sample_opponent_actions(
+        self, logits: Any, cand_actions: np.ndarray, cand_mask: np.ndarray
+    ) -> np.ndarray:
+        import torch
+
+        from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
+
+        logits_cpu = logits.float().cpu()
         temp = getattr(self, "_opp_temperature", 0.0)
         if temp > 0:
             dist = MaskedPlacementDist(logits_cpu / temp, torch.from_numpy(cand_mask))
@@ -720,6 +897,7 @@ class DrMarioVsPoolVecEnv:
             dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
             slot, _lp = dist.sample(deterministic=True)  # argmax: eval-matched
         slot_np = slot.numpy().reshape(-1).astype(np.int64)
+        B = cand_actions.shape[0]
         # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
         return cand_actions[np.arange(B), slot_np].astype(np.int32)
 

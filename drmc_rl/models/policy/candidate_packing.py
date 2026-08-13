@@ -29,6 +29,16 @@ class PackedCandidates:
     count: int  # number of valid candidates (<= Kmax)
 
 
+@dataclass(frozen=True)
+class PackedCandidateBatch:
+    """Packed feasible candidates for a batch of decision points."""
+
+    actions: np.ndarray  # (B,Kmax) int32; macro action indices; padding = -1
+    mask: np.ndarray  # (B,Kmax) bool; True for valid candidates
+    cost: np.ndarray  # (B,Kmax) float32; cost-to-lock frames; padding = 0
+    count: np.ndarray  # (B,) int32; number of valid candidates per row
+
+
 def pack_feasible_candidates(
     feasible_mask: np.ndarray,
     cost_to_lock: np.ndarray,
@@ -85,4 +95,67 @@ def pack_feasible_candidates(
     return PackedCandidates(actions=actions_out, mask=mask_out, cost=cost_out, count=k)
 
 
-__all__ = ["PackedCandidates", "pack_feasible_candidates"]
+def pack_feasible_candidates_batch(
+    feasible_mask: np.ndarray,
+    cost_to_lock: np.ndarray,
+    *,
+    max_candidates: int,
+    sort_by_cost: bool = True,
+) -> PackedCandidateBatch:
+    """Pack a ``(B,4,16,8)`` batch without a Python loop over environments.
+
+    Stable sorting preserves the single-row helper's deterministic tie break:
+    candidates with equal costs remain in ascending macro-action order.
+    """
+
+    kmax = int(max(1, int(max_candidates)))
+    mask = np.asarray(feasible_mask, dtype=np.bool_)
+    cost = np.asarray(cost_to_lock)
+    if mask.ndim != 4 or mask.shape[1:] != (4, 16, 8):
+        raise ValueError(f"Expected feasible_mask shape (B,4,16,8), got {mask.shape!r}")
+    if cost.shape != mask.shape:
+        raise ValueError(f"Expected cost_to_lock shape {mask.shape!r}, got {cost.shape!r}")
+
+    batch = int(mask.shape[0])
+    flat_mask = mask.reshape(batch, -1)
+    if cost.dtype == np.uint16:
+        flat_cost = cost.reshape(batch, -1).astype(np.float32)
+        flat_cost[flat_cost >= np.float32(0xFFFE)] = np.inf
+    else:
+        flat_cost = cost.reshape(batch, -1).astype(np.float32, copy=False)
+        if np.isnan(flat_cost).any():
+            flat_cost = flat_cost.copy()
+            flat_cost[np.isnan(flat_cost)] = np.inf
+
+    if sort_by_cost:
+        keys = np.where(flat_mask, flat_cost, np.inf)
+    else:
+        # False sorts before true; stable order retains ascending action ids.
+        keys = ~flat_mask
+    order = np.argsort(keys, axis=1, kind="stable")[:, : min(kmax, flat_mask.shape[1])]
+    valid = np.take_along_axis(flat_mask, order, axis=1)
+    selected_cost = np.take_along_axis(flat_cost, order, axis=1)
+
+    actions = np.full((batch, kmax), -1, dtype=np.int32)
+    packed_mask = np.zeros((batch, kmax), dtype=np.bool_)
+    packed_cost = np.zeros((batch, kmax), dtype=np.float32)
+    width = int(order.shape[1])
+    actions[:, :width] = np.where(valid, order, -1).astype(np.int32, copy=False)
+    packed_mask[:, :width] = valid
+    packed_cost[:, :width] = np.where(valid, selected_cost, 0.0).astype(
+        np.float32, copy=False
+    )
+    return PackedCandidateBatch(
+        actions=actions,
+        mask=packed_mask,
+        cost=packed_cost,
+        count=packed_mask.sum(axis=1, dtype=np.int32),
+    )
+
+
+__all__ = [
+    "PackedCandidateBatch",
+    "PackedCandidates",
+    "pack_feasible_candidates",
+    "pack_feasible_candidates_batch",
+]

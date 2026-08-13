@@ -228,7 +228,10 @@ def main(argv: Any = None) -> None:
             cfg.run_id = str(getattr(cfg, "run_id", Path(str(getattr(cfg, "logdir"))).name))
         except Exception:
             pass
-    ctx = set_reproducibility(int(getattr(cfg, "seed", 42)))
+    ctx = set_reproducibility(
+        int(getattr(cfg, "seed", 42)),
+        deterministic=bool(getattr(cfg, "deterministic", False)),
+    )
     device = pick_device(getattr(cfg, "device", "auto"))
 
     logger = DiagLogger(cfg)

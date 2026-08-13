@@ -7,7 +7,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_packing import (
+    pack_feasible_candidates,
+    pack_feasible_candidates_batch,
+)
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 from drmc_rl.models.policy.placement_heads import OrderedPairEmbedding
 
@@ -70,6 +73,28 @@ def test_pack_feasible_candidates_deterministic_ties():
 
     # With identical costs, ordering should be by macro action id.
     assert packed1.actions[: packed1.count].tolist() == sorted(idxs)
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.uint16])
+def test_pack_feasible_candidates_batch_matches_single(dtype):
+    rng = np.random.default_rng(4)
+    batch = 17
+    mask = rng.random((batch, 4, 16, 8)) < 0.3
+    if dtype == np.uint16:
+        cost = rng.integers(1, 300, size=mask.shape, dtype=np.uint16)
+        cost[~mask] = np.uint16(0xFFFF)
+    else:
+        cost = rng.integers(1, 300, size=mask.shape).astype(np.float32)
+        cost[~mask] = np.inf
+        cost[0, 0, 0, 0] = np.nan
+
+    batched = pack_feasible_candidates_batch(mask, cost, max_candidates=64)
+    for i in range(batch):
+        single = pack_feasible_candidates(mask[i], cost[i], max_candidates=64)
+        np.testing.assert_array_equal(batched.actions[i], single.actions)
+        np.testing.assert_array_equal(batched.mask[i], single.mask)
+        np.testing.assert_array_equal(batched.cost[i], single.cost)
+        assert int(batched.count[i]) == single.count
 
 
 def test_candidate_policy_forward_shapes_and_masking():

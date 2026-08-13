@@ -7,7 +7,7 @@
 #     vs_opponents.CHAMPION_CHECKPOINT points at), which is staged here.
 #   - checkpoint_interval raised 5M -> 25M and checkpoint_keep_last: 6
 #     (retention pruning) — disk on this box is 94% full.
-#   - start_bank stays disabled until the banks are rebuilt from the local
+#   - start_bank: REAL clear-endgame bank (built 2026-07-02 from the local
 #     corpus (tools/build_start_bank.py + build_clear_practice_bank.py; the
 #     full 29k-quark corpus is at ../fightcadeRatings).
 
@@ -32,9 +32,12 @@ smdp_ppo:
   entropy_coef: 0.008
   max_grad_norm: 0.7
 
-  decisions_per_update: 4096
+  # 384 pairs x 32 decisions/env. This preserves useful GAE horizon while
+  # feeding the 3090 efficiently; 4,096 decisions cut the horizon to ~11.
+  decisions_per_update: 12288
   num_epochs: 2
-  minibatch_size: 512
+  minibatch_size: 1536
+  compile_mode: "default"
 
   policy_type: "candidate"
   head_type: "dense"
@@ -67,31 +70,42 @@ env:
   id: "drmario-vs"
   obs_mode: state
   backend: cpp-vs-pool
-  # Rollout reachability solved on the GPU (reach_cuda) in one batch per
-  # decision wave — bit-exact vs the in-pool CPU planner
-  # (tests/test_vs_gpu_planner.py). Throughput-neutral at 16 pairs but frees
-  # ~15-20% CPU (+13% fps at 32 pairs) and is required for cheap search.
+  # Rollout reachability is solved in one GPU batch per decision wave and is
+  # bit-exact vs the in-pool CPU planner (tests/test_vs_gpu_planner.py).
   gpu_planner: true
   state_repr: bitplane_bottle_conn_mask
-  # 16 on the Mac; 32 measured +13% fps here with gpu_planner (b32 bench).
-  num_pairs: 32
+  # Measured tf3090 peak: 384 pairs. 512 no longer improved frame throughput.
+  num_pairs: 384
   frame_stack: 1
   randomize_rng: true
   level: 14
   speed_setting: 2
   clear_win_bonus: 0.25
+  # REAL human clear-endgame positions (R4): 40k rows / 20k games, both
+  # side-mirrors, strata 1-2/3-5/6-8 closer-side viruses. This is what gives
+  # clear_win_bonus a gradient (docs/ABLATION_PLAN.md "Correction").
   start_bank:
-    enabled: false
-    path: runs/start_bank/clear_practice_v1.npz
+    enabled: true
+    path: runs/start_bank/clear_endgame_v1.npz
     fraction: 0.35
   opponent_pool:
     enabled: true
     max_pool: 12
     snapshot_every_matches: 400
+    # Gate-best protection: collapsed policies (short-match equilibrium /
+    # anchor-wr collapse) cannot enter the pool — breaks the self-poisoning
+    # spiral that killed vs6tf_03 at ~145M steps.
+    snapshot_gate:
+      enabled: true
+      min_match_len_sec: 60
+      league_wr_frac: 0.5
+    device: auto
+    # Full-corpus BC bands v2 (R10): 750k moves/band, d128, val top1 ~0.53.
     seed_paths:
-      - runs/bc_opponents/bc_lt1600.pt.gz
-      - runs/bc_opponents/bc_1600to2000.pt.gz
-      - runs/bc_opponents/bc_gt2000.pt.gz
+      - runs/bc_opponents_v2/bc_lt1500.pt.gz
+      - runs/bc_opponents_v2/bc_1500to1800.pt.gz
+      - runs/bc_opponents_v2/bc_1800to2000.pt.gz
+      - runs/bc_opponents_v2/bc_gt2000.pt.gz
     league:
       mode: mixed
       exploiter_fraction: 0.2
