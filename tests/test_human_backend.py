@@ -48,6 +48,20 @@ def test_strength_calibration_math() -> None:
     assert abs(sum(ratings.values())) < 1e-9
 
 
+def test_adaptive_search_budget_preserves_headroom_and_recovers_from_misses() -> None:
+    from drmc_rl.human.backend import AdaptiveSearchBudget
+
+    budget = AdaptiveSearchBudget()
+    assert budget.resolve(100.0) == pytest.approx(66.0)
+    assert budget.resolve(100.0, 40.0) == 40.0
+    before = budget.utilization
+    budget.observe(deadline_exceeded=True)
+    assert budget.utilization < before
+    reduced = budget.resolve(100.0)
+    budget.observe(deadline_exceeded=False)
+    assert budget.resolve(100.0) > reduced
+
+
 def test_coach_keeps_human_norm_and_competitive_quality_separate() -> None:
     result = analyze_choice(
         [10, 20, 30],

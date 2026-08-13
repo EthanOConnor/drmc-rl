@@ -81,9 +81,19 @@ def main() -> None:
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--realtime-profile",
+        choices=("auto", "fast", "balanced", "deep"),
+        default="auto",
+    )
     parser.add_argument("--bench", type=int, default=0, help="benchmark N warmed-up decisions")
     args = parser.parse_args()
-    backend = HumanBackend(args.checkpoint, device=args.device, seed=args.seed)
+    backend = HumanBackend(
+        args.checkpoint,
+        device=args.device,
+        seed=args.seed,
+        realtime_profile=args.realtime_profile,
+    )
     if args.bench:
         benchmark(backend, args.bench)
     else:

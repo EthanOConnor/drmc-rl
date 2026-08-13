@@ -34,6 +34,15 @@ schema, checkpoint identity, corpus release, supported WHR-C range, and held-out
 model metrics. `health` additionally reports readiness, uptime, model-load time,
 request/error counters, and inference latency percentiles.
 
+The backend selects a real-time search profile for the detected device
+(`fast` on CPU, `balanced` on CUDA) and reports its beam, simulation width,
+and adaptive budget utilization. Professor Pills supplies the outer
+`deadline_ms`; when `search_deadline_ms` is omitted, the backend spends a
+measured fraction of the remaining time, preserves headroom for serialization
+and scheduling, and backs off after a miss. `--realtime-profile` can force a
+fixed `fast`, `balanced`, or `deep` breadth for diagnosis. Offline drmc-rl
+benchmarks use explicit search knobs instead of this real-time adaptation.
+
 ## Semantic decision state
 
 `decide` and `coach` share this envelope:
@@ -104,10 +113,11 @@ quality.
 
 Search is on by default for `coach`. Pure human play remains
 `search_weight: 0`; a positive weight blends bounded value advantage into the
-human logits. `search_deadline_ms` bounds search, while the outer `deadline_ms`
-governs whether the host accepts the response. Interactive hosts should allow
-search failure and retain imitation output; `require_search` is for offline
-evaluation.
+human logits. The outer `deadline_ms` is the host's freshness constraint;
+normally omit `search_deadline_ms` so the backend adapts it to local hardware.
+An explicit search deadline is an offline/debug override. Interactive hosts
+should allow search failure and retain imitation output; `require_search` is
+for offline evaluation.
 
 ## Training
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from typing import Any, Mapping
 
 import numpy as np
@@ -22,6 +23,35 @@ from tools.annotate_replay_events import POSE_TO_ACTION
 
 PROTOCOL_SCHEMA = "drmc-human-backend-v1"
 GRID_H, GRID_W = 16, 8
+
+_SEARCH_PROFILES = {
+    "fast": (4, 32),
+    "balanced": (8, 64),
+    "deep": (16, 128),
+}
+
+
+@dataclass(slots=True)
+class AdaptiveSearchBudget:
+    """Leave measured headroom while spending otherwise-idle decision time."""
+
+    utilization: float = 0.75
+    minimum_ms: float = 8.0
+
+    def resolve(self, remaining_ms: float, requested_ms: Any = None) -> float:
+        if requested_ms is not None:
+            return max(float(requested_ms), 0.0)
+        available = max(float(remaining_ms), 0.0)
+        if not np.isfinite(available):
+            available = 100.0
+        reserve = max(5.0, 0.12 * available)
+        return max(0.0, (available - reserve) * self.utilization)
+
+    def observe(self, *, deadline_exceeded: bool) -> None:
+        if deadline_exceeded:
+            self.utilization = max(0.35, self.utilization * 0.85)
+        else:
+            self.utilization = min(0.9, self.utilization + 0.005)
 
 
 def _action_to_pose() -> np.ndarray:
@@ -90,11 +120,19 @@ class HumanBackend:
         device: str = "cpu",
         seed: int = 0,
         max_frames: int = 2048,
+        realtime_profile: str = "auto",
     ):
         started = time.perf_counter()
         self.runtime = HumanPolicyRuntime(checkpoint, device=device, seed=seed)
         self.device = device
         self.seed = int(seed)
+        if realtime_profile == "auto":
+            realtime_profile = "balanced" if str(device).startswith("cuda") else "fast"
+        if realtime_profile not in _SEARCH_PROFILES:
+            raise ValueError(f"unknown realtime profile {realtime_profile!r}")
+        self.realtime_profile = realtime_profile
+        self.search_beam, self.search_num_sim_envs = _SEARCH_PROFILES[realtime_profile]
+        self.search_budget = AdaptiveSearchBudget()
         self.search: HumanValueSearch | None = None
         self.planner = NativeReachabilityRunner(max_frames=max_frames)
         self.ready = True
@@ -122,6 +160,10 @@ class HumanBackend:
                 "available": True,
                 "default_for_coach": True,
                 "play_control": "search_weight >= 0; zero is pure human imitation",
+                "realtime_profile": self.realtime_profile,
+                "beam": self.search_beam,
+                "num_sim_envs": self.search_num_sim_envs,
+                "adaptive_deadline": True,
             },
             "cancellation": "cooperative between requests; hosts must discard stale frame_ids",
             "model": self.runtime.identity,
@@ -141,6 +183,12 @@ class HumanBackend:
                 "p95": None if latencies.size == 0 else float(np.percentile(latencies, 95)),
             },
             "model": self.runtime.identity,
+            "search": {
+                "realtime_profile": self.realtime_profile,
+                "beam": self.search_beam,
+                "num_sim_envs": self.search_num_sim_envs,
+                "budget_utilization": self.search_budget.utilization,
+            },
         }
 
     def _candidates(self, state: Mapping[str, Any]):
@@ -196,12 +244,14 @@ class HumanBackend:
             self.search = HumanValueSearch(
                 self.runtime,
                 device=self.device,
+                beam=self.search_beam,
                 seed=self.seed,
+                num_sim_envs=self.search_num_sim_envs,
                 gpu_planner=str(self.device).startswith("cuda"),
             )
         return self.search
 
-    def _infer(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def _infer(self, request: Mapping[str, Any], *, remaining_ms: float) -> dict[str, Any]:
         state = request["state"]
         rating = float(request["target_rating"])
         temperature = float(request.get("temperature", 1.0))
@@ -244,7 +294,10 @@ class HumanBackend:
         search_error = None
         search_weight = max(float(request.get("search_weight", 0.0)), 0.0)
         use_search = bool(request.get("search", request.get("type") == "coach")) or search_weight > 0
-        if use_search:
+        search_deadline_ms = self.search_budget.resolve(
+            remaining_ms, request.get("search_deadline_ms")
+        )
+        if use_search and search_deadline_ms >= self.search_budget.minimum_ms:
             try:
                 search_info = self._value_search().analyze(
                     board_planes=planes,
@@ -263,7 +316,7 @@ class HumanBackend:
                     opponent_state_age_frames=int(state.get("opponent_state_age_frames", 0)),
                     game_phase=game_phase,
                     recent_decisions=recent_decisions,
-                    deadline_ms=float(request.get("search_deadline_ms", 100.0)),
+                    deadline_ms=search_deadline_ms,
                 )
                 comp = competitive_scores(valid_actions, search_info)
             except Exception as exc:
@@ -334,6 +387,8 @@ class HumanBackend:
             },
             "search_error": search_error,
             "search_weight": search_weight,
+            "search_profile": self.realtime_profile,
+            "search_deadline_ms": search_deadline_ms if use_search else None,
         }
         if request.get("type") == "coach":
             result["coach"] = analyze_choice(
@@ -380,12 +435,15 @@ class HumanBackend:
                 response.update(type="stale", latest_frame_id=self.latest_frame_id)
                 return response
             self.latest_frame_id = frame_id
-            result = self._infer(request)
-            elapsed_ms = (time.perf_counter() - started) * 1e3
             budget_ms = float(request.get("deadline_ms", float("inf")))
+            elapsed_before_infer = (time.perf_counter() - started) * 1e3
+            result = self._infer(request, remaining_ms=budget_ms - elapsed_before_infer)
+            elapsed_ms = (time.perf_counter() - started) * 1e3
             if elapsed_ms > budget_ms:
+                self.search_budget.observe(deadline_exceeded=True)
                 response.update(type="deadline_exceeded", elapsed_ms=elapsed_ms)
                 return response
+            self.search_budget.observe(deadline_exceeded=False)
             response.update(type="result", mode=kind, result=result)
             return response
         except Exception as exc:
