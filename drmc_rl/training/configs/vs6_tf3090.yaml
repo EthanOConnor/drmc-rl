@@ -38,9 +38,10 @@ smdp_ppo:
   num_epochs: 2
   minibatch_size: 1536
   compile_mode: "default"
-  # Collect the next rollout on a one-update-lag actor while PPO updates.
-  overlap_rollout_update: true
-
+  # TF32 wins for the small rollout batches; BF16 halves PPO update time.
+  # Numerically sensitive PPO math remains FP32 outside network forward/backward.
+  rollout_compute_dtype: "fp32"
+  update_compute_dtype: "bf16"
   policy_type: "candidate"
   head_type: "dense"
   pill_embed_dim: 128
@@ -75,6 +76,7 @@ env:
   # Rollout reachability is solved in one GPU batch per decision wave and is
   # bit-exact vs the in-pool CPU planner (tests/test_vs_gpu_planner.py).
   gpu_planner: true
+  direct_policy_batch: true
   state_repr: bitplane_bottle_conn_mask
   # Measured tf3090 peak: 384 pairs. 512 no longer improved frame throughput.
   num_pairs: 384

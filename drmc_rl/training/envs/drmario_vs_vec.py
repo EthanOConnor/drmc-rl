@@ -59,6 +59,7 @@ from drmc_rl.envs.backends.drmario_vs_pool import (
     DrMarioVsPoolRunner,
     build_vs_reset_spec,
 )
+from drmc_rl.training.envs.policy_batch import PlacementPolicyBatch
 
 NES_FPS = 60.1
 
@@ -119,6 +120,7 @@ class DrMarioVsPoolVecEnv:
         opponent_pool_cfg: Optional[Dict[str, Any]] = None,
         start_bank_cfg: Optional[Dict[str, Any]] = None,
         gpu_planner: bool = False,
+        direct_policy_batch: bool = False,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
         self.num_sides = 2 * self.num_pairs
@@ -133,6 +135,7 @@ class DrMarioVsPoolVecEnv:
         self.garbage_reward_coef = float(garbage_reward_coef)
         self.clear_win_bonus = float(clear_win_bonus)
         self.seed_provider = seed_provider
+        self.direct_policy_batch = bool(direct_policy_batch)
 
         state_repr_norm = str(state_repr or "").strip().lower().replace("-", "_")
         if state_repr_norm not in {"bitplane_bottle_conn_mask", "bitplane_bottle_conn_mask_vs"}:
@@ -222,6 +225,7 @@ class DrMarioVsPoolVecEnv:
 
         # Need-action snapshot from the last reset/step call.
         self._need_action = np.zeros((self.num_sides,), dtype=np.uint8)
+        self._last_tau = np.ones((self.num_sides,), dtype=np.int32)
 
         # Rolling VS metrics (dashboard contract: tools/vs_dashboard.py).
         self._matches_total = 0
@@ -327,12 +331,17 @@ class DrMarioVsPoolVecEnv:
         self._viruses_prev = v_now.copy()
         self._viruses_initial = v_now.copy()
         self._need_action = self._runner.buffers.need_action.copy()
+        self._last_tau.fill(1)
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
         if self.opponent_obs:
             self._fill_opponent_planes_in_place()
-        self._refresh_infos(step_tau_raw=np.zeros((self.num_sides,), dtype=np.uint32))
+        if self.direct_policy_batch:
+            for info in self._infos:
+                info.clear()
+        else:
+            self._refresh_infos(step_tau_raw=np.zeros((self.num_sides,), dtype=np.uint32))
 
         if self._opp_pool is not None:
             for pair_i in range(self.num_pairs):
@@ -367,6 +376,7 @@ class DrMarioVsPoolVecEnv:
 
         buf = self._runner.buffers
         tau_raw = buf.tau_frames.astype(np.uint32, copy=False)
+        np.maximum(tau_raw, 1, out=self._last_tau, casting="unsafe")
         invalid = buf.invalid_action.astype(np.int32, copy=False)
         term_pair = buf.terminated.astype(np.uint8, copy=False)
         trunc_pair = buf.truncated.astype(np.uint8, copy=False)
@@ -464,23 +474,28 @@ class DrMarioVsPoolVecEnv:
         self._apply_symmetry_reduction_in_place()
         if self.opponent_obs:
             self._fill_opponent_planes_in_place()
-        self._refresh_infos(step_tau_raw=tau_raw)
-
-        for i in range(self.num_sides):
-            info_i = self._infos[i]
-            r_env = float(rewards[i])
-            info_i["vs/garbage_sent_delta"] = int(garbage_delta_arr[i])
-            info_i["vs/outcome"] = str(outcome_str[i])
-            info_i["r_env"] = r_env
-            info_i["r_shape"] = float(self.garbage_reward_coef) * float(garbage_delta_arr[i])
-            info_i["r_total"] = r_env
-            info_i["reward/r_env"] = r_env
-            info_i["reward/r_shape"] = info_i["r_shape"]
-            info_i["reward/r_total"] = r_env
-            info_i["cleared"] = bool(outcome_str[i] == "win")
-            info_i["topout"] = bool(outcome_str[i] == "loss")
-            info_i["goal_achieved"] = bool(outcome_str[i] == "win")
-            info_i["terminal_reason"] = str(outcome_str[i])
+        if self.direct_policy_batch:
+            for info in self._infos:
+                info.clear()
+        else:
+            self._refresh_infos(step_tau_raw=tau_raw)
+            for i in range(self.num_sides):
+                info_i = self._infos[i]
+                r_env = float(rewards[i])
+                info_i["vs/garbage_sent_delta"] = int(garbage_delta_arr[i])
+                info_i["vs/outcome"] = str(outcome_str[i])
+                info_i["r_env"] = r_env
+                info_i["r_shape"] = float(self.garbage_reward_coef) * float(
+                    garbage_delta_arr[i]
+                )
+                info_i["r_total"] = r_env
+                info_i["reward/r_env"] = r_env
+                info_i["reward/r_shape"] = info_i["r_shape"]
+                info_i["reward/r_total"] = r_env
+                info_i["cleared"] = bool(outcome_str[i] == "win")
+                info_i["topout"] = bool(outcome_str[i] == "loss")
+                info_i["goal_achieved"] = bool(outcome_str[i] == "win")
+                info_i["terminal_reason"] = str(outcome_str[i])
 
         self._ep_return += rewards.astype(np.float64)
 
@@ -501,8 +516,8 @@ class DrMarioVsPoolVecEnv:
                     "viruses_cleared": int(self._ep_viruses_cleared[i]),
                     "viruses_remaining": int(v_now[i]),
                     "viruses_initial": int(self._viruses_initial[i]),
-                    "top_out": bool(self._infos[i].get("topout", False)),
-                    "cleared": bool(self._infos[i].get("cleared", False)),
+                    "top_out": bool(outcome_str[i] == "loss"),
+                    "cleared": bool(outcome_str[i] == "win"),
                     "level": int(self.level),
                     "speed_setting": int(self.speed_setting),
                     "vs_outcome": str(outcome_str[i]),
@@ -540,6 +555,101 @@ class DrMarioVsPoolVecEnv:
     def close(self) -> None:
         if hasattr(self._runner, "close"):
             self._runner.close()
+
+    def transition_tau(self) -> np.ndarray:
+        idx = slice(0, None, 2) if self._opp_pool is not None else slice(None)
+        return self._last_tau[idx]
+
+    def policy_batch(self, aux_spec: str = "none") -> PlacementPolicyBatch:
+        """Return policy inputs as arrays, bypassing per-environment dictionaries."""
+
+        idx = np.arange(0, self.num_sides, 2) if self._opp_pool is not None else np.arange(
+            self.num_sides
+        )
+        aux = None if aux_spec == "none" else self._build_direct_aux(idx, aux_spec)
+        buf = self._runner.buffers
+        return PlacementPolicyBatch(
+            feasible_mask=self._mask[idx],
+            cost_to_lock=self._cost[idx],
+            pill_colors=buf.pill_colors[idx].astype(np.int64),
+            preview_pill_colors=buf.preview_colors[idx].astype(np.int64),
+            aux=aux,
+        )
+
+    def _build_direct_aux(self, side_idxs: np.ndarray, aux_spec: str) -> np.ndarray:
+        """Build aux_v1[_vs] directly from vector state, without info dictionaries."""
+
+        spec = str(aux_spec).strip().lower()
+        if spec not in {"v1", "v1_vs"}:
+            raise ValueError(f"Unsupported direct aux spec: {aux_spec!r}")
+        obs = self._obs[side_idxs]
+        batch = int(len(side_idxs))
+        dim = 72 if spec == "v1_vs" else 57
+        out = np.zeros((batch, dim), dtype=np.float32)
+        virus = obs[:, 3] > 0.5
+        colors = obs[:, :3] > 0.5
+        occupancy = colors.any(axis=1)
+        virus_by_color = (colors & virus[:, None]).reshape(batch, 3, -1).sum(axis=2)
+
+        def heights(mask: np.ndarray) -> np.ndarray:
+            occupied = mask.any(axis=1)
+            first = mask.argmax(axis=1)
+            return np.where(occupied, 16 - first, 0).astype(np.float32)
+
+        column_heights = heights(occupancy)
+        virus_heights = heights(virus)
+        viruses = virus.reshape(batch, -1).sum(axis=1).astype(np.float32)
+        options = self._mask_1d[side_idxs].sum(axis=1).astype(np.float32)
+        initial = self._viruses_initial[side_idxs].astype(np.float32)
+        progress = np.divide(
+            initial - viruses,
+            initial,
+            out=np.zeros_like(initial),
+            where=initial > 0,
+        )
+
+        k = 0
+        out[:, k + self.speed_setting] = 1.0
+        k += 3
+        out[:, k] = np.clip(viruses / 84.0, 0.0, 1.0)
+        k += 1
+        out[:, k : k + 3] = np.clip(virus_by_color / 84.0, 0.0, 1.0)
+        k += 3
+        out[:, k + (self.level + 15)] = 1.0
+        k += 36
+        out[:, k] = np.tanh(self._ep_frames[side_idxs] / 8000.0)
+        k += 1
+        out[:, k] = np.clip(column_heights.max(axis=1) / 16.0, 0.0, 1.0)
+        k += 1
+        out[:, k : k + 8] = np.clip(column_heights / 16.0, 0.0, 1.0)
+        k += 8
+        out[:, k] = np.clip(progress, 0.0, 1.0)
+        k += 1
+        out[:, k] = np.clip(options / 512.0, 0.0, 1.0)
+        k += 1
+        out[:, k] = np.clip(occupancy.reshape(batch, -1).sum(axis=1) / 128.0, 0.0, 1.0)
+        k += 1
+        out[:, k] = np.clip(virus_heights.max(axis=1) / 16.0, 0.0, 1.0)
+        k += 1
+
+        if spec == "v1_vs":
+            buf = self._runner.buffers
+            opp = side_idxs ^ 1
+            out[:, k] = np.clip(buf.viruses_rem[opp].astype(np.float32) / 84.0, 0.0, 1.0)
+            k += 1
+            out[:, k] = np.clip(buf.garbage_pending[side_idxs].astype(np.float32) / 4.0, 0.0, 1.0)
+            k += 1
+            out[:, k] = np.clip(buf.garbage_pending[opp].astype(np.float32) / 4.0, 0.0, 1.0)
+            k += 1
+            for values in (buf.pill_colors[opp], buf.preview_colors[opp]):
+                for half in range(2):
+                    color = values[:, half].astype(np.int64)
+                    valid = (color >= 0) & (color < 3)
+                    out[np.nonzero(valid)[0], k + color[valid]] = 1.0
+                    k += 3
+        if k != dim:
+            raise RuntimeError(f"direct aux packing mismatch: {k} != {dim}")
+        return out
 
     def render(self, *args: Any, **kwargs: Any) -> Optional[np.ndarray]:
         return None
@@ -771,9 +881,9 @@ class DrMarioVsPoolVecEnv:
         if aux_rows:
             for entry, lo, hi in spans:
                 if int(entry.aux_dim) > 0:
-                    shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
-                    rows = shim._build_aux_batch(
-                        buf["obs"][lo:hi], [self._infos[gi] for gi in order[lo:hi]]
+                    rows = self._build_direct_aux(
+                        np.asarray(order[lo:hi], dtype=np.int64),
+                        getattr(entry, "aux_spec", "v1"),
                     )
                     buf["aux"][lo:hi, : rows.shape[1]] = rows
 
@@ -809,7 +919,7 @@ class DrMarioVsPoolVecEnv:
         import torch
 
         cur = getattr(self, "_opp_staging_buf", None)
-        aux_max = 64
+        aux_max = 72
         if cur is not None and cur["obs"].shape[0] >= n:
             return cur
         cap = max(self.num_sides, n)
@@ -860,8 +970,10 @@ class DrMarioVsPoolVecEnv:
 
         aux = None
         if int(entry.aux_dim) > 0:
-            shim = self._get_aux_shim(getattr(entry, "aux_spec", "v1"))
-            aux = shim._build_aux_batch(obs, [self._infos[gi] for gi in side_idxs])
+            aux = self._build_direct_aux(
+                np.asarray(side_idxs, dtype=np.int64),
+                getattr(entry, "aux_spec", "v1"),
+            )
 
         dev = getattr(entry, "device", "cpu")
         with torch.inference_mode():

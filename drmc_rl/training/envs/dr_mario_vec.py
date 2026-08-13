@@ -35,6 +35,7 @@ class VecEnvConfig:
     start_bank: Optional[Dict[str, Any]] = None  # cpp-vs-pool: Go-Exploit start-state bank
     clear_win_bonus: float = 0.0  # cpp-vs-pool: extra terminal reward for winning by clear
     gpu_planner: bool = False  # cpp-vs-pool: defer reachability batches to CUDA
+    direct_policy_batch: bool = False  # cpp-vs-pool: typed trainer hot path
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -235,6 +236,9 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             start_bank_cfg=env_cfg.start_bank,
             clear_win_bonus=float(getattr(env_cfg, "clear_win_bonus", 0.0) or 0.0),
             gpu_planner=bool(getattr(env_cfg, "gpu_planner", False) or False),
+            direct_policy_batch=bool(
+                getattr(env_cfg, "direct_policy_batch", False) or False
+            ),
         )
 
     real_ids = {
