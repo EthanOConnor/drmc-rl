@@ -24,6 +24,7 @@ League roles (docs/LEAGUE.md) extend the pool with fixed external targets
 import json
 import re
 import shutil
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -139,6 +140,7 @@ class OpponentPool:
 
             self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.entries: List[OpponentEntry] = []
+        self._lock = threading.RLock()
         if self.manifest_path.is_file():
             self._load_manifest()
 
@@ -257,21 +259,23 @@ class OpponentPool:
         return others
 
     def sample(self, rng: np.random.Generator) -> OpponentEntry:
-        subset = self._sample_subset(rng)
-        idx = int(rng.choice(len(subset), p=self.pfsp_weights(subset)))
-        entry = subset[idx]
-        self.ensure_loaded(entry)
-        return entry
+        with self._lock:
+            subset = self._sample_subset(rng)
+            idx = int(rng.choice(len(subset), p=self.pfsp_weights(subset)))
+            entry = subset[idx]
+            self.ensure_loaded(entry)
+            return entry
 
     def record(self, opponent_id: str, learner_won: bool | float) -> None:
         """Record one completed match (learner perspective; draws = 0.5)."""
 
-        entry = self.get(opponent_id)
-        if entry is None:
-            return
-        entry.wins += float(learner_won)
-        entry.games += 1
-        self._save_manifest()
+        with self._lock:
+            entry = self.get(opponent_id)
+            if entry is None:
+                return
+            entry.wins += float(learner_won)
+            entry.games += 1
+            self._save_manifest()
 
     def get(self, opponent_id: str) -> Optional[OpponentEntry]:
         for entry in self.entries:
