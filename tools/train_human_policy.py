@@ -855,20 +855,28 @@ def _shard_statistics(
         if len(ratings):
             minimum = min(minimum, float(ratings.min()))
             maximum = max(maximum, float(ratings.max()))
-        validation = np.flatnonzero(~train_mask)
-        if len(validation):
+        groups = (
+            (1, (arrays["split"] != 0) & (arrays["player_fold"] != 0) & (arrays["time_split"] == 0)),
+            (2, (arrays["player_fold"] == 0) & (arrays["split"] == 0) & (arrays["time_split"] == 0)),
+            (3, (arrays["time_split"] != 0) & (arrays["split"] == 0) & (arrays["player_fold"] != 0)),
+        )
+        per_group = max(1, int(validation_rows_per_shard) // len(groups))
+        for group, group_mask in groups:
+            validation = np.flatnonzero(group_mask)
+            if not len(validation):
+                continue
             chosen = rng.choice(
                 validation,
-                size=min(len(validation), int(validation_rows_per_shard)),
+                size=min(len(validation), per_group),
                 replace=False,
             )
-            validation_parts.append(
-                {
-                    key: value[chosen]
-                    for key, value in arrays.items()
-                    if np.asarray(value).ndim > 0 and len(value) == len(arrays["rating"])
-                }
-            )
+            part = {
+                key: value[chosen]
+                for key, value in arrays.items()
+                if np.asarray(value).ndim > 0 and len(value) == len(arrays["rating"])
+            }
+            part["evaluation_group"] = np.full(len(chosen), group, dtype=np.uint8)
+            validation_parts.append(part)
     if count == 0:
         raise ValueError("dataset shards contain no training rows")
     mean = rating_sum / count
@@ -1081,6 +1089,18 @@ def train_sharded(
         policy.load_state_dict(best_policy)
         timing.load_state_dict(best_timing)
     metrics = _evaluate_compact(policy, timing, validation, condition, device=device)
+    group_names = {1: "replay_holdout", 2: "player_holdout", 3: "future_holdout"}
+    for group, name in group_names.items():
+        selected = np.flatnonzero(validation["evaluation_group"] == group)
+        if not len(selected):
+            continue
+        part = {
+            key: value[selected]
+            for key, value in validation.items()
+            if np.asarray(value).ndim > 0 and len(value) == len(validation["rating"])
+        }
+        group_metrics = _evaluate_compact(policy, timing, part, condition, device=device)
+        metrics.update({f"{name}_{key}": value for key, value in group_metrics.items()})
     metrics.update(
         {
             "train_rows": int(train_rows),
