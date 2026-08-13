@@ -757,7 +757,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                 ) = self._select_actions_batch(decision_obs, decision_info, deterministic=True)
 
             batch = self.buffer.get_batch(
-                bootstrap_value=np.asarray(bootstrap_values, dtype=np.float32)
+                bootstrap_value=np.asarray(bootstrap_values, dtype=np.float32),
+                copy_storage=self._device_rollout is None,
             )
 
             # Candidate-packing telemetry (helps detect truncation / action-set issues).
