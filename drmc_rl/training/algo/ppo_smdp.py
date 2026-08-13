@@ -147,6 +147,126 @@ class SMDPPPOConfig:
     compile_mode: str = "off"  # off|default
 
 
+@dataclass(slots=True)
+class _DeviceRolloutWave:
+    observations: torch.Tensor
+    pill_colors: torch.Tensor
+    preview_pill_colors: torch.Tensor
+    aux: Optional[torch.Tensor]
+    actions: torch.Tensor
+    log_probs: torch.Tensor
+    candidate_actions: torch.Tensor
+    candidate_mask: torch.Tensor
+    candidate_cost: torch.Tensor
+
+
+@dataclass(slots=True)
+class _DeviceRolloutBatch:
+    observations: torch.Tensor
+    pill_colors: torch.Tensor
+    preview_pill_colors: torch.Tensor
+    aux: Optional[torch.Tensor]
+    actions: torch.Tensor
+    log_probs: torch.Tensor
+    candidate_actions: torch.Tensor
+    candidate_mask: torch.Tensor
+    candidate_cost: torch.Tensor
+
+
+class _DeviceRolloutBuffer:
+    """Preallocated CUDA tensors reused from action selection through PPO."""
+
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        obs_shape: Tuple[int, ...],
+        aux_dim: int,
+        candidate_max: int,
+        device: torch.device,
+    ) -> None:
+        self.capacity = int(capacity)
+        self.device = device
+        self.observations = torch.empty(
+            (capacity, *obs_shape), dtype=torch.float32, device=device
+        )
+        self.pill_colors = torch.empty((capacity, 2), dtype=torch.int64, device=device)
+        self.preview_pill_colors = torch.empty(
+            (capacity, 2), dtype=torch.int64, device=device
+        )
+        self.aux = (
+            torch.empty((capacity, aux_dim), dtype=torch.float32, device=device)
+            if aux_dim > 0
+            else None
+        )
+        self.actions = torch.empty(capacity, dtype=torch.int64, device=device)
+        self.log_probs = torch.empty(capacity, dtype=torch.float32, device=device)
+        self.candidate_actions = torch.empty(
+            (capacity, candidate_max), dtype=torch.int32, device=device
+        )
+        self.candidate_mask = torch.empty(
+            (capacity, candidate_max), dtype=torch.bool, device=device
+        )
+        self.candidate_cost = torch.empty(
+            (capacity, candidate_max), dtype=torch.float32, device=device
+        )
+        self.size = 0
+
+    def add(
+        self,
+        wave: _DeviceRolloutWave,
+        *,
+        actions: np.ndarray,
+        log_probs: np.ndarray,
+        replace_policy_outputs: bool,
+    ) -> None:
+        count = int(wave.observations.shape[0])
+        end = self.size + count
+        if end > self.capacity:
+            raise BufferError(
+                f"Device rollout batch exceeds capacity: {self.size}+{count}>{self.capacity}"
+            )
+        dst = slice(self.size, end)
+        self.observations[dst].copy_(wave.observations)
+        self.pill_colors[dst].copy_(wave.pill_colors)
+        self.preview_pill_colors[dst].copy_(wave.preview_pill_colors)
+        if self.aux is not None:
+            if wave.aux is None:
+                raise RuntimeError("Device rollout wave is missing auxiliary features")
+            self.aux[dst].copy_(wave.aux)
+        self.candidate_actions[dst].copy_(wave.candidate_actions)
+        self.candidate_mask[dst].copy_(wave.candidate_mask)
+        self.candidate_cost[dst].copy_(wave.candidate_cost)
+        if replace_policy_outputs:
+            self.actions[dst].copy_(torch.from_numpy(actions).to(self.device))
+            self.log_probs[dst].copy_(torch.from_numpy(log_probs).to(self.device))
+        else:
+            self.actions[dst].copy_(wave.actions)
+            self.log_probs[dst].copy_(wave.log_probs)
+        self.size = end
+
+    def batch(self, size: int) -> _DeviceRolloutBatch:
+        if int(size) != self.size:
+            raise RuntimeError(
+                f"CPU/device rollout size mismatch: CPU={int(size)}, device={self.size}"
+            )
+        src = slice(0, self.size)
+        return _DeviceRolloutBatch(
+            observations=self.observations[src],
+            pill_colors=self.pill_colors[src],
+            preview_pill_colors=self.preview_pill_colors[src],
+            aux=None if self.aux is None else self.aux[src],
+            actions=self.actions[src],
+            log_probs=self.log_probs[src],
+            candidate_actions=self.candidate_actions[src],
+            candidate_mask=self.candidate_mask[src],
+            candidate_cost=self.candidate_cost[src],
+        )
+
+    def clear(self) -> None:
+        self.size = 0
+
+
 class SMDPPPOAdapter(AlgoAdapter):
     """PPO trainer for placement policies with SMDP discounting."""
 
@@ -354,6 +474,18 @@ class SMDPPPOAdapter(AlgoAdapter):
             search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
         )
         self._rollout_env_ids = np.arange(env.num_envs, dtype=np.int32)
+        self._pending_device_wave: Optional[_DeviceRolloutWave] = None
+        self._device_rollout = (
+            _DeviceRolloutBuffer(
+                capacity=self.hparams.decisions_per_update * 2,
+                obs_shape=obs_shape,
+                aux_dim=self.aux_dim,
+                candidate_max=self.candidate_max,
+                device=torch.device(self.device),
+            )
+            if self.policy_type == "candidate" and torch.device(self.device).type == "cuda"
+            else None
+        )
 
         # Tracking
         self.global_step = 0  # Total environment steps (frames)
@@ -553,6 +685,15 @@ class SMDPPPOAdapter(AlgoAdapter):
                     search_values=sd_values,
                     search_mask=sd_flags,
                 )
+                if self._device_rollout is not None:
+                    if self._pending_device_wave is None:
+                        raise RuntimeError("CUDA rollout is missing its device wave")
+                    self._device_rollout.add(
+                        self._pending_device_wave,
+                        actions=actions,
+                        log_probs=log_probs,
+                        replace_policy_outputs=self._sd_runner is not None,
+                    )
 
                 advance_from: Optional[int] = None
                 advance_to: Optional[int] = None
@@ -635,7 +776,12 @@ class SMDPPPOAdapter(AlgoAdapter):
                         np.mean(feasible_counts > int(self.candidate_max))
                     )
 
-            metrics = self._update_policy(batch)
+            device_batch = (
+                None
+                if self._device_rollout is None
+                else self._device_rollout.batch(len(batch.actions))
+            )
+            metrics = self._update_policy(batch, device_batch=device_batch)
             metrics.update(candidate_stats)
 
             if self._sd_runner is not None:
@@ -646,6 +792,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
 
             self.buffer.clear()
+            if self._device_rollout is not None:
+                self._device_rollout.clear()
 
             update_time = time.time() - update_start
             metrics["perf/update_sec"] = update_time
@@ -867,6 +1015,18 @@ class SMDPPPOAdapter(AlgoAdapter):
                 selected = torch.stack(
                     (actions_t.float(), log_probs.float(), values.float().reshape(-1)), dim=1
                 ).cpu().numpy()
+                if self._device_rollout is not None:
+                    self._pending_device_wave = _DeviceRolloutWave(
+                        observations=obs_t,
+                        pill_colors=colors_t,
+                        preview_pill_colors=preview_t,
+                        aux=aux_t,
+                        actions=actions_t,
+                        log_probs=log_probs,
+                        candidate_actions=cand_actions_t,
+                        candidate_mask=cand_mask_t,
+                        candidate_cost=cand_cost_t,
+                    )
             dt = float(time.perf_counter() - t0)
             batch_size = int(obs_arr.shape[0])
             self._perf_inference_calls += batch_size
@@ -953,7 +1113,12 @@ class SMDPPPOAdapter(AlgoAdapter):
         return obs, float(rewards[env_idx]), terminated, truncated, infos
 
     # ------------------------------------------------------------------ update
-    def _update_policy(self, batch: DecisionBatch) -> Dict[str, float]:
+    def _update_policy(
+        self,
+        batch: DecisionBatch,
+        *,
+        device_batch: Optional[_DeviceRolloutBatch] = None,
+    ) -> Dict[str, float]:
         """Update policy using PPO on decision-level batch."""
         T = len(batch.actions)
 
@@ -961,13 +1126,37 @@ class SMDPPPOAdapter(AlgoAdapter):
         costs_to_lock_np = batch.costs_to_lock
 
         # Convert to tensors
-        obs = torch.from_numpy(batch.observations).to(self.device)
+        obs = (
+            device_batch.observations
+            if device_batch is not None
+            else torch.from_numpy(batch.observations).to(self.device)
+        )
         masks = torch.from_numpy(batch.masks).to(self.device)
-        pill_colors = torch.from_numpy(batch.pill_colors).to(self.device)
-        preview_pill_colors = torch.from_numpy(batch.preview_pill_colors).to(self.device)
-        aux = None if batch.aux is None else torch.from_numpy(batch.aux).to(self.device)
-        actions = torch.from_numpy(batch.actions).to(self.device)
-        log_probs_old = torch.from_numpy(batch.log_probs).to(self.device)
+        pill_colors = (
+            device_batch.pill_colors
+            if device_batch is not None
+            else torch.from_numpy(batch.pill_colors).to(self.device)
+        )
+        preview_pill_colors = (
+            device_batch.preview_pill_colors
+            if device_batch is not None
+            else torch.from_numpy(batch.preview_pill_colors).to(self.device)
+        )
+        aux = (
+            device_batch.aux
+            if device_batch is not None
+            else None if batch.aux is None else torch.from_numpy(batch.aux).to(self.device)
+        )
+        actions = (
+            device_batch.actions
+            if device_batch is not None
+            else torch.from_numpy(batch.actions).to(self.device)
+        )
+        log_probs_old = (
+            device_batch.log_probs
+            if device_batch is not None
+            else torch.from_numpy(batch.log_probs).to(self.device)
+        )
         returns = torch.from_numpy(batch.returns).to(self.device)
         advantages = torch.from_numpy(batch.advantages).to(self.device)
 
@@ -1012,14 +1201,19 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
             kmax = int(self.candidate_max)
             feasible_counts_np = masks_np.reshape(T, -1).sum(axis=1).astype(np.int32, copy=False)
-            packed = pack_feasible_candidates_tensor_batch(
-                masks,
-                torch.from_numpy(costs_to_lock_np).to(self.device),
-                max_candidates=kmax,
-            )
-            cand_actions_all_t = packed.actions
-            cand_mask_all_t = packed.mask
-            cand_cost_all_t = packed.cost
+            if device_batch is not None:
+                cand_actions_all_t = device_batch.candidate_actions
+                cand_mask_all_t = device_batch.candidate_mask
+                cand_cost_all_t = device_batch.candidate_cost
+            else:
+                packed = pack_feasible_candidates_tensor_batch(
+                    masks,
+                    torch.from_numpy(costs_to_lock_np).to(self.device),
+                    max_candidates=kmax,
+                )
+                cand_actions_all_t = packed.actions
+                cand_mask_all_t = packed.mask
+                cand_cost_all_t = packed.cost
 
         # Multiple epochs over the batch
         metrics_accum = {key: 0.0 for key in _UPDATE_METRIC_KEYS}
