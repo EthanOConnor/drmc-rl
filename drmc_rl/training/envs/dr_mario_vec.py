@@ -35,7 +35,6 @@ class VecEnvConfig:
     start_bank: Optional[Dict[str, Any]] = None  # cpp-vs-pool: Go-Exploit start-state bank
     clear_win_bonus: float = 0.0  # cpp-vs-pool: extra terminal reward for winning by clear
     gpu_planner: bool = False  # cpp-vs-pool: defer reachability batches to CUDA
-    pipeline_shards: int = 1  # cpp-vs-pool: independent pools overlapped in env.step
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -202,10 +201,7 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
 
     # 2-player VS self-play pool: both sides flattened as 2*num_pairs envs.
     if env_id in {"drmario-vs", "DrMarioVs-v0"} or str(env_cfg.backend or "") in {"cpp-vs-pool", "cpp_vs_pool"}:
-        from drmc_rl.training.envs.drmario_vs_vec import (
-            DrMarioVsPoolVecEnv,
-            DrMarioVsShardedVecEnv,
-        )
+        from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
         num_pairs = env_cfg.num_pairs
         if num_pairs is None:
@@ -229,17 +225,7 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
         else:
             opp_cfg = None
 
-        env_cls = (
-            DrMarioVsShardedVecEnv
-            if int(getattr(env_cfg, "pipeline_shards", 1) or 1) > 1
-            else DrMarioVsPoolVecEnv
-        )
-        shard_kwargs = (
-            {"num_shards": int(env_cfg.pipeline_shards)}
-            if env_cls is DrMarioVsShardedVecEnv
-            else {}
-        )
-        return env_cls(
+        return DrMarioVsPoolVecEnv(
             num_pairs=int(num_pairs),
             state_repr=str(env_cfg.state_repr or "bitplane_bottle_conn_mask"),
             level=int(env_cfg.level),
@@ -249,7 +235,6 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             start_bank_cfg=env_cfg.start_bank,
             clear_win_bonus=float(getattr(env_cfg, "clear_win_bonus", 0.0) or 0.0),
             gpu_planner=bool(getattr(env_cfg, "gpu_planner", False) or False),
-            **shard_kwargs,
         )
 
     real_ids = {

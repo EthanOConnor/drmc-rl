@@ -166,25 +166,3 @@ def test_vs_pool_runner_need_action_noop() -> None:
                     assert int(buf.invalid_action[i]) == 512
     finally:
         runner.close()
-
-
-def test_sharded_vs_pool_preserves_vector_contract() -> None:
-    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsShardedVecEnv
-
-    env = DrMarioVsShardedVecEnv(
-        num_pairs=4,
-        num_shards=2,
-        state_repr="bitplane_bottle_conn_mask",
-        level=0,
-        randomize_rng=True,
-    )
-    try:
-        obs, infos = env.reset(seed=8)
-        assert obs.shape == (8, 12, 16, 8)
-        actions = _random_feasible_actions(infos, np.random.default_rng(8))
-        obs, rewards, terminated, truncated, infos = env.step(actions)
-        assert obs.shape == (8, 12, 16, 8)
-        assert rewards.shape == terminated.shape == truncated.shape == (8,)
-        assert len(infos) == 8
-    finally:
-        env.close()
