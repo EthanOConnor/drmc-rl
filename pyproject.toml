@@ -45,6 +45,7 @@ rl = [
 ]
 viz = ["opencv-python-headless>=5,<6", "pillow>=12.3,<13"]
 eval = ["matplotlib>=3.11,<4", "pandas>=3.0,<4", "pyarrow>=25,<26"]
+corpus = ["pyarrow>=25,<26"]
 
 [dependency-groups]
 dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17"]
