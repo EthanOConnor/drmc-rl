@@ -102,15 +102,19 @@ def _attach_temporal_context(
     rows: list[dict[str, Any]],
     histories: dict[tuple[str, int], list[dict[str, float | int]]],
     decision_counts: dict[tuple[str, int], int],
+    *,
+    retained_ids: set[str] | None = None,
 ) -> None:
     """Attach leak-free prior-decision features before sampling current rows."""
 
     for row in rows:
         key = (str(row["game_id"]), int(row["player_slot"]))
         recent = histories.setdefault(key, [])
-        row["_history"] = history_features(recent)
         count = decision_counts.get(key, 0)
-        row["_game_phase"] = min(count, 100) / 100.0
+        retained = retained_ids is None or str(row["decision_id"]) in retained_ids
+        if retained:
+            row["_history"] = history_features(recent)
+            row["_game_phase"] = min(count, 100) / 100.0
         x = int(row["lock_x"])
         y = int(row["lock_y_top"])
         rotation = int(row["lock_rotation"]) & 3
@@ -259,12 +263,15 @@ def extract_dataset(
     ):
         source_rows = batch.to_pylist()
         scanned += len(source_rows)
-        _attach_temporal_context(source_rows, histories, decision_counts)
-        rows = [
-            row
+        retained_ids = {
+            str(row["decision_id"])
             for row in source_rows
             if _stable_keep(str(row["decision_id"]), sample_modulus, seed)
-        ]
+        }
+        _attach_temporal_context(
+            source_rows, histories, decision_counts, retained_ids=retained_ids
+        )
+        rows = [row for row in source_rows if str(row["decision_id"]) in retained_ids]
         if max_rows is not None:
             rows = rows[: max(0, int(max_rows) - sampled)]
         if not rows:

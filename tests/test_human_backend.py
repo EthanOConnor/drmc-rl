@@ -95,6 +95,7 @@ def test_temporal_context_uses_prior_decisions_in_same_round() -> None:
     from tools.train_human_policy import _attach_temporal_context
 
     common = {
+        "decision_id": "one",
         "game_id": "round-1",
         "lock_x": 3,
         "lock_y_top": 10,
@@ -105,14 +106,23 @@ def test_temporal_context_uses_prior_decisions_in_same_round() -> None:
     }
     rows = [
         {**common, "player_slot": 1},
-        {**common, "player_slot": 2},
-        {**common, "player_slot": 1, "tau_frames": 70},
+        {**common, "decision_id": "two", "player_slot": 2},
+        {**common, "decision_id": "three", "player_slot": 1, "tau_frames": 70},
     ]
     _attach_temporal_context(rows, {}, {})
     assert rows[0]["_history"].sum() == 0
     assert rows[1]["_history"].sum() == 0
     assert rows[2]["_history"][0] == 1.0
     assert rows[2]["_game_phase"] == 0.01
+
+    sampled = [dict(row) for row in rows]
+    for row in sampled:
+        row.pop("_history", None)
+        row.pop("_game_phase", None)
+    _attach_temporal_context(sampled, {}, {}, retained_ids={"three"})
+    assert "_history" not in sampled[0]
+    assert "_history" not in sampled[1]
+    assert sampled[2]["_history"][0] == 1.0
 
 
 def test_tiny_end_to_end_training_smoke() -> None:
