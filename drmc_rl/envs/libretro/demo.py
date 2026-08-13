@@ -455,7 +455,9 @@ def _viewer_worker(
                         image = Image.fromarray(frame)
                         if scale != 1.0:
                             w, h = image.size
-                            image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
+                            image = image.resize(
+                                (int(w * scale), int(h * scale)), Image.Resampling.NEAREST
+                            )
                         holder["img"] = ImageTk.PhotoImage(image)
                         img_label.configure(image=holder["img"])
                         record_viz_update()
@@ -488,7 +490,9 @@ def _viewer_worker(
                         image = Image.fromarray(frame)
                         if scale != 1.0:
                             w, h = image.size
-                            image = image.resize((int(w * scale), int(h * scale)), Image.NEAREST)
+                            image = image.resize(
+                                (int(w * scale), int(h * scale)), Image.Resampling.NEAREST
+                            )
                         holder["img"] = ImageTk.PhotoImage(image)
                         img_label.configure(image=holder["img"])
                         record_viz_update()

@@ -20,11 +20,13 @@ try:
     import torch.nn as nn
     import torch.nn.functional as F
     from torch import optim
+    from torch.optim.swa_utils import get_ema_multi_avg_fn
 except ImportError:
     torch = None  # type: ignore
     nn = None  # type: ignore
     F = None  # type: ignore
     optim = None  # type: ignore
+    get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
@@ -309,12 +311,16 @@ class SMDPPPOAdapter(AlgoAdapter):
                 aux_dim=self.aux_dim,
             ).to(self.device)
 
-        self.optimizer = optim.Adam(self.net.parameters(), lr=self.hparams.lr)
+        optimizer_kwargs = {"fused": True} if torch.device(self.device).type == "cuda" else {}
+        self.optimizer = optim.Adam(
+            self.net.parameters(), lr=self.hparams.lr, **optimizer_kwargs
+        )
 
         # EMA of the policy weights: PPO iterates wander, and evaluating the
         # raw iterate produced large sweep-to-sweep skill swings; the EMA is
         # the deployable/evaluated policy.
         self.ema_decay = float(getattr(self.hparams, "ema_decay", 0.995) or 0.995)
+        self._ema_update = get_ema_multi_avg_fn(self.ema_decay)
         self._ema_state = {
             k: v.detach().clone() for k, v in self.net.state_dict().items()
         }
@@ -1133,7 +1139,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                     loss = loss + sd_beta * sd_kl_loss
 
                 # Optimize
-                self.optimizer.zero_grad()
+                self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 nn.utils.clip_grad_norm_(
                     self.net.parameters(),
@@ -1141,13 +1147,17 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
                 self.optimizer.step()
                 with torch.no_grad():
-                    d = self.ema_decay
+                    ema_tensors: List[torch.Tensor] = []
+                    model_tensors: List[torch.Tensor] = []
                     for k, v in self.net.state_dict().items():
                         e = self._ema_state[k]
                         if v.dtype.is_floating_point:
-                            e.mul_(d).add_(v, alpha=1.0 - d)
+                            ema_tensors.append(e)
+                            model_tensors.append(v)
                         else:
                             e.copy_(v)
+                    if ema_tensors:
+                        self._ema_update(ema_tensors, model_tensors, None)
 
                 # Track metrics on-device; a `.item()` per metric per minibatch
                 # forces an accelerator sync each time (dominated profiles).
@@ -1905,27 +1915,26 @@ class SMDPPPOAdapter(AlgoAdapter):
     def _log_metrics(self, metrics: Dict[str, float]) -> None:
         """Log metrics to logger."""
         step = self.global_step
+        values: Dict[str, float] = dict(metrics)
 
         if self.batch_returns:
             returns = np.array(self.batch_returns, dtype=np.float32)
-            self.logger.log_scalar("train/return_mean", float(returns.mean()), step)
-            self.logger.log_scalar("train/return_std", float(returns.std()), step)
+            values["train/return_mean"] = float(returns.mean())
+            values["train/return_std"] = float(returns.std())
 
         if self.batch_viruses:
             viruses = np.array(self.batch_viruses, dtype=np.float32)
-            self.logger.log_scalar("drm/viruses_per_ep", float(viruses.mean()), step)
-
-        for key, value in metrics.items():
-            self.logger.log_scalar(key, value, step)
+            values["drm/viruses_per_ep"] = float(viruses.mean())
 
         # VS self-play metrics + skill grading (vs vec env only).
         get_vs_metrics = getattr(self.env, "get_vs_metrics", None)
         if callable(get_vs_metrics):
             try:
                 for key, value in get_vs_metrics().items():
-                    self.logger.log_scalar(str(key), float(value), step)
+                    values[str(key)] = float(value)
             except Exception:
                 pass
+            self.logger.log_scalars(values, step)
             self._maybe_grade_vs_skill(step)
             # Opponent-pool snapshots (vs env with opponent_pool enabled):
             # freeze the EMA weights into the pool every N learner matches.
@@ -1939,6 +1948,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                     )
                 except Exception:
                     pass
+        else:
+            self.logger.log_scalars(values, step)
 
     # Grade a batch of completed VS matches every N matches (2 per-side
     # samples per match) and append to <logdir>/skill_history.jsonl.

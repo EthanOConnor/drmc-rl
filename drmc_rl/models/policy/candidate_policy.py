@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
-import numpy as np
-
 try:
     import torch
     import torch.nn as nn
@@ -47,63 +45,6 @@ def _decode_actions(
     return o, row, col
 
 
-def _coord_channels(
-    B: int, H: int, W: int, *, device: "torch.device", dtype: "torch.dtype"
-) -> "torch.Tensor":
-    y = torch.linspace(0.0, 1.0, H, device=device, dtype=dtype).view(1, 1, H, 1).expand(B, 1, H, W)
-    x = torch.linspace(0.0, 1.0, W, device=device, dtype=dtype).view(1, 1, 1, W).expand(B, 1, H, W)
-    return torch.cat([y, x], dim=1)
-
-
-def _gather_patch(
-    occ: "torch.Tensor",
-    row: "torch.Tensor",
-    col: "torch.Tensor",
-    *,
-    kernel: int,
-    pad_value: float = 1.0,
-) -> "torch.Tensor":
-    """Return flattened occupancy patches around each cell.
-
-    Args:
-        occ: [B,H,W] float tensor in {0,1}.
-        row/col: [B,K] int tensors (will be clamped to in-bounds).
-        kernel: odd patch kernel size (e.g. 3 or 5).
-    """
-
-    k = int(kernel)
-    if k <= 1:
-        B = int(occ.shape[0])
-        b_idx = torch.arange(B, device=occ.device).unsqueeze(-1)
-        row_i = row.clamp(0, GRID_H - 1).long()
-        col_i = col.clamp(0, GRID_W - 1).long()
-        return occ[b_idx, row_i, col_i].unsqueeze(-1)
-
-    if k % 2 != 1:
-        raise ValueError(f"patch_kernel must be odd, got {k}")
-    r = k // 2
-    B, H, W = occ.shape
-    Hp = H + 2 * r
-    Wp = W + 2 * r
-
-    occ_p = F.pad(occ, (r, r, r, r), mode="constant", value=float(pad_value))
-    occ_flat = occ_p.reshape(B, Hp * Wp)
-
-    row_i = row.clamp(0, GRID_H - 1).long() + r
-    col_i = col.clamp(0, GRID_W - 1).long() + r
-    base = row_i * Wp + col_i  # [B,K]
-
-    offsets = []
-    for dy in range(-r, r + 1):
-        for dx in range(-r, r + 1):
-            offsets.append(dy * Wp + dx)
-    offs = torch.tensor(offsets, device=occ.device, dtype=torch.int64)  # [P]
-
-    idx = base.unsqueeze(-1) + offs.view(1, 1, -1)  # [B,K,P]
-    patch = occ_flat.gather(1, idx.reshape(B, -1)).reshape(B, base.shape[1], -1)
-    return patch
-
-
 class _ResBlock(nn.Module):
     def __init__(self, ch: int) -> None:
         super().__init__()
@@ -125,10 +66,13 @@ class _BoardCNN(nn.Module):
             nn.ReLU(inplace=True),
         )
         self.blocks = nn.Sequential(*[_ResBlock(d_model) for _ in range(int(max(0, blocks)))])
+        y = torch.linspace(0.0, 1.0, GRID_H).view(1, 1, GRID_H, 1).expand(1, 1, GRID_H, GRID_W)
+        x = torch.linspace(0.0, 1.0, GRID_W).view(1, 1, 1, GRID_W).expand(1, 1, GRID_H, GRID_W)
+        self.register_buffer("_coords", torch.cat([y, x], dim=1), persistent=False)
 
     def forward(self, board: "torch.Tensor") -> "torch.Tensor":
-        B, _, H, W = board.shape
-        coords = _coord_channels(B, H, W, device=board.device, dtype=board.dtype)
+        B = int(board.shape[0])
+        coords = self._coords.to(dtype=board.dtype).expand(B, -1, -1, -1)
         x = torch.cat([board, coords], dim=1)
         x = self.stem(x)
         x = self.blocks(x)
@@ -224,6 +168,7 @@ class CandidatePlacementPolicyNet(nn.Module):
         self.in_channels = int(in_channels)
         self.board_channels = int(max(1, int(board_channels)))
         self.d_model = int(d_model)
+        self.logit_scale = float(max(1, self.d_model) ** -0.5)
         self.aux_dim = int(max(0, int(aux_dim)))
         self.patch_kernel = int(patch_kernel)
         self.cost_norm_denom = float(cost_norm_denom)
@@ -515,7 +460,7 @@ class CandidatePlacementPolicyNet(nn.Module):
             cand_in = torch.cat([pos, cost_e, patch], dim=-1)
         e = self.cand_mlp(cand_in) + cond_m.unsqueeze(1)  # [B,K,D]
 
-        logits = (e * g.unsqueeze(1)).sum(dim=-1) / float(np.sqrt(max(1, self.d_model)))
+        logits = (e * g.unsqueeze(1)).sum(dim=-1) * self.logit_scale
         logits = logits.masked_fill(~cand_mask.bool(), -1e9)
 
         value = self.value_head(g)

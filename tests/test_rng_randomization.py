@@ -94,3 +94,20 @@ def test_randomize_rng_immediate_when_auto_start_disabled():
     assert addr == 0x0017
     assert tuple(int(v) for v in values) == tuple(override)
     assert info.get("rng_seed") == tuple(override)
+
+
+def test_reset_seed_and_snapshot_use_gymnasium_generator() -> None:
+    env = DrMarioLibretroEnv(obs_mode="state", backend="mock", auto_start=False)
+    try:
+        env.reset(seed=123)
+        first = env._mock_obs()
+        snap = env.snapshot()
+        after_snapshot = env._mock_obs()
+        env.restore(snap)
+        np.testing.assert_array_equal(env._mock_obs(), after_snapshot)
+
+        env.reset(seed=123)
+        np.testing.assert_array_equal(env._mock_obs(), first)
+        assert env._rng is env.np_random
+    finally:
+        env.close()
