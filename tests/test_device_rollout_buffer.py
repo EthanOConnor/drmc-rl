@@ -14,7 +14,7 @@ from drmc_rl.training.algo.ppo_smdp import (
 )
 
 
-def _wave(offset: int) -> _DeviceRolloutWave:
+def _wave(offset: int, candidate_width: int = 4) -> _DeviceRolloutWave:
     count = 3
     return _DeviceRolloutWave(
         observations=torch.full((count, 4, 2, 2), float(offset)),
@@ -23,9 +23,15 @@ def _wave(offset: int) -> _DeviceRolloutWave:
         aux=torch.full((count, 2), float(offset + 2)),
         actions=torch.arange(offset, offset + count),
         log_probs=torch.arange(count, dtype=torch.float32) + offset,
-        candidate_actions=torch.arange(12, dtype=torch.int32).reshape(count, 4) + offset,
-        candidate_mask=torch.ones((count, 4), dtype=torch.bool),
-        candidate_cost=torch.arange(12, dtype=torch.float32).reshape(count, 4) + offset,
+        candidate_actions=torch.arange(
+            count * candidate_width, dtype=torch.int32
+        ).reshape(count, candidate_width)
+        + offset,
+        candidate_mask=torch.ones((count, candidate_width), dtype=torch.bool),
+        candidate_cost=torch.arange(
+            count * candidate_width, dtype=torch.float32
+        ).reshape(count, candidate_width)
+        + offset,
     )
 
 
@@ -60,6 +66,26 @@ def test_device_rollout_reuses_policy_inputs_and_supports_action_replacement():
 
     buffer.clear()
     assert buffer.size == 0
+
+
+def test_device_rollout_losslessly_pads_candidate_width_buckets():
+    buffer = _DeviceRolloutBuffer(capacity=6, device=torch.device("cpu"))
+    narrow = _wave(0, candidate_width=2)
+    wide = _wave(10, candidate_width=4)
+    for wave in (narrow, wide):
+        buffer.add(
+            wave,
+            actions=np.arange(3),
+            log_probs=np.zeros(3, dtype=np.float32),
+            replace_policy_outputs=False,
+        )
+
+    batch = buffer.batch(6)
+    assert batch.candidate_actions.shape == (6, 4)
+    torch.testing.assert_close(batch.candidate_actions[:3, :2], narrow.candidate_actions)
+    assert torch.equal(batch.candidate_actions[:3, 2:], torch.full((3, 2), -1))
+    assert not batch.candidate_mask[:3, 2:].any()
+    assert not batch.candidate_cost[:3, 2:].any()
 
 
 def test_entropy_schedule_can_be_pinned_to_collected_rollout_step():

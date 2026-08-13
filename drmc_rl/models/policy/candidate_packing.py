@@ -20,6 +20,9 @@ import numpy as np
 import torch
 
 
+_CANDIDATE_WIDTH_BUCKETS = (32, 64, 96, 128)
+
+
 @dataclass(frozen=True)
 class PackedCandidates:
     """Packed feasible candidates for a single decision point."""
@@ -48,6 +51,33 @@ class PackedCandidateTensorBatch:
     mask: torch.Tensor  # (B,Kmax) bool
     cost: torch.Tensor  # (B,Kmax) float32; padding = 0
     count: torch.Tensor  # (B,) int32
+
+
+def candidate_bucket_width(
+    feasible_mask: np.ndarray,
+    *,
+    max_candidates: int,
+) -> int:
+    """Smallest compiled width that retains every feasible candidate.
+
+    Candidate policies historically padded every row to the configured hard
+    cap (normally 128), although real VS batches usually contain fewer than
+    40 feasible placements.  Bucketing keeps a small, stable set of tensor
+    shapes for ``torch.compile`` while avoiding work on masked padding.  If a
+    row exceeds the hard cap, returning the cap preserves the existing
+    deterministic truncation behavior.
+    """
+
+    cap = int(max(1, int(max_candidates)))
+    mask = np.asarray(feasible_mask, dtype=np.bool_)
+    if mask.ndim < 2:
+        raise ValueError(f"Expected a batched feasible mask, got {mask.shape!r}")
+    required = int(mask.reshape(mask.shape[0], -1).sum(axis=1).max(initial=0))
+    required = min(required, cap)
+    for width in _CANDIDATE_WIDTH_BUCKETS:
+        if required <= width and width <= cap:
+            return width
+    return cap
 
 
 def pack_feasible_candidates(
@@ -227,6 +257,7 @@ __all__ = [
     "PackedCandidateBatch",
     "PackedCandidateTensorBatch",
     "PackedCandidates",
+    "candidate_bucket_width",
     "pack_feasible_candidates",
     "pack_feasible_candidates_batch",
     "pack_feasible_candidates_tensor_batch",

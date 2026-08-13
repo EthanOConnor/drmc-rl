@@ -60,6 +60,7 @@ from drmc_rl.envs.backends.drmario_vs_pool import (
     build_vs_reset_spec,
 )
 from drmc_rl.training.envs.policy_batch import PlacementPolicyBatch
+from drmc_rl.models.policy.candidate_packing import candidate_bucket_width
 
 NES_FPS = 60.1
 
@@ -887,11 +888,15 @@ class DrMarioVsPoolVecEnv:
                     )
                     buf["aux"][lo:hi, : rows.shape[1]] = rows
 
+        candidate_cap = max(int(entry.candidate_max) for entry, _lo, _hi in spans)
+        packed_width = candidate_bucket_width(
+            buf["feasible"][:n], max_candidates=candidate_cap
+        )
         dev = {}
         for name in ("obs", "pills", "previews", "feasible", "raw_cost", "aux"):
             dev[name] = buf[f"{name}_t"][:n].to("cuda", non_blocking=True)
         packed = pack_feasible_candidates_tensor_batch(
-            dev["feasible"], dev["raw_cost"], max_candidates=128
+            dev["feasible"], dev["raw_cost"], max_candidates=packed_width
         )
 
         slots = torch.empty(n, dtype=torch.int64, device="cuda")
