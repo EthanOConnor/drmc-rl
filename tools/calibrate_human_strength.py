@@ -47,6 +47,54 @@ def elo_from_win_rate(win_rate: float, anchor: float) -> float:
     return float(anchor + 400.0 * math.log10(p / (1.0 - p)))
 
 
+def relative_elo(matchups: list[dict[str, Any]], labels: list[str]) -> dict[str, float]:
+    """Fit centered Bradley-Terry ratings; the zero point is intentionally arbitrary."""
+
+    count = len(labels)
+    index = {label: i for i, label in enumerate(labels)}
+    scores = np.full(count, 0.5, dtype=np.float64)
+    games = np.ones((count, count), dtype=np.float64)
+    np.fill_diagonal(games, 0.0)
+    for row in matchups:
+        left = index[str(row["left"])]
+        right = index[str(row["right"])]
+        scores[left] += float(row["wins"]) + 0.5 * float(row["draws"])
+        scores[right] += float(row["losses"]) + 0.5 * float(row["draws"])
+        games[left, right] += float(row["matches"])
+        games[right, left] += float(row["matches"])
+    ability = np.ones(count, dtype=np.float64)
+    for _ in range(10_000):
+        denominator = np.zeros(count, dtype=np.float64)
+        for i in range(count):
+            for j in range(count):
+                if i != j and games[i, j] > 0:
+                    denominator[i] += games[i, j] / (ability[i] + ability[j])
+        updated = scores / np.maximum(denominator, 1e-12)
+        updated /= np.exp(np.log(np.maximum(updated, 1e-12)).mean())
+        if np.max(np.abs(np.log(updated / ability))) < 1e-10:
+            ability = updated
+            break
+        ability = updated
+    scale = 400.0 / math.log(10.0)
+    ratings = scale * np.log(ability)
+    ratings -= ratings.mean()
+    return {label: float(ratings[i]) for i, label in enumerate(labels)}
+
+
+def parse_contestants(value: str) -> list[dict[str, float | str]]:
+    """Parse ``label:rating:search_weight`` tournament contestants."""
+
+    contestants: list[dict[str, float | str]] = []
+    for item in value.split(","):
+        label, rating, weight = item.split(":", 2)
+        contestants.append(
+            {"label": label, "rating": float(rating), "search_weight": float(weight)}
+        )
+    if len(contestants) < 2 or len({row["label"] for row in contestants}) != len(contestants):
+        raise ValueError("contestants require at least two unique labels")
+    return contestants
+
+
 class LadderPolicy:
     def __init__(
         self,
@@ -55,6 +103,8 @@ class LadderPolicy:
         device: str,
         search_weight: float,
         search_deadline_ms: float,
+        search_beam: int,
+        search_num_sim_envs: int,
         seed: int,
     ) -> None:
         self.runtime = HumanPolicyRuntime(checkpoint, device=device, seed=seed)
@@ -64,7 +114,9 @@ class LadderPolicy:
             HumanValueSearch(
                 self.runtime,
                 device=device,
+                beam=search_beam,
                 seed=seed,
+                num_sim_envs=search_num_sim_envs,
                 gpu_planner=str(device).startswith("cuda"),
             )
             if self.search_weight > 0
@@ -163,6 +215,9 @@ def run_probe(
     search_weight: float,
     search_deadline_ms: float,
     seed: int,
+    search_beam: int = 8,
+    search_num_sim_envs: int = 64,
+    anchor_search_weight: float = 0.0,
 ) -> dict[str, Any]:
     if pairs < 2:
         raise ValueError("pairs must be >= 2 so probe side can be balanced")
@@ -176,8 +231,10 @@ def run_probe(
     policy = LadderPolicy(
         checkpoint,
         device=device,
-        search_weight=search_weight,
+        search_weight=max(search_weight, anchor_search_weight),
         search_deadline_ms=search_deadline_ms,
+        search_beam=search_beam,
+        search_num_sim_envs=search_num_sim_envs,
         seed=seed,
     )
     obs, infos = env.reset(seed=seed)
@@ -187,7 +244,7 @@ def run_probe(
     for pair, side in enumerate(probe_side):
         ratings[2 * pair + int(side)] = rating
     opponent_ratings = ratings[np.arange(sides) ^ 1]
-    search_weights = np.zeros(sides, dtype=np.float32)
+    search_weights = np.full(sides, anchor_search_weight, dtype=np.float32)
     for pair, side in enumerate(probe_side):
         search_weights[2 * pair + int(side)] = search_weight
     histories: list[list[dict[str, float | int]]] = [[] for _ in range(sides)]
@@ -248,6 +305,9 @@ def run_probe(
         "requested_rating": float(rating),
         "anchor_rating": float(anchor),
         "search_weight": float(search_weight),
+        "anchor_search_weight": float(anchor_search_weight),
+        "search_beam": int(search_beam),
+        "search_num_sim_envs": int(search_num_sim_envs),
         "matches": int(wins + losses + draws),
         "wins": int(wins),
         "losses": int(losses),
@@ -264,6 +324,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--ratings", default="1000,1300,1600,1900,2200")
+    parser.add_argument(
+        "--contestants",
+        help="Round robin as label:rating:search_weight comma-separated entries",
+    )
     parser.add_argument("--anchor", type=float, default=1600.0)
     parser.add_argument("--matches", type=int, default=100)
     parser.add_argument("--pairs", type=int, default=6)
@@ -272,27 +336,63 @@ def main() -> None:
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--search-weight", type=float, default=0.0)
     parser.add_argument("--search-deadline-ms", type=float, default=100.0)
+    parser.add_argument("--search-beam", type=int, default=8)
+    parser.add_argument("--search-num-sim-envs", type=int, default=64)
     parser.add_argument("--seed", type=int, default=12345)
     parser.add_argument("--json-out", type=Path)
     args = parser.parse_args()
-    ratings = [float(value) for value in args.ratings.split(",")]
-    rows = [
-        run_probe(
-            args.checkpoint,
-            rating=rating,
-            anchor=args.anchor,
-            matches=args.matches,
-            pairs=args.pairs,
-            level=args.level,
-            speed=args.speed,
-            device=args.device,
-            search_weight=args.search_weight,
-            search_deadline_ms=args.search_deadline_ms,
-            seed=args.seed + index,
-        )
-        for index, rating in enumerate(ratings)
-    ]
-    payload = {"schema": "drmc-human-strength-calibration-v1", "probes": rows}
+    if args.contestants:
+        contestants = parse_contestants(args.contestants)
+        rows = []
+        for left in range(len(contestants)):
+            for right in range(left + 1, len(contestants)):
+                lhs, rhs = contestants[left], contestants[right]
+                row = run_probe(
+                    args.checkpoint,
+                    rating=float(lhs["rating"]),
+                    anchor=float(rhs["rating"]),
+                    matches=args.matches,
+                    pairs=args.pairs,
+                    level=args.level,
+                    speed=args.speed,
+                    device=args.device,
+                    search_weight=float(lhs["search_weight"]),
+                    anchor_search_weight=float(rhs["search_weight"]),
+                    search_deadline_ms=args.search_deadline_ms,
+                    search_beam=args.search_beam,
+                    search_num_sim_envs=args.search_num_sim_envs,
+                    seed=args.seed + len(rows),
+                )
+                row.update(left=str(lhs["label"]), right=str(rhs["label"]))
+                rows.append(row)
+        labels = [str(row["label"]) for row in contestants]
+        payload = {
+            "schema": "drmc-human-strength-tournament-v1",
+            "contestants": contestants,
+            "relative_elo": relative_elo(rows, labels),
+            "matchups": rows,
+        }
+    else:
+        ratings = [float(value) for value in args.ratings.split(",")]
+        rows = [
+            run_probe(
+                args.checkpoint,
+                rating=rating,
+                anchor=args.anchor,
+                matches=args.matches,
+                pairs=args.pairs,
+                level=args.level,
+                speed=args.speed,
+                device=args.device,
+                search_weight=args.search_weight,
+                search_deadline_ms=args.search_deadline_ms,
+                search_beam=args.search_beam,
+                search_num_sim_envs=args.search_num_sim_envs,
+                seed=args.seed + index,
+            )
+            for index, rating in enumerate(ratings)
+        ]
+        payload = {"schema": "drmc-human-strength-calibration-v1", "probes": rows}
     output = json.dumps(payload, indent=2)
     print(output)
     if args.json_out is not None:

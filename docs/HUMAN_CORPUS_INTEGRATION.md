@@ -236,12 +236,14 @@ PFSP record. The VS environment supplies live opponent planes, match phase,
 and the human side's four preceding placements. Human entries default to
 protected so learner snapshots cannot evict the fixed calibration anchors.
 
-Do not equate requested WHR with realized native-engine strength without a
-ladder measurement. `tools/calibrate_human_strength.py` alternates the probe
-side against a fixed anchor and reports score rate, Wilson intervals, and a
-logistic-Elo equivalent. Run the pure model first, then repeat selected points
-with `--search-weight`; these measurements determine the rating/search blend
-used for curriculum anchors rather than relying on an architectural guess.
+Do not equate requested WHR with realized native-engine strength. A fixed-anchor
+probe reports score rate and Wilson intervals, but its logistic-Elo equivalent
+is only an internal coordinate. Use `--contestants` for a balanced round robin
+of `label:rating:search_weight` configurations; its Bradley-Terry ratings are
+centered relative Elo, not Fightcade Elo. Real-player games are required to fit
+that internal ladder to human strength. Search sweeps can additionally vary
+`--search-beam`, `--search-num-sim-envs`, and `--search-deadline-ms` to measure
+strength per unit latency rather than choosing search breadth architecturally.
 
 ## Go-Exploit start-state bank (`tools/build_start_bank.py`, 2026-06-12)
 

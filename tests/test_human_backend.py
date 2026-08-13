@@ -27,12 +27,25 @@ def test_human_v2_trunk_encodes_both_boards() -> None:
 
 
 def test_strength_calibration_math() -> None:
-    from tools.calibrate_human_strength import elo_from_win_rate, wilson_interval
+    from tools.calibrate_human_strength import (
+        elo_from_win_rate,
+        parse_contestants,
+        relative_elo,
+        wilson_interval,
+    )
 
     assert elo_from_win_rate(0.5, 1600) == 1600
     assert elo_from_win_rate(0.75, 1600) > 1750
     lo, hi = wilson_interval(50, 100)
     assert lo < 0.5 < hi
+    contestants = parse_contestants("low:1000:0,high:1600:0.5")
+    assert contestants[1]["search_weight"] == 0.5
+    ratings = relative_elo(
+        [{"left": "high", "right": "low", "wins": 75, "losses": 25, "draws": 0, "matches": 100}],
+        ["low", "high"],
+    )
+    assert ratings["high"] > ratings["low"]
+    assert abs(sum(ratings.values())) < 1e-9
 
 
 def test_coach_keeps_human_norm_and_competitive_quality_separate() -> None:
