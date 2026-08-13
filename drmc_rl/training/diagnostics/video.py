@@ -7,11 +7,6 @@ from typing import Any, DefaultDict, Dict, List, Sequence
 import numpy as np
 
 try:  # pragma: no cover - optional dependency
-    import imageio.v2 as imageio
-except Exception:  # pragma: no cover - fallback handled at runtime
-    imageio = None  # type: ignore
-
-try:  # pragma: no cover - optional dependency
     import cv2
 except Exception:  # pragma: no cover - fallback handled at runtime
     cv2 = None  # type: ignore
@@ -68,12 +63,6 @@ class VideoEventHandler:
 
 
 def _write_video(path: Path, frames: Sequence[np.ndarray], fps: int) -> None:
-    if imageio is not None:
-        try:
-            imageio.mimwrite(str(path), frames, fps=fps, codec="libx264", quality=8)
-            return
-        except Exception:  # pragma: no cover - optional backend may be missing
-            pass
     if cv2 is not None:
         height, width, channels = frames[0].shape
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")

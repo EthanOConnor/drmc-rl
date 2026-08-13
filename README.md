@@ -20,25 +20,25 @@ for independent emulator verification.
 
 ## Setup
 
+Python 3.14 and [uv](https://docs.astral.sh/uv/) are required.
+
 ```bash
 git submodule update --init --recursive
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,rl,viz]"
-python -m tools.build_drmario_pool
+uv sync --all-extras
+uv run python -m tools.build_drmario_pool
 ```
 
 Validate the default path:
 
 ```bash
-python -m drmc_rl.training.run --dry_run true
-pytest -q
+uv run python -m drmc_rl.training.run --dry_run true
+uv run pytest -q
 ```
 
 Start single-player training:
 
 ```bash
-python -m drmc_rl.training.run --backend cpp-pool --ui tui
+uv run python -m drmc_rl.training.run --backend cpp-pool --ui tui
 ```
 
 The active VS configs are `vs6_tf3090.yaml`, `vsdist2_tf3090.yaml`, and

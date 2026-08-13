@@ -3,16 +3,12 @@ name = "drmc-rl"
 version = "0.1.0"
 description = "Dr. Mario RL environment, training, and evaluation"
 readme = "README.md"
-requires-python = ">=3.10,<3.15"
+requires-python = ">=3.14,<3.15"
 dependencies = [
-    "gymnasium",
-    "numpy>=2.2,<3; python_version < '3.11'",
-    "numpy>=2.4,<3; python_version >= '3.11'",
-    "rich>=13.0", # TUI and progress bars
+    "gymnasium>=1.3,<2",
+    "numpy>=2.5.2,<3",
+    "rich>=15,<16",
 ]
-
-[tool.black]
-line-length = 100
 
 [tool.ruff]
 line-length = 100
@@ -43,15 +39,16 @@ drmc_rl = [
 
 [project.optional-dependencies]
 rl = [
-    "torch",
-    "torchvision",
-    "torchaudio",
-    "torchrl",
-    "wandb",          # Experiment tracking (free tier available)
+    "tensorboard>=2.21,<3",
+    "torch>=2.13,<2.14",
+    "wandb>=0.28,<0.29",
 ]
-viz = ["opencv-python>=4.13.0.92", "pillow"]
-dev = ["black", "ruff", "pytest", "pandas", "pyarrow", "matplotlib"]
+viz = ["opencv-python-headless>=5,<6", "pillow>=12.3,<13"]
+eval = ["matplotlib>=3.11,<4", "pandas>=3.0,<4", "pyarrow>=25,<26"]
+
+[dependency-groups]
+dev = ["pytest>=9.1,<10", "ruff>=0.16,<0.17"]
 
 [build-system]
-requires = ["setuptools>=80", "wheel>=0.45"]
+requires = ["setuptools>=84,<85", "wheel>=0.48,<0.49"]
 build-backend = "setuptools.build_meta"

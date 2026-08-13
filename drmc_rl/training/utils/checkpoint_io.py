@@ -28,8 +28,8 @@ def load_checkpoint(path: Path, *, map_location: Optional[str] = None) -> Any:
         raise RuntimeError("PyTorch is required to load checkpoints.")
     if path.suffix == ".gz":
         with gzip.open(path, "rb") as fp:
-            return torch.load(fp, map_location=map_location)
-    return torch.load(str(path), map_location=map_location)
+            return torch.load(fp, map_location=map_location, weights_only=True)
+    return torch.load(str(path), map_location=map_location, weights_only=True)
 
 
 def save_checkpoint(payload: Any, path: Path) -> None:
