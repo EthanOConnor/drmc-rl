@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import re
 import time
+import copy
+from concurrent.futures import ThreadPoolExecutor
 from collections import Counter, deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +147,7 @@ class SMDPPPOConfig:
     # Misc
     value_loss_type: str = "mse"  # mse or huber
     compile_mode: str = "off"  # off|default
+    overlap_rollout_update: bool = False
 
 
 @dataclass(slots=True)
@@ -238,6 +241,28 @@ class _DeviceRolloutBuffer:
         self.size = 0
 
 
+@dataclass(slots=True)
+class _RolloutStorage:
+    cpu: DecisionRolloutBuffer
+    device: Optional[_DeviceRolloutBuffer]
+
+    def clear(self) -> None:
+        self.cpu.clear()
+        if self.device is not None:
+            self.device.clear()
+
+
+@dataclass(slots=True)
+class _CollectedRollout:
+    storage: _RolloutStorage
+    batch: DecisionBatch
+    device_batch: Optional[_DeviceRolloutBatch]
+    next_obs: np.ndarray
+    next_info: List[Dict[str, Any]]
+    global_step: int
+    decision_step: int
+
+
 class SMDPPPOAdapter(AlgoAdapter):
     """PPO trainer for placement policies with SMDP discounting."""
 
@@ -294,6 +319,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
             compile_mode=str(ppo_cfg_dict.get("compile_mode", "off")),
+            overlap_rollout_update=bool(ppo_cfg_dict.get("overlap_rollout_update", False)),
         )
 
         policy_type_norm = str(self.hparams.policy_type or "heatmap").strip().lower()
@@ -333,6 +359,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         # Environment info
         obs_space = getattr(env, "single_observation_space", env.observation_space)
         obs_shape = obs_space.shape  # expected [C, 16, 8] when frame_stack == 1
+        self._obs_shape = tuple(obs_shape)
         in_channels = obs_shape[0] if len(obs_shape) == 3 else 12
 
         # Create policy network
@@ -435,7 +462,7 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         # Rollout buffer (decision-wise)
         self.buffer = DecisionRolloutBuffer(
-            capacity=self.hparams.decisions_per_update * 2,
+            capacity=self.hparams.decisions_per_update,
             obs_shape=obs_shape,
             num_envs=env.num_envs,
             gamma=self.hparams.gamma,
@@ -448,7 +475,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         self._pending_device_wave: Optional[_DeviceRolloutWave] = None
         self._device_rollout = (
             _DeviceRolloutBuffer(
-                capacity=self.hparams.decisions_per_update * 2,
+                capacity=self.hparams.decisions_per_update,
                 device=torch.device(self.device),
             )
             if self.policy_type == "candidate" and torch.device(self.device).type == "cuda"
@@ -500,6 +527,20 @@ class SMDPPPOAdapter(AlgoAdapter):
         # so the first searched rollout uses the loaded weights).
         if self.search_distill_cfg.enabled:
             self._sd_runner = self._build_search_distill_runner()
+
+        self._actor_net: Optional[nn.Module] = None
+        if self.hparams.overlap_rollout_update:
+            if torch.device(self.device).type != "cuda" or self.policy_type != "candidate":
+                raise ValueError(
+                    "smdp_ppo.overlap_rollout_update requires a CUDA candidate policy"
+                )
+            if self.search_distill_cfg.enabled or bool(getattr(cfg.curriculum, "enabled", False)):
+                raise ValueError(
+                    "smdp_ppo.overlap_rollout_update currently requires search distillation "
+                    "and curriculum to be disabled"
+                )
+            self._actor_net = copy.deepcopy(self.net)
+            self._actor_net.load_state_dict(self.net.state_dict())
 
         # Entropy annealing
         self._entropy_coef_initial = self.hparams.entropy_coef
@@ -557,7 +598,251 @@ class SMDPPPOAdapter(AlgoAdapter):
         )
 
     # ---------------------------------------------------------------- training
+    def _new_rollout_storage(self) -> _RolloutStorage:
+        cpu = DecisionRolloutBuffer(
+            capacity=self.hparams.decisions_per_update,
+            obs_shape=self._obs_shape,
+            num_envs=self.env.num_envs,
+            gamma=self.hparams.gamma,
+            gae_lambda=self.hparams.gae_lambda,
+            aux_dim=self.aux_dim,
+            store_costs_to_lock=(self.policy_type == "candidate"),
+            search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
+        )
+        device = (
+            _DeviceRolloutBuffer(
+                capacity=self.hparams.decisions_per_update,
+                device=torch.device(self.device),
+            )
+            if self.policy_type == "candidate" and torch.device(self.device).type == "cuda"
+            else None
+        )
+        return _RolloutStorage(cpu=cpu, device=device)
+
     def train_forever(self) -> None:
+        if self._actor_net is None:
+            self._train_sequential()
+            return
+        self._train_overlapped()
+
+    def _train_overlapped(self) -> None:
+        obs, info = self.env.reset(seed=getattr(self.cfg, "seed", None))
+        obs_arr = self._ensure_batched_obs(self._unwrap_obs(obs)).astype(np.float32)
+        start_time = time.time()
+        start_step = int(self.global_step)
+        start_decision_step = int(self.decision_step)
+        current = self._collect_rollout(
+            _RolloutStorage(self.buffer, self._device_rollout),
+            obs_arr.copy(),
+            self._normalize_infos(info),
+            self.net,
+        )
+        free_storage = self._new_rollout_storage()
+
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="drmc-rollout") as executor:
+            while True:
+                future = (
+                    executor.submit(
+                        self._collect_rollout,
+                        free_storage,
+                        current.next_obs,
+                        current.next_info,
+                        self._actor_net,
+                    )
+                    if current.global_step < self.total_steps
+                    else None
+                )
+
+                update_start = time.time()
+                metrics = self._update_policy(
+                    current.batch, device_batch=current.device_batch
+                )
+                update_time = time.time() - update_start
+                metrics["perf/update_sec"] = update_time
+                metrics["perf/policy_lag_updates"] = 1.0
+
+                # Wait only when rollout is slower than PPO, then update the
+                # actor at the completed-rollout boundary before it runs again.
+                next_rollout = future.result() if future is not None else None
+                if next_rollout is not None:
+                    self._actor_net.load_state_dict(self.net.state_dict())
+
+                step = current.global_step
+                decision_step = current.decision_step
+                frames_since_update = int(step - self._last_update_step)
+                self._last_update_step = step
+                elapsed = time.time() - start_time
+                frames_since_start = max(0, step - start_step)
+                decisions_since_start = max(0, decision_step - start_decision_step)
+                metrics.update(
+                    {
+                        "perf/sps_frames_total": frames_since_start / max(elapsed, 1e-6),
+                        "perf/dps_decisions_total": decisions_since_start
+                        / max(elapsed, 1e-6),
+                        "perf/inference_calls": float(self._perf_inference_calls),
+                        "perf/inference_sec_total": float(self._perf_inference_sec_total),
+                        "perf/last_inference_ms": self._perf_last_inference_sec * 1000.0,
+                    }
+                )
+                metrics["perf/sps"] = metrics["perf/sps_frames_total"]
+                metrics["perf/dps"] = metrics["perf/dps_decisions_total"]
+                metrics.update(self._candidate_stats(current.batch))
+                if self._perf_inference_calls > 0:
+                    metrics["perf/inference_ms_avg"] = (
+                        self._perf_inference_sec_total
+                        * 1000.0
+                        / self._perf_inference_calls
+                    )
+                if frames_since_start > 0:
+                    metrics["perf/inference_ms_per_frame"] = (
+                        self._perf_inference_sec_total * 1000.0 / frames_since_start
+                    )
+                try:
+                    if hasattr(self.env, "record_update"):
+                        self.env.record_update(update_time, frames=frames_since_update)
+                except Exception:
+                    pass
+
+                self._log_metrics(metrics, step=step)
+                self.event_bus.emit("update_end", step=step, **metrics)
+                self._maybe_checkpoint(step=step, decision_step=decision_step)
+                self.logger.flush()
+
+                released = current.storage
+                released.clear()
+                if next_rollout is None:
+                    break
+                current = next_rollout
+                free_storage = released
+
+    def _candidate_stats(self, batch: DecisionBatch) -> Dict[str, float]:
+        if self.policy_type != "candidate":
+            return {}
+        counts = batch.masks.reshape(batch.masks.shape[0], -1).sum(axis=1)
+        if counts.size == 0:
+            return {}
+        return {
+            "candidate/feasible_mean": float(np.mean(counts)),
+            "candidate/feasible_p95": float(np.percentile(counts, 95)),
+            "candidate/feasible_max": float(np.max(counts)),
+            "candidate/truncation_frac": float(
+                np.mean(counts > int(self.candidate_max))
+            ),
+        }
+
+    def _collect_rollout(
+        self,
+        storage: _RolloutStorage,
+        decision_obs: np.ndarray,
+        decision_info: List[Dict[str, Any]],
+        policy_net: nn.Module,
+    ) -> _CollectedRollout:
+        decisions_collected = 0
+        while decisions_collected < self.hparams.decisions_per_update:
+            (
+                actions,
+                log_probs,
+                values,
+                masks,
+                costs_to_lock,
+                pill_colors,
+                preview_pill_colors,
+                aux_batch,
+            ) = self._select_actions_batch(
+                decision_obs,
+                decision_info,
+                deterministic=False,
+                policy_net=policy_net,
+            )
+            obs_after, rewards, terminated, truncated, info_after = self.env.step(actions)
+            obs_after_arr = self._ensure_batched_obs(self._unwrap_obs(obs_after)).astype(
+                np.float32
+            )
+            info_after_list = self._normalize_infos(info_after)
+            rewards_arr = np.asarray(rewards, dtype=np.float32).reshape(self.env.num_envs)
+            done_arr = np.asarray(terminated, dtype=bool).reshape(
+                self.env.num_envs
+            ) | np.asarray(truncated, dtype=bool).reshape(self.env.num_envs)
+            tau_arr = np.fromiter(
+                (self._extract_tau(row) for row in info_after_list),
+                dtype=np.int32,
+                count=self.env.num_envs,
+            )
+            self.global_step += int(tau_arr.sum())
+            self.decision_step += int(self.env.num_envs)
+            decisions_collected += int(self.env.num_envs)
+            storage.cpu.add_arrays(
+                observations=decision_obs,
+                masks=masks,
+                costs_to_lock=costs_to_lock,
+                pill_colors=pill_colors,
+                preview_pill_colors=preview_pill_colors,
+                aux=aux_batch,
+                actions=actions,
+                log_probs=log_probs,
+                values=values,
+                taus=tau_arr,
+                rewards=rewards_arr,
+                observations_next=obs_after_arr,
+                dones=done_arr,
+                env_ids=self._rollout_env_ids,
+            )
+            if storage.device is not None:
+                if self._pending_device_wave is None:
+                    raise RuntimeError("CUDA rollout is missing its device wave")
+                storage.device.add(
+                    self._pending_device_wave,
+                    actions=actions,
+                    log_probs=log_probs,
+                    replace_policy_outputs=False,
+                )
+
+            for env_idx, info_i in enumerate(info_after_list):
+                if not bool(done_arr[env_idx]):
+                    continue
+                self._episodes_total += 1
+                ep_info = info_i.get("episode", {})
+                drm_info = info_i.get("drm", {})
+                self.batch_returns.append(float(ep_info.get("r", 0.0)))
+                self.batch_lengths.append(int(ep_info.get("l", 0)))
+                self.batch_viruses.append(float(drm_info.get("viruses_cleared", 0.0)))
+                self.batch_decisions.append(int(ep_info.get("decisions", 0)))
+                payload = {
+                    "step": self.global_step,
+                    "ret": float(ep_info.get("r", 0.0)),
+                    "len": int(ep_info.get("l", 0)),
+                    "env_index": int(env_idx),
+                }
+                payload.update({f"drm/{k}": v for k, v in drm_info.items()})
+                self.event_bus.emit("episode_end", **payload)
+
+            decision_obs = obs_after_arr.copy()
+            decision_info = info_after_list
+
+        bootstrap_values = self._select_actions_batch(
+            decision_obs,
+            decision_info,
+            deterministic=True,
+            policy_net=policy_net,
+        )[2]
+        batch = storage.cpu.get_batch(
+            bootstrap_value=np.asarray(bootstrap_values, dtype=np.float32),
+            copy_storage=storage.device is None,
+        )
+        device_batch = (
+            None if storage.device is None else storage.device.batch(len(batch.actions))
+        )
+        return _CollectedRollout(
+            storage=storage,
+            batch=batch,
+            device_batch=device_batch,
+            next_obs=decision_obs,
+            next_info=decision_info,
+            global_step=int(self.global_step),
+            decision_step=int(self.decision_step),
+        )
+
+    def _train_sequential(self) -> None:
         """Main training loop."""
         obs, info = self.env.reset(seed=getattr(self.cfg, "seed", None))
         obs_arr = self._ensure_batched_obs(self._unwrap_obs(obs)).astype(np.float32)
@@ -914,6 +1199,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         obs_batch: np.ndarray,
         infos: List[Dict[str, Any]],
         deterministic: bool = False,
+        policy_net: Optional[nn.Module] = None,
     ) -> Tuple[
         np.ndarray,
         np.ndarray,
@@ -925,6 +1211,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         Optional[np.ndarray],
     ]:
         """Select actions for a batch of environments."""
+        net = self.net if policy_net is None else policy_net
         num_envs = int(self.env.num_envs)
         obs_arr = self._ensure_batched_obs(obs_batch).astype(np.float32, copy=False)
 
@@ -960,7 +1247,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                 cand_cost_t = packed.cost
                 cand_mask_t = packed.mask
 
-                logits, values = self.net(  # type: ignore[misc]
+                logits, values = net(  # type: ignore[misc]
                     obs_t,
                     colors_t,
                     preview_t,
@@ -2112,9 +2399,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                     (int(self.global_step) // int(self.checkpoint_interval)) + 1
                 ) * int(self.checkpoint_interval)
 
-    def _log_metrics(self, metrics: Dict[str, float]) -> None:
+    def _log_metrics(self, metrics: Dict[str, float], *, step: Optional[int] = None) -> None:
         """Log metrics to logger."""
-        step = self.global_step
+        step = self.global_step if step is None else int(step)
         values: Dict[str, float] = dict(metrics)
 
         if self.batch_returns:
@@ -2209,9 +2496,15 @@ class SMDPPPOAdapter(AlgoAdapter):
         except Exception:
             return
 
-    def _maybe_checkpoint(self) -> None:
+    def _maybe_checkpoint(
+        self, *, step: Optional[int] = None, decision_step: Optional[int] = None
+    ) -> None:
         """Save checkpoint if interval reached."""
-        if self.global_step < self._next_checkpoint:
+        checkpoint_step = self.global_step if step is None else int(step)
+        checkpoint_decision_step = (
+            self.decision_step if decision_step is None else int(decision_step)
+        )
+        if checkpoint_step < self._next_checkpoint:
             return
 
         payload = {
@@ -2219,16 +2512,18 @@ class SMDPPPOAdapter(AlgoAdapter):
             "ema_state_dict": self._ema_state,
             "optimizer": self.optimizer.state_dict(),
             "cfg": getattr(self.cfg, "to_dict", lambda: {})(),
-            "step": self.global_step,
-            "decision_step": self.decision_step,
+            "step": checkpoint_step,
+            "decision_step": checkpoint_decision_step,
             "sha": git_commit(),
         }
 
-        path = checkpoint_path(self.checkpoint_dir, "smdp_ppo", self.global_step, compress=True)
+        path = checkpoint_path(
+            self.checkpoint_dir, "smdp_ppo", checkpoint_step, compress=True
+        )
         save_checkpoint(payload, path)
 
         self.event_bus.emit(
-            "checkpoint", step=self.global_step, path=str(path), walltime=time.time()
+            "checkpoint", step=checkpoint_step, path=str(path), walltime=time.time()
         )
         self._next_checkpoint += self.checkpoint_interval
         self._prune_checkpoints()
