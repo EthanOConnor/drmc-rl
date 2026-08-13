@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
-from training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
+from drmc_rl.training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
 
 
 def _expected_connection_edges(board: np.ndarray) -> np.ndarray:

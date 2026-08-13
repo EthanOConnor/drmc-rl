@@ -5,7 +5,7 @@ replay events in ``../fightcadeRatings/data/drmario.sqlite`` (read-only; see
 their COORDINATION.md) and trains one small candidate-policy net per WHR band.
 The checkpoints embed a ``cfg`` dict compatible with
 ``tools.eval_policy._build_net_from_cfg``, so `OpponentPool.ensure_loaded`
-(training/envs/vs_opponents.py) loads them with zero changes — drop them into
+(drmc_rl/training/envs/vs_opponents.py) loads them with zero changes — drop them into
 a pool dir / manifest like any frozen snapshot.
 
 Extraction reuses the spawn/lock pairing + planner machinery from
@@ -51,8 +51,8 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
-from envs.retro.fast_reach import compute_speed_threshold
-from models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.planning.fast_reach import compute_speed_threshold
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 from tools.annotate_replay_events import (
     GRID_H,
     GRID_W,
@@ -329,7 +329,7 @@ def batch_inputs(arrays: Dict[str, np.ndarray], idx: np.ndarray):
     same-color channel-6/7 zeroing.
     """
 
-    from envs.specs.ram_to_state import COLOR_VALUE_TO_INDEX
+    from drmc_rl.game.specs.ram_to_state import COLOR_VALUE_TO_INDEX
 
     B = idx.shape[0]
     obs = np.zeros((B, 12, GRID_H, GRID_W), dtype=np.float32)
@@ -464,9 +464,9 @@ def cmd_extract(args) -> None:
     import sqlite3
 
     sys.path.insert(0, str(Path(args.fcr_root)))
-    import store  # fightcadeRatings/store.py
-
     from collections import defaultdict
+
+    import store  # fightcadeRatings/store.py
 
     rate = rating_lookup(Path(args.players))
     planner = make_batch_planner(args.planner)
@@ -562,7 +562,7 @@ def cmd_extract(args) -> None:
 def cmd_train(args) -> None:
     import torch
 
-    from training.utils.checkpoint_io import save_checkpoint
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     torch.set_num_threads(int(args.threads))
     data = np.load(args.dataset, allow_pickle=False)

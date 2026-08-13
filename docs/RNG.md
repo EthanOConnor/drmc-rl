@@ -24,7 +24,7 @@ Workflow
 - Unit tests: capture RNG state at selection and regenerate layout to assert byte‑for‑byte equivalence.
 
 Data Products
-- `envs/retro/seeds/registry.json` with entries and hashes
+- `drmc_rl/envs/libretro/seeds/registry.json` with entries and hashes
 - `data/datasets/` parquet tables with per‑state Monte‑Carlo time‑to‑clear samples
 - `docs/RNG.md` updates with discovered addresses, constants, and algorithm sketch
 

@@ -7,7 +7,7 @@ and the design of the jagged-progress explorer built on it. Companion to
 ## Problem structure (what makes this easy-er than it looks)
 
 1. **Deterministic, perfect information.** A (level, speed, seed) game has no
-   chance nodes: `seedlab/rng.py` derives the full 128-pill reserve and virus
+   chance nodes: `drmc_rl/seedlab/rng.py` derives the full 128-pill reserve and virus
    board analytically before play. Per-seed optimization is therefore
    single-agent shortest-path planning — state `(board, pill_idx)`, edge cost
    in frames — not expectimax. (The wrap at pill 128 reuses the reserve, so
@@ -53,7 +53,7 @@ and the design of the jagged-progress explorer built on it. Companion to
 | 7 | Jagged effort allocation across seeds (headroom-weighted + uniform mix) | spend depth where it pays |
 
 Admissible bounds for T3 (and headroom signals), all engine-measured or
-combinatorial (`seedlab/bounds.py`, 2026-06-11):
+combinatorial (`drmc_rl/seedlab/bounds.py`, 2026-06-11):
 
 - **Pills**: remaining ≥ max(ceil(v/6), ceil(Σ_c ceil(v_c/3) / 2)) — a pill
   has 2 halves, one half clears ≤3 viruses, and halves are color-specific.
@@ -75,17 +75,17 @@ combinatorial (`seedlab/bounds.py`, 2026-06-11):
   episode/seed. Baseline coverage.
 - **T1 — best-of-K sampled** (existing worker, K dial): temperature samples;
   feeds "typical achievable" distributions and cheap record luck.
-- **T2 — policy-guided beam** (`seedlab/search.py:beam_search`): width W ∈
+- **T2 — policy-guided beam** (`drmc_rl/seedlab/search.py:beam_search`): width W ∈
   {8, 32, 128}, top-M policy-prior children, board-hash dedup, rank by
   f = g + λ·viruses_remaining. Anytime: every cleared leaf is a candidate;
   best trace replay-verified then recorded.
-- **T3 — exact DFS branch-and-bound** (`seedlab/search.py:exact_search`):
+- **T3 — exact DFS branch-and-bound** (`drmc_rl/seedlab/search.py:exact_search`):
   low levels only (≈ depth ≤ 8–10). Incumbent from catalog best; admissible
   frame bound prunes; transposition table. Returns optimality certificate
   when the search closes → `solutions.verified=2` ("proven optimal") via
   explorer.
 
-## Jagged explorer (`python -m seedlab explore`)
+## Jagged explorer (`python -m drmc_rl.seedlab explore`)
 
 Continuous process, no work-unit queue (that's the systematic-pass axis).
 Each iteration:
@@ -179,7 +179,7 @@ the catalog; certificates void on any replay mismatch.
 
 ## Measured baselines (M3 Max, ≤3 threads, ckpt step590M, 2026-06-11)
 
-`python -m seedlab explore --bench` on seed 0x8988, after the fast path
+`python -m drmc_rl.seedlab explore --bench` on seed 0x8988, after the fast path
 (pool workers 2; in parentheses: before):
 
 | level | width | frames | nodes | wall s | nodes/s |

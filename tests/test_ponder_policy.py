@@ -5,11 +5,11 @@ import threading
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 torch = pytest.importorskip("torch")
 
-from models.policy.search_policy import (  # noqa: E402
+from drmc_rl.models.policy.search_policy import (  # noqa: E402
     MACRO_ACTIONS,
     PonderingSearchPolicy,
     PonderResult,
@@ -24,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _tiny_ponder(**kw) -> PonderingSearchPolicy:
-    from models.policy.candidate_policy import CandidatePlacementPolicyNet
+    from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 
     torch.manual_seed(0)
     net = CandidatePlacementPolicyNet(
@@ -51,7 +51,7 @@ def _root_state(sp: PonderingSearchPolicy):
     board[12:, 1] = 0xD0
     board[13:, 5] = 0xD1
     board = board.reshape(-1)
-    from envs.backends.drmario_pool import build_reset_spec
+    from drmc_rl.envs.backends.drmario_pool import build_reset_spec
 
     spec = build_reset_spec(
         level=5,
@@ -299,7 +299,7 @@ def test_real_ponder_end_to_end_hits_next_decision() -> None:
         assert stats["pairs_depth2"] == 9  # generous budget: all pairs refined
 
         # Replicate the committed step to get the true next decision context.
-        from envs.backends.drmario_pool import build_reset_spec
+        from drmc_rl.envs.backends.drmario_pool import build_reset_spec
 
         spec = build_reset_spec(
             level=5,

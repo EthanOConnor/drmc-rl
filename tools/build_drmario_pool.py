@@ -5,11 +5,11 @@ from __future__ import annotations
 Usage:
   python -m tools.build_drmario_pool
 
-This produces a platform-specific shared library under `game_engine/build/`:
+This produces a platform-specific shared library under `vendor/drmario_native/build/`:
   - macOS: `libdrmario_pool.dylib`
   - Linux: `libdrmario_pool.so`
 
-The pool is used by the `cpp-pool` backend in `training/envs/drmario_pool_vec.py`.
+The pool is used by the `cpp-pool` backend in `drmc_rl/training/envs/drmario_pool_vec.py`.
 """
 
 import argparse
@@ -30,7 +30,7 @@ def _library_name() -> str:
 
 def build(*, verbose: bool = False) -> Path:
     repo_root = Path(__file__).resolve().parents[1]
-    engine_dir = repo_root / "game_engine"
+    engine_dir = repo_root / "vendor" / "drmario_native"
     if not engine_dir.is_dir():
         raise FileNotFoundError(f"Missing directory: {engine_dir}")
 
@@ -55,4 +55,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-

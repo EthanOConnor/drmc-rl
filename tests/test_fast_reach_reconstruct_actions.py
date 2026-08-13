@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from envs.retro.fast_reach import (
+from drmc_rl.planning.fast_reach import (
     FrameState,
     HoldDir,
     ReachabilityConfig,

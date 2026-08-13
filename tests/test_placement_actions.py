@@ -1,4 +1,4 @@
-from envs.retro.placement_actions import (
+from drmc_rl.planning.placement_actions import (
     GRID_HEIGHT,
     GRID_WIDTH,
     PLACEMENT_EDGES,

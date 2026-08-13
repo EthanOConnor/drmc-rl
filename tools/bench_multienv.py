@@ -12,7 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
-from training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
+from drmc_rl.training.envs.dr_mario_vec import VecEnvConfig, make_vec_env
 
 
 def _parse_num_envs(value: str) -> List[int]:

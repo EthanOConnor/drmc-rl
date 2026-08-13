@@ -9,9 +9,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from models.policy.placement_heads import PlacementPolicyNet
-from models.policy.placement_dist import MaskedPlacementDist
-from training.rollout.decision_buffer import DecisionRolloutBuffer, DecisionStep
+from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
+from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
+from drmc_rl.training.rollout.decision_buffer import DecisionRolloutBuffer, DecisionStep
 
 
 class TestPlacementPolicySmoke:

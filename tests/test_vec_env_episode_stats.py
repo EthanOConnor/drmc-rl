@@ -4,7 +4,7 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from training.envs.dr_mario_vec import _InfoListWrapper
+from drmc_rl.training.envs.dr_mario_vec import _InfoListWrapper
 
 
 class _FakeVectorEnv:

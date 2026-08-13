@@ -15,11 +15,9 @@ import time
 from pathlib import Path
 from typing import Tuple
 
-import numpy as np
-
-from envs.retro.drmario_env import Action, DrMarioRetroEnv
-from envs.retro.placement_env import NEXT_ACTION_PILL_FALLING, ZP_CURRENT_P_NEXT_ACTION
-from envs.retro.placement_planner import BoardState, PillSnapshot, PlacementPlanner
+from drmc_rl.game.actions import Action, DrMarioLibretroEnv
+from drmc_rl.envs.libretro.placement_env import NEXT_ACTION_PILL_FALLING, ZP_CURRENT_P_NEXT_ACTION
+from drmc_rl.planning.planner import BoardState, PillSnapshot, PlacementPlanner
 
 
 def _read_u8(buf: bytes, addr: int) -> int:
@@ -28,7 +26,7 @@ def _read_u8(buf: bytes, addr: int) -> int:
     return int(buf[addr]) & 0xFF
 
 
-def _at_decision_point(env: DrMarioRetroEnv) -> bool:
+def _at_decision_point(env: DrMarioLibretroEnv) -> bool:
     state = getattr(env, "_state_cache", None)
     if state is None:
         return False
@@ -41,7 +39,7 @@ def _at_decision_point(env: DrMarioRetroEnv) -> bool:
         return False
 
 
-def _capture_spawn(env: DrMarioRetroEnv, *, max_wait_frames: int = 6000) -> Tuple[BoardState, PillSnapshot]:
+def _capture_spawn(env: DrMarioLibretroEnv, *, max_wait_frames: int = 6000) -> Tuple[BoardState, PillSnapshot]:
     for _ in range(int(max_wait_frames)):
         if _at_decision_point(env):
             state = env._state_cache
@@ -79,7 +77,7 @@ def main(argv: list[str] | None = None) -> None:
     core_path = str(Path(args.core_path).expanduser())
     rom_path = str(Path(args.rom_path).expanduser())
 
-    env = DrMarioRetroEnv(
+    env = DrMarioLibretroEnv(
         obs_mode="state",
         backend=str(args.backend),
         core_path=core_path,

@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from training.envs.curriculum import CurriculumConfig, CurriculumVecEnv
+from drmc_rl.training.envs.curriculum import CurriculumConfig, CurriculumVecEnv
 
 
 @dataclass

@@ -189,7 +189,7 @@ VS-pool checkpoint resets so training can start from real human crises
 instead of only clean level starts. Requires the VS checkpoint reset added
 to the engine (`DrmVsResetSpec.checkpoint_*`, applied via
 `GameLogic::loadCheckpoint` per side; rebuild with
-`make -C game_engine libdrmario_pool`).
+`make -C vendor/drmario_native libdrmario_pool`).
 
 Reconstructibility (documented in the tool docstring): boards / pills /
 counters are exact from spawn-record snapshots; the two sides' snapshots are
@@ -209,7 +209,7 @@ Rebuild + validate (plays N rows to completion in the native pool):
     nice -n 19 .venv/bin/python -m tools.build_start_bank --validate 64
     # -> runs/start_bank/start_bank_v1.npz (+ .json build report)
 
-Enable in a VS run (`training/envs/start_bank.py` loader, sampled in
+Enable in a VS run (`drmc_rl/training/envs/start_bank.py` loader, sampled in
 `DrMarioVsPoolVecEnv._build_reset_specs`):
 
     env:

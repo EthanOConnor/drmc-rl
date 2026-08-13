@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
-from training.envs.interactive import PlaybackControl, RateLimitedVecEnv
+from drmc_rl.training.envs.interactive import PlaybackControl, RateLimitedVecEnv
 
 
 class _FakeVecEnv:

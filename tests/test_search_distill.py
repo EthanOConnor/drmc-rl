@@ -15,18 +15,18 @@ torch = pytest.importorskip("torch")
 
 from gymnasium import spaces
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
-from models.policy.candidate_packing import pack_feasible_candidates
-from training.algo.ppo_smdp import SMDPPPOAdapter
-from training.algo.search_distill import (
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.training.algo.ppo_smdp import SMDPPPOAdapter
+from drmc_rl.training.algo.search_distill import (
     SearchDistillConfig,
     blend_value_targets,
     improved_policy_target,
     masked_distill_kl,
 )
-from training.rollout.decision_buffer import DecisionBatch
-from training.utils.cfg import to_config_node
+from drmc_rl.training.rollout.decision_buffer import DecisionBatch
+from drmc_rl.training.utils.cfg import to_config_node
 
 needs_pool = pytest.mark.skipif(
     not is_library_present(),
@@ -40,7 +40,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -50,7 +50,7 @@ def _has_vspool_symbols() -> bool:
 
 needs_vspool = pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
@@ -405,7 +405,7 @@ def _run_one_update(cfg, env):
 @needs_pool
 def test_search_distill_smoke_1p(tmp_path) -> None:
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+    from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv
 
     env = DrMarioPoolVecEnv(
         num_envs=4,
@@ -432,7 +432,7 @@ def test_search_distill_smoke_1p(tmp_path) -> None:
 @needs_vspool
 def test_search_distill_smoke_vs(tmp_path) -> None:
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     env = DrMarioVsPoolVecEnv(
         num_pairs=2,

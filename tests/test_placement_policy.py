@@ -11,21 +11,17 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from models.policy.placement_dist import (
+from drmc_rl.models.policy.placement_dist import (
     MaskedPlacementDist,
     flatten_placement,
     unflatten_placement,
 )
-from models.policy.placement_heads import (
-    DenseConvHead,
-    DrMarioBoardEncoder,
-    FactorizedHead,
+from drmc_rl.models.policy.placement_heads import (
     OrderedPairEmbedding,
     PlacementPolicyNet,
-    ShiftAndScoreHead,
     UnorderedPillEmbedding,
 )
-from training.rollout.decision_buffer import compute_gae_smdp
+from drmc_rl.training.rollout.decision_buffer import compute_gae_smdp
 
 
 class TestMaskedDistribution:
@@ -241,7 +237,7 @@ class TestSMDPMath:
             delta = rewards[t] + gamma * next_value - values[t]
             last_gae = delta + gamma * lam * last_gae
             advantages_std[t] = last_gae
-            next_return = 0.0 if t == 1 else returns_std[t + 1]
+            0.0 if t == 1 else returns_std[t + 1]
             returns_std[t] = rewards[t] + gamma * (values[t + 1] if t < 1 else 0.0)
 
         # SMDP version with τ=1

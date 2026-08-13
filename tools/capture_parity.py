@@ -8,11 +8,13 @@ Usage:
 Notes:
 - Requires Stable-Retro environment available for RAM capture; will fallback to state-only dumps.
 """
-import argparse, os, json
-import numpy as np
+import argparse
 from pathlib import Path
-from envs.retro.register_env import register_env_id
+
 import gymnasium as gym
+import numpy as np
+
+from drmc_rl.envs.libretro.registration import register_env_id
 
 
 def save_np(path: Path, arr: np.ndarray):
@@ -33,7 +35,7 @@ def main():
     outdir.mkdir(parents=True, exist_ok=True)
     register_env_id()
 
-    env = gym.make('DrMarioRetroEnv-v0', obs_mode=args.mode, level=0)
+    env = gym.make('DrMarioLibretroEnv-v0', obs_mode=args.mode, level=0)
 
     for ep in range(args.episodes):
         obs, info = env.reset(options={'frame_offset': args.frame_offset})

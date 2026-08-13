@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import gymnasium as gym
 import numpy as np
 
-from envs.retro.placement_env import DrMarioPlacementEnv
-from envs.retro.placement_planner import PlanResult, SpawnReachability
-from envs.retro.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS
+from drmc_rl.envs.libretro.placement_env import DrMarioPlacementEnv
+from drmc_rl.planning.planner import PlanResult, SpawnReachability
+from drmc_rl.planning.placement_space import GRID_HEIGHT, GRID_WIDTH, ORIENTATIONS
 
 
 class _TrivialPlanner:

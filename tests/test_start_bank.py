@@ -5,11 +5,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = pytest.mark.skipif(
     not is_library_present(),
-    reason="native pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="native pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fc_v2_events_small.jsonl"
@@ -46,8 +46,8 @@ def test_bank_extraction_deterministic():
 def test_bank_row_round_trips_through_native_reset(bank_path):
     """bank row -> reset spec -> env reset -> board matches."""
 
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
-    from training.envs.start_bank import StartBank
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+    from drmc_rl.training.envs.start_bank import StartBank
 
     bank = StartBank(bank_path)
     runner = DrMarioVsPoolRunner(num_pairs=1)
@@ -72,7 +72,7 @@ def test_bank_row_round_trips_through_native_reset(bank_path):
 
 
 def _make_env(bank_path, fraction, *, enabled=True, num_pairs=4):
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     cfg = None
     if enabled:
@@ -87,7 +87,7 @@ def _make_env(bank_path, fraction, *, enabled=True, num_pairs=4):
 
 
 def test_fraction_sampling_respected(bank_path):
-    from training.envs.start_bank import StartBank
+    from drmc_rl.training.envs.start_bank import StartBank
 
     bank = StartBank(bank_path)
     bank_boards = {bank.boards[i].tobytes() for i in range(len(bank))}
@@ -111,7 +111,7 @@ def test_disabled_flag_is_bit_identical(bank_path):
     obs = {}
     boards = {}
     for name, enabled in (("off", False), ("absent", None)):
-        from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+        from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
         cfg = {"enabled": False, "path": str(bank_path), "fraction": 0.5} if enabled is False else None
         env = DrMarioVsPoolVecEnv(

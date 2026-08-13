@@ -15,22 +15,20 @@ from __future__ import annotations
 
 import argparse
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tools.game_transcript import (
-    GameTranscript,
-    FrameState,
-    save_transcript,
     BOARD_SIZE,
     TILE_EMPTY,
+    FrameState,
+    GameTranscript,
+    save_transcript,
 )
-
 
 # NES RAM addresses (from ram_offsets.json and disassembly)
 ADDR_BOARD = 0x0400
@@ -67,7 +65,7 @@ def record_nes_demo(
     Returns:
         GameTranscript with frame-by-frame recording
     """
-    from envs.backends.libretro_backend import LibretroBackend
+    from drmc_rl.envs.backends.libretro_backend import LibretroBackend
     
     # Initialize backend
     backend = LibretroBackend()

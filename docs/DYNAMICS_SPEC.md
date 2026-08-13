@@ -196,4 +196,4 @@ def pill_rotate_validation(state, prev_rot, prev_col):
 
 3. **Demo parity**
    - The C++ engine replays the demo input stream internally (`getInputs_checkMode` demo branch).
-   - Verified by `tests/test_game_engine_demo.py::test_demo_trace_matches_nes_ground_truth` against `data/nes_demo.json`.
+   - Verified by `tests/test_native_demo.py::test_demo_trace_matches_nes_ground_truth` against `data/nes_demo.json`.

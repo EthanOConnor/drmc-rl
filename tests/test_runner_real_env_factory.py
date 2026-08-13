@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
-from training.envs import make_vec_env
-from training.utils.cfg import load_and_merge_cfg, to_config_node
+from drmc_rl.training.envs import make_vec_env
+from drmc_rl.training.utils.cfg import load_and_merge_cfg, to_config_node
 
 
 def test_make_vec_env_builds_real_retro_env_with_mock_backend() -> None:
-    cfg_dict = load_and_merge_cfg("training/configs/base.yaml", None)
-    cfg_dict.setdefault("env", {})["id"] = "DrMarioRetroEnv-v0"
+    cfg_dict = load_and_merge_cfg("drmc_rl/training/configs/base.yaml", None)
+    cfg_dict.setdefault("env", {})["id"] = "DrMarioLibretroEnv-v0"
     cfg_dict["env"]["backend"] = "mock"
     cfg_dict["env"]["obs_mode"] = "state"
     cfg_dict["env"]["include_risk_tau"] = False

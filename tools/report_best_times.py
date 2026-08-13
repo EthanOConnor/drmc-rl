@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import sqlite3
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Tuple
 
 import numpy as np
 

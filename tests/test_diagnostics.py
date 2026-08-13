@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from training.diagnostics.video import VideoWriter
+from drmc_rl.training.diagnostics.video import VideoWriter
 
 
 def test_video_writer(tmp_path) -> None:

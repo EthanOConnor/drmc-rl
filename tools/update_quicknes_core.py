@@ -20,7 +20,6 @@ import zipfile
 from pathlib import Path
 from typing import Optional
 
-
 DEFAULT_URL = (
     "https://buildbot.libretro.com/nightly/apple/osx/arm64/latest/quicknes_libretro.dylib.zip"
 )

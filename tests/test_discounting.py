@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from training.discounting import (
+from drmc_rl.training.discounting import (
     discounted_returns_list,
     discounted_returns_mlx,
     discounted_returns_torch,

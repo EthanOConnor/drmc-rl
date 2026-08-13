@@ -7,9 +7,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from models.policy.candidate_packing import pack_feasible_candidates
-from models.policy.candidate_policy import CandidatePlacementPolicyNet
-from models.policy.placement_heads import OrderedPairEmbedding
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
+from drmc_rl.models.policy.placement_heads import OrderedPairEmbedding
 
 
 def test_pack_feasible_candidates_sorted_and_padded():

@@ -1,7 +1,11 @@
 """Dump raw RAM and mapped state tensors for N frames to disk."""
-import argparse, os, numpy as np
-from envs.retro.register_env import register_env_id
+import argparse
+import os
+
 import gymnasium as gym
+import numpy as np
+
+from drmc_rl.envs.libretro.registration import register_env_id
 
 
 def main():
@@ -13,7 +17,7 @@ def main():
 
     os.makedirs(args.outdir, exist_ok=True)
     register_env_id()
-    env = gym.make('DrMarioRetroEnv-v0', obs_mode=args.mode, level=0)
+    env = gym.make('DrMarioLibretroEnv-v0', obs_mode=args.mode, level=0)
     obs, info = env.reset()
     for i in range(args.frames):
         a = env.action_space.sample()

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-from envs.retro.drmario_env import DrMarioRetroEnv
+from drmc_rl.envs.libretro.gym_env import DrMarioLibretroEnv
 
 
 def test_mock_backend_reset_and_step():
-    env = DrMarioRetroEnv(obs_mode="state", backend="mock", include_risk_tau=False)
+    env = DrMarioLibretroEnv(obs_mode="state", backend="mock", include_risk_tau=False)
     obs, info = env.reset()
     assert isinstance(obs, np.ndarray)
     assert info["viruses_remaining"] == env._viruses_remaining  # internal consistency

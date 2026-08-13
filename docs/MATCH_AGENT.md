@@ -1,10 +1,8 @@
 # The match agent: playing real games (vs the training architecture)
 
-Status 2026-07-02. This documents the "designed to play real matches" stack —
-what runs when the agent sits across from a human — and how it deliberately
-differs from the "designed to train" stack. Companions:
-docs/LIVE_BRIDGE_PROTOCOL.md (transport), docs/SEARCH_DESIGN.md (search),
-docs/DESIGN_REVIEW_2026-07.md (why these pieces).
+This documents the stack used when the agent plays a human and how it differs
+from the throughput-oriented training stack. See `LIVE_BRIDGE_PROTOCOL.md` for
+transport and `SEARCH_DESIGN.md` for search.
 
 ## Two architectures, one policy
 

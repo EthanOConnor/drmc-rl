@@ -5,8 +5,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 
 def _has_vspool_symbols() -> bool:
@@ -15,7 +15,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -25,7 +25,7 @@ def _has_vspool_symbols() -> bool:
 
 needs_vspool = pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 
 
@@ -42,7 +42,7 @@ def _random_feasible_actions(infos, rng) -> np.ndarray:
 
 
 def _make_aux_shim(spec: str):
-    from training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
+    from drmc_rl.training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
 
     shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
     shim.aux_spec = spec
@@ -53,7 +53,7 @@ def _make_aux_shim(spec: str):
 @needs_vspool
 def test_vs_opponent_obs_layout_and_scalars() -> None:
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     num_pairs = 2
     env = DrMarioVsPoolVecEnv(
@@ -104,7 +104,7 @@ def test_vs_opponent_obs_layout_and_scalars() -> None:
 @needs_vspool
 def test_vs_obs_flag_off_unchanged() -> None:
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     env = DrMarioVsPoolVecEnv(num_pairs=1, state_repr="bitplane_bottle_conn_mask", level=0)
     try:
@@ -127,7 +127,7 @@ def test_aux_v1_vs_extends_v1() -> None:
 
 
 def _check_aux_v1_vs() -> None:
-    from training.algo.ppo_smdp import _AUX_V1_DIM, _AUX_V1_VS_DIM
+    from drmc_rl.training.algo.ppo_smdp import _AUX_V1_DIM, _AUX_V1_VS_DIM
 
     shim_v1 = _make_aux_shim("v1")
     shim_vs = _make_aux_shim("v1_vs")
@@ -182,7 +182,7 @@ def _check_aux_v1_vs() -> None:
 
 def test_expand_checkpoint_preserves_outputs() -> None:
     torch = pytest.importorskip("torch")
-    from models.policy.candidate_policy import CandidatePlacementPolicyNet
+    from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
     from tools.expand_checkpoint import expand_checkpoint_payload
 
     torch.manual_seed(0)

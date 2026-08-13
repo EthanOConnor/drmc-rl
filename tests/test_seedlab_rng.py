@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from seedlab import rng as slrng
+from drmc_rl.seedlab import rng as slrng
 
 
 def test_orbit_structure() -> None:
@@ -40,7 +40,7 @@ _RAW_TO_CANONICAL = {0: 1, 1: 0, 2: 2}  # raw Y/R/B -> canonical R/Y/B
 
 def _is_pool_present() -> bool:
     try:
-        from envs.backends.drmario_pool import is_library_present
+        from drmc_rl.envs.backends.drmario_pool import is_library_present
 
         return bool(is_library_present())
     except Exception:
@@ -53,7 +53,7 @@ def _is_pool_present() -> bool:
 )
 @pytest.mark.parametrize("level", [0, 10, 20])
 def test_engine_parity_board_and_pills(level: int) -> None:
-    from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+    from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv
 
     orbit = slrng.orbit()
     sample_seeds = [0x8988, orbit[1], orbit[1234], orbit[30000], 0x0102]
@@ -101,7 +101,7 @@ def test_engine_parity_board_and_pills(level: int) -> None:
     reason="cpp-pool library missing (build with: python -m tools.build_drmario_pool)",
 )
 def test_seed_provider_per_env_seeds() -> None:
-    from training.envs.drmario_pool_vec import DrMarioPoolVecEnv
+    from drmc_rl.training.envs.drmario_pool_vec import DrMarioPoolVecEnv
 
     seeds = [0x8988, slrng.orbit()[100]]
     env = DrMarioPoolVecEnv(

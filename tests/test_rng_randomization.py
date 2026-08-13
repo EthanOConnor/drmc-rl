@@ -1,5 +1,5 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from envs.retro.drmario_env import DrMarioRetroEnv
+from drmc_rl.envs.libretro.gym_env import DrMarioLibretroEnv
 
 
 class _StubBackend:
@@ -34,7 +34,7 @@ class _StubBackend:
     def step(self, buttons, repeat: int = 1) -> None:
         self.events.append(("step", list(buttons), int(repeat)))
         # Simulate the ROM reaching the `initData_level` boundary (mode==0x03)
-        # during the START press, which is where `DrMarioRetroEnv` applies RNG
+        # during the START press, which is where `DrMarioLibretroEnv` applies RNG
         # seeds for parity.
         self._step_count += 1
         if self._step_count == 1:
@@ -44,8 +44,8 @@ class _StubBackend:
         raise NotImplementedError
 
 
-def _make_env(auto_start: bool) -> tuple[DrMarioRetroEnv, _StubBackend]:
-    env = DrMarioRetroEnv(obs_mode="pixel", backend="mock", auto_start=auto_start)
+def _make_env(auto_start: bool) -> tuple[DrMarioLibretroEnv, _StubBackend]:
+    env = DrMarioLibretroEnv(obs_mode="pixel", backend="mock", auto_start=auto_start)
     stub = _StubBackend()
     env._backend = stub  # type: ignore[assignment]
     env._using_backend = True

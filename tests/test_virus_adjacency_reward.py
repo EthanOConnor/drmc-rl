@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import numpy as np
 
-import envs.specs.ram_to_state as ram_specs
-from envs.retro.drmario_env import DrMarioRetroEnv, RewardConfig
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.libretro.gym_env import DrMarioLibretroEnv, RewardConfig
 
 
-def _make_env(*, pair: float = 1.0, triplet: float = 2.0) -> DrMarioRetroEnv:
+def _make_env(*, pair: float = 1.0, triplet: float = 2.0) -> DrMarioLibretroEnv:
     cfg = RewardConfig(
         virus_adjacency_pair_bonus=float(pair),
         virus_adjacency_triplet_bonus=float(triplet),
@@ -14,7 +14,7 @@ def _make_env(*, pair: float = 1.0, triplet: float = 2.0) -> DrMarioRetroEnv:
         adjacency_pair_bonus=0.0,
         adjacency_triplet_bonus=0.0,
     )
-    return DrMarioRetroEnv(obs_mode="state", backend="mock", reward_config=cfg, auto_start=False)
+    return DrMarioLibretroEnv(obs_mode="state", backend="mock", reward_config=cfg, auto_start=False)
 
 
 def test_virus_adjacency_pair_bonus_awarded() -> None:

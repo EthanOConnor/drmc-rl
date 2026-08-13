@@ -361,7 +361,7 @@ def run_tournament(
 # ---------------------------------------------------------------- match runner
 def _entry_board_channels(entry: Dict[str, Any]) -> int:
     """Board-channel count from the entry checkpoint's embedded cfg."""
-    from training.utils.checkpoint_io import load_checkpoint
+    from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
     ckpt = REPO_ROOT / str(entry["checkpoint"])
     if not ckpt.exists():
@@ -417,7 +417,7 @@ class VsMatchRunner:
     ) -> None:
         import torch
 
-        from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+        from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
         torch.set_num_threads(int(threads))
         if device == "auto":
@@ -540,7 +540,7 @@ class _EntryPolicy:
         self.search = None
         # Reliance probe: zero the opponent planes (ch 8-15) and the v1_vs aux
         # tail before the net sees them — measures how much a 20-ch checkpoint
-        # actually uses opponent information (docs/ABLATION_PLAN.md).
+        # actually uses opponent information.
         self.mask_opponent = bool(params.get("mask_opponent", False))
         if self.mode == "plain":
             self.plain = PlainPolicy(ckpt, device=str(params.get("device", "cpu")))
@@ -554,7 +554,7 @@ class _EntryPolicy:
             raise SystemExit("mask_opponent is only supported for mode: plain")
         if self.mode not in {"search", "ponder"}:
             raise SystemExit(f"entry '{entry.get('name')}': unknown mode '{self.mode}'")
-        from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
+        from drmc_rl.models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
 
         kwargs = dict(
             beam=int(params.get("beam", 8)),

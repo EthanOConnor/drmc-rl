@@ -1,118 +1,83 @@
-# Design Overview
+# Design
 
-This document describes the current `drmc-rl` architecture. It is intentionally
-forward-facing: older emulator-first and EnvPool plans are retained only where
-they still explain parity/debug code.
+## Fixed contract
 
-## Product Goal
+The policy chooses a final pill pose, not controller buttons. Actions form a
+`4 × 16 × 8 = 512` grid. The planner returns feasibility and exact frames to
+lock; PPO discounts over the resulting duration `tau`.
 
-Train a single-player Dr. Mario agent that chooses one macro placement per pill
-spawn. The training problem is a placement SMDP, not a 60 Hz controller-policy
-problem.
+This contract is shared by training, search, seedlab, and live play. It removes
+movement legality from the learning problem while retaining frame-perfect
+maneuvers and timing as explicit costs.
 
-## Current Runtime Path
+## Package boundaries
 
-Default command:
+- `drmc_rl.game` owns backend-independent actions, state decoding, mechanics,
+  rendering, and specifications.
+- `drmc_rl.planning` owns the 512-way placement space and Python, native, and
+  CUDA reachability implementations. It may depend on `game`, never libretro.
+- `drmc_rl.envs.backends` owns native-pool and emulator runtime bindings.
+- `drmc_rl.envs.libretro` owns Gymnasium wrappers, registration, and emulator
+  verification utilities. It depends on `game` and `planning`.
+- `drmc_rl.training`, `drmc_rl.models`, `drmc_rl.eval`, and `drmc_rl.seedlab`
+  are application layers
+  over those contracts.
 
-```bash
-python -m training.run --cfg training/configs/smdp_ppo.yaml --backend cpp-pool
+The `vendor/drmario_native` submodule is a pinned build dependency. Engine work
+is committed in the standalone `drmario-native` repository first; `drmc-rl`
+then updates the submodule revision. Python bindings remain in `drmc_rl.native`
+instead of making the vendored source tree part of the application namespace.
+
+## Runtime paths
+
+### Single player
+
+```text
+drmario-native pool
+  -> board, pill, preview, feasible placements, costs
+  -> packed candidate policy
+  -> SMDP PPO and curriculum
 ```
 
-Default config shape:
+The pool runs in process through ctypes and warps a chosen pill to its lock
+pose. `drm_reach_bfs_v4` is the costs-only training planner;
+`drm_reach_bfs_full` is its verification oracle.
 
-- `algo: ppo_smdp`
-- `env.id: DrMarioPlacementEnv-v0`
-- `env.backend: cpp-pool`
-- `env.state_repr: bitplane_bottle_conn_mask`
-- `curriculum.mode: ln_hop_back`
+### VS
 
-Data flow:
+The VS pool simulates both boards, garbage, attacks, and terminal outcomes.
+Training either exposes both sides for self-play or one learner side against a
+frozen opponent pool. Optional CUDA planning batches parked decision states
+before reinjecting exact costs into the native pool.
 
-1. `game_engine/` builds `libdrmario_pool` from the `drmario-native` submodule.
-2. `envs/backends/drmario_pool.py` loads the native pool with ctypes.
-3. `training/envs/drmario_pool_vec.py` owns the current vector-env hot path.
-4. `training/envs/dr_mario_vec.py` routes `DrMarioPlacementEnv-v0` +
-   `backend=cpp-pool` directly to that hot path.
-5. `training/algo/ppo_smdp.py` gathers one transition per placement decision and
-   updates the policy with SMDP discounting.
+Pure self-play previously learned ceiling attrition instead of clearing. The
+current design therefore uses human-policy opponents, real clear-endgame start
+states, a small clear-win bonus, and anchored tournament gates.
 
-`cpp-pool` does not go through the emulator backend registry and does not require
-a ROM.
+### Search and live play
 
-## Placement SMDP
+Search uses native simulation plus the policy/value network for depth-2 policy
+improvement. Pondering spends pill-fall time preparing the next decision. The
+live bridge reads RAM at spawn boundaries, plans from the observed microstate,
+and sends a verified frame-indexed input script. Training uses warp execution;
+live play never does.
 
-Action space: a dense `4 x 16 x 8 = 512` placement grid.
+### Seedlab
 
-- Action `a = (orientation, row, col)` selects the final locked pose.
-- Feasibility comes from planner masks.
-- `placements/cost_to_lock` or `placements/costs` records frames-to-lock.
-- `placements/tau` records the SMDP duration through the macro step.
+Seedlab distributes fixed-seed attempts, records best traces and distributions,
+and runs beam or bounded exact search. Catalog times are native planner times
+until independently audited through script replay or an emulator.
 
-Current training observations are RAM/state-derived board tensors, especially
-`bitplane_bottle_conn_mask`: bottle color planes, virus mask, locked-capsule
-connection edges, and feasibility planes. Pill colors and preview data are
-carried alongside the board.
+## Model
 
-## Policy Stack
+The production policy encodes bottle planes with a CNN, embeds current and
+preview pills, and scores only packed feasible candidates. Candidate features
+include pose, cost-to-lock, local occupancy, gathered board features, and
+optional scalar context. The value head shares the board context.
 
-Implemented policy modes:
+## Independent verification boundary
 
-- Dense, shift-score, and factorized 512-way placement heads.
-- Candidate-scoring policy that packs only feasible placements and scores each
-  candidate with explicit cost-to-lock features.
-
-The default config is now candidate scoring in
-`training/configs/smdp_ppo.yaml`. Use
-`training/configs/smdp_ppo_heatmap.yaml` only for controlled heatmap baseline
-comparisons, and `training/configs/smdp_ppo_candidate.yaml` as the verbose
-annotated candidate experiment file.
-
-## Curriculum
-
-The current default curriculum is `ln_hop_back`.
-
-- Synthetic negative levels cover match-count and low-virus tasks.
-- Stage advancement uses EMA/Wilson-style confidence gates plus minimum decision
-  budgets.
-- Time budgets become active after mastery and are treated as soft goals.
-- PPO rollouts stop at advancement boundaries so updates remain stage-pure.
-
-## Backend Roles
-
-- `cpp-pool`: default training backend.
-- `cpp-engine`: older subprocess/shared-memory engine backend. Useful for
-  compatibility and parity checks, not the default.
-- `libretro`: emulator oracle/debug path with a legal ROM and NES core.
-- `stable-retro`: legacy compatibility path.
-- `mock`: dry-run and hermetic smoke behavior.
-
-## Emulator Parity Boundary
-
-Emulator-backed code remains important for:
-
-- checking native-engine behavior against an oracle;
-- recording and replaying traces;
-- inspecting RAM and visual frames;
-- validating ROM-specific timing assumptions.
-
-It is not the onboarding or training default. See `docs/RETRO_CORE_NOTES.md` for
-that lane.
-
-## Current Non-Goals
-
-These are not active default directions:
-
-- EnvPool as the next simulator architecture;
-- Stable-Retro-first setup;
-- per-frame controller-policy training as the main learning setup;
-- pixel-to-state as a prerequisite for training;
-- 2-player/PettingZoo work as near-term scope.
-
-If any of these become active again, promote them through `notes/BACKLOG.md` and
-update this document at the same time.
-
-## Design Records
-
-Use `notes/MEMORY.md` for durable decisions, `notes/SCRUTINY.md` for risks, and
-`notes/WORKLOG.md` for changes made. `docs/PROJECT_DEEP_DIVE_2026-05-07.md` is a
-dated audit and handoff, not a replacement for current docs.
+The native engine and reachability planner are optimized models, not the final
+oracle. Libretro with a legal ROM, recorded NES traces, the full native planner,
+and controller-script replay remain independent checks. Optimizations must not
+replace their own oracle.

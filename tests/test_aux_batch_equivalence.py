@@ -7,8 +7,8 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from envs.specs import ram_to_state as ram_specs  # noqa: F401  (layout import)
-from training.algo.ppo_smdp import SMDPPPOAdapter
+from drmc_rl.game.specs import ram_to_state as ram_specs  # noqa: F401  (layout import)
+from drmc_rl.training.algo.ppo_smdp import SMDPPPOAdapter
 
 
 class _StubEnv:

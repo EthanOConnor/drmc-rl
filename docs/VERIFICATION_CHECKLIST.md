@@ -15,5 +15,5 @@
 6. No future peeking
    - Do not read hidden RNG; only current + preview pill.
 
-Copy `envs/specs/ram_offsets_example.json` to `envs/specs/ram_offsets.json` with your values once verified.
+Copy `drmc_rl/game/specs/ram_offsets_example.json` to `drmc_rl/game/specs/ram_offsets.json` with your values once verified.
 

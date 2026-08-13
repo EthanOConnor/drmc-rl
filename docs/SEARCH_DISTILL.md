@@ -1,7 +1,6 @@
 # Search-Amplified Training Targets (Gumbel-AZ-lite)
 
-Item 2 of `docs/ARCHITECTURE_REVIEW_2026-06.md`: use the depth-2
-checkpoint-reset search (`models/policy/search_policy.py`, measured 86.7%
+Use depth-2 checkpoint-reset search (`drmc_rl/models/policy/search_policy.py`, measured 86.7%
 head-to-head win rate over the same weights plain) to produce improved
 training targets, so the net banks the search gap at zero inference cost.
 
@@ -24,9 +23,9 @@ training targets, so the net banks the search gap at zero inference cost.
 
 ## Mechanics
 
-Code: `training/algo/search_distill.py` (config, target math, rollout runner),
-wired into `training/algo/ppo_smdp.py`; per-decision storage in
-`training/rollout/decision_buffer.py`.
+Code: `drmc_rl/training/algo/search_distill.py` (config, target math, rollout runner),
+wired into `drmc_rl/training/algo/ppo_smdp.py`; per-decision storage in
+`drmc_rl/training/rollout/decision_buffer.py`.
 
 - **Rollout.** Each vectorized decision, a Bernoulli(`decision_fraction`)
   sample (per env; sampled, not strided, to avoid phase artifacts) picks the
@@ -76,11 +75,11 @@ and matches serial `decide()` per request up to float association
 
 ### Opponent-board observability (`_vs` repr)
 
-The 20-channel `bitplane_bottle_conn_mask_vs` obs + `aux_spec: v1_vs`
-(docs/VS_OPPONENT_OBS.md) is now searchable. The sims remain 1P (the
+The 20-channel `bitplane_bottle_conn_mask_vs` observation with
+`aux_spec: v1_vs` is searchable. The sims remain 1P (the
 learner's own board); the obs handed to the net during search is assembled by
 **splicing a frozen opponent context** around the sim planes
-(`models/policy/search_policy.ObsContext` / `splice_obs_context`):
+(`drmc_rl/models/policy/search_policy.ObsContext` / `splice_obs_context`):
 
 - opponent planes (live obs ch 8..15) and the 15 v1_vs aux-tail scalars are
   captured from the live decision's stored obs/aux;
@@ -167,7 +166,7 @@ against throughput linearly.
   `max(0, level-20) + decisions_in_episode // 10` (same as eval/tournament
   tooling). Synthetic curriculum levels < 0 clamp to 0 inside the sim.
 - 1P reward replication uses the global reward config
-  (`training/envs/drmario_pool_vec._RewardCfg.load()`); per-run reward
+  (`drmc_rl/training/envs/drmario_pool_vec._RewardCfg.load()`); per-run reward
   overrides that bypass it would skew Q magnitudes (ranking is usually
   preserved).
 

@@ -18,21 +18,27 @@ line-length = 100
 line-length = 100
 
 [tool.ruff.lint]
-select = ["E", "F", "I"]
+select = ["F"]
 ignore = []
 
 [tool.setuptools]
-# Explicitly control package discovery to avoid bundling non-packages (e.g., 're', 'retro')
+include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["envs*", "models*", "eval*", "training*", "tools*"]
+include = ["drmc_rl*", "tools*"]
 exclude = [
-    "re*",
-    "retro*",
     "data*",
     "legal_ROMs*",
     "docs*",
     "dr-mario-disassembly*",
+]
+
+[tool.setuptools.package-data]
+drmc_rl = [
+    "game/specs/*.json",
+    "envs/libretro/seeds/*.json",
+    "planning/cuda/*.cu",
+    "training/configs/*.yaml",
 ]
 
 [project.optional-dependencies]
@@ -41,11 +47,9 @@ rl = [
     "torchvision",
     "torchaudio",
     "torchrl",
-    "pettingzoo",
     "wandb",          # Experiment tracking (free tier available)
 ]
 viz = ["opencv-python>=4.13.0.92", "pillow"]
-apple = ["mlx"]
 dev = ["black", "ruff", "pytest", "pandas", "pyarrow", "matplotlib"]
 
 [build-system]

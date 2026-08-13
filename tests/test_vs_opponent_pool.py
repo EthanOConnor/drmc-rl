@@ -3,9 +3,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import envs.specs.ram_to_state as ram_specs
-from envs.backends.drmario_pool import is_library_present
-from training.envs.vs_opponents import OpponentPool, _PFSP_MAX_WEIGHT
+import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.envs.backends.drmario_pool import is_library_present
+from drmc_rl.training.envs.vs_opponents import _PFSP_MAX_WEIGHT, OpponentPool
 
 
 def _has_vspool_symbols() -> bool:
@@ -14,7 +14,7 @@ def _has_vspool_symbols() -> bool:
     try:
         import ctypes
 
-        from envs.backends.drmario_pool import resolve_library_path
+        from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 
         lib = ctypes.CDLL(str(resolve_library_path()))
         return hasattr(lib, "drm_vspool_create")
@@ -97,7 +97,7 @@ def test_pfsp_sample_prefers_even_opponent(tmp_path) -> None:
 # ----------------------------------------------------------- manifest persistence
 def test_manifest_roundtrip(tmp_path) -> None:
     torch = pytest.importorskip("torch")
-    from training.utils.checkpoint_io import save_checkpoint
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     seed_ckpt = tmp_path / "seed_step100.pt.gz"
     save_checkpoint({"state_dict": {"w": torch.zeros(1)}, "cfg": TINY_CFG, "step": 100}, seed_ckpt)
@@ -125,7 +125,7 @@ def test_manifest_roundtrip(tmp_path) -> None:
 
 def test_snapshot_eviction_keeps_protected_seed(tmp_path) -> None:
     torch = pytest.importorskip("torch")
-    from training.utils.checkpoint_io import save_checkpoint
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     seed_ckpt = tmp_path / "champ_step1.pt.gz"
     save_checkpoint({"state_dict": {"w": torch.zeros(1)}, "cfg": TINY_CFG, "step": 1}, seed_ckpt)
@@ -150,12 +150,12 @@ def test_snapshot_eviction_keeps_protected_seed(tmp_path) -> None:
 # ------------------------------------------------------------------ env smoke
 @pytest.mark.skipif(
     not _has_vspool_symbols(),
-    reason="cpp-vs-pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="cpp-vs-pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 def test_opponent_pool_env_smoke(tmp_path) -> None:
     pytest.importorskip("torch")
     prev_repr = ram_specs.get_state_representation()
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     net, aux_dim, cand_max = _tiny_net()
     pool = OpponentPool(tmp_path / "pool", max_pool=4)

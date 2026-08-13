@@ -1,11 +1,17 @@
 import numpy as np
 import pytest
 
-from envs.retro import reach_native as reach_native_mod
-from envs.retro.fast_reach import FrameState, HoldDir, Rotation, frame_action_from_index, simulate_frame
-from envs.retro.placement_planner import BoardState, PillSnapshot, PlacementPlanner
-from envs.retro.placement_space import GRID_WIDTH
-from envs.retro.drmario_env import Action
+from drmc_rl.planning import native_reach as reach_native_mod
+from drmc_rl.game.actions import Action
+from drmc_rl.planning.fast_reach import (
+    FrameState,
+    HoldDir,
+    Rotation,
+    frame_action_from_index,
+    simulate_frame,
+)
+from drmc_rl.planning.planner import BoardState, PillSnapshot, PlacementPlanner
+from drmc_rl.planning.placement_space import GRID_WIDTH
 
 
 def _blocked_under_spawn_board() -> BoardState:

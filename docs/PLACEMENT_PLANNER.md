@@ -22,9 +22,9 @@ The macro action space is a dense 4×16×8 grid (512 actions):
 
 ## Action Space (Canonical)
 
-Module: `envs/retro/placement_space.py`
+Module: `drmc_rl/planning/placement_space.py`
 
-Orientation convention (matches `models/policy/placement_heads.py`):
+Orientation convention (matches `drmc_rl/models/policy/placement_heads.py`):
 
 - `o = 0 (H+)`: partner at `(row,   col+1)`
 - `o = 1 (V+)`: partner at `(row+1, col)`
@@ -47,7 +47,7 @@ but **color order depends on the full rotation code** (see ROM tables).
 
 ## Reachability Core (Frame-Accurate)
 
-Module: `envs/retro/fast_reach.py`
+Module: `drmc_rl/planning/fast_reach.py`
 
 This is the correctness-first reference implementation. It mirrors the ROM’s
 per-frame falling-pill update order:
@@ -65,7 +65,7 @@ and parent pointers so we can reconstruct a minimal-time controller script.
 
 Modules:
 - Native BFS: `reach_native/drm_reach_full.c`
-- Python wrapper: `envs/retro/reach_native.py`
+- Python wrapper: `drmc_rl/planning/native_reach.py`
 - Build helper: `python -m tools.build_reach_native`
 
 The Python reference BFS can be prohibitively slow when executed once per pill
@@ -87,10 +87,10 @@ in `info` (`native` or `python`).
 For normal training, `DrMarioPlacementEnv-v0` plus `backend=cpp-pool` bypasses
 Gymnasium vector wrappers and `DrMarioPlacementEnv` entirely. The active path is:
 
-- `training/envs/dr_mario_vec.py` dispatch
-- `training/envs/drmario_pool_vec.py` vector env
-- `envs/backends/drmario_pool.py` ctypes wrapper
-- native `game_engine/libdrmario_pool`
+- `drmc_rl/training/envs/dr_mario_vec.py` dispatch
+- `drmc_rl/training/envs/drmario_pool_vec.py` vector env
+- `drmc_rl/envs/backends/drmario_pool.py` ctypes wrapper
+- native `vendor/drmario_native/build/libdrmario_pool`
 
 This path keeps the same canonical 512-way placement action contract and planner
 semantics, but masks, costs, observations, and rewards come directly from the
@@ -98,7 +98,7 @@ native pool. Use the emulator wrapper path for parity/debugging.
 
 ## Planner (Spawn-Latched Masks + Plans)
 
-Module: `envs/retro/placement_planner.py`
+Module: `drmc_rl/planning/planner.py`
 
 Key responsibilities:
 
@@ -116,9 +116,9 @@ controllable.
 
 ## Macro Environment Wrapper (SMDP)
 
-Module: `envs/retro/placement_env.py`
+Module: `drmc_rl/envs/libretro/placement_env.py`
 
-`DrMarioPlacementEnv` wraps `DrMarioRetroEnv` (state observations only) and:
+`DrMarioPlacementEnv` wraps `DrMarioLibretroEnv` (state observations only) and:
 
 - Detects decision points when:
   1) `currentP_nextAction == nextAction_pillFalling` (inputs are interpreted),
@@ -142,10 +142,3 @@ Important `info` keys:
 - `placements/spawn_id` (for caching logits “one inference per spawn”)
 - `placements/tau` (SMDP duration in frames)
 - `next_pill_colors` / `pill/colors` (color indices `[2]`)
-
-## Legacy Components
-
-- `envs/retro/placement_wrapper.py` is a small compatibility shim kept as a stable
-  import target for older scripts.
-- `envs/retro/reach512.py` and `envs/retro/placement_actions.py` reflect earlier,
-  simplified reachability models and are no longer used by the macro environment.

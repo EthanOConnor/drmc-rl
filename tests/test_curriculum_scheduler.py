@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+
 import numpy as np
 
-from training.envs.curriculum import CurriculumConfig, LnHopBackCurriculum, ScriptedCurriculum
+from drmc_rl.training.envs.curriculum import CurriculumConfig, LnHopBackCurriculum, ScriptedCurriculum
 
 
 def test_curriculum_advances_on_confidence_bound() -> None:

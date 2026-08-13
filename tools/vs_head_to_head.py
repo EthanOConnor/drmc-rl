@@ -1,7 +1,7 @@
 """VS-pool head-to-head probe: search policy vs plain policy, same checkpoint.
 
 Side 0 of every pair is driven by the depth-2 search
-(`models/policy/search_policy.SearchPolicy`); side 1 by the plain
+(`drmc_rl/models/policy/search_policy.SearchPolicy`); side 1 by the plain
 deterministic argmax of the same checkpoint. Reports the search side's win
 rate with a Wilson 95% CI (draws reported separately).
 
@@ -33,9 +33,9 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import torch
 
-from models.policy.candidate_packing import pack_feasible_candidates
-from models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
-from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.search_policy import PonderingSearchPolicy, SearchPolicy
+from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,7 +68,7 @@ class PlainPolicy:
 
     def __init__(self, checkpoint: Path, device: str = "cpu") -> None:
         from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
-        from training.utils.checkpoint_io import load_checkpoint
+        from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
         payload = load_checkpoint(checkpoint, map_location="cpu")
         cfg = payload.get("cfg", {})

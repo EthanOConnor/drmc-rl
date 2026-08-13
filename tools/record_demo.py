@@ -10,7 +10,7 @@ ground-truth transcript (`data/nes_demo.json`), this recorder:
   matching the NES recorder’s frame list semantics.
 
 Usage:
-  cd game_engine && make
+  cd vendor/drmario_native && make
   python tools/record_demo.py --output data/cpp_demo.json
 """
 from __future__ import annotations
@@ -28,11 +28,11 @@ from typing import List, Tuple
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tools.game_transcript import (
-    GameTranscript,
-    FrameState,
-    save_transcript,
     BOARD_SIZE,
     TILE_EMPTY,
+    FrameState,
+    GameTranscript,
+    save_transcript,
 )
 
 
@@ -57,7 +57,7 @@ def record_cpp_demo(
     with tempfile.NamedTemporaryFile(delete=False, suffix=".bin") as f:
         shm_file = Path(f.name)
         # Pre-allocate to correct size
-        from game_engine.engine_shm import SHM_SIZE
+        from drmc_rl.native.shm import SHM_SIZE
         f.write(b"\x00" * SHM_SIZE)
     
     # Set env var for both engine and our Python code (restore on exit so tests
@@ -68,7 +68,7 @@ def record_cpp_demo(
     env = os.environ.copy()
     
     # Import shared memory module AFTER setting env var
-    from game_engine.engine_shm import open_shared_memory
+    from drmc_rl.native.shm import open_shared_memory
     
     # Start engine in demo mode with manual-step for synchronized stepping
     # --manual-step: engine only advances when control_flags bit 0x04 is set
@@ -264,7 +264,7 @@ def main():
     parser.add_argument(
         "--engine",
         type=Path,
-        default=Path("game_engine/drmario_engine"),
+        default=Path("vendor/drmario_native/drmario_engine"),
         help="Path to engine binary",
     )
     parser.add_argument(
@@ -288,7 +288,7 @@ def main():
     
     if not engine_path.exists():
         print(f"Error: Engine not found at {engine_path}")
-        print("Build it with: cd game_engine && make")
+        print("Build it with: make -C vendor/drmario_native")
         return 1
     
     # Record

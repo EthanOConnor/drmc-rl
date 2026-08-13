@@ -1,9 +1,11 @@
 """Utilities to visualize the RAM-derived state tensor and (optionally) overlay on pixels."""
 from __future__ import annotations
-import numpy as np
-import matplotlib.pyplot as plt
 
-import envs.specs.ram_to_state as ram_specs
+import matplotlib.pyplot as plt
+import numpy as np
+
+import drmc_rl.game.specs.ram_to_state as ram_specs
+
 
 def grid_show(state: np.ndarray, title: str = "state", savepath: str | None = None):
     """Show a tiled grid of the state channels (C,H,W) as 2D images."""

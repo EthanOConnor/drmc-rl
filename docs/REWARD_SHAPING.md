@@ -2,7 +2,7 @@
 
 ## 0) Base Environment Reward (`r_env`)
 
-`DrMarioRetroEnv` computes a per-frame reward that is reported in `info` as:
+`DrMarioLibretroEnv` computes a per-frame reward that is reported in `info` as:
 
 - `r_env`: the “native” environment reward (configured via `RewardConfig`)
 - `r_shape`: optional potential-based shaping (evaluator-driven)
@@ -14,13 +14,13 @@ For macro-action training (`DrMarioPlacementEnv`), each macro step returns the
 
 ### Configuration
 
-The default reward config is loaded from `envs/specs/reward_config.json`.
+The default reward config is loaded from `drmc_rl/game/specs/reward_config.json`.
 You can override it via:
 
-- `DrMarioRetroEnv(..., reward_config_path=...)`, or
+- `DrMarioLibretroEnv(..., reward_config_path=...)`, or
 - the env var `DRMARIO_REWARD_CONFIG=...`
 
-Key terms in `r_env` (see `envs/retro/drmario_env.py`):
+Key terms in `r_env` (see `drmc_rl/envs/libretro/gym_env.py`):
 
 - **Pill lock bonus** when the ROM pill spawn counter advances (previous pill locked):
   `pill_place_base` with quadratic growth `pill_place_growth`.

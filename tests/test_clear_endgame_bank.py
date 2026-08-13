@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 FIXTURE = Path(__file__).parent / "fixtures" / "fc_v2_events_small.jsonl"
 
@@ -71,14 +71,14 @@ def bank_path(tmp_path_factory):
 
 @pytest.mark.skipif(
     not is_library_present(),
-    reason="native pool library missing (build with: make -C game_engine libdrmario_pool)",
+    reason="native pool library missing (build with: make -C vendor/drmario_native libdrmario_pool)",
 )
 def test_bank_rows_round_trip_through_native_reset(bank_path):
     """StartBank loads the npz unchanged; original AND mirrored rows reset
     cleanly to a live decision in the native pool."""
 
-    from envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
-    from training.envs.start_bank import StartBank
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+    from drmc_rl.training.envs.start_bank import StartBank
 
     bank = StartBank(bank_path)
     runner = DrMarioVsPoolRunner(num_pairs=1)
