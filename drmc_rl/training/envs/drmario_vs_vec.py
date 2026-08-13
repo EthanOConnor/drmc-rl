@@ -745,7 +745,9 @@ class DrMarioVsPoolVecEnv:
 
         import torch
 
-        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
+        from drmc_rl.models.policy.candidate_packing import (
+            pack_feasible_candidates_tensor_batch,
+        )
 
         order: List[int] = []
         spans: List[Tuple[Any, int, int]] = []
@@ -758,16 +760,8 @@ class DrMarioVsPoolVecEnv:
         buf["obs"][:n] = self._obs[order]
         buf["pills"][:n] = self._runner.buffers.pill_colors[order]
         buf["previews"][:n] = self._runner.buffers.preview_colors[order]
-        kmax = buf["actions"].shape[1]
-        packed = pack_feasible_candidates_batch(
-            self._mask[order].astype(bool, copy=False),
-            self._cost[order],
-            max_candidates=kmax,
-            sort_by_cost=True,
-        )
-        buf["actions"][:n] = packed.actions
-        buf["mask"][:n] = packed.mask
-        buf["cost"][:n] = packed.cost
+        buf["feasible"][:n] = self._mask[order]
+        buf["raw_cost"][:n] = self._cost[order]
         aux_rows = [
             (k, gi, entry)
             for entry, lo, hi in spans
@@ -784,8 +778,11 @@ class DrMarioVsPoolVecEnv:
                     buf["aux"][lo:hi, : rows.shape[1]] = rows
 
         dev = {}
-        for name in ("obs", "pills", "previews", "actions", "cost", "mask", "aux"):
+        for name in ("obs", "pills", "previews", "feasible", "raw_cost", "aux"):
             dev[name] = buf[f"{name}_t"][:n].to("cuda", non_blocking=True)
+        packed = pack_feasible_candidates_tensor_batch(
+            dev["feasible"], dev["raw_cost"], max_candidates=128
+        )
 
         slots = torch.empty(n, dtype=torch.int64, device="cuda")
         with torch.inference_mode():
@@ -795,18 +792,16 @@ class DrMarioVsPoolVecEnv:
                     dev["obs"][lo:hi],
                     dev["pills"][lo:hi],
                     dev["previews"][lo:hi],
-                    dev["actions"][lo:hi, : int(entry.candidate_max)],
-                    dev["cost"][lo:hi, : int(entry.candidate_max)],
-                    dev["mask"][lo:hi, : int(entry.candidate_max)],
+                    packed.actions[lo:hi, : int(entry.candidate_max)],
+                    packed.cost[lo:hi, : int(entry.candidate_max)],
+                    packed.mask[lo:hi, : int(entry.candidate_max)],
                     aux=aux,
                 )
                 # logits are already -1e9 on masked slots -> plain argmax.
                 slots[lo:hi] = logits.argmax(dim=1)
-        slot_np = slots.cpu().numpy()  # the single synchronization point
+        chosen = packed.actions.gather(1, slots.unsqueeze(1)).squeeze(1).cpu().numpy()
         # Empty mask -> slot 0 -> padding action -1 (noop-fall), as before.
-        return [
-            (gi, int(buf["actions"][k, slot_np[k]])) for k, gi in enumerate(order)
-        ]
+        return [(gi, int(chosen[k])) for k, gi in enumerate(order)]
 
     def _opp_staging(self, n: int) -> Dict[str, Any]:
         """Pinned staging buffers (numpy views + torch pinned tensors)."""
@@ -814,7 +809,6 @@ class DrMarioVsPoolVecEnv:
         import torch
 
         cur = getattr(self, "_opp_staging_buf", None)
-        kmax = 128
         aux_max = 64
         if cur is not None and cur["obs"].shape[0] >= n:
             return cur
@@ -824,9 +818,12 @@ class DrMarioVsPoolVecEnv:
             "obs_t": torch.empty((cap, C, GRID_H, GRID_W), dtype=torch.float32).pin_memory(),
             "pills_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
             "previews_t": torch.empty((cap, 2), dtype=torch.int64).pin_memory(),
-            "actions_t": torch.empty((cap, kmax), dtype=torch.int32).pin_memory(),
-            "cost_t": torch.empty((cap, kmax), dtype=torch.float32).pin_memory(),
-            "mask_t": torch.empty((cap, kmax), dtype=torch.bool).pin_memory(),
+            "feasible_t": torch.empty(
+                (cap, 4, GRID_H, GRID_W), dtype=torch.bool
+            ).pin_memory(),
+            "raw_cost_t": torch.empty(
+                (cap, 4, GRID_H, GRID_W), dtype=torch.float32
+            ).pin_memory(),
             "aux_t": torch.zeros((cap, aux_max), dtype=torch.float32).pin_memory(),
         }
         buf = {k[:-2]: v.numpy() for k, v in t.items()}

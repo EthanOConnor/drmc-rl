@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import torch
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,16 @@ class PackedCandidateBatch:
     mask: np.ndarray  # (B,Kmax) bool; True for valid candidates
     cost: np.ndarray  # (B,Kmax) float32; cost-to-lock frames; padding = 0
     count: np.ndarray  # (B,) int32; number of valid candidates per row
+
+
+@dataclass(frozen=True)
+class PackedCandidateTensorBatch:
+    """Fixed-size candidates that remain on the input tensor's device."""
+
+    actions: torch.Tensor  # (B,Kmax) int32; padding = -1
+    mask: torch.Tensor  # (B,Kmax) bool
+    cost: torch.Tensor  # (B,Kmax) float32; padding = 0
+    count: torch.Tensor  # (B,) int32
 
 
 def pack_feasible_candidates(
@@ -153,9 +164,70 @@ def pack_feasible_candidates_batch(
     )
 
 
+def pack_feasible_candidates_tensor_batch(
+    feasible_mask: torch.Tensor,
+    cost_to_lock: torch.Tensor,
+    *,
+    max_candidates: int,
+    sort_by_cost: bool = True,
+) -> PackedCandidateTensorBatch:
+    """Pack candidates directly on CPU or CUDA with NumPy-equivalent ordering."""
+
+    kmax = int(max(1, int(max_candidates)))
+    if feasible_mask.ndim != 4 or tuple(feasible_mask.shape[1:]) != (4, 16, 8):
+        raise ValueError(
+            f"Expected feasible_mask shape (B,4,16,8), got {tuple(feasible_mask.shape)!r}"
+        )
+    if cost_to_lock.shape != feasible_mask.shape:
+        raise ValueError(
+            f"Expected cost_to_lock shape {tuple(feasible_mask.shape)!r}, "
+            f"got {tuple(cost_to_lock.shape)!r}"
+        )
+
+    batch = int(feasible_mask.shape[0])
+    flat_mask = feasible_mask.reshape(batch, -1).bool()
+    flat_cost = cost_to_lock.reshape(batch, -1).float()
+    flat_cost = torch.nan_to_num(flat_cost, nan=float("inf"))
+    # Native pools use uint16 0xffff/0xfffe as unreachable sentinels. Casting
+    # before this comparison also works around limited uint16 CUDA operators.
+    flat_cost = flat_cost.masked_fill(flat_cost >= 65534.0, float("inf"))
+
+    if sort_by_cost:
+        keys = flat_cost.masked_fill(~flat_mask, float("inf"))
+    else:
+        keys = (~flat_mask).to(torch.int8)
+    width = min(kmax, int(flat_mask.shape[1]))
+    # Input columns are ascending action ids, so stable sorting gives the
+    # NumPy reference's (cost, action-id) lexicographic order for tied costs.
+    order = torch.argsort(keys, dim=1, stable=True)[:, :width]
+    valid = flat_mask.gather(1, order)
+    selected_cost = flat_cost.gather(1, order)
+
+    actions = torch.full(
+        (batch, kmax), -1, dtype=torch.int32, device=feasible_mask.device
+    )
+    packed_mask = torch.zeros(
+        (batch, kmax), dtype=torch.bool, device=feasible_mask.device
+    )
+    packed_cost = torch.zeros(
+        (batch, kmax), dtype=torch.float32, device=feasible_mask.device
+    )
+    actions[:, :width] = torch.where(valid, order, -1).to(torch.int32)
+    packed_mask[:, :width] = valid
+    packed_cost[:, :width] = torch.where(valid, selected_cost, 0.0)
+    return PackedCandidateTensorBatch(
+        actions=actions,
+        mask=packed_mask,
+        cost=packed_cost,
+        count=packed_mask.sum(dim=1, dtype=torch.int32),
+    )
+
+
 __all__ = [
     "PackedCandidateBatch",
+    "PackedCandidateTensorBatch",
     "PackedCandidates",
     "pack_feasible_candidates",
     "pack_feasible_candidates_batch",
+    "pack_feasible_candidates_tensor_batch",
 ]

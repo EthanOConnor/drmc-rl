@@ -315,7 +315,12 @@ class DecisionRolloutBuffer:
             
         return advantages, returns, gammas
         
-    def get_batch(self, bootstrap_value: Optional[float] = None) -> DecisionBatch:
+    def get_batch(
+        self,
+        bootstrap_value: Optional[float] = None,
+        *,
+        copy_storage: bool = True,
+    ) -> DecisionBatch:
         """Get all stored decisions as a batch with computed advantages.
         
         Args:
@@ -330,27 +335,31 @@ class DecisionRolloutBuffer:
         bootstrap = None if bootstrap_value is None else np.asarray(bootstrap_value)
         advantages, returns, gammas = self.compute_advantages(bootstrap)
         
+        def stored(array: np.ndarray) -> np.ndarray:
+            view = array[:T]
+            return view.copy() if copy_storage else view
+
         return DecisionBatch(
-            observations=self.observations[:T].copy(),
-            masks=self.masks[:T].copy(),
-            costs_to_lock=self.costs_to_lock[:T].copy() if self.costs_to_lock is not None else None,
-            pill_colors=self.pill_colors[:T].copy(),
-            preview_pill_colors=self.preview_pill_colors[:T].copy(),
-            aux=self.aux[:T].copy() if self.aux is not None else None,
-            actions=self.actions[:T].copy(),
-            log_probs=self.log_probs[:T].copy(),
-            values=self.values[:T].copy(),
-            taus=self.taus[:T].copy(),
-            rewards=self.rewards[:T].copy(),
-            observations_next=self.observations_next[:T].copy(),
-            dones=self.dones[:T].copy(),
-            env_ids=self.env_ids[:T].copy(),
+            observations=stored(self.observations),
+            masks=stored(self.masks),
+            costs_to_lock=stored(self.costs_to_lock) if self.costs_to_lock is not None else None,
+            pill_colors=stored(self.pill_colors),
+            preview_pill_colors=stored(self.preview_pill_colors),
+            aux=stored(self.aux) if self.aux is not None else None,
+            actions=stored(self.actions),
+            log_probs=stored(self.log_probs),
+            values=stored(self.values),
+            taus=stored(self.taus),
+            rewards=stored(self.rewards),
+            observations_next=stored(self.observations_next),
+            dones=stored(self.dones),
+            env_ids=stored(self.env_ids),
             advantages=advantages,
             returns=returns,
             gammas=gammas,
-            search_targets=self.search_targets[:T].copy() if self.search_targets is not None else None,
-            search_values=self.search_values[:T].copy() if self.search_values is not None else None,
-            search_mask=self.search_mask[:T].copy() if self.search_mask is not None else None,
+            search_targets=stored(self.search_targets) if self.search_targets is not None else None,
+            search_values=stored(self.search_values) if self.search_values is not None else None,
+            search_mask=stored(self.search_mask) if self.search_mask is not None else None,
         )
         
     def clear(self) -> None:

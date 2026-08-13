@@ -38,6 +38,8 @@ smdp_ppo:
   num_epochs: 2
   minibatch_size: 1536
   compile_mode: "default"
+  # Collect the next rollout on a one-update-lag actor while PPO updates.
+  overlap_rollout_update: true
 
   policy_type: "candidate"
   head_type: "dense"
