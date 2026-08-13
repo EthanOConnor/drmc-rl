@@ -1,6 +1,7 @@
 # Shared defaults. Product configs override the environment and training budget.
 
 seed: 42
+deterministic: false
 device: auto
 logdir: runs/auto
 viz:
