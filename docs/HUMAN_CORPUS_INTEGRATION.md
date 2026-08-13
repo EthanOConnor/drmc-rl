@@ -189,15 +189,25 @@ more meaningful than absolute levels. Refit as the corpus grows.
 
 `tools/train_human_policy.py` supersedes the old independent rating-bucket
 trainers. It reads only `HumanCorpus`, joins current WHR-C trajectories, and
-trains one rating-conditioned candidate policy plus a separate execution-slack
-model. The policy can represent any observed human strength without abrupt
+trains one rating-conditioned candidate policy with an outcome-supervised value
+head plus a separate execution-slack model. The policy can represent any observed human strength without abrupt
 bucket boundaries or four independently drifting networks. Rating-density
 weights retain tail behavior; replay splits plus a complete player fold are
-held out.
+held out. Version 2 also conditions on both ratings and uncertainty, match
+phase, opponent snapshot age, and four preceding semantic placements. Month
+shards are prefetched one at a time so all 54.8 million decisions remain
+trainable within tf3090's 16 GB system memory.
 
 `tools/human_backend.py` serves that checkpoint as the out-of-process human
 player and backend-only coach. Professor Pills is the thin, non-blocking host.
 The complete semantic contract is in `HUMAN_BACKEND_PROTOCOL.md`.
+
+The coach and optional sparring enhancement reuse the production native
+depth-2 search. Search retains the human prior, freezes semantic opponent and
+history context through leaf simulation, and evaluates branches with the
+outcome head. Coaching reports behavioral typicality and competitive value as
+separate axes. Sparring uses an explicit nonnegative search weight: zero is
+pure imitation; calibrated positive weights strengthen plausible human moves.
 
 ## Go-Exploit start-state bank (`tools/build_start_bank.py`, 2026-06-12)
 

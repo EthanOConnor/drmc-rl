@@ -46,11 +46,19 @@ request/error counters, and inference latency percentiles.
   "frame_id": 9182,
   "deadline_ms": 90,
   "target_rating": 1750,
+  "target_rating_sd": 70,
   "temperature": 1.0,
   "state": {
     "board_planes": "8 x 16 x 8 nested 0/1 values",
     "opponent_board_planes": "8 x 16 x 8 nested 0/1 values",
     "opponent_state_age_frames": 12,
+    "opponent_rating": 1680,
+    "opponent_rating_sd": 75,
+    "game_phase": 0.34,
+    "recent_decisions": [
+      {"action": 119, "tau_frames": 63},
+      {"action": 246, "tau_frames": 81}
+    ],
     "pill": [0, 1],
     "preview": [2, 0],
     "speed": 2,
@@ -70,11 +78,14 @@ request/error counters, and inference latency percentiles.
 ```
 
 Colors are canonical `0=red, 1=yellow, 2=blue`; row zero is the bottle top.
+Rating uncertainty, opponent rating, game phase, and recent decisions are
+optional. Missing history means an empty history. This is an inspectable
+semantic temporal contract rather than a host-maintained recurrent tensor.
 Each set of eight board planes is color `[3]`, virus `[1]`, and pill connectivity
 `[up, down, left, right]`. The backend computes every reachable placement and
 its exact controller script. The response declares the chosen placement,
 frame-indexed NES button masks, resolved/clamped rating, timing distribution,
-candidate actions, and human-policy logits. The opponent board is the corpus-
+candidate actions, human-policy logits, and state win probability. The opponent board is the corpus-
 compatible latest known spawn state; its explicit age prevents it from being
 misrepresented as frame-synchronized. Professor Pills decides how to
 schedule or present those declarations; the backend never issues UI commands.
@@ -87,22 +98,29 @@ can add delay without invalidating reachability.
 
 A `coach` request may include `chosen_action` and `alternative_limit`. Its
 response reports how typical the choice is for comparable humans, its rank,
-surprisal, and common alternatives. Human frequency is explicitly not called
-move quality. A competitive-policy score will be added as a separate axis;
-until then the backend provides faithful behavioral comparison, not claims of
-optimality or strategic causation.
+surprisal, common alternatives, and a separate competitive rank from bounded
+native depth-2 value search. Human frequency is explicitly not called move
+quality.
+
+Search is on by default for `coach`. Pure human play remains
+`search_weight: 0`; a positive weight blends bounded value advantage into the
+human logits. `search_deadline_ms` bounds search, while the outer `deadline_ms`
+governs whether the host accepts the response. Interactive hosts should allow
+search failure and retain imitation output; `require_search` is for offline
+evaluation.
 
 ## Training
 
 ```sh
 uv run python -m tools.train_human_policy extract --planner cuda --sample-modulus 32
-uv run python -m tools.train_human_policy train --device cuda --epochs 8
-uv run python -m tools.human_backend --checkpoint runs/human_policy/human_policy_v1.pt.gz
+uv run python -m tools.train_human_policy train --device cuda --epochs 12
+uv run python -m tools.human_backend --checkpoint runs/human_policy/human_policy_v2.pt.gz
 ```
 
-Extraction reads only immutable `HumanCorpus` releases, joins each decision to
-the release's continuously interpolated WHR-C trajectory, recomputes exact
-feasible candidates, and deterministically samples by decision ID. One model
-replaces rating buckets. Rating-density weights prevent the middle of the
-population from drowning out the tails. Validation holds out both replay
-splits and a complete player fold.
+Extraction reads only immutable `HumanCorpus` releases, emits bounded-memory
+month shards, joins both players' continuously interpolated WHR-C trajectories,
+recomputes exact feasible candidates, and builds four prior decisions of
+semantic history. Training shuffles and prefetches shards, jointly learns
+behavior, outcome value, and timing, and restores the best validation epoch.
+Rating-density weights prevent the middle of the population from drowning out
+the tails.

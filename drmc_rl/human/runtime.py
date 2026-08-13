@@ -12,6 +12,7 @@ from drmc_rl.human.model import (
     HUMAN_POLICY_SCHEMA,
     build_human_policy,
     build_timing_model,
+    policy_condition_features,
     timing_feature_vector,
 )
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
@@ -48,6 +49,8 @@ class HumanPolicyRuntime:
             "replay_holdout_top1": metrics.get("replay_holdout_top1"),
             "player_holdout_top1": metrics.get("player_holdout_top1"),
             "future_holdout_top1": metrics.get("future_holdout_top1"),
+            "future_holdout_outcome_brier": metrics.get("future_holdout_outcome_brier"),
+            "value_head": True,
         }
 
     def score(
@@ -56,13 +59,18 @@ class HumanPolicyRuntime:
         board_planes: np.ndarray,
         opponent_board_planes: np.ndarray,
         opponent_state_age_frames: int,
+        rating_sd: float = 0.0,
+        opponent_rating: float | None = None,
+        opponent_rating_sd: float = 0.0,
+        game_phase: float = 0.0,
+        recent_decisions=(),
         pill: np.ndarray,
         preview: np.ndarray,
         candidate_actions: np.ndarray,
         candidate_costs: np.ndarray,
         candidate_mask: np.ndarray,
         rating: float,
-    ) -> tuple[np.ndarray, float, bool]:
+    ) -> tuple[np.ndarray, float, float, bool]:
         import torch
 
         planes = np.asarray(board_planes, dtype=np.float32)
@@ -79,9 +87,16 @@ class HumanPolicyRuntime:
         if actions.ndim != 1 or costs.shape != actions.shape or mask.shape != actions.shape:
             raise ValueError("candidate arrays must be equal-length vectors")
         resolved, clamped = self.condition.resolve(rating)
-        skill = self.condition.encode(np.asarray([resolved], dtype=np.float32))
-        age = min(max(int(opponent_state_age_frames), 0), 240) / 240.0
-        aux = np.concatenate((skill, np.asarray([[age]], dtype=np.float32)), axis=1)
+        aux = policy_condition_features(
+            self.condition,
+            rating=resolved,
+            rating_sd=rating_sd,
+            opponent_rating=opponent_rating,
+            opponent_rating_sd=opponent_rating_sd,
+            opponent_state_age_frames=opponent_state_age_frames,
+            game_phase=game_phase,
+            recent_decisions=recent_decisions,
+        )[None]
         feasible = np.zeros((4, 16, 8), dtype=np.float32)
         valid_actions = actions[mask]
         feasible.reshape(-1)[valid_actions] = 1.0
@@ -91,7 +106,7 @@ class HumanPolicyRuntime:
         if pill_arr[0, 0] == pill_arr[0, 1]:
             obs[:, 6:8] = 0.0
         with torch.inference_mode():
-            logits, _ = self.policy(
+            logits, value = self.policy(
                 torch.from_numpy(obs).to(self.device),
                 torch.from_numpy(pill_arr).to(self.device),
                 torch.from_numpy(preview_arr).to(self.device),
@@ -100,7 +115,7 @@ class HumanPolicyRuntime:
                 torch.from_numpy(mask[None]).to(self.device),
                 aux=torch.from_numpy(aux).to(self.device),
             )
-        return logits[0].float().cpu().numpy(), resolved, clamped
+        return logits[0].float().cpu().numpy(), float(value[0, 0].float().cpu()), resolved, clamped
 
     def choose(self, logits: np.ndarray, mask: np.ndarray, *, temperature: float = 1.0) -> int:
         valid = np.flatnonzero(np.asarray(mask, dtype=np.bool_))
@@ -119,6 +134,10 @@ class HumanPolicyRuntime:
         *,
         board_planes: np.ndarray,
         rating: float,
+        rating_sd: float = 0.0,
+        opponent_rating: float | None = None,
+        game_phase: float = 0.0,
+        previous_tau_frames: float = 0.0,
         chosen_cost: float,
         speed: int,
         speed_ups: int,
@@ -129,6 +148,12 @@ class HumanPolicyRuntime:
         resolved, _ = self.condition.resolve(rating)
         features = timing_feature_vector(
             self.condition.encode(resolved),
+            rating_sd=rating_sd,
+            opponent_skill_z=float(
+                self.condition.encode(resolved if opponent_rating is None else opponent_rating)[0]
+            ),
+            game_phase=game_phase,
+            previous_tau_frames=previous_tau_frames,
             chosen_cost=chosen_cost,
             board_planes=board_planes,
             speed=speed,

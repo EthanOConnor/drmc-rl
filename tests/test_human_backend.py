@@ -5,6 +5,7 @@ import pytest
 
 from drmc_rl.human.coach import analyze_choice
 from drmc_rl.human.conditioning import HumanSkillCondition
+from drmc_rl.human.search import blend_human_and_search, semantic_planes_to_nes_board
 from drmc_rl.planning.native_reach import is_library_present
 
 
@@ -31,6 +32,23 @@ def test_coach_keeps_human_norm_and_competitive_quality_separate() -> None:
     assert result["interpretation"]["human_probability"] != result["interpretation"]["competitive_score"]
 
 
+def test_semantic_board_round_trip_input_and_search_blend() -> None:
+    planes = np.zeros((8, 16, 8), dtype=np.float32)
+    planes[0, 15, 0] = 1.0
+    planes[3, 15, 0] = 1.0
+    planes[2, 14, 1] = 1.0
+    planes[6, 14, 1] = 1.0
+    board = semantic_planes_to_nes_board(planes).reshape(16, 8)
+    assert board[15, 0] == 0xD1  # canonical red -> raw red virus
+    assert board[14, 1] == 0x72  # canonical blue, connected left
+    assert board[0, 0] == 0xFF
+
+    human = np.asarray([2.0, 1.0, 0.0])
+    value = np.asarray([0.0, 3.0, -1.0])
+    np.testing.assert_array_equal(blend_human_and_search(human, value, weight=0), human)
+    assert np.argmax(blend_human_and_search(human, value, weight=2.0)) == 1
+
+
 def test_training_batch_contains_opponent_context_and_continuous_condition() -> None:
     from tools.train_human_policy import KMAX, batch_inputs
 
@@ -54,6 +72,11 @@ def test_training_batch_contains_opponent_context_and_continuous_condition() -> 
         "candidate_count": np.asarray([2] * n),
         "chosen_slot": np.asarray([0, 1, 0]),
         "rating": np.asarray([1000.0, 1500.0, 2000.0]),
+        "rating_sd": np.asarray([50.0] * n),
+        "opponent_rating": np.asarray([1200.0, 1500.0, 1800.0]),
+        "opponent_rating_sd": np.asarray([60.0] * n),
+        "game_phase": np.asarray([0.1, 0.2, 0.3]),
+        "history": np.zeros((n, 32), dtype=np.float32),
     }
     condition = HumanSkillCondition.fit(arrays["rating"])
     obs, _pill, _preview, _actions, _costs, mask, slots, aux = batch_inputs(
@@ -64,8 +87,8 @@ def test_training_batch_contains_opponent_context_and_continuous_condition() -> 
     assert obs[:, 8 + 3, 15, 7].all()  # opponent virus plane
     assert mask[:, :2].all()
     assert slots.tolist() == [0, 1, 0]
-    assert aux.shape == (n, 3)
-    assert aux[:, 2].tolist() == [0.0, 0.5, 1.0]
+    assert aux.shape == (n, 40)
+    assert aux[:, 6].tolist() == [0.0, 0.5, 1.0]
 
 
 def test_tiny_end_to_end_training_smoke() -> None:
@@ -89,6 +112,12 @@ def test_tiny_end_to_end_training_smoke() -> None:
         "candidate_count": np.asarray([2] * n),
         "chosen_slot": np.arange(n) % 2,
         "rating": np.linspace(1000, 2000, n, dtype=np.float32),
+        "rating_sd": np.full(n, 50.0, dtype=np.float32),
+        "opponent_rating": np.linspace(1100, 1900, n, dtype=np.float32),
+        "opponent_rating_sd": np.full(n, 60.0, dtype=np.float32),
+        "game_phase": np.linspace(0.0, 1.0, n, dtype=np.float32),
+        "history": np.zeros((n, 32), dtype=np.float32),
+        "won": np.arange(n) % 2 == 0,
         "tau_frames": np.asarray([45] * n),
         "chosen_cost": np.asarray([30] * n),
         "speed": np.asarray([2] * n),
@@ -110,6 +139,62 @@ def test_tiny_end_to_end_training_smoke() -> None:
     assert timing.training is False
     assert result["metrics"]["train_rows"] == 10
     assert np.isfinite(result["metrics"]["replay_holdout_nll"])
+    assert condition.minimum == 1000.0
+
+
+def test_sharded_training_streams_and_selects_checkpoint(tmp_path) -> None:
+    from tools.train_human_policy import KMAX, train_sharded
+
+    n = 24
+    candidates = np.full((n, KMAX), -1, dtype=np.int16)
+    candidates[:, :2] = (120, 121)
+    costs = np.zeros((n, KMAX), dtype=np.uint16)
+    costs[:, :2] = (30, 31)
+    fields = np.full((n, 128), 0xFF, dtype=np.uint8)
+    fields[:, 120] = 0xD0
+    arrays = {
+        "field": fields,
+        "opponent_field": fields.copy(),
+        "opponent_state_age_frames": np.arange(n),
+        "pill": np.asarray([[1, 0]] * n),
+        "preview": np.asarray([[2, 1]] * n),
+        "candidate_actions": candidates,
+        "candidate_costs": costs,
+        "candidate_count": np.asarray([2] * n),
+        "chosen_slot": np.arange(n) % 2,
+        "rating": np.linspace(1000, 2000, n, dtype=np.float32),
+        "rating_sd": np.full(n, 50.0, dtype=np.float32),
+        "opponent_rating": np.linspace(1100, 1900, n, dtype=np.float32),
+        "opponent_rating_sd": np.full(n, 60.0, dtype=np.float32),
+        "game_phase": np.linspace(0.0, 1.0, n, dtype=np.float32),
+        "history": np.zeros((n, 32), dtype=np.float32),
+        "won": np.arange(n) % 2 == 0,
+        "tau_frames": np.asarray([45] * n),
+        "chosen_cost": np.asarray([30] * n),
+        "speed": np.asarray([2] * n),
+        "speed_ups": np.asarray([0] * n),
+        "split": np.asarray([0] * 18 + [1] * 6),
+        "time_split": np.asarray([0] * n),
+        "player_fold": np.asarray([1] * 16 + [0] * 2 + [1] * 6),
+    }
+    paths = []
+    for shard, selected in enumerate((np.arange(0, 12), np.arange(12, 24))):
+        path = tmp_path / f"shard-{shard}.npz"
+        np.savez_compressed(path, **{key: value[selected] for key, value in arrays.items()})
+        paths.append(path)
+    policy, timing, result, condition = train_sharded(
+        paths,
+        device="cpu",
+        epochs=1,
+        batch_size=4,
+        lr=1e-3,
+        seed=3,
+        capacity="small",
+    )
+    assert policy.training is False
+    assert timing.training is False
+    assert result["metrics"]["shards"] == 2
+    assert result["metrics"]["best_epoch"] == 1
     assert condition.minimum == 1000.0
 
 
@@ -215,3 +300,5 @@ def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None
     assert coach["type"] == "result"
     assert coach["result"]["coach"]["chosen"]["feasible"] is True
     assert coach["result"]["coach"]["alternatives"]
+    assert coach["result"]["search"] is not None
+    assert "competitive_rank" in coach["result"]["coach"]["chosen"]

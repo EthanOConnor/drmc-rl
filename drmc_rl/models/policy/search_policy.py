@@ -449,7 +449,12 @@ class SearchPolicy:
         # beyond the 57 v1 features are the frozen v1_vs tail.
         self.obs_extra_planes = max(0, int(getattr(net, "in_channels", 12)) - 12)
         aux_dim = int(getattr(aux_shim, "aux_dim", 57) or 57) if aux_shim is not None else 0
-        self.aux_tail_dim = max(0, aux_dim - 57) if aux_shim is not None else 0
+        self._context_only_aux = bool(getattr(aux_shim, "context_only", False))
+        self.aux_tail_dim = (
+            aux_dim
+            if self._context_only_aux
+            else max(0, aux_dim - 57) if aux_shim is not None else 0
+        )
         opponent_model = str(opponent_model or "none").strip().lower()
         if opponent_model not in {"none", "self"}:
             raise ValueError(f"opponent_model must be 'none' or 'self', got {opponent_model!r}")
@@ -1748,6 +1753,18 @@ class SearchPolicy:
     ) -> Optional[np.ndarray]:
         if self.aux_shim is None:
             return None
+        if self._context_only_aux:
+            B = int(np.asarray(obs).shape[0])
+            if aux_tails is None:
+                return np.zeros((B, self.aux_tail_dim), dtype=np.float32)
+            aux = np.asarray(aux_tails, dtype=np.float32)
+            if aux.ndim == 1:
+                aux = np.broadcast_to(aux[None], (B, aux.shape[0]))
+            if aux.shape != (B, self.aux_tail_dim):
+                raise ValueError(
+                    f"context aux must be {(B, self.aux_tail_dim)}, got {aux.shape}"
+                )
+            return np.array(aux, dtype=np.float32, order="C", copy=True)
         return aux_v1_with_tail(obs, infos, aux_tails, self.aux_tail_dim)
 
     def _forward_full(

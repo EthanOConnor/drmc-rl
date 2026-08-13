@@ -17,29 +17,32 @@ from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
 
 
 def serve(backend: HumanBackend) -> None:
-    for line in sys.stdin:
-        try:
-            request = json.loads(line)
-        except json.JSONDecodeError as exc:
-            response = {
-                "schema": PROTOCOL_SCHEMA,
-                "type": "error",
-                "request_id": -1,
-                "frame_id": -1,
-                "error": {"kind": type(exc).__name__, "message": str(exc)},
-            }
-        else:
-            if request.get("type") == "shutdown":
+    try:
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+            except json.JSONDecodeError as exc:
                 response = {
                     "schema": PROTOCOL_SCHEMA,
-                    "type": "shutdown",
-                    "request_id": int(request.get("request_id", -1)),
-                    "frame_id": int(request.get("frame_id", -1)),
+                    "type": "error",
+                    "request_id": -1,
+                    "frame_id": -1,
+                    "error": {"kind": type(exc).__name__, "message": str(exc)},
                 }
-                print(json.dumps(response, separators=(",", ":")), flush=True)
-                return
-            response = backend.handle(request)
-        print(json.dumps(response, separators=(",", ":")), flush=True)
+            else:
+                if request.get("type") == "shutdown":
+                    response = {
+                        "schema": PROTOCOL_SCHEMA,
+                        "type": "shutdown",
+                        "request_id": int(request.get("request_id", -1)),
+                        "frame_id": int(request.get("frame_id", -1)),
+                    }
+                    print(json.dumps(response, separators=(",", ":")), flush=True)
+                    return
+                response = backend.handle(request)
+            print(json.dumps(response, separators=(",", ":")), flush=True)
+    finally:
+        backend.close()
 
 
 def benchmark(backend: HumanBackend, iterations: int) -> None:
