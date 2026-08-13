@@ -43,6 +43,12 @@ def test_manifest_verify_and_scan(tmp_path):
     assert corpus.verify(hashes=True)["files"] == 2
     rows = sum(batch.num_rows for batch in corpus.batches(months=["2026-08"]))
     assert rows == 2
+    ids = [
+        value
+        for batch in corpus.batches(columns=("decision_id",), months=["2026-08"])
+        for value in batch.column(0).to_pylist()
+    ]
+    assert ids == ["a", "b"]
     assert corpus.rating_at("Alice", 101) == (1510.0, 45.0)
     assert corpus.rating_at("unknown", 101) == (None, None)
     assert corpus.time_split(101) == "train"

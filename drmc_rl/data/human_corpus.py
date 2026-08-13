@@ -148,7 +148,10 @@ class HumanCorpus:
         batch_size: int = 8192,
     ) -> Iterator[Any]:
         scanner = self.dataset(kind, months=months).scanner(
-            columns=columns, filter=filter, batch_size=int(batch_size), use_threads=True
+            columns=None if columns is None else list(columns),
+            filter=filter,
+            batch_size=int(batch_size),
+            use_threads=True,
         )
         yield from scanner.to_batches()
 
