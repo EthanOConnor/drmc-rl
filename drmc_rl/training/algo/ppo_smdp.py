@@ -852,10 +852,21 @@ class SMDPPPOAdapter(AlgoAdapter):
                     cand_mask_t,
                     aux=aux_t,
                 )
-                # Single device->host sync; sampling on tiny [B, K] logits is
-                # far cheaper on CPU than paying per-op accelerator dispatch.
-                logits_cpu = logits.float().cpu()
-                values_np = values.float().cpu().numpy().astype(np.float32).reshape(-1)
+                dist = MaskedPlacementDist(logits.float(), cand_mask_t)
+                if deterministic:
+                    slot = dist.mode()
+                    log_probs = dist.log_prob(slot)
+                else:
+                    slot, log_probs = dist.sample(deterministic=False)
+                actions_t = cand_actions_t.gather(1, slot.unsqueeze(1)).squeeze(1)
+
+                # The native engine needs host actions. Resolve and sample on
+                # device, then synchronize once for only the three selected
+                # scalars per environment instead of copying every candidate
+                # logit back to the CPU.
+                selected = torch.stack(
+                    (actions_t.float(), log_probs.float(), values.float().reshape(-1)), dim=1
+                ).cpu().numpy()
             dt = float(time.perf_counter() - t0)
             batch_size = int(obs_arr.shape[0])
             self._perf_inference_calls += batch_size
@@ -867,16 +878,9 @@ class SMDPPPOAdapter(AlgoAdapter):
             except Exception:
                 pass
 
-            dist = MaskedPlacementDist(logits_cpu, torch.from_numpy(cand_mask))
-            if deterministic:
-                slot = dist.mode()
-                log_probs = dist.log_prob(slot)
-            else:
-                slot, log_probs = dist.sample(deterministic=False)
-
-            slot_np = slot.numpy().astype(np.int64).reshape(-1)
-            actions_np = cand_actions[np.arange(num_envs), slot_np].astype(np.int64)
-            log_probs_np = log_probs.numpy().astype(np.float32)
+            actions_np = selected[:, 0].astype(np.int64)
+            log_probs_np = selected[:, 1].astype(np.float32)
+            values_np = selected[:, 2].astype(np.float32)
             return (
                 actions_np,
                 log_probs_np,
