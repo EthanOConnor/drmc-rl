@@ -33,7 +33,9 @@ def set_reproducibility(seed: int, *, deterministic: bool = True) -> ReproContex
         if torch.cuda.is_available():
             torch.set_float32_matmul_precision("high")
         torch.backends.cudnn.deterministic = deterministic
-        torch.backends.cudnn.benchmark = not deterministic
+        # Opponent-pool batch sizes vary by decision wave. cuDNN benchmarking
+        # repeatedly autotunes those shapes and costs more than it saves.
+        torch.backends.cudnn.benchmark = False
     return ReproContext(seed=seed, deterministic=deterministic, numpy_seed=seed)
 
 
