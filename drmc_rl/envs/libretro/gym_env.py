@@ -1594,7 +1594,6 @@ class DrMarioLibretroEnv(gym.Env):
         candidates = [
             os.environ.get("DRMARIO_RAM_OFFSETS"),
             str(Path(__file__).resolve().parents[2] / "game" / "specs" / "ram_offsets.json"),
-            str(Path(__file__).resolve().parents[2] / "game" / "specs" / "ram_offsets_example.json"),
         ]
         for p in candidates:
             if not p:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
+from . import retail_wram as ram
+
 
 @dataclass(frozen=True)
 class BottleSpec:
@@ -14,7 +16,7 @@ class BottleSpec:
 
 
 BOTTLE = BottleSpec(
-    base_addr=0x0400,
+    base_addr=ram.P1_FIELD,
     width=8,
     height=16,
     stride=8,
@@ -23,45 +25,45 @@ BOTTLE = BottleSpec(
 
 # Current falling pill metadata for player one (player two mirrors with +0x80 offset).
 FALLING_PILL: Dict[str, int] = {
-    "row_addr": 0x0306,
-    "col_addr": 0x0305,
-    "orient_addr": 0x0325,
-    "size_addr": 0x0326,
-    "left_color_addr": 0x0301,
-    "right_color_addr": 0x0302,
+    "row_addr": ram.p1(ram.FALLING_PILL_ROW),
+    "col_addr": ram.p1(ram.FALLING_PILL_COLUMN),
+    "orient_addr": ram.p1(ram.FALLING_PILL_ROTATION),
+    "size_addr": ram.p1(ram.FALLING_PILL_SIZE),
+    "left_color_addr": ram.p1(ram.FALLING_PILL_COLOR_LEFT),
+    "right_color_addr": ram.p1(ram.FALLING_PILL_COLOR_RIGHT),
 }
 
 PREVIEW_PILL: Dict[str, int] = {
-    "left_color_addr": 0x031A,
-    "right_color_addr": 0x031B,
-    "rotation_addr": 0x0322,
-    "size_addr": 0x0323,
+    "left_color_addr": ram.p1(ram.NEXT_PILL_COLOR_LEFT),
+    "right_color_addr": ram.p1(ram.NEXT_PILL_COLOR_RIGHT),
+    "rotation_addr": ram.p1(ram.NEXT_PILL_ROTATION),
+    "size_addr": ram.p1(ram.NEXT_PILL_SIZE),
 }
 
 GRAVITY_LOCK: Dict[str, int] = {
-    "gravity_counter_addr": 0x0312,
-    "lock_counter_addr": 0x0307,
-    "speed_index_addr": 0x0320,
-    "speed_setting_addr": 0x030B,
+    "gravity_counter_addr": ram.p1(ram.SPEED_COUNTER),
+    "lock_counter_addr": ram.p1(ram.LOCK_COUNTER),
+    "speed_index_addr": ram.p1(ram.SPEED_INDEX),
+    "speed_setting_addr": ram.p1(ram.SPEED_SETTING),
 }
 
 TIMERS: Dict[str, int] = {
-    "frame_counter_addr": 0x0043,
-    "wait_frames_addr": 0x0051,
-    "music_frames_since_last_beat_addr": 0x067F,
+    "frame_counter_addr": ram.FRAME_COUNTER,
+    "wait_frames_addr": ram.WAIT_FRAMES,
+    "music_frames_since_last_beat_addr": ram.MUSIC_FRAMES_SINCE_LAST_BEAT,
 }
 
-LEVEL: Dict[str, int] = {"addr": 0x0316}
+LEVEL: Dict[str, int] = {"addr": ram.p1(ram.LEVEL)}
 
 GAME_STATUS: Dict[str, int] = {
-    "mode_addr": 0x0046,
+    "mode_addr": ram.GAME_MODE,
     "mode_in_game": 0x0004,
-    "stage_clear_flag_addr": 0x0055,
+    "stage_clear_flag_addr": ram.WHO_WON,
     "stage_clear_value": 0x0001,
-    "ending_state_addr": 0x0053,
-    "ending_non_value": 0x000A,
-    "player_count_addr": 0x0727,
-    "pill_counter_addr": 0x0310,
+    "ending_state_addr": ram.FINAL_CUTSCENE_STEP,
+    "ending_non_value": 0x0000,
+    "player_count_addr": ram.PLAYER_COUNT,
+    "pill_counter_addr": ram.p1(ram.PILLS_COUNTER_DECIMAL),
 }
 
 PLAYER_BASE_OFFSETS: Dict[str, int] = {"p1": 0x0000, "p2": 0x0080}
