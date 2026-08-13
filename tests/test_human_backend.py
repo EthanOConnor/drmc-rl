@@ -91,6 +91,30 @@ def test_training_batch_contains_opponent_context_and_continuous_condition() -> 
     assert aux[:, 6].tolist() == [0.0, 0.5, 1.0]
 
 
+def test_temporal_context_uses_prior_decisions_in_same_round() -> None:
+    from tools.train_human_policy import _attach_temporal_context
+
+    common = {
+        "game_id": "round-1",
+        "lock_x": 3,
+        "lock_y_top": 10,
+        "lock_rotation": 0,
+        "pill_left": 0,
+        "pill_right": 1,
+        "tau_frames": 60,
+    }
+    rows = [
+        {**common, "player_slot": 1},
+        {**common, "player_slot": 2},
+        {**common, "player_slot": 1, "tau_frames": 70},
+    ]
+    _attach_temporal_context(rows, {}, {})
+    assert rows[0]["_history"].sum() == 0
+    assert rows[1]["_history"].sum() == 0
+    assert rows[2]["_history"][0] == 1.0
+    assert rows[2]["_game_phase"] == 0.01
+
+
 def test_tiny_end_to_end_training_smoke() -> None:
     from tools.train_human_policy import KMAX, train
 

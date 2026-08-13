@@ -62,7 +62,6 @@ _COLUMNS = (
     "player",
     "opponent",
     "player_slot",
-    "crown_idx",
     "player_fold",
     "random_split",
     "won",
@@ -97,6 +96,33 @@ def _controller_state(held: int) -> tuple[int, int]:
     hold_dir = 1 if held & 0x02 else 2 if held & 0x01 else 0
     rot_hold = 1 if held & 0x80 else 2 if held & 0x40 else 0
     return hold_dir, rot_hold
+
+
+def _attach_temporal_context(
+    rows: list[dict[str, Any]],
+    histories: dict[tuple[str, int], list[dict[str, float | int]]],
+    decision_counts: dict[tuple[str, int], int],
+) -> None:
+    """Attach leak-free prior-decision features before sampling current rows."""
+
+    for row in rows:
+        key = (str(row["game_id"]), int(row["player_slot"]))
+        recent = histories.setdefault(key, [])
+        row["_history"] = history_features(recent)
+        count = decision_counts.get(key, 0)
+        row["_game_phase"] = min(count, 100) / 100.0
+        x = int(row["lock_x"])
+        y = int(row["lock_y_top"])
+        rotation = int(row["lock_rotation"]) & 3
+        action = -1
+        if 0 <= x < GRID_W and 0 <= y < GRID_H:
+            action = int(POSE_TO_ACTION[rotation * 128 + y * GRID_W + x])
+            if action >= 0 and int(row["pill_left"]) == int(row["pill_right"]):
+                action = canonicalize_same_color_action(action)
+        if action >= 0:
+            recent.insert(0, {"action": action, "tau_frames": int(row["tau_frames"])})
+            del recent[HISTORY_STEPS:]
+        decision_counts[key] = count + 1
 
 
 def _empty_arrays() -> dict[str, list[Any]]:
@@ -193,7 +219,7 @@ def _append_batch(
         output["rating_sd"].append(float(rating_sd or 0.0))
         output["opponent_rating"].append(float(opponent_rating))
         output["opponent_rating_sd"].append(float(opponent_rating_sd or 0.0))
-        output["game_phase"].append(min(max(int(row["crown_idx"]), 0), 100) / 100.0)
+        output["game_phase"].append(float(row["_game_phase"]))
         output["history"].append(row["_history"])
         output["won"].append(bool(row["won"]))
         output["tau_frames"].append(int(row["tau_frames"]))
@@ -224,7 +250,7 @@ def extract_dataset(
     planner = make_batch_planner(planner_backend)
     output = _empty_arrays()
     histories: dict[tuple[str, int], list[dict[str, float | int]]] = {}
-    last_crown: dict[tuple[str, int], int] = {}
+    decision_counts: dict[tuple[str, int], int] = {}
     scanned = sampled = kept = 0
     next_log = 10_000
     started = time.time()
@@ -233,28 +259,7 @@ def extract_dataset(
     ):
         source_rows = batch.to_pylist()
         scanned += len(source_rows)
-        for row in source_rows:
-            key = (str(row["game_id"]), int(row["player_slot"]))
-            crown = int(row["crown_idx"])
-            if crown <= last_crown.get(key, -1):
-                histories[key] = []
-            recent = histories.setdefault(key, [])
-            row["_history"] = history_features(recent)
-            x = int(row["lock_x"])
-            y = int(row["lock_y_top"])
-            rotation = int(row["lock_rotation"]) & 3
-            action = -1
-            if 0 <= x < GRID_W and 0 <= y < GRID_H:
-                action = int(POSE_TO_ACTION[rotation * 128 + y * GRID_W + x])
-                if (
-                    action >= 0
-                    and int(row["pill_left"]) == int(row["pill_right"])
-                ):
-                    action = canonicalize_same_color_action(action)
-            if action >= 0:
-                recent.insert(0, {"action": action, "tau_frames": int(row["tau_frames"])})
-                del recent[HISTORY_STEPS:]
-            last_crown[key] = crown
+        _attach_temporal_context(source_rows, histories, decision_counts)
         rows = [
             row
             for row in source_rows
