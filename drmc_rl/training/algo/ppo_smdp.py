@@ -29,7 +29,7 @@ except ImportError:
     get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
-from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
@@ -814,16 +814,12 @@ class SMDPPPOAdapter(AlgoAdapter):
             aux_batch = self._build_aux_batch(obs_arr, infos)
 
         if self.policy_type == "candidate":
-            cand_actions = np.full((num_envs, self.candidate_max), -1, dtype=np.int32)
-            cand_mask = np.zeros((num_envs, self.candidate_max), dtype=np.bool_)
-            cand_cost = np.zeros((num_envs, self.candidate_max), dtype=np.float32)
-            for i in range(num_envs):
-                packed = pack_feasible_candidates(
-                    masks[i], costs_to_lock[i], max_candidates=self.candidate_max, sort_by_cost=True
-                )
-                cand_actions[i] = packed.actions
-                cand_mask[i] = packed.mask
-                cand_cost[i] = packed.cost
+            packed = pack_feasible_candidates_batch(
+                masks, costs_to_lock, max_candidates=self.candidate_max, sort_by_cost=True
+            )
+            cand_actions = packed.actions
+            cand_mask = packed.mask
+            cand_cost = packed.cost
 
             t0 = time.perf_counter()
             with torch.inference_mode():
@@ -999,20 +995,13 @@ class SMDPPPOAdapter(AlgoAdapter):
                     "DecisionBatch.costs_to_lock is required for policy_type=candidate"
                 )
             kmax = int(self.candidate_max)
-            cand_actions_all = np.full((T, kmax), -1, dtype=np.int64)
-            cand_mask_all = np.zeros((T, kmax), dtype=np.bool_)
-            cand_cost_all = np.zeros((T, kmax), dtype=np.float32)
             feasible_counts_np = masks_np.reshape(T, -1).sum(axis=1).astype(np.int32, copy=False)
-            for t in range(T):
-                packed = pack_feasible_candidates(
-                    masks_np[t], costs_to_lock_np[t], max_candidates=kmax, sort_by_cost=True
-                )
-                cand_actions_all[t] = packed.actions
-                cand_mask_all[t] = packed.mask
-                cand_cost_all[t] = packed.cost
-            cand_actions_all_t = torch.from_numpy(cand_actions_all).to(self.device)
-            cand_mask_all_t = torch.from_numpy(cand_mask_all).to(self.device)
-            cand_cost_all_t = torch.from_numpy(cand_cost_all).to(self.device)
+            packed = pack_feasible_candidates_batch(
+                masks_np, costs_to_lock_np, max_candidates=kmax, sort_by_cost=True
+            )
+            cand_actions_all_t = torch.from_numpy(packed.actions).to(self.device)
+            cand_mask_all_t = torch.from_numpy(packed.mask).to(self.device)
+            cand_cost_all_t = torch.from_numpy(packed.cost).to(self.device)
 
         # Multiple epochs over the batch
         metrics_accum = {key: 0.0 for key in _UPDATE_METRIC_KEYS}

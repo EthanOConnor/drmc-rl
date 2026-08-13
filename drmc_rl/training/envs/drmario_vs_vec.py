@@ -745,7 +745,7 @@ class DrMarioVsPoolVecEnv:
 
         import torch
 
-        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 
         order: List[int] = []
         spans: List[Tuple[Any, int, int]] = []
@@ -759,13 +759,15 @@ class DrMarioVsPoolVecEnv:
         buf["pills"][:n] = self._runner.buffers.pill_colors[order]
         buf["previews"][:n] = self._runner.buffers.preview_colors[order]
         kmax = buf["actions"].shape[1]
-        for k, gi in enumerate(order):
-            packed = pack_feasible_candidates(
-                self._mask[gi].astype(bool), self._cost[gi], max_candidates=kmax, sort_by_cost=True
-            )
-            buf["actions"][k] = packed.actions
-            buf["mask"][k] = packed.mask
-            buf["cost"][k] = packed.cost
+        packed = pack_feasible_candidates_batch(
+            self._mask[order].astype(bool, copy=False),
+            self._cost[order],
+            max_candidates=kmax,
+            sort_by_cost=True,
+        )
+        buf["actions"][:n] = packed.actions
+        buf["mask"][:n] = packed.mask
+        buf["cost"][:n] = packed.cost
         aux_rows = [
             (k, gi, entry)
             for entry, lo, hi in spans
@@ -842,24 +844,22 @@ class DrMarioVsPoolVecEnv:
 
         import torch
 
-        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 
-        B = len(side_idxs)
         obs = np.ascontiguousarray(self._obs[side_idxs], dtype=np.float32)
         pills = self._runner.buffers.pill_colors[side_idxs].astype(np.int64)
         previews = self._runner.buffers.preview_colors[side_idxs].astype(np.int64)
 
         kmax = int(entry.candidate_max)
-        cand_actions = np.full((B, kmax), -1, dtype=np.int32)
-        cand_mask = np.zeros((B, kmax), dtype=np.bool_)
-        cand_cost = np.zeros((B, kmax), dtype=np.float32)
-        for k, gi in enumerate(side_idxs):
-            packed = pack_feasible_candidates(
-                self._mask[gi].astype(bool), self._cost[gi], max_candidates=kmax, sort_by_cost=True
-            )
-            cand_actions[k] = packed.actions
-            cand_mask[k] = packed.mask
-            cand_cost[k] = packed.cost
+        packed = pack_feasible_candidates_batch(
+            self._mask[side_idxs].astype(bool, copy=False),
+            self._cost[side_idxs],
+            max_candidates=kmax,
+            sort_by_cost=True,
+        )
+        cand_actions = packed.actions
+        cand_mask = packed.mask
+        cand_cost = packed.cost
 
         aux = None
         if int(entry.aux_dim) > 0:
