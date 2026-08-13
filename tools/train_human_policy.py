@@ -1089,6 +1089,31 @@ def train_sharded(
         policy.load_state_dict(best_policy)
         timing.load_state_dict(best_timing)
     metrics = _evaluate_compact(policy, timing, validation, condition, device=device)
+    historyless = dict(validation)
+    historyless["history"] = np.zeros_like(validation["history"])
+    historyless_metrics = _evaluate_compact(
+        policy, timing, historyless, condition, device=device
+    )
+    skillless = dict(validation)
+    skillless["rating"] = np.full_like(validation["rating"], condition.mean)
+    skillless["opponent_rating"] = np.full_like(
+        validation["opponent_rating"], condition.mean
+    )
+    skillless["rating_sd"] = np.zeros_like(validation["rating_sd"])
+    skillless["opponent_rating_sd"] = np.zeros_like(validation["opponent_rating_sd"])
+    skillless_metrics = _evaluate_compact(policy, timing, skillless, condition, device=device)
+    metrics.update(
+        {
+            "history_gain_behavior_nll": historyless_metrics["behavior_nll"]
+            - metrics["behavior_nll"],
+            "history_gain_outcome_brier": historyless_metrics["outcome_brier"]
+            - metrics["outcome_brier"],
+            "skill_gain_behavior_nll": skillless_metrics["behavior_nll"]
+            - metrics["behavior_nll"],
+            "skill_gain_outcome_brier": skillless_metrics["outcome_brier"]
+            - metrics["outcome_brier"],
+        }
+    )
     group_names = {1: "replay_holdout", 2: "player_holdout", 3: "future_holdout"}
     for group, name in group_names.items():
         selected = np.flatnonzero(validation["evaluation_group"] == group)
