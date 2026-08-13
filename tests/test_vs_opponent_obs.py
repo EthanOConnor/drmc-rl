@@ -116,6 +116,70 @@ def test_vs_obs_flag_off_unchanged() -> None:
         ram_specs.set_state_representation(prev_repr)
 
 
+@needs_vspool
+def test_direct_policy_batch_matches_info_contract() -> None:
+    prev_repr = ram_specs.get_state_representation()
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+
+    reference = DrMarioVsPoolVecEnv(
+        num_pairs=2,
+        state_repr="bitplane_bottle_conn_mask",
+        level=7,
+        speed_setting=2,
+        randomize_rng=True,
+    )
+    direct = DrMarioVsPoolVecEnv(
+        num_pairs=2,
+        state_repr="bitplane_bottle_conn_mask",
+        level=7,
+        speed_setting=2,
+        randomize_rng=True,
+        direct_policy_batch=True,
+    )
+    shim = _make_aux_shim("v1")
+    rng = np.random.default_rng(3)
+    try:
+        obs_ref, infos_ref = reference.reset(seed=3)
+        obs_direct, infos_direct = direct.reset(seed=3)
+        for _ in range(8):
+            np.testing.assert_array_equal(obs_direct, obs_ref)
+            assert all(not info for info in infos_direct)
+
+            batch = direct.policy_batch("v1")
+            expected_mask = np.stack(
+                [info["placements/feasible_mask"] for info in infos_ref]
+            )
+            expected_cost = np.stack(
+                [info["placements/cost_to_lock"] for info in infos_ref]
+            )
+            expected_aux = shim._build_aux_batch(obs_ref, infos_ref)
+            np.testing.assert_array_equal(batch.feasible_mask, expected_mask)
+            np.testing.assert_array_equal(batch.cost_to_lock, expected_cost)
+            np.testing.assert_array_equal(
+                batch.pill_colors,
+                np.stack([info["next_pill_colors"] for info in infos_ref]),
+            )
+            np.testing.assert_allclose(batch.aux, expected_aux, rtol=0.0, atol=0.0)
+
+            actions = _random_feasible_actions(infos_ref, rng)
+            obs_ref, rew_ref, term_ref, trunc_ref, infos_ref = reference.step(actions)
+            obs_direct, rew_direct, term_direct, trunc_direct, infos_direct = direct.step(
+                actions
+            )
+            np.testing.assert_array_equal(obs_direct, obs_ref)
+            np.testing.assert_array_equal(rew_direct, rew_ref)
+            np.testing.assert_array_equal(term_direct, term_ref)
+            np.testing.assert_array_equal(trunc_direct, trunc_ref)
+            np.testing.assert_array_equal(
+                direct.transition_tau(),
+                np.asarray([info["placements/tau"] for info in infos_ref]),
+            )
+    finally:
+        direct.close()
+        reference.close()
+        ram_specs.set_state_representation(prev_repr)
+
+
 def test_aux_v1_vs_extends_v1() -> None:
     pytest.importorskip("torch")
     prev_repr = ram_specs.get_state_representation()

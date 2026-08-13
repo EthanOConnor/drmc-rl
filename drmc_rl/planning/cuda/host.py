@@ -231,6 +231,18 @@ class CudaReach:
         annotation spawn. Returns (n, 512) u16 (0xFFFF = unreachable pose).
         """
         n = self._pack_instances(cols, parity, thr, **spawn)
+        # The persistent kernel draws instances from one atomic queue. Real VS
+        # batches mix nearly-empty reset boards with expensive stacked boards;
+        # their solve times differ enough that input order otherwise leaves a
+        # long, under-occupied tail. Cheap-first occupancy ordering keeps all
+        # SMs fed. Stable order makes equal-complexity rows deterministic.
+        order = None
+        if n > self.grid_blocks:
+            occupancy = np.bitwise_count(self.h_insts["cols"][:n]).sum(
+                axis=1, dtype=np.uint16
+            )
+            order = np.argsort(occupancy, kind="stable")
+            self.h_insts[:n] = self.h_insts[:n][order]
         _check(drv.cuMemsetD8Async(self.d_cursor, 0, 8, self.stream))
         _check(drv.cuMemcpyHtoDAsync(
             self.d_insts, self._h_insts_ptr, n * INSTANCE_DTYPE.itemsize, self.stream))
@@ -241,7 +253,12 @@ class CudaReach:
         _check(drv.cuMemcpyDtoHAsync(
             self._h_costs_ptr, self.d_costs, n * N_POSES * 2, self.stream))
         _check(drv.cuStreamSynchronize(self.stream))
-        return self.h_costs[:n].copy()
+        costs = self.h_costs[:n].copy()
+        if order is not None:
+            restored = np.empty_like(costs)
+            restored[order] = costs
+            return restored
+        return costs
 
     SCRIPT_BUF_CAP = 24576
     PARENT_SLOT_U32 = 2 * 6336 * 8 * 64   # must match the kernel
