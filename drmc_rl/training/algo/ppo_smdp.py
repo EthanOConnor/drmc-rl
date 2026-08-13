@@ -39,7 +39,7 @@ from drmc_rl.training.algo.search_distill import (
     blend_value_targets,
     masked_distill_kl,
 )
-from drmc_rl.training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer, DecisionStep
+from drmc_rl.training.rollout.decision_buffer import DecisionBatch, DecisionRolloutBuffer
 from drmc_rl.training.utils.checkpoint_io import checkpoint_path, load_checkpoint, save_checkpoint
 from drmc_rl.training.utils.reproducibility import git_commit
 
@@ -351,6 +351,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             store_costs_to_lock=(self.policy_type == "candidate"),
             search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
         )
+        self._rollout_env_ids = np.arange(env.num_envs, dtype=np.int32)
 
         # Tracking
         self.global_step = 0  # Total environment steps (frames)
@@ -522,45 +523,44 @@ class SMDPPPOAdapter(AlgoAdapter):
                     dtype=np.int32,
                 )
 
+                done_arr = terminated_arr | truncated_arr
                 if self._sd_runner is not None:
-                    self._sd_runner.note_dones(terminated_arr | truncated_arr)
+                    self._sd_runner.note_dones(done_arr)
 
                 frames_total = int(np.sum(tau_arr))
                 self.global_step += frames_total
                 self.decision_step += int(self.env.num_envs)
                 decisions_collected += int(self.env.num_envs)
 
+                self.buffer.add_arrays(
+                    observations=decision_obs,
+                    masks=masks,
+                    costs_to_lock=costs_to_lock,
+                    pill_colors=pill_colors,
+                    preview_pill_colors=preview_pill_colors,
+                    aux=aux_batch,
+                    actions=actions,
+                    log_probs=log_probs,
+                    values=values,
+                    taus=tau_arr,
+                    rewards=rewards_arr,
+                    observations_next=obs_after_arr,
+                    dones=done_arr,
+                    env_ids=self._rollout_env_ids,
+                    search_targets=sd_targets,
+                    search_values=sd_values,
+                    search_mask=sd_flags,
+                )
+
                 advance_from: Optional[int] = None
                 advance_to: Optional[int] = None
                 for env_idx in range(self.env.num_envs):
                     info_i = info_after_list[env_idx] if env_idx < len(info_after_list) else {}
-                    step = DecisionStep(
-                        obs=decision_obs[env_idx],
-                        mask=masks[env_idx],
-                        cost_to_lock=costs_to_lock[env_idx],
-                        pill_colors=pill_colors[env_idx],
-                        preview_pill_colors=preview_pill_colors[env_idx],
-                        aux=None if aux_batch is None else aux_batch[env_idx],
-                        action=int(actions[env_idx]),
-                        log_prob=float(log_probs[env_idx]),
-                        value=float(values[env_idx]),
-                        tau=int(tau_arr[env_idx]),
-                        reward=float(rewards_arr[env_idx]),
-                        obs_next=obs_after_arr[env_idx],
-                        done=bool(terminated_arr[env_idx] or truncated_arr[env_idx]),
-                        env_id=int(env_idx),
-                        info=dict(info_i),
-                        search_target=None if sd_targets is None else sd_targets[env_idx],
-                        search_value=0.0 if sd_values is None else float(sd_values[env_idx]),
-                        searched=False if sd_flags is None else bool(sd_flags[env_idx]),
-                    )
-                    self.buffer.add(step)
-
                     # Track episodes
-                    if step.done:
+                    if bool(done_arr[env_idx]):
                         self._episodes_total += 1
-                        ep_info = step.info.get("episode", {})
-                        drm_info = step.info.get("drm", {})
+                        ep_info = info_i.get("episode", {})
+                        drm_info = info_i.get("drm", {})
 
                         self.batch_returns.append(float(ep_info.get("r", 0.0)))
                         self.batch_lengths.append(int(ep_info.get("l", 0)))

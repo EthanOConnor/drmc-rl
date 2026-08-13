@@ -104,6 +104,44 @@ class TestPlacementPolicySmoke:
         assert batch.advantages.shape == (5,)
         assert batch.returns.shape == (5,)
         assert batch.gammas.shape == (5,)
+
+    def test_decision_buffer_batched_append(self):
+        buffer = DecisionRolloutBuffer(
+            capacity=8,
+            obs_shape=(4, 16, 8),
+            num_envs=3,
+            aux_dim=2,
+            store_costs_to_lock=True,
+            search_target_dim=5,
+        )
+        rng = np.random.default_rng(3)
+        obs = rng.random((3, 4, 16, 8), dtype=np.float32)
+        next_obs = rng.random((3, 4, 16, 8), dtype=np.float32)
+        buffer.add_arrays(
+            observations=obs,
+            masks=np.ones((3, 4, 16, 8), dtype=bool),
+            costs_to_lock=np.ones((3, 4, 16, 8), dtype=np.float32),
+            pill_colors=np.array([[0, 1], [1, 2], [2, 0]], dtype=np.int64),
+            preview_pill_colors=np.array([[2, 1], [0, 2], [1, 0]], dtype=np.int64),
+            aux=np.arange(6, dtype=np.float32).reshape(3, 2),
+            actions=np.array([4, 5, 6]),
+            log_probs=np.array([-1.0, -2.0, -3.0], dtype=np.float32),
+            values=np.array([0.1, 0.2, 0.3], dtype=np.float32),
+            taus=np.array([10, 20, 30]),
+            rewards=np.array([1.0, 2.0, 3.0], dtype=np.float32),
+            observations_next=next_obs,
+            dones=np.array([False, True, False]),
+            env_ids=np.arange(3, dtype=np.int32),
+            search_targets=np.full((3, 5), 0.2, dtype=np.float32),
+            search_values=np.array([0.4, 0.5, 0.6], dtype=np.float32),
+            search_mask=np.array([True, False, True]),
+        )
+
+        assert len(buffer) == 3
+        np.testing.assert_array_equal(buffer.observations[:3], obs)
+        np.testing.assert_array_equal(buffer.observations_next[:3], next_obs)
+        np.testing.assert_array_equal(buffer.actions[:3], [4, 5, 6])
+        np.testing.assert_array_equal(buffer.search_mask[:3], [True, False, True])
         
     def test_all_heads_produce_valid_output(self):
         """All three policy heads produce valid outputs."""

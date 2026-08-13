@@ -184,6 +184,70 @@ class DecisionRolloutBuffer:
         """Add multiple decision steps."""
         for step in steps:
             self.add(step)
+
+    def add_arrays(
+        self,
+        *,
+        observations: np.ndarray,
+        masks: np.ndarray,
+        pill_colors: np.ndarray,
+        preview_pill_colors: np.ndarray,
+        actions: np.ndarray,
+        log_probs: np.ndarray,
+        values: np.ndarray,
+        taus: np.ndarray,
+        rewards: np.ndarray,
+        observations_next: np.ndarray,
+        dones: np.ndarray,
+        env_ids: np.ndarray,
+        costs_to_lock: Optional[np.ndarray] = None,
+        aux: Optional[np.ndarray] = None,
+        search_targets: Optional[np.ndarray] = None,
+        search_values: Optional[np.ndarray] = None,
+        search_mask: Optional[np.ndarray] = None,
+    ) -> None:
+        """Append one vector-environment wave with contiguous array writes."""
+
+        actions_arr = np.asarray(actions).reshape(-1)
+        count = int(actions_arr.shape[0])
+        end = self.ptr + count
+        if end > self.capacity:
+            raise BufferError(
+                f"Decision rollout batch exceeds capacity: {self.ptr}+{count}>{self.capacity}"
+            )
+        dst = slice(self.ptr, end)
+
+        self.observations[dst] = observations
+        self.masks[dst] = masks
+        if self.costs_to_lock is not None:
+            if costs_to_lock is None:
+                raise ValueError("costs_to_lock is required when store_costs_to_lock=True")
+            self.costs_to_lock[dst] = costs_to_lock
+        self.pill_colors[dst] = pill_colors
+        self.preview_pill_colors[dst] = preview_pill_colors
+        if self.aux is not None:
+            if aux is None:
+                raise ValueError("aux is required when aux_dim > 0")
+            self.aux[dst] = aux
+        self.actions[dst] = actions_arr
+        self.log_probs[dst] = log_probs
+        self.values[dst] = values
+        self.taus[dst] = taus
+        self.rewards[dst] = rewards
+        self.observations_next[dst] = observations_next
+        self.dones[dst] = dones
+        self.env_ids[dst] = env_ids
+
+        if self.search_targets is not None:
+            if search_targets is None:
+                self.search_targets[dst] = 0.0
+            else:
+                self.search_targets[dst] = search_targets
+            self.search_values[dst] = 0.0 if search_values is None else search_values
+            self.search_mask[dst] = False if search_mask is None else search_mask
+
+        self.ptr = end
+        self.size = max(self.size, end)
             
     def compute_advantages(
         self,
