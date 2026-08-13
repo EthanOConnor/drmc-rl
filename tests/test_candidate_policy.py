@@ -8,6 +8,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from drmc_rl.models.policy.candidate_packing import (
+    candidate_bucket_width,
     pack_feasible_candidates,
     pack_feasible_candidates_batch,
     pack_feasible_candidates_tensor_batch,
@@ -47,6 +48,24 @@ def test_pack_feasible_candidates_sorted_and_padded():
     assert np.all(valid_costs[:-1] <= valid_costs[1:])
     # Same set as input.
     assert set(int(a) for a in valid_actions.tolist()) == set(idxs)
+
+
+@pytest.mark.parametrize(
+    ("counts", "cap", "expected"),
+    [
+        ([0, 12], 128, 32),
+        ([12, 33], 128, 64),
+        ([95, 40], 128, 96),
+        ([97], 128, 128),
+        ([70], 80, 80),
+        ([200], 128, 128),
+    ],
+)
+def test_candidate_bucket_width_is_lossless(counts, cap, expected):
+    mask = np.zeros((len(counts), 4, 16, 8), dtype=bool)
+    for row, count in enumerate(counts):
+        mask[row].reshape(-1)[:count] = True
+    assert candidate_bucket_width(mask, max_candidates=cap) == expected
 
 
 def test_pack_feasible_candidates_deterministic_ties():
@@ -174,6 +193,48 @@ def test_candidate_policy_forward_shapes_and_masking():
     # Padding slots are masked to large negative logits.
     assert (logits[0, 2:] < -1e8).all()
     assert (logits[1, 2:] < -1e8).all()
+
+
+def test_candidate_policy_valid_outputs_are_padding_width_invariant():
+    torch.manual_seed(7)
+    net = CandidatePlacementPolicyNet(
+        in_channels=4,
+        board_channels=4,
+        board_encoder="cnn",
+        encoder_blocks=0,
+        d_model=64,
+        pill_embed_dim=64,
+        aux_dim=0,
+        transformer_layers=2,
+        transformer_heads=2,
+        transformer_ff_mult=2,
+        patch_kernel=3,
+    ).eval()
+    batch = 3
+    valid_width = 7
+    board = torch.randn(batch, 4, 16, 8)
+    colors = torch.randint(0, 3, (batch, 2))
+    preview = torch.randint(0, 3, (batch, 2))
+    actions = torch.arange(valid_width).expand(batch, -1)
+    costs = torch.arange(1, valid_width + 1, dtype=torch.float32).expand(batch, -1)
+    mask = torch.ones((batch, valid_width), dtype=torch.bool)
+
+    def forward(width):
+        pad = width - valid_width
+        return net(
+            board,
+            colors,
+            preview,
+            torch.nn.functional.pad(actions, (0, pad), value=-1),
+            torch.nn.functional.pad(costs, (0, pad)),
+            torch.nn.functional.pad(mask, (0, pad), value=False),
+        )
+
+    with torch.no_grad():
+        logits_32, values_32 = forward(32)
+        logits_128, values_128 = forward(128)
+    torch.testing.assert_close(logits_32[:, :valid_width], logits_128[:, :valid_width])
+    torch.testing.assert_close(values_32, values_128)
 
 
 def test_candidate_policy_forward_with_connection_edge_channels():

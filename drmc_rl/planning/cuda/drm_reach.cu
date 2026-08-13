@@ -1105,7 +1105,7 @@ __device__ void refresh_G(Workspace* ws, Phase3Shared* s3, int n_wanted) {
 // Full solve for one instance: phases 1+2 must have run (ws->wanted/ub/gd).
 __device__ void run_phase3(
     const Instance* inst, Workspace* ws, Phase12Shared* sh, Phase3Shared* s3,
-    int n_wanted, u16* out_costs
+    int n_wanted, u16* out_costs, bool certify_witnesses
 ) {
     const int tid = threadIdx.x;
 
@@ -1159,6 +1159,51 @@ __device__ void run_phase3(
         s3->next_n = 0;
     }
     __syncthreads();
+
+    // A feasible witness is exact when it meets the fastest possible vertical
+    // schedule. In the collision-free relaxation, choose down-only whenever
+    // fast-drop parity permits it and otherwise let the natural speed counter
+    // advance. Reaching row py and locking needs (py-sy) successful drops plus
+    // one failed drop. Obstacles, lateral movement, and rotation can only make
+    // the real path slower, so equality with a feasible UB certifies optimality.
+    // Pre-resolving these witnesses shrinks the exact BFS target count. They
+    // deliberately remain in the allowance gates: the truncated reverse
+    // adjacency used by gd is safe for the original union gate, but removing
+    // one target's permissive region can over-prune paths to another target.
+    if (gated && certify_witnesses) {
+        for (int wi = tid; wi < n_wanted; wi += blockDim.x) {
+            const int pose = (int)ws->wanted_ids[wi];
+            const u16 ub = ws->ub[pose];
+            if (ub == (u16)COST_INF) continue;
+            int drops_left = ((pose >> 3) & 15) - sy + 1;
+            if (drops_left < 1) drops_left = 1;
+            int p = p0;
+            int sc = sc0;
+            int lb = 0;
+            while (drops_left > 0) {
+                bool drop = false;
+                if ((p & FAST_DROP_MASK) == 0) {
+                    drop = true;
+                    sc = 0;
+                } else {
+                    sc += 1;
+                    if (sc > thr) {
+                        drop = true;
+                        sc = 0;
+                    }
+                }
+                p ^= 1;
+                lb += 1;
+                if (drop) drops_left -= 1;
+            }
+            if ((int)ub != lb) continue;
+            out_costs[pose] = ub;
+            atomicAdd(&s3->found_wanted, 1);
+        }
+        __syncthreads();
+        if (tid == 0 && s3->found_wanted >= n_wanted) s3->stop = 1;
+        __syncthreads();
+    }
 
     if (gated) {
         refresh_G(ws, s3, n_wanted);
@@ -1300,7 +1345,10 @@ extern "C" __global__ void drm_reach_costs_kernel(
 
         const Instance inst = insts[idx];
         const int nw = run_phase12(&inst, ws, &sh);
-        run_phase3(&inst, ws, &sh, &s3, nw, out_costs + (size_t)idx * N_POSES);
+        run_phase3(
+            &inst, ws, &sh, &s3, nw,
+            out_costs + (size_t)idx * N_POSES, true
+        );
         __syncthreads();
     }
 }
@@ -1677,7 +1725,10 @@ extern "C" __global__ void drm_reach_scripts_kernel(
         const Instance inst = insts[idx];
         const int nw = run_phase12(&inst, ws, &sh);
         u16* costs = out_costs + (size_t)idx * N_POSES;
-        run_phase3(&inst, ws, &sh, &s3, nw, costs);
+        // Script reconstruction needs the complete exact-search parent
+        // surface; cost-only witness certification may stop before that
+        // surface has been traversed.
+        run_phase3(&inst, ws, &sh, &s3, nw, costs, false);
         u32* pslot = parents ? parents + (size_t)blockIdx.x * PARENT_SLOT_U32 : nullptr;
         run_scripts_stage(&inst, ws, &sh, &s3, nw, costs, pslot,
                           out_offsets + (size_t)idx * N_POSES,

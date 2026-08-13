@@ -31,6 +31,7 @@ except ImportError:
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
 from drmc_rl.models.policy.candidate_packing import (
+    candidate_bucket_width,
     pack_feasible_candidates_tensor_batch,
 )
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
@@ -220,6 +221,12 @@ class _DeviceRolloutBuffer:
                 f"CPU/device rollout size mismatch: CPU={int(size)}, device={self.size}"
             )
         aux = [wave.aux for wave in self.waves]
+        candidate_width = max(int(wave.candidate_actions.shape[1]) for wave in self.waves)
+
+        def _pad_candidates(value: torch.Tensor, fill: float | int) -> torch.Tensor:
+            missing = candidate_width - int(value.shape[1])
+            return value if missing == 0 else F.pad(value, (0, missing), value=fill)
+
         return _DeviceRolloutBatch(
             observations=torch.cat([wave.observations for wave in self.waves]),
             pill_colors=torch.cat([wave.pill_colors for wave in self.waves]),
@@ -230,10 +237,14 @@ class _DeviceRolloutBuffer:
             actions=torch.cat([wave.actions for wave in self.waves]),
             log_probs=torch.cat([wave.log_probs for wave in self.waves]),
             candidate_actions=torch.cat(
-                [wave.candidate_actions for wave in self.waves]
+                [_pad_candidates(wave.candidate_actions, -1) for wave in self.waves]
             ),
-            candidate_mask=torch.cat([wave.candidate_mask for wave in self.waves]),
-            candidate_cost=torch.cat([wave.candidate_cost for wave in self.waves]),
+            candidate_mask=torch.cat(
+                [_pad_candidates(wave.candidate_mask, False) for wave in self.waves]
+            ),
+            candidate_cost=torch.cat(
+                [_pad_candidates(wave.candidate_cost, 0.0) for wave in self.waves]
+            ),
         )
 
     def clear(self) -> None:
@@ -1023,10 +1034,15 @@ class SMDPPPOAdapter(AlgoAdapter):
                 colors_t = torch.from_numpy(pill_colors).to(self.device)
                 preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
                 aux_t = None if aux_batch is None else torch.from_numpy(aux_batch).to(self.device)
+                packed_width = (
+                    self.candidate_max
+                    if self._sd_runner is not None
+                    else candidate_bucket_width(masks, max_candidates=self.candidate_max)
+                )
                 packed = pack_feasible_candidates_tensor_batch(
                     torch.from_numpy(masks).to(self.device),
                     torch.from_numpy(costs_to_lock).to(self.device),
-                    max_candidates=self.candidate_max,
+                    max_candidates=packed_width,
                 )
                 cand_actions_t = packed.actions
                 cand_cost_t = packed.cost
