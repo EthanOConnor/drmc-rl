@@ -83,6 +83,10 @@ class OpponentEntry:
     aux_dim: int = 0
     aux_spec: str = "v1"
     candidate_max: int = 128
+    kind: str = "rl"
+    rating: Optional[float] = None
+    rating_sd: float = 0.0
+    condition: Any = field(default=None, repr=False)
 
     def smoothed_winrate(self) -> float:
         """Laplace-smoothed learner win rate vs this opponent."""
@@ -199,6 +203,37 @@ class OpponentPool:
             )
         self._save_manifest()
 
+    def seed_humans(self, specifications: Sequence[Dict[str, Any]]) -> None:
+        """Register fixed-rating human-v2 checkpoints as protected opponents."""
+
+        existing = {
+            (e.path.name if e.path is not None else "", e.rating)
+            for e in self.entries
+            if e.kind == "human"
+        }
+        for specification in specifications:
+            src = Path(str(specification["checkpoint"]))
+            if not src.is_file():
+                raise FileNotFoundError(f"Human opponent checkpoint not found: {src}")
+            rating = float(specification["rating"])
+            if (src.name, rating) in existing:
+                continue
+            dst = self.dir / src.name
+            if not dst.is_file():
+                shutil.copy2(src, dst)
+            label = str(specification.get("id") or f"human_{int(round(rating))}")
+            self._add_entry(
+                OpponentEntry(
+                    id=self._unique_id(label),
+                    path=dst,
+                    protected=bool(specification.get("protected", True)),
+                    kind="human",
+                    rating=rating,
+                    rating_sd=float(specification.get("rating_sd", 0.0)),
+                )
+            )
+        self._save_manifest()
+
     def add_loaded(
         self,
         opponent_id: str,
@@ -304,23 +339,42 @@ class OpponentPool:
         if entry.path is None:
             raise RuntimeError(f"Opponent {entry.id!r} has no checkpoint path and no net")
 
-        from tools.eval_policy import _build_net_from_cfg
         from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
         payload = load_checkpoint(entry.path, map_location="cpu")
-        cfg = payload.get("cfg", {})
-        net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
+        if str(payload.get("schema", "")).startswith("drmc-human-policy-"):
+            from drmc_rl.human.conditioning import HumanSkillCondition
+            from drmc_rl.human.model import POLICY_CONDITION_DIM, build_human_policy
+
+            cfg = payload["cfg"]
+            net = build_human_policy(cfg, device="cpu")
+            net.load_state_dict(payload["state_dict"])
+            entry.kind = "human"
+            entry.condition = HumanSkillCondition.from_dict(
+                payload["human_meta"]["skill_condition"]
+            )
+            entry.aux_dim = POLICY_CONDITION_DIM
+            entry.aux_spec = "human_v2"
+            entry.candidate_max = int(
+                cfg.get("smdp_ppo", cfg).get("candidate_max_candidates", 128)
+            )
+        else:
+            from tools.eval_policy import _build_net_from_cfg
+
+            cfg = payload.get("cfg", {})
+            net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
+            entry.aux_dim = int(aux_dim)
+            entry.aux_spec = str(cfg.get("smdp_ppo", cfg).get("aux_spec", "v1")).strip().lower()
+            entry.candidate_max = int(candidate_max)
         sd = payload.get("ema_state_dict") or payload["state_dict"]
-        net.load_state_dict({k: v.detach().cpu() for k, v in sd.items()})
+        if entry.kind != "human":
+            net.load_state_dict({k: v.detach().cpu() for k, v in sd.items()})
         net = net.to(self.device)
         net.eval()
         for p in net.parameters():
             p.requires_grad_(False)
         entry.net = net
         entry.device = self.device
-        entry.aux_dim = int(aux_dim)
-        entry.aux_spec = str(cfg.get("smdp_ppo", cfg).get("aux_spec", "v1")).strip().lower()
-        entry.candidate_max = int(candidate_max)
 
     # ------------------------------------------------------------------ internals
     def _add_entry(self, entry: OpponentEntry) -> None:
@@ -359,6 +413,9 @@ class OpponentPool:
                     "league_target": bool(e.league_target),
                     "wins": float(e.wins),
                     "games": int(e.games),
+                    "kind": str(e.kind),
+                    "rating": e.rating,
+                    "rating_sd": float(e.rating_sd),
                 }
                 for e in self.entries
                 if e.path is not None
@@ -383,6 +440,9 @@ class OpponentPool:
                     league_target=bool(row.get("league_target", False)),
                     wins=float(row.get("wins", 0.0)),
                     games=int(row.get("games", 0)),
+                    kind=str(row.get("kind", "rl")),
+                    rating=None if row.get("rating") is None else float(row["rating"]),
+                    rating_sd=float(row.get("rating_sd", 0.0)),
                 )
             )
 

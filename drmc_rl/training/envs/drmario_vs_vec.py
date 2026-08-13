@@ -147,6 +147,12 @@ class DrMarioVsPoolVecEnv:
         # Opponent-board observability gate: the `_vs` representation appends
         # the opponent bottle planes (8..15) ahead of the feasible planes.
         self.opponent_obs = state_repr_norm == "bitplane_bottle_conn_mask_vs"
+        human_opponents = list(opp_cfg.get("human_opponents") or [])
+        if human_opponents and not self.opponent_obs:
+            raise ValueError(
+                "opponent_pool.human_opponents requires state_repr="
+                "bitplane_bottle_conn_mask_vs"
+            )
         ram_specs.set_state_representation(state_repr_norm)
         obs_channels = 20 if self.opponent_obs else 12
         self._feas_ch = 16 if self.opponent_obs else 8
@@ -214,6 +220,8 @@ class DrMarioVsPoolVecEnv:
         self._ep_decisions = np.zeros((self.num_sides,), dtype=np.int64)
         self._ep_pills = np.zeros((self.num_sides,), dtype=np.int64)
         self._ep_viruses_cleared = np.zeros((self.num_sides,), dtype=np.int64)
+        self._human_recent_actions = np.full((self.num_sides, 4), -1, dtype=np.int32)
+        self._human_recent_tau = np.zeros((self.num_sides, 4), dtype=np.float32)
         self._viruses_prev = np.full((self.num_sides,), -1, dtype=np.int32)
         self._viruses_initial = np.zeros((self.num_sides,), dtype=np.int32)
         self._garbage_sent_prev = np.zeros((self.num_sides,), dtype=np.int64)
@@ -287,6 +295,8 @@ class DrMarioVsPoolVecEnv:
                     league=league,
                     device=str(opp_cfg.get("device", "auto")),
                 )
+                if human_opponents:
+                    pool.seed_humans(human_opponents)
                 if league.mode != "exploiter" and not pool.entries:
                     seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
                     if not seed_paths:
@@ -321,6 +331,8 @@ class DrMarioVsPoolVecEnv:
         self._ep_decisions.fill(0)
         self._ep_pills.fill(0)
         self._ep_viruses_cleared.fill(0)
+        self._human_recent_actions.fill(-1)
+        self._human_recent_tau.fill(0.0)
         self._garbage_sent_prev.fill(0)
         self._volleys_sent_round.fill(0)
         self._volleys_recv_round.fill(0)
@@ -434,11 +446,17 @@ class DrMarioVsPoolVecEnv:
                 self._garbage_recv_round[i] = 0
                 self._viruses_initial[i] = int(v_i)
                 self._ep_viruses_cleared[i] = 0
+                self._human_recent_actions[i].fill(-1)
+                self._human_recent_tau[i].fill(0.0)
                 continue
 
             accepted = bool(was_need_action[i]) and int(invalid[i]) == -1 and int(acts[i]) >= -1
             if accepted:
                 self._ep_pills[i] += 1
+                self._human_recent_actions[i, 1:] = self._human_recent_actions[i, :-1]
+                self._human_recent_tau[i, 1:] = self._human_recent_tau[i, :-1]
+                self._human_recent_actions[i, 0] = int(acts[i])
+                self._human_recent_tau[i, 0] = float(tau_i_raw)
 
             g_delta = int(garbage_sent[i]) - int(self._garbage_sent_prev[i])
             g_delta = max(0, g_delta)
@@ -803,6 +821,39 @@ class DrMarioVsPoolVecEnv:
             self._aux_shim[spec] = shim
         return shim
 
+    def _human_opponent_aux(self, entry: Any, side_idxs: np.ndarray) -> np.ndarray:
+        """Semantic v2 conditioning for fixed-rating human pool entries."""
+
+        from drmc_rl.human.model import POLICY_CONDITION_DIM, policy_condition_features
+
+        rating = float(entry.rating if entry.rating is not None else entry.condition.mean)
+        out = np.zeros((len(side_idxs), POLICY_CONDITION_DIM), dtype=np.float32)
+        for row, side in enumerate(side_idxs):
+            recent = [
+                {"action": int(action), "tau_frames": float(tau)}
+                for action, tau in zip(
+                    self._human_recent_actions[int(side)],
+                    self._human_recent_tau[int(side)],
+                )
+                if int(action) >= 0
+            ]
+            out[row] = policy_condition_features(
+                entry.condition,
+                rating=rating,
+                rating_sd=float(entry.rating_sd),
+                opponent_rating=rating,
+                opponent_rating_sd=float(entry.rating_sd),
+                opponent_state_age_frames=0,
+                game_phase=min(float(self._ep_pills[int(side)]) / 100.0, 1.0),
+                recent_decisions=recent,
+            )
+        return out
+
+    def _opponent_aux(self, entry: Any, side_idxs: np.ndarray) -> np.ndarray:
+        if getattr(entry, "kind", "rl") == "human":
+            return self._human_opponent_aux(entry, side_idxs)
+        return self._build_direct_aux(side_idxs, getattr(entry, "aux_spec", "v1"))
+
     def _opponent_actions(self) -> np.ndarray:
         """Macro actions for the P2 sides, from their assigned frozen nets.
 
@@ -882,9 +933,8 @@ class DrMarioVsPoolVecEnv:
         if aux_rows:
             for entry, lo, hi in spans:
                 if int(entry.aux_dim) > 0:
-                    rows = self._build_direct_aux(
-                        np.asarray(order[lo:hi], dtype=np.int64),
-                        getattr(entry, "aux_spec", "v1"),
+                    rows = self._opponent_aux(
+                        entry, np.asarray(order[lo:hi], dtype=np.int64)
                     )
                     buf["aux"][lo:hi, : rows.shape[1]] = rows
 
@@ -975,10 +1025,7 @@ class DrMarioVsPoolVecEnv:
 
         aux = None
         if int(entry.aux_dim) > 0:
-            aux = self._build_direct_aux(
-                np.asarray(side_idxs, dtype=np.int64),
-                getattr(entry, "aux_spec", "v1"),
-            )
+            aux = self._opponent_aux(entry, np.asarray(side_idxs, dtype=np.int64))
 
         dev = getattr(entry, "device", "cpu")
         with torch.inference_mode():

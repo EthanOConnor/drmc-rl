@@ -263,6 +263,52 @@ def _checkpoint(path) -> None:
     )
 
 
+def test_opponent_pool_loads_fixed_rating_human_checkpoint(tmp_path) -> None:
+    from drmc_rl.training.envs.vs_opponents import OpponentPool
+
+    checkpoint = tmp_path / "human.pt.gz"
+    _checkpoint(checkpoint)
+    pool = OpponentPool(tmp_path / "pool", device="cpu")
+    pool.seed_humans([{"checkpoint": str(checkpoint), "rating": 1750, "rating_sd": 80}])
+    entry = pool.entries[0]
+    pool.ensure_loaded(entry)
+    assert entry.kind == "human"
+    assert entry.rating == 1750
+    assert entry.aux_spec == "human_v2"
+    assert entry.aux_dim == 40
+    assert entry.net.in_channels == 20
+
+    reloaded = OpponentPool(tmp_path / "pool", device="cpu")
+    assert reloaded.entries[0].kind == "human"
+    assert reloaded.entries[0].rating == 1750
+
+
+@pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
+def test_vs_pool_can_step_against_fixed_rating_human(tmp_path) -> None:
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.vs_opponents import OpponentPool
+
+    checkpoint = tmp_path / "human.pt.gz"
+    _checkpoint(checkpoint)
+    pool = OpponentPool(tmp_path / "pool", device="cpu")
+    pool.seed_humans([{"checkpoint": str(checkpoint), "rating": 1750}])
+    env = DrMarioVsPoolVecEnv(
+        num_pairs=1,
+        state_repr="bitplane_bottle_conn_mask_vs",
+        opponent_pool_cfg={"enabled": True, "pool": pool},
+    )
+    try:
+        obs, infos = env.reset(seed=3)
+        assert obs.shape == (1, 20, 16, 8)
+        mask = np.asarray(infos[0]["placements/feasible_mask"], dtype=bool).reshape(-1)
+        action = int(np.flatnonzero(mask)[0]) if mask.any() else -1
+        next_obs, _reward, _term, _trunc, _infos = env.step([action])
+        assert next_obs.shape == obs.shape
+        assert env._human_recent_actions[1, 0] >= 0
+    finally:
+        env.close()
+
+
 @pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
 def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None:
     from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA

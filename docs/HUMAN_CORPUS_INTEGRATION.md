@@ -209,6 +209,28 @@ outcome head. Coaching reports behavioral typicality and competitive value as
 separate axes. Sparring uses an explicit nonnegative search weight: zero is
 pure imitation; calibrated positive weights strengthen plausible human moves.
 
+Human checkpoints are also first-class PFSP pool entries. Training must use
+the opponent-aware representation so the same two-board model is exercised:
+
+```yaml
+env:
+  state_repr: bitplane_bottle_conn_mask_vs
+  opponent_pool:
+    enabled: true
+    human_opponents:
+      - id: human_1400
+        checkpoint: runs/human_policy/human_policy_v2.pt.gz
+        rating: 1400
+      - id: human_1900
+        checkpoint: runs/human_policy/human_policy_v2.pt.gz
+        rating: 1900
+```
+
+Each entry shares checkpoint weights but gets its own continuous rating and
+PFSP record. The VS environment supplies live opponent planes, match phase,
+and the human side's four preceding placements. Human entries default to
+protected so learner snapshots cannot evict the fixed calibration anchors.
+
 ## Go-Exploit start-state bank (`tools/build_start_bank.py`, 2026-06-12)
 
 Mid-game two-board positions sampled from corpus games, loaded as native
