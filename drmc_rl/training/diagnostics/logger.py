@@ -4,7 +4,7 @@ import gzip
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
 
 import numpy as np
 
@@ -51,18 +51,26 @@ class DiagLogger:
                     "config": _extract_flattened_cfg(cfg),
                 }
                 self._wandb_run = _wandb.init(**wandb_kwargs)  # type: ignore[arg-type]
+                self._wandb_run.define_metric("*", step_metric="global_step")
             except Exception:
                 self._wandb = None
                 self._wandb_run = None
 
     # ------------------------------------------------------------------ logging
     def log_scalar(self, name: str, value: float, step: int) -> None:
-        payload = {"step": int(step), "type": "scalar", "name": name, "value": float(value)}
-        self._write_json(payload)
-        if self._tb is not None:
-            self._tb.add_scalar(name, value, step)
-        if self._wandb_run is not None:
-            self._wandb_run.log({name: value, "global_step": step})
+        self.log_scalars({name: value}, step)
+
+    def log_scalars(self, values: Mapping[str, float], step: int) -> None:
+        """Log one training step, batching remote transport without changing JSONL schema."""
+        normalized = {str(name): float(value) for name, value in values.items()}
+        for name, value in normalized.items():
+            self._write_json(
+                {"step": int(step), "type": "scalar", "name": name, "value": value}
+            )
+            if self._tb is not None:
+                self._tb.add_scalar(name, value, step)
+        if self._wandb_run is not None and normalized:
+            self._wandb_run.log({**normalized, "global_step": int(step)})
 
     def log_hist(self, name: str, array: Iterable[float], step: int) -> None:
         data = np.asarray(list(array), dtype=np.float32)
@@ -71,7 +79,7 @@ class DiagLogger:
         if self._tb is not None:
             self._tb.add_histogram(name, data, step)
         if self._wandb_run is not None and self._wandb is not None:
-            self._wandb_run.log({name: self._wandb.Histogram(data), "global_step": step})
+            self._wandb_run.log({name: self._wandb.Histogram(data), "global_step": int(step)})
 
     def log_text(self, name: str, text: str, step: int) -> None:
         payload = {"step": int(step), "type": "text", "name": name, "text": text}
@@ -79,21 +87,21 @@ class DiagLogger:
         if self._tb is not None:
             self._tb.add_text(name, text, step)
         if self._wandb_run is not None:
-            self._wandb_run.log({name: text, "global_step": step})
+            self._wandb_run.log({name: text, "global_step": int(step)})
 
     def log_video(self, tag: str, mp4_path: Path, step: int) -> None:
         payload = {"step": int(step), "type": "video", "tag": tag, "path": str(mp4_path)}
         self._write_json(payload)
         if self._wandb_run is not None and self._wandb is not None:
-            self._wandb_run.log({tag: self._wandb.Video(str(mp4_path)), "global_step": step})
+            self._wandb_run.log(
+                {tag: self._wandb.Video(str(mp4_path)), "global_step": int(step)}
+            )
 
     # ------------------------------------------------------------------- helpers
     def flush(self) -> None:
         if self._tb is not None:
             self._tb.flush()
         self._jsonl.flush()
-        if self._wandb_run is not None:
-            self._wandb_run.flush()
         self._last_flush = time.time()
 
     def close(self) -> None:

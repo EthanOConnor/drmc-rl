@@ -25,7 +25,7 @@ class VideoWriter:
         array = np.asarray(frame)
         if array.ndim != 3:
             raise ValueError("Video frames must be HxWxC arrays")
-        self._buffers[tag].append(array.astype(np.uint8))
+        self._buffers[tag].append(array.astype(np.uint8, copy=False))
 
     def finalize(self, tag: str, step: int) -> Path:
         frames = self._buffers.pop(tag, [])

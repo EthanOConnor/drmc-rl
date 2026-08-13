@@ -153,10 +153,9 @@ class OrderedPairEmbedding(nn.Module):
 
         c0 = colors[:, 0].to(torch.long)
         c1 = colors[:, 1].to(torch.long)
-        invalid = (c0 < 0) | (c0 >= self.num_colors) | (c1 < 0) | (c1 >= self.num_colors)
-        if bool(invalid.any().item()):
-            raise ValueError(f"Invalid color index for num_colors={self.num_colors}")
-
+        # nn.Embedding already bounds-checks indices. Avoid a tensor-to-Python
+        # sync here: this is a training-hot path and the sync also breaks
+        # torch.compile graph capture.
         pair_id = c0 * self.num_colors + c1  # 0..(num_colors^2-1)
         return self.emb(pair_id)
 

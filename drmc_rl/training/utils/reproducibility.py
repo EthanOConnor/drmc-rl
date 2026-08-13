@@ -29,6 +29,9 @@ def set_reproducibility(seed: int, *, deterministic: bool = True) -> ReproContex
     if torch is not None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+        torch.use_deterministic_algorithms(deterministic)
+        if torch.cuda.is_available():
+            torch.set_float32_matmul_precision("high")
         torch.backends.cudnn.deterministic = deterministic
         torch.backends.cudnn.benchmark = not deterministic
     return ReproContext(seed=seed, deterministic=deterministic, numpy_seed=seed)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import warnings
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence, Tuple, Union
@@ -169,7 +170,7 @@ class DrMarioLibretroEnv(gym.Env):
         self._t = 0  # frames elapsed
         self._viruses_remaining = 8  # placeholder; varies by level
         self._viruses_initial = self._viruses_remaining
-        self._rng = np.random.RandomState(0)
+        self._rng = np.random.default_rng(0)
         self._t_max = get_level_timeout(self.level)
         self._fps = 60.0
         if state_viz_interval is None:
@@ -1619,7 +1620,7 @@ class DrMarioLibretroEnv(gym.Env):
             C = ram_specs.STATE_CHANNELS
             board = np.zeros((4, C, 16, 8), dtype=np.float32)
             for f in range(4):
-                idx = self._rng.randint(0, C, size=(16, 8))
+                idx = self._rng.integers(0, C, size=(16, 8))
                 board[f, idx, np.arange(16)[:, None], np.arange(8)[None, :]] = 1.0
             # Broadcast scalars could be encoded in reserved channels later
             return board
@@ -1655,8 +1656,7 @@ class DrMarioLibretroEnv(gym.Env):
         options: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Any, Dict[str, Any]]:
         super().reset(seed=seed)
-        if seed is not None:
-            self._rng = np.random.RandomState(seed)
+        self._rng = self.np_random
         self._configure_task_from_level()
         self._t = 0
         self._viruses_remaining = 8
@@ -2035,7 +2035,7 @@ class DrMarioLibretroEnv(gym.Env):
                 self._using_backend = False
         else:
             # Mock dynamics if Retro not available
-            delta_v = 1 if self._rng.rand() < 0.02 else 0
+            delta_v = 1 if self._rng.random() < 0.02 else 0
             self._viruses_remaining = max(0, self._viruses_remaining - delta_v)
 
         t0 = perf_counter()
@@ -2415,7 +2415,7 @@ class DrMarioLibretroEnv(gym.Env):
         return {
             "t": self._t,
             "viruses_remaining": self._viruses_remaining,
-            "rng_state": self._rng.get_state(),
+            "rng_state": deepcopy(self._rng.bit_generator.state),
             "state_prev": None if self._state_prev is None else np.copy(self._state_prev),
             "last_obs": self.last_obs if hasattr(self, "last_obs") else None,
             "backend_state": (
@@ -2427,7 +2427,7 @@ class DrMarioLibretroEnv(gym.Env):
     def restore(self, snap: Dict[str, Any]) -> None:
         self._t = snap["t"]
         self._viruses_remaining = snap["viruses_remaining"]
-        self._rng.set_state(snap["rng_state"])  # type: ignore[arg-type]
+        self._rng.bit_generator.state = deepcopy(snap["rng_state"])
         self._state_prev = snap["state_prev"]
         self.last_obs = snap.get("last_obs")
         self._first_boot = bool(snap.get("first_boot", False))

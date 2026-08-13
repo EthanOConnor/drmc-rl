@@ -55,7 +55,7 @@ def main():
         for x, y in dl:
             pred = model(x)
             loss = quantile_huber_loss(pred, y, taus)
-            opt.zero_grad()
+            opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
             total += float(loss.item())

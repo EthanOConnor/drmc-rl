@@ -11,17 +11,19 @@ def main():
     args = ap.parse_args()
     df = pd.read_parquet(args.infile)
     df = df.sort_values('E_T')
-    plt.figure()
-    plt.plot(df['seed'], df['E_T'], marker='o')
-    plt.title('Mean frames to clear per seed')
-    plt.xlabel('seed')
-    plt.ylabel('E[T] (frames)')
-    plt.tight_layout()
+    fig, ax = plt.subplots()
+    ax.plot(df['seed'], df['E_T'], marker='o')
+    ax.set(
+        title='Mean frames to clear per seed',
+        xlabel='seed',
+        ylabel='E[T] (frames)',
+    )
+    fig.tight_layout()
     out = args.infile.replace('.parquet', '_mean_frames.png')
-    plt.savefig(out, dpi=150)
+    fig.savefig(out, dpi=150)
+    plt.close(fig)
     print(f'Saved {out}')
 
 
 if __name__ == '__main__':
     main()
-

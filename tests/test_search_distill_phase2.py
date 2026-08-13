@@ -423,6 +423,9 @@ class _StubLogger:
     def log_scalar(self, *a, **k):
         pass
 
+    def log_scalars(self, *a, **k):
+        pass
+
     def flush(self):
         pass
 
