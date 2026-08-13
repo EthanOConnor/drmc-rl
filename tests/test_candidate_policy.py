@@ -10,6 +10,7 @@ torch = pytest.importorskip("torch")
 from drmc_rl.models.policy.candidate_packing import (
     pack_feasible_candidates,
     pack_feasible_candidates_batch,
+    pack_feasible_candidates_tensor_batch,
 )
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 from drmc_rl.models.policy.placement_heads import OrderedPairEmbedding
@@ -95,6 +96,30 @@ def test_pack_feasible_candidates_batch_matches_single(dtype):
         np.testing.assert_array_equal(batched.mask[i], single.mask)
         np.testing.assert_array_equal(batched.cost[i], single.cost)
         assert int(batched.count[i]) == single.count
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.uint16])
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_pack_feasible_candidates_tensor_batch_matches_numpy(dtype, device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    rng = np.random.default_rng(9)
+    mask = rng.random((19, 4, 16, 8)) < 0.35
+    costs = rng.integers(1, 40, size=mask.shape).astype(dtype)
+    costs[~mask] = np.uint16(0xFFFF) if dtype == np.uint16 else np.inf
+    if dtype == np.float32:
+        costs[0, 0, 0, 0] = np.nan
+
+    expected = pack_feasible_candidates_batch(mask, costs, max_candidates=64)
+    actual = pack_feasible_candidates_tensor_batch(
+        torch.from_numpy(mask).to(device),
+        torch.from_numpy(costs).to(device),
+        max_candidates=64,
+    )
+    np.testing.assert_array_equal(actual.actions.cpu().numpy(), expected.actions)
+    np.testing.assert_array_equal(actual.mask.cpu().numpy(), expected.mask)
+    np.testing.assert_array_equal(actual.cost.cpu().numpy(), expected.cost)
+    np.testing.assert_array_equal(actual.count.cpu().numpy(), expected.count)
 
 
 def test_candidate_policy_forward_shapes_and_masking():

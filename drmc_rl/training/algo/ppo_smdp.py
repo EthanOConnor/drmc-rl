@@ -29,7 +29,9 @@ except ImportError:
     get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
-from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
+from drmc_rl.models.policy.candidate_packing import (
+    pack_feasible_candidates_tensor_batch,
+)
 from drmc_rl.models.policy.candidate_policy import CandidatePlacementPolicyNet
 from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
 from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
@@ -826,22 +828,20 @@ class SMDPPPOAdapter(AlgoAdapter):
             aux_batch = self._build_aux_batch(obs_arr, infos)
 
         if self.policy_type == "candidate":
-            packed = pack_feasible_candidates_batch(
-                masks, costs_to_lock, max_candidates=self.candidate_max, sort_by_cost=True
-            )
-            cand_actions = packed.actions
-            cand_mask = packed.mask
-            cand_cost = packed.cost
-
             t0 = time.perf_counter()
             with torch.inference_mode():
                 obs_t = torch.from_numpy(obs_arr).to(self.device)
                 colors_t = torch.from_numpy(pill_colors).to(self.device)
                 preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
                 aux_t = None if aux_batch is None else torch.from_numpy(aux_batch).to(self.device)
-                cand_actions_t = torch.from_numpy(cand_actions).to(self.device)
-                cand_cost_t = torch.from_numpy(cand_cost).to(self.device)
-                cand_mask_t = torch.from_numpy(cand_mask).to(self.device)
+                packed = pack_feasible_candidates_tensor_batch(
+                    torch.from_numpy(masks).to(self.device),
+                    torch.from_numpy(costs_to_lock).to(self.device),
+                    max_candidates=self.candidate_max,
+                )
+                cand_actions_t = packed.actions
+                cand_cost_t = packed.cost
+                cand_mask_t = packed.mask
 
                 logits, values = self.net(  # type: ignore[misc]
                     obs_t,
@@ -1012,12 +1012,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                 )
             kmax = int(self.candidate_max)
             feasible_counts_np = masks_np.reshape(T, -1).sum(axis=1).astype(np.int32, copy=False)
-            packed = pack_feasible_candidates_batch(
-                masks_np, costs_to_lock_np, max_candidates=kmax, sort_by_cost=True
+            packed = pack_feasible_candidates_tensor_batch(
+                masks,
+                torch.from_numpy(costs_to_lock_np).to(self.device),
+                max_candidates=kmax,
             )
-            cand_actions_all_t = torch.from_numpy(packed.actions).to(self.device)
-            cand_mask_all_t = torch.from_numpy(packed.mask).to(self.device)
-            cand_cost_all_t = torch.from_numpy(packed.cost).to(self.device)
+            cand_actions_all_t = packed.actions
+            cand_mask_all_t = packed.mask
+            cand_cost_all_t = packed.cost
 
         # Multiple epochs over the batch
         metrics_accum = {key: 0.0 for key in _UPDATE_METRIC_KEYS}
