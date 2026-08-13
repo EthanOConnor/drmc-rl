@@ -32,9 +32,12 @@ smdp_ppo:
   entropy_coef: 0.008
   max_grad_norm: 0.7
 
-  decisions_per_update: 4096
+  # 384 pairs x 32 decisions/env. This preserves useful GAE horizon while
+  # feeding the 3090 efficiently; 4,096 decisions cut the horizon to ~11.
+  decisions_per_update: 12288
   num_epochs: 2
-  minibatch_size: 512
+  minibatch_size: 1536
+  compile_mode: "default"
 
   policy_type: "candidate"
   head_type: "dense"
@@ -67,14 +70,12 @@ env:
   id: "drmario-vs"
   obs_mode: state
   backend: cpp-vs-pool
-  # Rollout reachability solved on the GPU (reach_cuda) in one batch per
-  # decision wave — bit-exact vs the in-pool CPU planner
-  # (tests/test_vs_gpu_planner.py). Throughput-neutral at 16 pairs but frees
-  # ~15-20% CPU (+13% fps at 32 pairs) and is required for cheap search.
+  # Rollout reachability is solved in one GPU batch per decision wave and is
+  # bit-exact vs the in-pool CPU planner (tests/test_vs_gpu_planner.py).
   gpu_planner: true
   state_repr: bitplane_bottle_conn_mask
-  # 16 on the Mac; 32 measured +13% fps here with gpu_planner (b32 bench).
-  num_pairs: 32
+  # Measured tf3090 peak: 384 pairs. 512 no longer improved frame throughput.
+  num_pairs: 384
   frame_stack: 1
   randomize_rng: true
   level: 14

@@ -142,7 +142,7 @@ class SMDPPPOConfig:
 
     # Misc
     value_loss_type: str = "mse"  # mse or huber
-    compile_mode: str = "off"  # off|default|max-autotune-no-cudagraphs
+    compile_mode: str = "off"  # off|default
 
 
 class SMDPPPOAdapter(AlgoAdapter):
@@ -317,7 +317,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             ).to(self.device)
 
         compile_mode = str(self.hparams.compile_mode).strip().lower()
-        if compile_mode not in {"off", "default", "max-autotune-no-cudagraphs"}:
+        if compile_mode not in {"off", "default"}:
             raise ValueError(f"Unknown smdp_ppo.compile_mode: {self.hparams.compile_mode!r}")
         if compile_mode != "off":
             if torch.device(self.device).type != "cuda":
