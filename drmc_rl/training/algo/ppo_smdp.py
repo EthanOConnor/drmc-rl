@@ -174,42 +174,12 @@ class _DeviceRolloutBatch:
 
 
 class _DeviceRolloutBuffer:
-    """Preallocated CUDA tensors reused from action selection through PPO."""
+    """Retain rollout inference tensors and concatenate them once for PPO."""
 
-    def __init__(
-        self,
-        *,
-        capacity: int,
-        obs_shape: Tuple[int, ...],
-        aux_dim: int,
-        candidate_max: int,
-        device: torch.device,
-    ) -> None:
+    def __init__(self, *, capacity: int, device: torch.device) -> None:
         self.capacity = int(capacity)
         self.device = device
-        self.observations = torch.empty(
-            (capacity, *obs_shape), dtype=torch.float32, device=device
-        )
-        self.pill_colors = torch.empty((capacity, 2), dtype=torch.int64, device=device)
-        self.preview_pill_colors = torch.empty(
-            (capacity, 2), dtype=torch.int64, device=device
-        )
-        self.aux = (
-            torch.empty((capacity, aux_dim), dtype=torch.float32, device=device)
-            if aux_dim > 0
-            else None
-        )
-        self.actions = torch.empty(capacity, dtype=torch.int64, device=device)
-        self.log_probs = torch.empty(capacity, dtype=torch.float32, device=device)
-        self.candidate_actions = torch.empty(
-            (capacity, candidate_max), dtype=torch.int32, device=device
-        )
-        self.candidate_mask = torch.empty(
-            (capacity, candidate_max), dtype=torch.bool, device=device
-        )
-        self.candidate_cost = torch.empty(
-            (capacity, candidate_max), dtype=torch.float32, device=device
-        )
+        self.waves: List[_DeviceRolloutWave] = []
         self.size = 0
 
     def add(
@@ -226,23 +196,19 @@ class _DeviceRolloutBuffer:
             raise BufferError(
                 f"Device rollout batch exceeds capacity: {self.size}+{count}>{self.capacity}"
             )
-        dst = slice(self.size, end)
-        self.observations[dst].copy_(wave.observations)
-        self.pill_colors[dst].copy_(wave.pill_colors)
-        self.preview_pill_colors[dst].copy_(wave.preview_pill_colors)
-        if self.aux is not None:
-            if wave.aux is None:
-                raise RuntimeError("Device rollout wave is missing auxiliary features")
-            self.aux[dst].copy_(wave.aux)
-        self.candidate_actions[dst].copy_(wave.candidate_actions)
-        self.candidate_mask[dst].copy_(wave.candidate_mask)
-        self.candidate_cost[dst].copy_(wave.candidate_cost)
         if replace_policy_outputs:
-            self.actions[dst].copy_(torch.from_numpy(actions).to(self.device))
-            self.log_probs[dst].copy_(torch.from_numpy(log_probs).to(self.device))
-        else:
-            self.actions[dst].copy_(wave.actions)
-            self.log_probs[dst].copy_(wave.log_probs)
+            wave = _DeviceRolloutWave(
+                observations=wave.observations,
+                pill_colors=wave.pill_colors,
+                preview_pill_colors=wave.preview_pill_colors,
+                aux=wave.aux,
+                actions=torch.from_numpy(actions).to(self.device),
+                log_probs=torch.from_numpy(log_probs).to(self.device),
+                candidate_actions=wave.candidate_actions,
+                candidate_mask=wave.candidate_mask,
+                candidate_cost=wave.candidate_cost,
+            )
+        self.waves.append(wave)
         self.size = end
 
     def batch(self, size: int) -> _DeviceRolloutBatch:
@@ -250,20 +216,25 @@ class _DeviceRolloutBuffer:
             raise RuntimeError(
                 f"CPU/device rollout size mismatch: CPU={int(size)}, device={self.size}"
             )
-        src = slice(0, self.size)
+        aux = [wave.aux for wave in self.waves]
         return _DeviceRolloutBatch(
-            observations=self.observations[src],
-            pill_colors=self.pill_colors[src],
-            preview_pill_colors=self.preview_pill_colors[src],
-            aux=None if self.aux is None else self.aux[src],
-            actions=self.actions[src],
-            log_probs=self.log_probs[src],
-            candidate_actions=self.candidate_actions[src],
-            candidate_mask=self.candidate_mask[src],
-            candidate_cost=self.candidate_cost[src],
+            observations=torch.cat([wave.observations for wave in self.waves]),
+            pill_colors=torch.cat([wave.pill_colors for wave in self.waves]),
+            preview_pill_colors=torch.cat(
+                [wave.preview_pill_colors for wave in self.waves]
+            ),
+            aux=None if aux[0] is None else torch.cat(aux),  # type: ignore[arg-type]
+            actions=torch.cat([wave.actions for wave in self.waves]),
+            log_probs=torch.cat([wave.log_probs for wave in self.waves]),
+            candidate_actions=torch.cat(
+                [wave.candidate_actions for wave in self.waves]
+            ),
+            candidate_mask=torch.cat([wave.candidate_mask for wave in self.waves]),
+            candidate_cost=torch.cat([wave.candidate_cost for wave in self.waves]),
         )
 
     def clear(self) -> None:
+        self.waves.clear()
         self.size = 0
 
 
@@ -478,9 +449,6 @@ class SMDPPPOAdapter(AlgoAdapter):
         self._device_rollout = (
             _DeviceRolloutBuffer(
                 capacity=self.hparams.decisions_per_update * 2,
-                obs_shape=obs_shape,
-                aux_dim=self.aux_dim,
-                candidate_max=self.candidate_max,
                 device=torch.device(self.device),
             )
             if self.policy_type == "candidate" and torch.device(self.device).type == "cuda"

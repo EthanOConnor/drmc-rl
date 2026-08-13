@@ -26,9 +26,6 @@ def _wave(offset: int) -> _DeviceRolloutWave:
 def test_device_rollout_reuses_policy_inputs_and_supports_action_replacement():
     buffer = _DeviceRolloutBuffer(
         capacity=6,
-        obs_shape=(4, 2, 2),
-        aux_dim=2,
-        candidate_max=4,
         device=torch.device("cpu"),
     )
     first = _wave(0)
