@@ -153,7 +153,7 @@ def human_policy_config(*, capacity: str = "medium", candidate_max: int = 128) -
             "candidate_cost_embed_dim": 32,
             "candidate_hidden_dim": hidden,
             "candidate_board_encoder": "cnn",
-            "candidate_board_channels": 8,
+            "candidate_board_channels": 16,
             "candidate_transformer_layers": layers,
             "candidate_transformer_heads": 4,
             "candidate_transformer_ff_mult": 4,

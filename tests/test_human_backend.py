@@ -18,6 +18,14 @@ def test_skill_condition_is_continuous_and_clamped() -> None:
     assert condition.resolve(1750.0) == (1750.0, False)
 
 
+def test_human_v2_trunk_encodes_both_boards() -> None:
+    from drmc_rl.human.model import build_human_policy, human_policy_config
+
+    net = build_human_policy(human_policy_config(capacity="small"))
+    assert net.in_channels == 20
+    assert net.board_channels == 16
+
+
 def test_strength_calibration_math() -> None:
     from tools.calibrate_human_strength import elo_from_win_rate, wilson_interval
 

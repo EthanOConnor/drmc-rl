@@ -198,6 +198,11 @@ phase, opponent snapshot age, and four preceding semantic placements. Month
 shards are prefetched one at a time so all 54.8 million decisions remain
 trainable within tf3090's 16 GB system memory.
 
+Unlike v1, the v2 board trunk encodes all sixteen own/opponent semantic board
+planes. Merely placing opponent planes in the 20-channel observation is not
+sufficient: the candidate network's `board_channels` must be sixteen or those
+planes never enter either its global or local candidate representation.
+
 `tools/human_backend.py` serves that checkpoint as the out-of-process human
 player and backend-only coach. Professor Pills is the thin, non-blocking host.
 The complete semantic contract is in `HUMAN_BACKEND_PROTOCOL.md`.
