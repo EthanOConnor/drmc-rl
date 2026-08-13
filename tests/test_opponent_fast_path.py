@@ -8,7 +8,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = [
     pytest.mark.skipif(
@@ -30,7 +30,7 @@ def test_cuda_opponent_path_matches_reference(tmp_path):
     if not all(p.is_file() for p in seeds):
         pytest.skip("seed checkpoints not staged")
 
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     env = DrMarioVsPoolVecEnv(
         num_pairs=6,

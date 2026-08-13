@@ -3,7 +3,6 @@ trunk grafts must leave a checkpoint's outputs exactly unchanged at init."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")

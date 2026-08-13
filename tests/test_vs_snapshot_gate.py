@@ -5,12 +5,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
 
-from envs.backends.drmario_pool import is_library_present
+from drmc_rl.envs.backends.drmario_pool import is_library_present
 
 pytestmark = pytest.mark.skipif(
     not is_library_present(), reason="native pool library missing"
@@ -20,7 +19,7 @@ SEEDS = [Path("runs/bc_opponents/bc_lt1600.pt.gz")]
 
 
 def _env(tmp_path, gate):
-    from training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
     if not SEEDS[0].is_file():
         pytest.skip("seed checkpoint not staged")

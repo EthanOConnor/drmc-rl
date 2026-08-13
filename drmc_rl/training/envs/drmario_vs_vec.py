@@ -745,7 +745,7 @@ class DrMarioVsPoolVecEnv:
 
         import torch
 
-        from models.policy.candidate_packing import pack_feasible_candidates
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 
         order: List[int] = []
         spans: List[Tuple[Any, int, int]] = []
