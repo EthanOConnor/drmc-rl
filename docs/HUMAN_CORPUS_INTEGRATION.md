@@ -33,6 +33,15 @@ It validates schema and manifest paths, exposes Arrow datasets/batches, and
 can restrict scans to monthly shards. Full hash verification is explicit
 because reading every byte across SSH is expensive.
 
+Schema v2 separates immutable replay facts from annotations that change as
+the corpus grows. `corpus.batches("ratings")` exposes the complete WHR-C
+trajectory points for the release, `corpus.rating_at(player, day)` performs
+the specified continuous linear interpolation, and `corpus.time_split(day)`
+derives the release-relative train/validation/test assignment. Ratings and
+time splits must not be assumed to be columns in v2 decision/game shards.
+This lets daily releases hard-link unchanged monthly behavior while updating
+historical skill estimates correctly and cheaply.
+
 The core schema stores source facts. Planner feasible sets, policy ranks,
 native exact-reset checkpoints, and model-ready observations are separate
 derived releases keyed by core release id and tool/model version.
