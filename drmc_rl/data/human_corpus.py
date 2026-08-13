@@ -7,6 +7,7 @@ and content-hashed Parquet shards.  Network/mount lifecycle lives in
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
-SUPPORTED_SCHEMAS = {"fcr-human-v1"}
+SUPPORTED_SCHEMAS = {"fcr-human-v1", "fcr-human-v2"}
 DEFAULT_ROOT = Path(os.environ.get("DRMC_HUMAN_CORPUS_ROOT", "~/.cache/drmc-rl/human-corpus")).expanduser()
 
 
@@ -95,6 +96,7 @@ class HumanCorpus:
         )
         for entry in self._files:
             _safe_relative(entry.path)
+        self._rating_index: dict[str, tuple[list[int], list[float], list[float]]] | None = None
 
     @property
     def stats(self) -> Mapping[str, int]:
@@ -149,3 +151,49 @@ class HumanCorpus:
             columns=columns, filter=filter, batch_size=int(batch_size), use_threads=True
         )
         yield from scanner.to_batches()
+
+    def time_split(self, day: int) -> str:
+        """Return the release-relative split without storing it in behavior shards."""
+
+        max_day = int(self.manifest["source"]["max_day"])
+        if int(day) > max_day - 180:
+            return "test"
+        if int(day) > max_day - 270:
+            return "validation"
+        return "train"
+
+    def _load_ratings(self):
+        if self._rating_index is not None:
+            return
+        index: dict[str, tuple[list[int], list[float], list[float]]] = {}
+        for batch in self.batches(
+            "ratings", columns=["player", "day", "skill_elo", "skill_sd"]
+        ):
+            for row in batch.to_pylist():
+                days, means, sds = index.setdefault(row["player"], ([], [], []))
+                days.append(int(row["day"]))
+                means.append(float(row["skill_elo"]))
+                sds.append(float(row["skill_sd"]))
+        self._rating_index = index
+
+    def rating_at(self, player: str, day: int) -> tuple[float | None, float | None]:
+        """Linearly interpolate the release's continuous WHR-C trajectory."""
+
+        self._load_ratings()
+        row = self._rating_index.get(player) if self._rating_index else None
+        if row is None:
+            return None, None
+        days, means, sds = row
+        i = bisect.bisect_left(days, int(day))
+        if i <= 0:
+            return means[0], sds[0]
+        if i >= len(days):
+            return means[-1], sds[-1]
+        lo, hi = days[i - 1], days[i]
+        if hi == lo:
+            return means[i], sds[i]
+        weight = (int(day) - lo) / (hi - lo)
+        return (
+            means[i - 1] + weight * (means[i] - means[i - 1]),
+            sds[i - 1] + weight * (sds[i] - sds[i - 1]),
+        )
