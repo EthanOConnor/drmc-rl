@@ -231,6 +231,13 @@ PFSP record. The VS environment supplies live opponent planes, match phase,
 and the human side's four preceding placements. Human entries default to
 protected so learner snapshots cannot evict the fixed calibration anchors.
 
+Do not equate requested WHR with realized native-engine strength without a
+ladder measurement. `tools/calibrate_human_strength.py` alternates the probe
+side against a fixed anchor and reports score rate, Wilson intervals, and a
+logistic-Elo equivalent. Run the pure model first, then repeat selected points
+with `--search-weight`; these measurements determine the rating/search blend
+used for curriculum anchors rather than relying on an architectural guess.
+
 ## Go-Exploit start-state bank (`tools/build_start_bank.py`, 2026-06-12)
 
 Mid-game two-board positions sampled from corpus games, loaded as native

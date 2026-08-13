@@ -18,6 +18,15 @@ def test_skill_condition_is_continuous_and_clamped() -> None:
     assert condition.resolve(1750.0) == (1750.0, False)
 
 
+def test_strength_calibration_math() -> None:
+    from tools.calibrate_human_strength import elo_from_win_rate, wilson_interval
+
+    assert elo_from_win_rate(0.5, 1600) == 1600
+    assert elo_from_win_rate(0.75, 1600) > 1750
+    lo, hi = wilson_interval(50, 100)
+    assert lo < 0.5 < hi
+
+
 def test_coach_keeps_human_norm_and_competitive_quality_separate() -> None:
     result = analyze_choice(
         [10, 20, 30],
