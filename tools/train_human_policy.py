@@ -523,6 +523,8 @@ def timing_features(
 
 
 def _sample_weights(ratings: np.ndarray, bins: int = 20) -> np.ndarray:
+    if len(ratings) == 0:
+        return np.empty(0, dtype=np.float32)
     counts, edges = np.histogram(ratings, bins=bins)
     bucket = np.clip(np.searchsorted(edges, ratings, side="right") - 1, 0, bins - 1)
     weights = 1.0 / np.sqrt(np.maximum(counts[bucket], 1))
