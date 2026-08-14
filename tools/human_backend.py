@@ -17,7 +17,7 @@ import numpy as np
 
 from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
 
-DEFAULT_CHECKPOINT = "human_policy_v2.pt.gz"
+DEFAULT_CHECKPOINTS = ("human_policy.pt.gz", "human_policy_v2.pt.gz")
 
 
 def resolve_checkpoint(path: str | None) -> Path:
@@ -33,8 +33,10 @@ def resolve_checkpoint(path: str | None) -> Path:
             roots.append(Path(frozen_root))
         roots.append(Path(sys.executable).resolve().parent)
         roots.append(Path(__file__).resolve().parents[1])
-        candidates = [root / "models" / DEFAULT_CHECKPOINT for root in roots]
-        candidates.append(roots[-1] / "runs" / "human_policy" / DEFAULT_CHECKPOINT)
+        candidates = [root / "models" / name for root in roots for name in DEFAULT_CHECKPOINTS]
+        candidates.extend(
+            roots[-1] / "runs" / "human_policy" / name for name in DEFAULT_CHECKPOINTS
+        )
 
     for candidate in candidates:
         if candidate.is_file():

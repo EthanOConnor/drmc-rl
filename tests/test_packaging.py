@@ -32,3 +32,17 @@ def test_runtime_resources_are_packaged() -> None:
     assert (root / "envs/libretro/seeds/registry.json").is_file()
     assert (root / "planning/cuda/drm_reach.cu").is_file()
     assert (root / "training/configs/smdp_ppo.yaml").is_file()
+
+
+def test_pool_library_resolves_from_frozen_sidecar(monkeypatch, tmp_path) -> None:
+    import sys
+
+    from drmc_rl.envs.backends.drmario_pool import (
+        _default_library_name,
+        default_library_path,
+    )
+
+    packaged = tmp_path / _default_library_name()
+    packaged.touch()
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    assert default_library_path() == packaged

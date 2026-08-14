@@ -9,7 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from tools.build_reach_native import build
+from tools.build_drmario_pool import build as build_pool
+from tools.build_reach_native import build as build_reach
 
 
 def package(checkpoint: Path, output: Path) -> Path:
@@ -18,7 +19,8 @@ def package(checkpoint: Path, output: Path) -> Path:
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
 
-    native_library = build(verbose=True)
+    reach_library = build_reach(verbose=True)
+    pool_library = build_pool(verbose=True)
     package_name = "drmc-human-backend"
     subprocess.run(
         [
@@ -39,7 +41,9 @@ def package(checkpoint: Path, output: Path) -> Path:
             "--paths",
             str(repo),
             "--add-binary",
-            f"{native_library}{os.pathsep}.",
+            f"{reach_library}{os.pathsep}.",
+            "--add-binary",
+            f"{pool_library}{os.pathsep}.",
             str(repo / "tools" / "human_backend.py"),
         ],
         cwd=repo,
@@ -48,7 +52,7 @@ def package(checkpoint: Path, output: Path) -> Path:
     package_dir = output / package_name
     model_dir = package_dir / "models"
     model_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(checkpoint, model_dir / "human_policy_v2.pt.gz")
+    shutil.copy2(checkpoint, model_dir / "human_policy.pt.gz")
     return package_dir
 
 

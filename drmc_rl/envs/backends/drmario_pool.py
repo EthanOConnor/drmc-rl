@@ -66,6 +66,10 @@ def _default_library_name() -> str:
 
 
 def default_library_path() -> Path:
+    if frozen_root := getattr(sys, "_MEIPASS", None):
+        packaged = Path(frozen_root) / _default_library_name()
+        if packaged.is_file():
+            return packaged
     root = Path(__file__).resolve().parents[3]
     return root / "vendor" / "drmario_native" / "build" / _default_library_name()
 
@@ -273,7 +277,12 @@ class DrMarioPoolRunner:
         create.restype = C.c_void_p
         destroy.argtypes = [C.c_void_p]
         destroy.restype = None
-        reset.argtypes = [C.c_void_p, C.POINTER(C.c_uint8), C.POINTER(_DrmResetSpec), C.POINTER(_DrmPoolOutputs)]
+        reset.argtypes = [
+            C.c_void_p,
+            C.POINTER(C.c_uint8),
+            C.POINTER(_DrmResetSpec),
+            C.POINTER(_DrmPoolOutputs),
+        ]
         reset.restype = C.c_int
         step.argtypes = [
             C.c_void_p,
@@ -404,7 +413,9 @@ class DrMarioPoolRunner:
         def _ptr(arr: np.ndarray, c_type: object) -> C._Pointer:  # type: ignore[name-defined]
             return arr.ctypes.data_as(C.POINTER(c_type))  # type: ignore[arg-type]
 
-        out.obs = _ptr(buffers.obs, C.c_float) if buffers.obs.size else C.cast(0, C.POINTER(C.c_float))
+        out.obs = (
+            _ptr(buffers.obs, C.c_float) if buffers.obs.size else C.cast(0, C.POINTER(C.c_float))
+        )
         out.feasible_mask = _ptr(buffers.feasible_mask, C.c_uint8)
         out.cost_to_lock = _ptr(buffers.cost_to_lock, C.c_uint16)
         out.pill_colors = _ptr(buffers.pill_colors, C.c_uint8)
@@ -620,12 +631,8 @@ def build_reset_spec(
     spec.checkpoint_frame_parity = int(checkpoint_frame_parity) & 0xFF
     spec.inject_plan = 1 if bool(inject_plan) else 0
     if inject_plan:
-        feas = np.ascontiguousarray(
-            np.asarray(inject_feasible, dtype=np.uint8).reshape(-1)
-        )
-        costs = np.ascontiguousarray(
-            np.asarray(inject_costs, dtype=np.uint16).reshape(-1)
-        )
+        feas = np.ascontiguousarray(np.asarray(inject_feasible, dtype=np.uint8).reshape(-1))
+        costs = np.ascontiguousarray(np.asarray(inject_costs, dtype=np.uint16).reshape(-1))
         if feas.size != 512 or costs.size != 512:
             raise ValueError("inject_feasible/inject_costs must have 512 entries")
         C.memmove(spec.inject_feasible, feas.ctypes.data, 512)
