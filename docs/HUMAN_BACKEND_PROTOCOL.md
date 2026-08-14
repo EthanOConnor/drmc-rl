@@ -55,6 +55,7 @@ benchmarks use explicit search knobs instead of this real-time adaptation.
   "frame_id": 9182,
   "deadline_ms": 90,
   "target_rating": 1750,
+  "timing_scale": 1.0,
   "target_rating_sd": 70,
   "temperature": 1.0,
   "state": {
@@ -100,8 +101,25 @@ misrepresented as frame-synchronized. Professor Pills decides how to
 schedule or present those declarations; the backend never issues UI commands.
 
 The timing model predicts human slack beyond the planner-minimal controller
-script. It is metadata until the host implements an execution scheduler that
-can add delay without invalidating reachability.
+script. `timing_scale: 0` requests the fastest planner path; `1` samples the
+corpus-calibrated cadence for the requested rating, and larger values request
+more deliberation. The backend prepends only reaction time that replay-validates
+against the exact frame model, so gravity clamps delay before it can change the
+chosen placement. The response reports requested and realized slack.
+
+## Consented Professor Pills evidence
+
+drmariostats exports only replay-verified runs with explicit, revocable research
+consent. Public visibility is unrelated. Analyze the private operator export with:
+
+```sh
+uv run python -m tools.analyze_professor_corpus professor-corpus.jsonl
+```
+
+The report groups raw cartridge-latched APM by authenticated player and emits
+human-versus-model outcomes keyed by requested rating and cadence. Raw APM is a
+useful style diagnostic; semantic per-pill `tau_frames` remains the training
+target because it excludes menus and resolution intervals.
 
 ## Coaching
 

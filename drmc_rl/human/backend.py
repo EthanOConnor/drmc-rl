@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from drmc_rl.human.coach import analyze_choice
+from drmc_rl.human.cadence import add_thinking_delay
 from drmc_rl.human.model import canonicalize_same_color_action
 from drmc_rl.human.runtime import HumanPolicyRuntime
 from drmc_rl.human.search import (
@@ -156,6 +157,11 @@ class HumanBackend:
                 "coordinates": "planner coordinates: row 0 is bottle top",
             },
             "outputs": ["placement", "controller_frames", "timing", "coach_analysis"],
+            "cadence": {
+                "control": "timing_scale >= 0; zero is planner-minimal, one is corpus-calibrated",
+                "conditioning": "rating, pressure, phase, speed, prior tau, path cost",
+                "validation": "every delayed script is replayed before return",
+            },
             "search": {
                 "available": True,
                 "default_for_coach": True,
@@ -231,7 +237,7 @@ class HumanBackend:
         )
         if packed.count == 0:
             raise RuntimeError("no reachable placement")
-        return planes, opponent_planes, pill, preview, speed, speed_ups, reach, packed, costs
+        return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
 
     def close(self) -> None:
         if self.search is not None:
@@ -262,6 +268,7 @@ class HumanBackend:
             preview,
             speed,
             speed_ups,
+            frame,
             reach,
             packed,
             costs512,
@@ -355,6 +362,22 @@ class HumanBackend:
             speed=speed,
             speed_ups=speed_ups,
             candidate_count=packed.count,
+        )
+        timing_scale = max(float(request.get("timing_scale", 1.0)), 0.0)
+        requested_slack = self.runtime.sample_slack_frames(timing, scale=timing_scale)
+        script, realized_slack = add_thinking_delay(
+            _columns(planes),
+            frame,
+            script,
+            speed_threshold=compute_speed_threshold(speed, speed_ups),
+            target=(x, y, rotation),
+            requested_frames=requested_slack,
+        )
+        timing.update(
+            scale=timing_scale,
+            requested_slack_frames=float(requested_slack),
+            realized_slack_frames=float(realized_slack),
+            cadence_clamped=bool(realized_slack < requested_slack),
         )
         result = {
             "target_rating": rating,

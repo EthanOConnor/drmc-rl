@@ -245,6 +245,12 @@ that internal ladder to human strength. Search sweeps can additionally vary
 `--search-beam`, `--search-num-sim-envs`, and `--search-deadline-ms` to measure
 strength per unit latency rather than choosing search breadth architecturally.
 
+Professor Pills records the model's requested rating and timing scale in the
+signed versus summary. Consented, verified exports therefore provide both the
+absolute human anchor and a cadence check. Use raw APM only as an aggregate
+sanity measure; retraining should re-emulate the exact tape and derive semantic
+placement decisions and `tau_frames` before merging it with HumanCorpus.
+
 ## Go-Exploit start-state bank (`tools/build_start_bank.py`, 2026-06-12)
 
 Mid-game two-board positions sampled from corpus games, loaded as native

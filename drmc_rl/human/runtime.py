@@ -169,3 +169,15 @@ class HumanPolicyRuntime:
             "log_slack_std": float(np.exp(log_std)),
             "slack_frames_median": float(max(np.expm1(mean), 0.0)),
         }
+
+    def sample_slack_frames(self, timing: dict[str, float], *, scale: float = 1.0) -> int:
+        """Sample skill-conditioned execution slack from the fitted lognormal."""
+
+        multiplier = max(float(scale), 0.0)
+        if multiplier == 0.0:
+            return 0
+        log_slack = self.rng.normal(
+            float(timing["log_slack_mean"]),
+            float(timing["log_slack_std"]),
+        )
+        return int(np.clip(np.rint(max(np.expm1(log_slack), 0.0) * multiplier), 0, 300))
