@@ -1,0 +1,92 @@
+# Opponent-aware decisive-play generalist. The init checkpoint is produced by
+# tools.expand_checkpoint from Searchlight after the specialist gates pass.
+algo: ppo_smdp
+train:
+  total_steps: 2000000000
+  checkpoint_interval: 25000000
+  checkpoint_keep_last: 8
+  init_checkpoint: runs/best_agents/searchlight_g2_vsobs.pt.gz
+  strict_checkpoint: true
+  resume_step: false
+  resume_optimizer: false
+smdp_ppo:
+  lr: 3.0e-5
+  gamma: 1.0
+  gae_lambda: 0.98
+  clip_epsilon: 0.15
+  value_coef: 0.5
+  entropy_coef: 0.006
+  max_grad_norm: 0.7
+  decisions_per_update: 12288
+  num_epochs: 2
+  minibatch_size: 1536
+  compile_mode: default
+  rollout_compute_dtype: fp32
+  update_compute_dtype: bf16
+  policy_type: candidate
+  head_type: dense
+  pill_embed_dim: 128
+  pill_embed_type: ordered_pair
+  encoder_blocks: 4
+  candidate_max_candidates: 128
+  candidate_d_model: 192
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 384
+  candidate_board_encoder: cnn
+  candidate_board_channels: 16
+  candidate_transformer_layers: 4
+  candidate_transformer_heads: 4
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
+  aux_spec: v1_vs
+  entropy_schedule_end: 0.005
+  entropy_schedule_steps: 150000000
+  value_loss_type: huber
+env:
+  id: drmario-vs
+  obs_mode: state
+  backend: cpp-vs-pool
+  gpu_planner: true
+  direct_policy_batch: true
+  state_repr: bitplane_bottle_conn_mask_vs
+  num_pairs: 320
+  frame_stack: 1
+  randomize_rng: true
+  level: 14
+  speed_setting: 2
+  garbage_reward_coef: 0.05
+  clear_win_bonus: 0.35
+  virus_progress_reward_coef: 0.015
+  decision_penalty: 0.0003
+  match_horizon_pills: 420
+  horizon_penalty: 0.20
+  start_bank:
+    enabled: true
+    path: runs/start_bank/clear_endgame_v1.npz
+    fraction: 0.30
+  opponent_pool:
+    enabled: true
+    max_pool: 24
+    snapshot_every_matches: 400
+    snapshot_gate:
+      enabled: true
+      min_match_len_sec: 30
+      league_wr_frac: 0.5
+    device: auto
+    human_opponents:
+      - {id: human_900, checkpoint: runs/human_policy/human_policy_v2.pt.gz, rating: 900}
+      - {id: human_1300, checkpoint: runs/human_policy/human_policy_v2.pt.gz, rating: 1300}
+      - {id: human_1700, checkpoint: runs/human_policy/human_policy_v2.pt.gz, rating: 1700}
+      - {id: human_2100, checkpoint: runs/human_policy/human_policy_v2.pt.gz, rating: 2100}
+      - {id: human_2400, checkpoint: runs/human_policy/human_policy_v2.pt.gz, rating: 2400}
+    seed_paths:
+      - runs/best_agents/searchlight_g2_vsobs.pt.gz
+    league:
+      mode: mixed
+      exploiter_fraction: 0.30
+      main_agents:
+        - runs/best_agents/searchlight_g2_vsobs.pt.gz
+curriculum:
+  enabled: false
+logdir: runs/vs_decisive_generalist_01

@@ -114,6 +114,10 @@ class DrMarioVsPoolVecEnv:
         randomize_rng: bool = True,
         garbage_reward_coef: float = 0.05,
         clear_win_bonus: float = 0.0,
+        virus_progress_reward_coef: float = 0.0,
+        decision_penalty: float = 0.0,
+        match_horizon_pills: int = 0,
+        horizon_penalty: float = 0.0,
         max_lock_frames: int = 2048,
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
@@ -135,6 +139,10 @@ class DrMarioVsPoolVecEnv:
         self.rng_randomize = bool(randomize_rng)
         self.garbage_reward_coef = float(garbage_reward_coef)
         self.clear_win_bonus = float(clear_win_bonus)
+        self.virus_progress_reward_coef = max(0.0, float(virus_progress_reward_coef))
+        self.decision_penalty = max(0.0, float(decision_penalty))
+        self.match_horizon_pills = max(0, int(match_horizon_pills))
+        self.horizon_penalty = max(0.0, float(horizon_penalty))
         self.seed_provider = seed_provider
         self.direct_policy_batch = bool(direct_policy_batch)
 
@@ -241,6 +249,12 @@ class DrMarioVsPoolVecEnv:
         self._win_p1 = deque(maxlen=100)  # 1.0 P1 win, 0.0 P1 loss, 0.5 draw
         self._draws = deque(maxlen=100)
         self._match_len_sec = deque(maxlen=100)
+        self._clear_wins = deque(maxlen=100)
+        self._topout_wins = deque(maxlen=100)
+        self._horizon_matches = deque(maxlen=100)
+        self._pills_per_match = deque(maxlen=100)
+        self._garbage_per_match = deque(maxlen=100)
+        self._viruses_per_match = deque(maxlen=100)
         self._volleys_total = 0
         self._emu_frames_total = 0
         # Per-side completed-game feature records for the skill grader.
@@ -420,7 +434,10 @@ class DrMarioVsPoolVecEnv:
         terminated = np.zeros((self.num_sides,), dtype=bool)
         truncated = np.zeros((self.num_sides,), dtype=bool)
         garbage_delta_arr = np.zeros((self.num_sides,), dtype=np.int64)
+        virus_delta_arr = np.zeros((self.num_sides,), dtype=np.int64)
+        accepted_arr = np.zeros((self.num_sides,), dtype=bool)
         outcome_str: List[str] = ["" for _ in range(self.num_sides)]
+        horizon_pair = np.zeros(self.num_pairs, dtype=bool)
 
         for i in range(self.num_sides):
             pair_i = i // 2
@@ -451,6 +468,7 @@ class DrMarioVsPoolVecEnv:
                 continue
 
             accepted = bool(was_need_action[i]) and int(invalid[i]) == -1 and int(acts[i]) >= -1
+            accepted_arr[i] = accepted
             if accepted:
                 self._ep_pills[i] += 1
                 self._human_recent_actions[i, 1:] = self._human_recent_actions[i, :-1]
@@ -463,7 +481,13 @@ class DrMarioVsPoolVecEnv:
             self._garbage_sent_prev[i] = int(garbage_sent[i])
             garbage_delta_arr[i] = int(g_delta)
 
-            r = float(self.garbage_reward_coef) * float(g_delta)
+            delta_v = max(0, v_prev - v_i) if v_prev >= 0 else 0
+            virus_delta_arr[i] = int(delta_v)
+            r = (
+                float(self.garbage_reward_coef) * float(g_delta)
+                + float(self.virus_progress_reward_coef) * float(delta_v)
+                - (float(self.decision_penalty) if accepted else 0.0)
+            )
 
             pair_done = bool(int(term_pair[pair_i]) != 0)
             if pair_done:
@@ -489,6 +513,23 @@ class DrMarioVsPoolVecEnv:
                     terminated[i] = True
             rewards[i] = r
 
+        # A human-calibrated unresolved-game horizon prevents survival loops
+        # from occupying rollout lanes indefinitely. It is a truncation (not a
+        # fabricated win/loss); both sides receive the same optional urgency
+        # penalty and the value function may bootstrap normally.
+        if self.match_horizon_pills:
+            for pair_i in range(self.num_pairs):
+                i0, i1 = pair_i * 2, pair_i * 2 + 1
+                if int(term_pair[pair_i]) != 0:
+                    continue
+                if max(int(self._ep_pills[i0]), int(self._ep_pills[i1])) < self.match_horizon_pills:
+                    continue
+                horizon_pair[pair_i] = True
+                truncated[i0] = truncated[i1] = True
+                outcome_str[i0] = outcome_str[i1] = "horizon"
+                rewards[i0] -= float(self.horizon_penalty)
+                rewards[i1] -= float(self.horizon_penalty)
+
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
         if self.opponent_obs:
@@ -511,6 +552,12 @@ class DrMarioVsPoolVecEnv:
                 info_i["reward/r_env"] = r_env
                 info_i["reward/r_shape"] = info_i["r_shape"]
                 info_i["reward/r_total"] = r_env
+                info_i["reward/virus_progress"] = float(
+                    self.virus_progress_reward_coef * int(virus_delta_arr[i])
+                )
+                info_i["reward/decision_penalty"] = (
+                    -float(self.decision_penalty) if bool(accepted_arr[i]) else 0.0
+                )
                 opponent_i = (i // 2) * 2 + (1 - i % 2)
                 info_i["cleared"] = bool(
                     outcome_str[i] == "win" and int(v_now[i]) == 0
@@ -528,7 +575,9 @@ class DrMarioVsPoolVecEnv:
             i0, i1 = pair_i * 2, pair_i * 2 + 1
             if not bool(terminated[i0] or truncated[i0] or terminated[i1] or truncated[i1]):
                 continue
-            self._record_match(pair_i, outcome, pair_clocks[pair_i])
+            self._record_match(
+                pair_i, outcome, pair_clocks[pair_i], horizon=bool(horizon_pair[pair_i])
+            )
             for i in (i0, i1):
                 info_i = self._infos[i]
                 info_i["episode"] = {
@@ -690,6 +739,9 @@ class DrMarioVsPoolVecEnv:
         if name == "garbage_reward_coef":
             self.garbage_reward_coef = float(value)
             return
+        if name == "virus_progress_reward_coef":
+            self.virus_progress_reward_coef = max(0.0, float(value))
+            return
         if name in {"rng_randomize", "randomize_rng"}:
             self.rng_randomize = bool(value)
             return
@@ -721,6 +773,13 @@ class DrMarioVsPoolVecEnv:
             out["vs/draw_rate"] = float(np.mean(self._draws))
         if self._match_len_sec:
             out["vs/match_len_p50_sec"] = float(np.median(self._match_len_sec))
+        if self._clear_wins:
+            out["vs/clear_win_rate"] = float(np.mean(self._clear_wins))
+            out["vs/topout_win_rate"] = float(np.mean(self._topout_wins))
+            out["vs/horizon_rate"] = float(np.mean(self._horizon_matches))
+            out["vs/pills_per_match"] = float(np.mean(self._pills_per_match))
+            out["vs/garbage_per_match"] = float(np.mean(self._garbage_per_match))
+            out["vs/viruses_cleared_per_match"] = float(np.mean(self._viruses_per_match))
         if self._snapshot_gate_cfg:
             out["vs/snapshots_blocked"] = float(self._snapshots_blocked)
         if self._opp_pool is not None:
@@ -1067,7 +1126,9 @@ class DrMarioVsPoolVecEnv:
         # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
         return cand_actions[np.arange(B), slot_np].astype(np.int32)
 
-    def _record_match(self, pair_i: int, outcome: np.ndarray, pair_clock: int) -> None:
+    def _record_match(
+        self, pair_i: int, outcome: np.ndarray, pair_clock: int, *, horizon: bool = False
+    ) -> None:
         i0 = pair_i * 2
         oc0 = int(outcome[i0])
         self._matches_total += 1
@@ -1083,6 +1144,17 @@ class DrMarioVsPoolVecEnv:
 
         length_s = float(max(1, int(pair_clock))) / NES_FPS
         self._match_len_sec.append(length_s)
+        viruses_rem = self._runner.buffers.viruses_rem
+        learner_clear = bool(not horizon and oc0 == VS_OUTCOME_WIN and int(viruses_rem[i0]) == 0)
+        learner_topout_win = bool(
+            not horizon and oc0 == VS_OUTCOME_WIN and int(viruses_rem[i0]) != 0
+        )
+        self._clear_wins.append(float(learner_clear))
+        self._topout_wins.append(float(learner_topout_win))
+        self._horizon_matches.append(float(horizon))
+        self._pills_per_match.append(float(self._ep_pills[i0]))
+        self._garbage_per_match.append(float(self._garbage_sent_prev[i0]))
+        self._viruses_per_match.append(float(self._ep_viruses_cleared[i0]))
         minutes = max(length_s / 60.0, 1e-6)
 
         # DrMC-style per-game features for tools/skill_grade.py (one record per
@@ -1097,7 +1169,6 @@ class DrMarioVsPoolVecEnv:
         #                   weights received garbage by stack depth)
         #   pills_per_min = pills locked / min
         #   garbage_per_min = garbage half pills sent / min
-        viruses_rem = self._runner.buffers.viruses_rem
         # Pool mode: only the learner side is graded (P2 is a frozen net).
         sides = (i0,) if self._opp_pool is not None else (i0, i0 + 1)
         for i in sides:

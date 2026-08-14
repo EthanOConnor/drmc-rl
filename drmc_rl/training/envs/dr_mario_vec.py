@@ -34,6 +34,11 @@ class VecEnvConfig:
     opponent_pool: Optional[Dict[str, Any]] = None  # cpp-vs-pool: frozen-opponent PFSP pool
     start_bank: Optional[Dict[str, Any]] = None  # cpp-vs-pool: Go-Exploit start-state bank
     clear_win_bonus: float = 0.0  # cpp-vs-pool: extra terminal reward for winning by clear
+    garbage_reward_coef: float = 0.05  # delivered garbage half-pills
+    virus_progress_reward_coef: float = 0.0  # bounded dense clear progress
+    decision_penalty: float = 0.0  # urgency cost per accepted placement
+    match_horizon_pills: int = 0  # per-side unresolved-game horizon; 0 disables
+    horizon_penalty: float = 0.0  # symmetric penalty at an unresolved horizon
     gpu_planner: bool = False  # cpp-vs-pool: defer reachability batches to CUDA
     direct_policy_batch: bool = False  # cpp-vs-pool: typed trainer hot path
     level: int = 0
@@ -234,7 +239,14 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             randomize_rng=bool(env_cfg.randomize_rng),
             opponent_pool_cfg=opp_cfg,
             start_bank_cfg=env_cfg.start_bank,
+            garbage_reward_coef=float(getattr(env_cfg, "garbage_reward_coef", 0.05)),
             clear_win_bonus=float(getattr(env_cfg, "clear_win_bonus", 0.0) or 0.0),
+            virus_progress_reward_coef=float(
+                getattr(env_cfg, "virus_progress_reward_coef", 0.0) or 0.0
+            ),
+            decision_penalty=float(getattr(env_cfg, "decision_penalty", 0.0) or 0.0),
+            match_horizon_pills=int(getattr(env_cfg, "match_horizon_pills", 0) or 0),
+            horizon_penalty=float(getattr(env_cfg, "horizon_penalty", 0.0) or 0.0),
             gpu_planner=bool(getattr(env_cfg, "gpu_planner", False) or False),
             direct_policy_batch=bool(
                 getattr(env_cfg, "direct_policy_batch", False) or False

@@ -166,3 +166,38 @@ def test_vs_pool_runner_need_action_noop() -> None:
                     assert int(buf.invalid_action[i]) == 512
     finally:
         runner.close()
+
+
+def test_vs_training_horizon_and_decisive_metrics() -> None:
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+
+    env = DrMarioVsPoolVecEnv(
+        num_pairs=1,
+        level=14,
+        speed_setting=2,
+        randomize_rng=False,
+        virus_progress_reward_coef=0.05,
+        decision_penalty=0.001,
+        match_horizon_pills=2,
+        horizon_penalty=0.25,
+    )
+    rng = np.random.default_rng(7)
+    try:
+        _obs, infos = env.reset(seed=7)
+        for _ in range(2):
+            actions = _random_feasible_actions(infos, rng)
+            _obs, rewards, terminated, truncated, infos = env.step(actions)
+        assert not np.asarray(terminated).any()
+        assert np.asarray(truncated).all()
+        assert all(info["vs/outcome"] == "horizon" for info in infos)
+        # Bounded virus-progress shaping may offset part of the symmetric
+        # horizon cost, but cannot erase it in this two-placement probe.
+        assert np.all(np.asarray(rewards) <= -0.15)
+        metrics = env.get_vs_metrics()
+        assert metrics["vs/matches_total"] == 1.0
+        assert metrics["vs/horizon_rate"] == 1.0
+        assert metrics["vs/pills_per_match"] == 2.0
+        assert metrics["vs/clear_win_rate"] == 0.0
+        assert metrics["vs/topout_win_rate"] == 0.0
+    finally:
+        env.close()
