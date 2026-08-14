@@ -74,6 +74,7 @@ def elo_mle(
     *,
     max_iter: int = 500,
     tol: float = 1e-9,
+    pair_prior: float = 0.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Bradley-Terry / logistic Elo MLE with mean-zero anchor.
 
@@ -94,6 +95,14 @@ def elo_mle(
         ent = agg.setdefault(key, [0.0, 0.0])
         ent[0] += 1.0
         ent[1] += float(s)
+    if pair_prior < 0:
+        raise ValueError("pair_prior must be non-negative")
+    if pair_prior:
+        # Symmetric pseudo-results prevent perfect-separation infinities while
+        # leaving the mean-zero field anchor and observed game graph intact.
+        for total_score in agg.values():
+            total_score[0] += 2.0 * float(pair_prior)
+            total_score[1] += float(pair_prior)
 
     r = np.zeros(n, dtype=np.float64)
     fisher = np.zeros((n, n), dtype=np.float64)

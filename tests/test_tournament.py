@@ -74,6 +74,15 @@ def test_elo_mle_chain_transitivity():
     assert se[0] == pytest.approx(se[2], rel=1e-6)
 
 
+def test_elo_pair_prior_keeps_perfect_separation_finite():
+    games = [(0, 1, 1.0)] * 12
+    ratings, se = elo_mle(2, games, pair_prior=0.5)
+    assert ratings[0] - ratings[1] == pytest.approx(400 * math.log10(12.5 / 0.5), abs=1e-3)
+    assert np.all(np.isfinite(ratings))
+    assert np.all(se > 0)
+    assert np.all(se < 500)
+
+
 # ----------------------------------------------------------------------- SPRT
 def test_sprt_llr_reference_values():
     # Computed with an independent BayesElo-trinomial implementation.

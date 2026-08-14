@@ -217,7 +217,7 @@ class ArenaStore:
                 rec[0] += 1
             else:
                 rec[2] += 1
-        ratings, errors = elo_mle(len(agents), games) if games else (
+        ratings, errors = elo_mle(len(agents), games, pair_prior=0.5) if games else (
             np.zeros(len(agents)), np.zeros(len(agents))
         )
         counts = [0] * len(agents)
