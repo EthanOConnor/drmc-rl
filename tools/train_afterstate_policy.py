@@ -280,6 +280,7 @@ def _evaluate(
     objective_sum = top1_sum = brier_sum = 0.0
     ratings: list[np.ndarray] = []
     regrets: list[np.ndarray] = []
+    rows_per_shard = max(1, int(np.ceil(max_rows / len(paths))))
     with torch.inference_mode():
         for path in paths:
             if total_rows >= max_rows:
@@ -289,7 +290,13 @@ def _evaluate(
             validation = (
                 (arrays["split"] != 0) | (arrays["player_fold"] == 0) | (arrays["time_split"] != 0)
             )
-            rows = np.flatnonzero(validation)[: max_rows - total_rows]
+            available = np.flatnonzero(validation)
+            take = min(rows_per_shard, len(available), max_rows - total_rows)
+            if take < len(available):
+                positions = np.linspace(0, len(available) - 1, take, dtype=np.int64)
+                rows = available[positions]
+            else:
+                rows = available
             for start in range(0, len(rows), batch_size):
                 index = rows[start : start + batch_size]
                 numpy_batch = make_batch(shard, index, condition)
