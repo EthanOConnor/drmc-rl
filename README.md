@@ -41,6 +41,17 @@ Start single-player training:
 uv run python -m drmc_rl.training.run --backend cpp-pool --ui tui
 ```
 
+Run the continuous VS lineage arena and its browser dashboard:
+
+```bash
+uv run python -m tools.arena register arena-roster.json
+uv run python -m tools.arena worker
+uv run python -m tools.arena serve --host 0.0.0.0
+```
+
+Promoted champions remain immutable active entrants after a successor is
+promoted, so ratings and promotion evidence continue to cover every era.
+
 The active VS configs are `vs6_tf3090.yaml`, `vsdist2_tf3090.yaml`, and
 `vsact_actfromsearch.yaml`. The latter two are staged experiments with explicit
 checkpoint placeholders; do not launch them without satisfying their gates.
