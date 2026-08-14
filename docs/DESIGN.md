@@ -77,8 +77,10 @@ represented by the exact sparse tile changes produced after lock, clear, and
 cascade, plus pose, movement cost, current pill, and preview. Cross-candidate
 attention compares alternatives directly. Rating-independent heads predict
 competitive quality, outcome, clear, top-out, virus progress, and attack;
-rating/history condition only the human-style head. A separate empirical
-regret model controls human strength.
+rating/history condition only the human-style head. A separate empirical model
+controls human strength from conditional regret quantiles. It preserves rare
+mistake tails across rating and decision-opportunity strata rather than assuming
+that average or typical placements differ by skill.
 
 ## Independent verification boundary
 

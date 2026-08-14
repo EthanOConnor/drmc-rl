@@ -27,7 +27,7 @@ from drmc_rl.human.afterstate_model import (
 from drmc_rl.human.conditioning import HumanSkillCondition
 from drmc_rl.human.afterstate_sim import decode_sparse_deltas
 from drmc_rl.human.model import POLICY_CONDITION_DIM, build_timing_model
-from drmc_rl.human.strength import RegretCalibration
+from drmc_rl.human.strength import RegretCalibration, quality_opportunity
 from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 from tools.train_human_policy import condition_features, timing_features
 
@@ -280,6 +280,7 @@ def _evaluate(
     objective_sum = top1_sum = brier_sum = 0.0
     ratings: list[np.ndarray] = []
     regrets: list[np.ndarray] = []
+    opportunities: list[np.ndarray] = []
     rows_per_shard = max(1, int(np.ceil(max_rows / len(paths))))
     with torch.inference_mode():
         for path in paths:
@@ -314,18 +315,38 @@ def _evaluate(
                 brier_sum += float(((probability - batch["won"]) ** 2).sum())
                 ratings.append(numpy_batch["rating"])
                 regrets.append(regret.cpu().numpy())
+                opportunities.append(
+                    quality_opportunity(
+                        quality.cpu().numpy(), numpy_batch["mask"]
+                    )
+                )
                 total_rows += n
     if total_rows < 20:
         raise ValueError("not enough held-out rows for V3 evaluation")
     rating_array = np.concatenate(ratings)
     regret_array = np.concatenate(regrets)
+    opportunity_array = np.concatenate(opportunities)
     bins = min(12, max(2, total_rows // 100))
-    calibration = RegretCalibration.fit(rating_array, regret_array, bins=bins)
+    calibration = RegretCalibration.fit(
+        rating_array,
+        regret_array,
+        opportunity_array,
+        rating_bins=bins,
+    )
+    low_cut, high_cut = np.quantile(rating_array, (0.2, 0.8))
+    low_regret = regret_array[rating_array <= low_cut]
+    high_regret = regret_array[rating_array >= high_cut]
     metrics = {
         "validation_objective": objective_sum / total_rows,
         "validation_top1": top1_sum / total_rows,
         "validation_outcome_brier": brier_sum / total_rows,
         "validation_mean_regret": float(regret_array.mean()),
+        "validation_regret_q90": float(np.quantile(regret_array, 0.9)),
+        "validation_low_rating_regret_q90": float(np.quantile(low_regret, 0.9)),
+        "validation_high_rating_regret_q90": float(np.quantile(high_regret, 0.9)),
+        "validation_regret_tail_gap": float(
+            np.quantile(low_regret, 0.9) - np.quantile(high_regret, 0.9)
+        ),
         "validation_rows": float(total_rows),
     }
     return metrics, calibration

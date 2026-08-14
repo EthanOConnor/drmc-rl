@@ -72,8 +72,11 @@ def test_regret_calibration_is_monotone_and_controls_choices() -> None:
     rng = np.random.default_rng(4)
     ratings = np.repeat(np.linspace(800, 2400, 9), 100)
     regrets = np.maximum(3.0 - (ratings - 800) / 800 + rng.normal(0, 0.2, len(ratings)), 0)
-    calibration = RegretCalibration.fit(ratings, regrets, bins=8)
-    assert np.all(np.diff(calibration.median_regret) <= 1e-12)
+    opportunities = np.tile(np.linspace(0.1, 2.0, 100), 9)
+    calibration = RegretCalibration.fit(
+        ratings, regrets, opportunities, rating_bins=8, opportunity_bins=3
+    )
+    assert np.all(np.diff(calibration.regret_quantiles, axis=0) <= 1e-12)
     controller = RegretStrengthController(calibration, seed=2)
     quality = np.asarray([10.0, 9.0, 7.0])
     style = np.zeros(3)
@@ -85,6 +88,36 @@ def test_regret_calibration_is_monotone_and_controls_choices() -> None:
     )
     assert low_info["chosen_regret"] >= high_info["chosen_regret"]
     assert low != high
+
+
+def test_regret_calibration_preserves_skill_difference_in_error_tail() -> None:
+    from drmc_rl.human.strength import RegretCalibration, RegretStrengthController
+
+    ratings = np.repeat((900.0, 2300.0), 1000)
+    # Typical choices are identical. The separation is the low-rated players'
+    # occasional consequential error, which a median-only control loses.
+    low = np.concatenate((np.full(800, 0.1), np.full(200, 2.0)))
+    high = np.concatenate((np.full(800, 0.1), np.full(200, 0.5)))
+    calibration = RegretCalibration.fit(
+        ratings,
+        np.concatenate((low, high)),
+        np.ones(2000),
+        rating_bins=2,
+        opportunity_bins=1,
+    )
+    low_controller = RegretStrengthController(calibration, seed=11)
+    high_controller = RegretStrengthController(calibration, seed=11)
+    quality = np.asarray([10.0, 9.5, 8.0])
+    mask = np.ones(3, bool)
+    style = np.zeros(3)
+    low_regrets = []
+    high_regrets = []
+    for _ in range(500):
+        low_slot, _ = low_controller.choose(quality, style, mask, rating=900)
+        high_slot, _ = high_controller.choose(quality, style, mask, rating=2300)
+        low_regrets.append(quality.max() - quality[low_slot])
+        high_regrets.append(quality.max() - quality[high_slot])
+    assert np.mean(low_regrets) > np.mean(high_regrets) + 0.15
 
 
 def test_sparse_afterstates_round_trip_exactly() -> None:

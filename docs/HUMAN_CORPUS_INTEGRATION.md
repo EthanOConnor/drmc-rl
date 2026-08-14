@@ -202,9 +202,12 @@ V3 separates quality from human behavior:
   scores the exact candidate deltas. Competitive and tactical heads never see
   requested rating. A separate style head sees rating, uncertainty, phase, and
   recent decisions.
-- After training, each observed choice's competitive regret is measured. A
-  weighted monotone calibration maps WHR-C to a regret distribution. Runtime
-  strength changes tolerated regret while timing remains an independent model.
+- After training, each observed choice's competitive regret is measured. The
+  calibration retains the full error-tail distribution by rating and by the
+  rating-independent spread of candidate quality. This matters because typical
+  placements overlap heavily across skill levels; separation can live in rare,
+  consequential mistakes that a mean or median erases. Runtime strength changes
+  reliability on those decisions while timing remains an independent model.
 
 On tf3090:
 
@@ -212,6 +215,9 @@ On tf3090:
 .venv/bin/python -m tools.annotate_afterstates --num-envs 4096
 .venv/bin/python -m tools.train_afterstate_policy \
   --device cuda --capacity base --batch-size 512 --epochs 6
+.venv/bin/python -m tools.recalibrate_afterstate_strength \
+  runs/human_policy/v3_lineage/human_afterstate_v3_epoch01.pt.gz \
+  --output runs/human_policy/v3_lineage/human_afterstate_v3_epoch01_strength.pt.gz
 ```
 
 `tools/human_backend.py` serves V2 historical checkpoints and V3 checkpoints
@@ -220,7 +226,7 @@ non-blocking host. For distribution, build the native sidecar with:
 
 ```bash
 uv run --group package --extra rl python -m tools.package_human_backend \
-  --checkpoint runs/human_policy/human_policy_v2.pt.gz
+  --checkpoint runs/human_policy/human_afterstate_v3.pt.gz
 ```
 
 The resulting `dist/drmc-human-backend/` directory includes the executable,

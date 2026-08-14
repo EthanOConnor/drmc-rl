@@ -322,11 +322,13 @@ def _afterstate_checkpoint(path) -> None:
     from drmc_rl.training.utils.checkpoint_io import save_checkpoint
 
     condition = HumanSkillCondition.fit(np.asarray([800.0, 1500.0, 2400.0]))
-    calibration = RegretCalibration(
-        rating_edges=np.asarray([800.0, 1300.0, 1900.0, 2400.0]),
-        median_regret=np.asarray([1.0, 0.5, 0.1]),
-        log_regret_std=np.asarray([0.5, 0.4, 0.3]),
-        counts=np.asarray([100, 100, 100]),
+    ratings = np.repeat(np.asarray([800.0, 1500.0, 2400.0]), 80)
+    calibration = RegretCalibration.fit(
+        ratings,
+        np.repeat(np.asarray([1.0, 0.5, 0.1]), 80),
+        np.tile(np.linspace(0.1, 1.0, 80), 3),
+        rating_bins=3,
+        opportunity_bins=2,
     )
     cfg = afterstate_policy_config(capacity="small")
     model = build_afterstate_policy(cfg, condition_dim=POLICY_CONDITION_DIM)
