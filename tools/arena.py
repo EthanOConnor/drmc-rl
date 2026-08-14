@@ -356,7 +356,7 @@ def main() -> None:
     worker.add_argument("--batch", type=int, default=8)
     worker.add_argument("--level", type=int, default=14)
     worker.add_argument("--speed-setting", type=int, default=2)
-    worker.add_argument("--state-repr", default="bitplane_bottle_conn_mask")
+    worker.add_argument("--state-repr", default="bitplane_bottle_conn_mask_vs")
     worker.add_argument("--seed", type=int, default=27182)
     worker.add_argument("--poll", type=float, default=10)
     worker.add_argument("--elo0", type=float, default=0)

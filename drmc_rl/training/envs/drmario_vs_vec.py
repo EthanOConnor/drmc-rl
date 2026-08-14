@@ -511,8 +511,13 @@ class DrMarioVsPoolVecEnv:
                 info_i["reward/r_env"] = r_env
                 info_i["reward/r_shape"] = info_i["r_shape"]
                 info_i["reward/r_total"] = r_env
-                info_i["cleared"] = bool(outcome_str[i] == "win")
-                info_i["topout"] = bool(outcome_str[i] == "loss")
+                opponent_i = (i // 2) * 2 + (1 - i % 2)
+                info_i["cleared"] = bool(
+                    outcome_str[i] == "win" and int(v_now[i]) == 0
+                )
+                info_i["topout"] = bool(
+                    outcome_str[i] == "loss" and int(v_now[opponent_i]) != 0
+                )
                 info_i["goal_achieved"] = bool(outcome_str[i] == "win")
                 info_i["terminal_reason"] = str(outcome_str[i])
 
@@ -535,8 +540,8 @@ class DrMarioVsPoolVecEnv:
                     "viruses_cleared": int(self._ep_viruses_cleared[i]),
                     "viruses_remaining": int(v_now[i]),
                     "viruses_initial": int(self._viruses_initial[i]),
-                    "top_out": bool(outcome_str[i] == "loss"),
-                    "cleared": bool(outcome_str[i] == "win"),
+                    "top_out": bool(info_i.get("topout", False)),
+                    "cleared": bool(info_i.get("cleared", False)),
                     "level": int(self.level),
                     "speed_setting": int(self.speed_setting),
                     "vs_outcome": str(outcome_str[i]),

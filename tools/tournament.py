@@ -608,6 +608,7 @@ class _EntryPolicy:
         if not ckpt.exists():
             raise SystemExit(f"entry '{entry.get('name')}': checkpoint not found: {ckpt}")
         self.search = None
+        self.human = None
         # Reliance probe: zero the opponent planes (ch 8-15) and the v1_vs aux
         # tail before the net sees them — measures how much a 20-ch checkpoint
         # actually uses opponent information.
@@ -619,6 +620,21 @@ class _EntryPolicy:
                     f"entry '{entry.get('name')}': mask_opponent requires an "
                     "opponent-obs (20-channel) checkpoint"
                 )
+            return
+        if self.mode == "human":
+            from drmc_rl.human.runtime import HumanPolicyRuntime
+
+            self.human = HumanPolicyRuntime(
+                ckpt,
+                device=str(params.get("device", "cpu")),
+                seed=int(params.get("seed", runner.run_seed + 1)),
+            )
+            self.human_rating = float(params["rating"])
+            self.human_rating_sd = float(params.get("rating_sd", 0.0))
+            self.human_opponent_rating = float(
+                params.get("opponent_rating", self.human_rating)
+            )
+            self.human_temperature = float(params.get("temperature", 1.0))
             return
         if self.mask_opponent:
             raise SystemExit("mask_opponent is only supported for mode: plain")
@@ -665,6 +681,50 @@ class _EntryPolicy:
                     for info in sub_infos
                 ]
             return self.plain.act(sub_obs, sub_infos)
+        if self.mode == "human":
+            from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+
+            if obs.shape[1] != 20:
+                raise ValueError("human arena entrants require the 20-channel VS observation")
+            acts = np.full(len(idxs), -1, dtype=np.int32)
+            env = self.runner.env
+            for k, i in enumerate(idxs):
+                info = infos[i]
+                packed = pack_feasible_candidates(
+                    np.asarray(info["placements/feasible_mask"], dtype=bool),
+                    info["placements/cost_to_lock"],
+                    max_candidates=int(self.human.cfg["smdp_ppo"]["candidate_max_candidates"]),
+                    sort_by_cost=True,
+                )
+                if not packed.mask.any():
+                    continue
+                recent = [
+                    {"action": int(action), "tau_frames": float(tau)}
+                    for action, tau in zip(
+                        env._human_recent_actions[i], env._human_recent_tau[i]
+                    )
+                    if int(action) >= 0
+                ]
+                logits, _value, _rating, _clamped = self.human.score(
+                    board_planes=obs[i, :8],
+                    opponent_board_planes=obs[i, 8:16],
+                    opponent_state_age_frames=0,
+                    rating_sd=self.human_rating_sd,
+                    opponent_rating=self.human_opponent_rating,
+                    game_phase=min(float(ep_decisions[i]) / 100.0, 1.0),
+                    recent_decisions=recent,
+                    pill=env._runner.buffers.pill_colors[i],
+                    preview=env._runner.buffers.preview_colors[i],
+                    candidate_actions=packed.actions,
+                    candidate_costs=packed.cost,
+                    candidate_mask=packed.mask,
+                    rating=self.human_rating,
+                )
+                slot = self.human.choose(
+                    logits, packed.mask, temperature=self.human_temperature
+                )
+                acts[k] = int(packed.actions[slot])
+            return acts
         acts = np.full(len(idxs), -1, dtype=np.int32)
         env = self.runner.env
         base_speed_ups = max(0, self.runner.level - 20)
