@@ -205,6 +205,18 @@ planes never enter either its global or local candidate representation.
 
 `tools/human_backend.py` serves that checkpoint as the out-of-process human
 player and backend-only coach. Professor Pills is the thin, non-blocking host.
+It finds `runs/human_policy/human_policy_v2.pt.gz` automatically in a
+development checkout, or accepts `--checkpoint`/`DRMC_HUMAN_MODEL` explicitly.
+For distribution, build the native, self-contained sidecar directory with:
+
+```bash
+uv run --group package --extra rl python -m tools.package_human_backend \
+  --checkpoint runs/human_policy/human_policy_v2.pt.gz
+```
+
+The resulting `dist/drmc-human-backend/` directory includes the executable,
+model, Python runtime, PyTorch, and native reachability library. Keep the
+directory intact when copying it beside a host application.
 The complete semantic contract is in `HUMAN_BACKEND_PROTOCOL.md`.
 
 The coach and optional sparring enhancement reuse the production native

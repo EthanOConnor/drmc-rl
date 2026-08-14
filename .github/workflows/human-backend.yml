@@ -1,0 +1,66 @@
+name: Human backend
+
+on:
+  push:
+    tags: ['human-backend-v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x86_64
+          - os: macos-14
+            platform: macos-aarch64
+          - os: windows-latest
+            platform: windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+
+      - name: Install packaging environment
+        run: uv sync --group package --extra rl
+
+      - name: Fetch published human policy
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download human-policy-v2 --pattern human_policy_v2.pt.gz --dir model
+
+      - name: Build standalone backend
+        run: uv run --group package --extra rl python -m tools.package_human_backend --checkpoint model/human_policy_v2.pt.gz
+
+      - name: Archive backend
+        if: runner.os != 'Windows'
+        run: tar -czf drmc-human-backend-${{ matrix.platform }}.tar.gz -C dist drmc-human-backend
+
+      - name: Archive backend (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist\drmc-human-backend -DestinationPath drmc-human-backend-${{ matrix.platform }}.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: drmc-human-backend-${{ matrix.platform }}
+          path: drmc-human-backend-${{ matrix.platform }}.*
+          retention-days: 3
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/human-backend-v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/drmc-human-backend-*
+          generate_release_notes: true

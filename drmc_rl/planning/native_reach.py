@@ -65,6 +65,9 @@ def _default_library_name() -> str:
 
 
 def default_library_path() -> Path:
+    frozen_root = getattr(sys, "_MEIPASS", None)
+    if frozen_root is not None:
+        return Path(frozen_root) / _default_library_name()
     root = Path(__file__).resolve().parents[2]
     return root / "reach_native" / "build" / _default_library_name()
 
@@ -75,7 +78,8 @@ def resolve_library_path(path: Optional[str] = None) -> Path:
     Priority:
       1) explicit ``path`` argument
       2) env var ``DRMARIO_REACH_LIB``
-      3) repo-local default under ``reach_native/build/``
+      3) bundled application resource
+      4) repo-local default under ``reach_native/build/``
     """
 
     if path:
@@ -225,6 +229,9 @@ class NativeReachabilityRunner:
         self._script_cap = int(POSES * self._max_frames)
         self._script_buf = np.empty(self._script_cap, dtype=np.uint8)
         self._used = C.c_int(0)
+
+    def close(self) -> None:
+        """Complete the explicit lifecycle; this runner owns no external handle."""
 
     @property
     def max_frames(self) -> int:

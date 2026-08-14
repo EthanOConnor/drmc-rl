@@ -426,3 +426,4 @@ def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None
     assert coach["result"]["coach"]["alternatives"]
     assert coach["result"]["search"] is not None
     assert "competitive_rank" in coach["result"]["coach"]["chosen"]
+    backend.close()

@@ -9,11 +9,38 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
 from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
+
+DEFAULT_CHECKPOINT = "human_policy_v2.pt.gz"
+
+
+def resolve_checkpoint(path: str | None) -> Path:
+    """Find the requested model or the model shipped with a frozen backend."""
+
+    if path:
+        candidates = [Path(path).expanduser()]
+    elif model_path := os.environ.get("DRMC_HUMAN_MODEL"):
+        candidates = [Path(model_path).expanduser()]
+    else:
+        roots: list[Path] = []
+        if frozen_root := getattr(sys, "_MEIPASS", None):
+            roots.append(Path(frozen_root))
+        roots.append(Path(sys.executable).resolve().parent)
+        roots.append(Path(__file__).resolve().parents[1])
+        candidates = [root / "models" / DEFAULT_CHECKPOINT for root in roots]
+        candidates.append(roots[-1] / "runs" / "human_policy" / DEFAULT_CHECKPOINT)
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate.resolve()
+    searched = ", ".join(str(candidate) for candidate in candidates)
+    raise FileNotFoundError(f"Human policy checkpoint not found; searched: {searched}")
 
 
 def serve(backend: HumanBackend) -> None:
@@ -78,7 +105,10 @@ def benchmark(backend: HumanBackend, iterations: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument(
+        "--checkpoint",
+        help="model path; defaults to DRMC_HUMAN_MODEL or the packaged model",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
@@ -89,7 +119,7 @@ def main() -> None:
     parser.add_argument("--bench", type=int, default=0, help="benchmark N warmed-up decisions")
     args = parser.parse_args()
     backend = HumanBackend(
-        args.checkpoint,
+        resolve_checkpoint(args.checkpoint),
         device=args.device,
         seed=args.seed,
         realtime_profile=args.realtime_profile,
