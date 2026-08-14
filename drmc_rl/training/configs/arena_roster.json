@@ -1,0 +1,97 @@
+{
+  "agents": [
+    {
+      "id": "classic-vs-g0",
+      "name": "Classic VS · G0",
+      "family": "central",
+      "generation": 0,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/best_agents/vs_champion_smdp_ppo_step530046434.pt.gz",
+      "status": "lineage",
+      "metadata": {"era": "original self-play champion"}
+    },
+    {
+      "id": "clearwater-g1",
+      "name": "Clearwater · G1",
+      "family": "central",
+      "generation": 1,
+      "parent_id": "classic-vs-g0",
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/best_agents/vs4_best_step20188116.pt.gz",
+      "status": "lineage",
+      "metadata": {"era": "clear-oriented metagame"}
+    },
+    {
+      "id": "searchlight-g2",
+      "name": "Searchlight · G2",
+      "family": "central",
+      "generation": 2,
+      "parent_id": "clearwater-g1",
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/vsdist_02/checkpoints/smdp_ppo_step880175540.pt.gz",
+      "status": "provisional",
+      "metadata": {"era": "search-distilled policy"}
+    },
+    {
+      "id": "searchlight-deep-g2",
+      "name": "Searchlight Deep · G2",
+      "family": "search",
+      "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/vsdist_02/checkpoints/smdp_ppo_step880175540.pt.gz",
+      "mode": "search",
+      "params": {"beam": 8, "deadline_ms": 100, "device": "cpu"},
+      "status": "anchor",
+      "metadata": {"era": "depth-2 search ceiling"}
+    },
+    {
+      "id": "human-legacy-lt1600", "name": "Human Legacy · <1600",
+      "family": "human-legacy", "generation": 0,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/bc_opponents/bc_lt1600.pt.gz",
+      "status": "anchor", "metadata": {"era": "coarse Fightcade imitation band"}
+    },
+    {
+      "id": "human-legacy-1600-2000", "name": "Human Legacy · 1600–2000",
+      "family": "human-legacy", "generation": 0,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/bc_opponents/bc_1600to2000.pt.gz",
+      "status": "anchor", "metadata": {"era": "coarse Fightcade imitation band"}
+    },
+    {
+      "id": "human-legacy-gt2000", "name": "Human Legacy · >2000",
+      "family": "human-legacy", "generation": 0,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/bc_opponents/bc_gt2000.pt.gz",
+      "status": "anchor", "metadata": {"era": "coarse Fightcade imitation band"}
+    },
+    {
+      "id": "human-v2-900", "name": "Human V2 · 900 target",
+      "family": "human-v2", "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
+      "mode": "human", "params": {"rating": 900, "temperature": 1.0, "device": "cpu", "seed": 900},
+      "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    },
+    {
+      "id": "human-v2-1300", "name": "Human V2 · 1300 target",
+      "family": "human-v2", "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
+      "mode": "human", "params": {"rating": 1300, "temperature": 1.0, "device": "cpu", "seed": 1300},
+      "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    },
+    {
+      "id": "human-v2-1700", "name": "Human V2 · 1700 target",
+      "family": "human-v2", "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
+      "mode": "human", "params": {"rating": 1700, "temperature": 1.0, "device": "cpu", "seed": 1700},
+      "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    },
+    {
+      "id": "human-v2-2100", "name": "Human V2 · 2100 target",
+      "family": "human-v2", "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
+      "mode": "human", "params": {"rating": 2100, "temperature": 1.0, "device": "cpu", "seed": 2100},
+      "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    },
+    {
+      "id": "human-v2-2400", "name": "Human V2 · 2400 target",
+      "family": "human-v2", "generation": 2,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
+      "mode": "human", "params": {"rating": 2400, "temperature": 1.0, "device": "cpu", "seed": 2400},
+      "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    }
+  ]
+}
