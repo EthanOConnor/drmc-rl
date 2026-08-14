@@ -63,7 +63,7 @@ env:
   horizon_penalty: 0.20
   start_bank:
     enabled: true
-    path: runs/start_bank/clear_endgame_v1.npz
+    path: runs/start_bank/clear_practice_v1.npz
     fraction: 0.30
   opponent_pool:
     enabled: true

@@ -5,7 +5,7 @@ train:
   total_steps: 500000000
   checkpoint_interval: 10000000
   checkpoint_keep_last: 8
-  init_checkpoint: runs/vsdist_02/checkpoints/smdp_ppo_step880175540.pt.gz
+  init_checkpoint: runs/best_agents/capsule_prime_seed.pt.gz
   strict_checkpoint: true
   resume_step: false
   resume_optimizer: false
@@ -63,7 +63,7 @@ env:
   horizon_penalty: 0.25
   start_bank:
     enabled: true
-    path: runs/start_bank/clear_endgame_v1.npz
+    path: runs/start_bank/clear_practice_v1.npz
     fraction: 0.10
   opponent_pool:
     enabled: true
@@ -78,12 +78,11 @@ env:
       - runs/bc_opponents/bc_lt1600.pt.gz
       - runs/bc_opponents/bc_1600to2000.pt.gz
       - runs/bc_opponents/bc_gt2000.pt.gz
-      - runs/best_agents/vs4_best_step20188116.pt.gz
     league:
       mode: mixed
       exploiter_fraction: 0.35
       main_agents:
-        - runs/vsdist_02/checkpoints/smdp_ppo_step880175540.pt.gz
+        - runs/best_agents/capsule_prime_seed.pt.gz
 curriculum:
   enabled: false
 logdir: runs/vs_attack_specialist_01
