@@ -167,6 +167,11 @@ def _losses(model, timing, batch, *, autocast):
         quality_outcome = F.binary_cross_entropy_with_logits(
             output["competitive_score"][row, chosen], batch["won"]
         )
+        # Bootstrap a coherent rating-independent policy from the observed
+        # corpus action. Outcome/search fine-tuning can improve this head later;
+        # without this term, only one candidate per row receives a long-horizon
+        # label and the remaining ranking is nearly arbitrary.
+        quality_policy = F.cross_entropy(output["competitive_score"], chosen)
         valid = batch["mask"]
         clear_target = (batch["terminal"] == 1).to(output["clear_logit"].dtype)
         topout_target = (batch["terminal"] == 2).to(output["topout_logit"].dtype)
@@ -211,6 +216,7 @@ def _losses(model, timing, batch, *, autocast):
             style
             + 0.5 * outcome
             + 0.25 * quality_outcome
+            + 0.50 * quality_policy
             + 0.12 * ordering
             + 0.08 * clear
             + 0.08 * topout
@@ -224,6 +230,7 @@ def _losses(model, timing, batch, *, autocast):
             "style": style.detach(),
             "outcome": outcome.detach(),
             "quality_outcome": quality_outcome.detach(),
+            "quality_policy": quality_policy.detach(),
             "ordering": ordering.detach(),
             "clear": clear.detach(),
             "topout": topout.detach(),
@@ -277,7 +284,7 @@ def _evaluate(
     model.eval()
     timing.eval()
     total_rows = 0
-    objective_sum = top1_sum = brier_sum = 0.0
+    objective_sum = top1_sum = quality_top1_sum = brier_sum = 0.0
     ratings: list[np.ndarray] = []
     regrets: list[np.ndarray] = []
     opportunities: list[np.ndarray] = []
@@ -308,10 +315,12 @@ def _evaluate(
                 quality = output["competitive_score"].float()
                 regret = quality.max(dim=1).values - quality[row, chosen]
                 prediction = output["human_logits"].argmax(dim=1)
+                quality_prediction = output["competitive_score"].argmax(dim=1)
                 probability = torch.sigmoid(output["outcome_logit"][row, chosen].float())
                 n = len(index)
                 objective_sum += float(loss) * n
                 top1_sum += float((prediction == chosen).sum())
+                quality_top1_sum += float((quality_prediction == chosen).sum())
                 brier_sum += float(((probability - batch["won"]) ** 2).sum())
                 ratings.append(numpy_batch["rating"])
                 regrets.append(regret.cpu().numpy())
@@ -339,6 +348,7 @@ def _evaluate(
     metrics = {
         "validation_objective": objective_sum / total_rows,
         "validation_top1": top1_sum / total_rows,
+        "validation_quality_top1": quality_top1_sum / total_rows,
         "validation_outcome_brier": brier_sum / total_rows,
         "validation_mean_regret": float(regret_array.mean()),
         "validation_regret_q90": float(np.quantile(regret_array, 0.9)),
@@ -394,6 +404,14 @@ def train(args) -> dict[str, Any]:
     cfg = afterstate_policy_config(capacity=args.capacity)
     model = build_afterstate_policy(cfg, condition_dim=POLICY_CONDITION_DIM, device=args.device)
     timing = build_timing_model(device=args.device)
+    if args.init_checkpoint is not None:
+        from drmc_rl.training.utils.checkpoint_io import load_checkpoint
+
+        initial = load_checkpoint(args.init_checkpoint, map_location="cpu")
+        if initial.get("schema") != HUMAN_AFTERSTATE_SCHEMA:
+            raise ValueError(f"not a {HUMAN_AFTERSTATE_SCHEMA} checkpoint: {args.init_checkpoint}")
+        model.load_state_dict(initial["state_dict"])
+        timing.load_state_dict(initial["timing_state_dict"])
     parameters = list(model.parameters()) + list(timing.parameters())
     optimizer_args: dict[str, Any] = {"lr": args.lr, "weight_decay": 1e-4}
     if str(args.device).startswith("cuda"):
@@ -516,6 +534,7 @@ def main() -> None:
     parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
     parser.add_argument("--afterstates", type=Path, default=DEFAULT_AFTERSTATES)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--init-checkpoint", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--capacity", choices=("small", "base", "large"), default="base")
     parser.add_argument("--epochs", type=int, default=6)

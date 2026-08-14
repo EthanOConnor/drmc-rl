@@ -120,9 +120,10 @@ epoch=1 step=100 decisions/s=2,586 loss=3.3554 style=2.6901 outcome=0.5450
 epoch=1 step=200 decisions/s=2,666 loss=3.0865 style=2.4608 outcome=0.5871
 {
   "epoch": 1,
-  "metrics": {
-    "validation_objective": 2.2,
-    "validation_top1": 0.42,
+    "metrics": {
+      "validation_objective": 2.2,
+      "validation_top1": 0.42,
+      "validation_quality_top1": 0.37,
     "validation_outcome_brier": 0.19,
     "validation_mean_regret": 0.31
   }
@@ -136,4 +137,5 @@ epoch=1 step=200 decisions/s=2,666 loss=3.0865 style=2.4608 outcome=0.5871
     assert latest["perf/dps"] == 2666
     assert latest["train/style"] == 2.4608
     assert latest["validation/top1"] == 0.42
+    assert latest["validation/quality_top1"] == 0.37
     assert tasks[0]["history"]["perf/dps"] == [[100, 2586.0], [200, 2666.0]]

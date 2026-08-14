@@ -15,7 +15,9 @@ anchor it.
    deltas and immediate clear, top-out, virus, attack, and duration targets.
 2. **Afterstate pretraining.** Encode the root and opponent bottles once, then
    score exact candidate deltas. Jointly learn rating-independent competitive
-   value, tactical outcomes, human style, game outcome, and execution timing.
+   policy/value, tactical outcomes, human style, game outcome, and execution
+   timing. The competitive head first learns the corpus action without rating;
+   search and outcome self-play subsequently improve it beyond imitation.
 3. **Human strength calibration.** Measure each observed human choice's regret
    against its legal alternatives. Fit monotone conditional regret quantiles by
    rating and decision opportunity, preserving rare error tails when typical

@@ -179,7 +179,7 @@ _AFTERSTATE_PROGRESS = re.compile(
 )
 _SCALAR_PART = re.compile(r"(?P<name>[a-z_]+)=(?P<value>[\d.eE+-]+)")
 _VALIDATION_SCALAR = re.compile(
-    r'"(?P<name>validation_(?:objective|top1|outcome_brier|mean_regret|regret_q90|'
+    r'"(?P<name>validation_(?:objective|top1|quality_top1|outcome_brier|mean_regret|regret_q90|'
     r'low_rating_regret_q90|high_rating_regret_q90|regret_tail_gap|rows))"\s*:\s*'
     r"(?P<value>[\d.eE+-]+)"
 )
