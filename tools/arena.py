@@ -128,8 +128,9 @@ def run_telemetry(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, stop)
     remote = (
         f"cd {args.remote_repo} && "
-        "latest=$(find runs -name metrics.jsonl.gz -printf '%T@ %p\\n' | sort -n | tail -1 | cut -d' ' -f2-); "
-        "printf '%s\\n' \"$latest\"; gzip -cd \"$latest\" 2>/dev/null"
+        "find runs -name metrics.jsonl.gz -mmin -15 -printf '%T@ %p\\n' | sort -n | "
+        "while read -r stamp path; do printf '@@RUN %s\\n' \"$path\"; "
+        "gzip -cd \"$path\" 2>/dev/null; done"
     )
     while not stopped:
         result = subprocess.run(
@@ -140,10 +141,16 @@ def run_telemetry(args: argparse.Namespace) -> None:
         # A live gzip stream legitimately exits nonzero because its writer has
         # not emitted the final trailer yet; every complete JSONL row is valid.
         if lines:
-            run = lines[0]
-            latest: dict[str, Any] = {}
-            history: dict[str, list[list[float]]] = {}
-            for line in lines[1:]:
+            tasks: list[dict[str, Any]] = []
+            task: dict[str, Any] | None = None
+            for line in lines:
+                if line.startswith("@@RUN "):
+                    if task is not None:
+                        tasks.append(task)
+                    task = {"run": line[6:].removeprefix("runs/"), "latest": {}, "history": {}}
+                    continue
+                if task is None:
+                    continue
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
@@ -151,14 +158,31 @@ def run_telemetry(args: argparse.Namespace) -> None:
                 if row.get("type") != "scalar":
                     continue
                 name = str(row["name"])
-                latest[name] = row["value"]
+                task["latest"][name] = row["value"]
                 if name in {"perf/sps", "perf/dps", "train/return_mean",
                             "search_distill/searched_fraction_actual"}:
-                    history.setdefault(name, []).append([row["step"], row["value"]])
+                    task["history"].setdefault(name, []).append([row["step"], row["value"]])
+            if task is not None:
+                tasks.append(task)
+            for item in tasks:
+                item["history"] = {
+                    name: points[-60:] for name, points in item["history"].items()
+                }
+            # Preserve the original top-level shape for existing dashboard
+            # consumers while exposing every recently active campaign.
+            latest: dict[str, Any] = {}
+            for name in ("perf/sps", "perf/dps"):
+                latest[name] = sum(float(item["latest"].get(name, 0.0)) for item in tasks)
+            if tasks:
+                primary = max(tasks, key=lambda item: float(item["latest"].get("perf/sps", 0.0)))
+                for name, value in primary["latest"].items():
+                    latest.setdefault(name, value)
             payload = {
-                "run": run.removeprefix("runs/"), "updated": utc_timestamp(),
+                "run": f"{len(tasks)} active campaign{'s' if len(tasks) != 1 else ''}",
+                "updated": utc_timestamp(),
                 "latest": latest,
-                "history": {name: points[-60:] for name, points in history.items()},
+                "history": {},
+                "tasks": tasks,
                 "source": args.ssh,
             }
             temporary = output.with_suffix(output.suffix + ".tmp")
