@@ -498,7 +498,11 @@ def train(args) -> dict[str, Any]:
             epoch=epoch + 1,
             metrics=metrics,
         )
-        lineage = args.output.parent / "v3_lineage"
+        lineage = (
+            args.lineage_dir
+            if args.lineage_dir is not None
+            else args.output.parent / "v3_lineage"
+        )
         lineage.mkdir(parents=True, exist_ok=True)
         epoch_path = lineage / f"human_afterstate_v3_epoch{epoch + 1:02d}.pt.gz"
         save_checkpoint(payload, epoch_path)
@@ -535,6 +539,7 @@ def main() -> None:
     parser.add_argument("--afterstates", type=Path, default=DEFAULT_AFTERSTATES)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--init-checkpoint", type=Path)
+    parser.add_argument("--lineage-dir", type=Path)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--capacity", choices=("small", "base", "large"), default="base")
     parser.add_argument("--epochs", type=int, default=6)
