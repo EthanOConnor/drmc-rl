@@ -164,6 +164,26 @@ class AfterstatePolicyRuntime:
             deterministic=temperature <= 0,
         )
 
+    def choose_style(
+        self,
+        human_logits: np.ndarray,
+        candidate_mask: np.ndarray,
+        *,
+        temperature: float = 1.0,
+    ) -> int:
+        """Sample pure corpus imitation without claiming a strength transform."""
+
+        valid = np.flatnonzero(np.asarray(candidate_mask, dtype=np.bool_))
+        if valid.size == 0:
+            raise ValueError("cannot choose without a valid candidate")
+        scores = np.asarray(human_logits, dtype=np.float64)[valid]
+        if temperature <= 0:
+            return int(valid[int(np.argmax(scores))])
+        scaled = (scores - scores.max()) / float(temperature)
+        probability = np.exp(scaled)
+        probability /= probability.sum()
+        return int(self.rng.choice(valid, p=probability))
+
     def timing_prediction(
         self,
         *,

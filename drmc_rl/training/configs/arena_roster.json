@@ -92,6 +92,15 @@
       "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/human_policy_v2.pt.gz",
       "mode": "human", "params": {"rating": 2400, "temperature": 1.0, "device": "cpu", "seed": 2400},
       "status": "anchor", "metadata": {"era": "continuous Fightcade imitation"}
+    },
+    {
+      "id": "human-v3-e1-style", "name": "V3 Corpus Imitation · E1",
+      "family": "human-v3", "generation": 1,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/v3_lineage/human_afterstate_v3_epoch01_strength.pt.gz",
+      "mode": "human",
+      "params": {"rating": 1900, "temperature": 1.0, "strength_control": "style", "device": "mps", "seed": 301},
+      "status": "candidate",
+      "metadata": {"era": "exact-afterstate corpus imitation", "strength_claim": "none"}
     }
   ]
 }

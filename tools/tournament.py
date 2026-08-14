@@ -640,6 +640,15 @@ class _EntryPolicy:
             self.human_rating_sd = float(params.get("rating_sd", 0.0))
             self.human_opponent_rating = float(params.get("opponent_rating", self.human_rating))
             self.human_temperature = float(params.get("temperature", 1.0))
+            self.human_strength_control = str(params.get("strength_control", "regret")).lower()
+            if self.human_strength_control not in {"regret", "style"}:
+                raise SystemExit(
+                    f"entry '{entry.get('name')}': strength_control must be regret or style"
+                )
+            if self.human_strength_control == "style" and not self.human_v3:
+                raise SystemExit(
+                    f"entry '{entry.get('name')}': pure style control requires a V3 checkpoint"
+                )
             return
         if self.mask_opponent:
             raise SystemExit("mask_opponent is only supported for mode: plain")
@@ -736,13 +745,20 @@ class _EntryPolicy:
                         speed=self.runner.speed_setting,
                         speed_ups=speed_ups,
                     )
-                    slot, _strength = self.human.choose_strength(
-                        details["competitive_score"],
-                        details["human_logits"],
-                        packed.mask,
-                        rating=float(details["resolved_rating"]),
-                        temperature=self.human_temperature,
-                    )
+                    if self.human_strength_control == "style":
+                        slot = self.human.choose_style(
+                            details["human_logits"],
+                            packed.mask,
+                            temperature=self.human_temperature,
+                        )
+                    else:
+                        slot, _strength = self.human.choose_strength(
+                            details["competitive_score"],
+                            details["human_logits"],
+                            packed.mask,
+                            rating=float(details["resolved_rating"]),
+                            temperature=self.human_temperature,
+                        )
                 else:
                     logits, _value, _rating, _clamped = self.human.score(**score_args)
                     slot = self.human.choose(
