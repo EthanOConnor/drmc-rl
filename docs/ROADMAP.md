@@ -45,3 +45,9 @@ anchor it.
   anchor.
 - Performance: report decisions/sec, candidate afterstates/sec, inference
   latency, search nodes, and strength gained per millisecond.
+
+The current fast central bootstrap is
+`drmc_rl/training/configs/vs_outcome_recovery_tf3090.yaml`. It trains on full
+games at level 14/high against distinct frozen policies and a gated self-play
+league. V3 corpus imitation supplies human behavior and evaluation context; it
+is not cloned at several requested ratings and used as a synthetic ladder.
