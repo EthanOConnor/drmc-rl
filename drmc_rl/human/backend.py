@@ -9,7 +9,7 @@ from typing import Any, Mapping
 import numpy as np
 
 from drmc_rl.human.coach import analyze_choice
-from drmc_rl.human.cadence import add_thinking_delay
+from drmc_rl.human.cadence import add_thinking_delay, hold_soft_drop_suffix
 from drmc_rl.human.model import canonicalize_same_color_action
 from drmc_rl.human.runtime import HumanPolicyRuntime
 from drmc_rl.human.search import (
@@ -373,11 +373,19 @@ class HumanBackend:
             target=(x, y, rotation),
             requested_frames=requested_slack,
         )
+        script, held_soft_drop = hold_soft_drop_suffix(
+            _columns(planes),
+            frame,
+            script,
+            speed_threshold=compute_speed_threshold(speed, speed_ups),
+            target=(x, y, rotation),
+        )
         timing.update(
             scale=timing_scale,
             requested_slack_frames=float(requested_slack),
             realized_slack_frames=float(realized_slack),
             cadence_clamped=bool(realized_slack < requested_slack),
+            held_soft_drop=held_soft_drop,
         )
         result = {
             "target_rating": rating,
