@@ -170,7 +170,8 @@ def run_worker(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, stop)
     runner = VsMatchRunner(level=args.level, speed_setting=args.speed_setting,
                            num_pairs=args.batch, device=args.device, threads=args.threads,
-                           run_seed=args.seed, state_repr=args.state_repr)
+                           run_seed=args.seed, state_repr=args.state_repr,
+                           replay_sample_rate=args.replay_sample_rate)
     serial = int(store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
     try:
         while not stopped:
@@ -185,7 +186,7 @@ def run_worker(args: argparse.Namespace) -> None:
             for result in results:
                 store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
                              winner=result.winner, match_len_sec=result.match_len_sec,
-                             decisions=result.decisions)
+                             decisions=result.decisions, replay=result.replay)
                 serial += 1
             results.close()
             champion = next((x for x in store.agents(("champion",)) if x.family == a.family), None)
@@ -209,6 +210,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload = json.dumps(store.snapshot(), separators=(",", ":")).encode()
             finally:
                 store.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        if path.startswith("/api/replay/"):
+            try:
+                match_id = int(path.rsplit("/", 1)[1])
+            except ValueError:
+                self.send_error(400)
+                return
+            store = ArenaStore(self.db)
+            try:
+                replay = store.replay(match_id)
+            finally:
+                store.close()
+            if replay is None:
+                self.send_error(404)
+                return
+            payload = json.dumps(replay, separators=(",", ":")).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
@@ -265,6 +288,7 @@ def main() -> None:
     worker.add_argument("--alpha", type=float, default=0.05)
     worker.add_argument("--beta", type=float, default=0.05)
     worker.add_argument("--max-gate-games", type=int, default=400)
+    worker.add_argument("--replay-sample-rate", type=float, default=0.2)
     args = parser.parse_args()
     if args.command == "register":
         store = ArenaStore(args.db)

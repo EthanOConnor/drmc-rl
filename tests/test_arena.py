@@ -1,4 +1,6 @@
 from pathlib import Path
+import gzip
+import json
 
 from drmc_rl.arena.store import ArenaStore
 from tools.arena import discover_once, maybe_promote, pair_priority
@@ -68,3 +70,24 @@ def test_discovery_names_and_links_candidate(tmp_path: Path) -> None:
     assert candidate.name == "Capsule Prime G3 · 25000000"
     assert candidate.parent_id == "champ"
     assert discover_once(store, config) == 0
+
+
+def test_replay_and_training_metrics_feed_dashboard(tmp_path: Path) -> None:
+    db = tmp_path / "runs" / "arena" / "arena.sqlite"
+    store = ArenaStore(db)
+    add(store, "old", "lineage")
+    add(store, "new", "champion", 1)
+    frames = [{"boards": [[[0] * 128], [[0] * 128]], "decision": 0}]
+    store.record("new", "old", seed=7, side=0, winner="a", match_len_sec=20,
+                 decisions=4, replay=frames)
+    run = tmp_path / "runs" / "campaign" / "run-1"
+    run.mkdir(parents=True)
+    with gzip.open(run / "metrics.jsonl.gz", "wt") as handle:
+        handle.write(json.dumps({"step": 10, "type": "scalar", "name": "perf/sps",
+                                 "value": 123456}) + "\n")
+        handle.write(json.dumps({"step": 10, "type": "scalar", "name": "perf/dps",
+                                 "value": 3456}) + "\n")
+    snap = store.snapshot()
+    assert snap["recent"][0]["has_replay"] == 1
+    assert store.replay(snap["recent"][0]["id"])["replay"] == frames
+    assert snap["training"]["latest"]["perf/sps"] == 123456

@@ -36,6 +36,7 @@ import argparse
 import hashlib
 import json
 import math
+import random
 import sqlite3
 import time
 from collections import deque
@@ -170,6 +171,7 @@ class GameResult:
     winner: str  # 'a' | 'b' | 'draw'
     match_len_sec: float
     decisions: int
+    replay: Optional[List[Dict[str, Any]]] = None
 
 
 def game_seed(tournament_seed: int, name_a: str, name_b: str, game_idx: int) -> int:
@@ -414,6 +416,7 @@ class VsMatchRunner:
         threads: int = 4,
         run_seed: int = 0,
         state_repr: str = "bitplane_bottle_conn_mask",
+        replay_sample_rate: float = 0.0,
     ) -> None:
         import torch
 
@@ -427,6 +430,7 @@ class VsMatchRunner:
         self.speed_setting = int(speed_setting)
         self.num_pairs = int(num_pairs)
         self.run_seed = int(run_seed)
+        self.replay_sample_rate = min(max(float(replay_sample_rate), 0.0), 1.0)
         self._assigned: List[Optional[GameSpec]] = [None] * self.num_pairs
         self.env = DrMarioVsPoolVecEnv(
             num_pairs=self.num_pairs,
@@ -471,6 +475,12 @@ class VsMatchRunner:
         obs, infos = self.env.reset(seed=series_seed)
         S = self.env.num_sides
         ep_decisions = np.zeros(S, dtype=np.int64)
+        replaying = [
+            spec is not None
+            and random.Random(spec.seed ^ self.run_seed).random() < self.replay_sample_rate
+            for spec in self._assigned
+        ]
+        replays: List[List[Dict[str, Any]]] = [[] for _ in range(self.num_pairs)]
         remaining = len(specs)
 
         while remaining > 0:
@@ -494,6 +504,22 @@ class VsMatchRunner:
                 acts[idxs_a] = pol_a.decide(idxs_a, obs, infos, ep_decisions)
             if idxs_b:
                 acts[idxs_b] = pol_b.decide(idxs_b, obs, infos, ep_decisions)
+            boards = self.env._runner.buffers.board_bytes
+            pills = self.env._runner.buffers.pill_colors
+            for pair_i, capture in enumerate(replaying):
+                if not capture or self._assigned[pair_i] is None:
+                    continue
+                i0 = pair_i * 2
+                if not bool(need[i0] or need[i0 + 1]):
+                    continue
+                replays[pair_i].append(
+                    {
+                        "boards": [boards[i0].tolist(), boards[i0 + 1].tolist()],
+                        "pills": [pills[i0].tolist(), pills[i0 + 1].tolist()],
+                        "actions": [int(acts[i0]), int(acts[i0 + 1])],
+                        "decision": int(max(ep_decisions[i0], ep_decisions[i0 + 1])),
+                    }
+                )
             ep_decisions[need] += 1
             obs, _r, term, trunc, infos = self.env.step(acts)
 
@@ -520,6 +546,14 @@ class VsMatchRunner:
                     winner=winner,
                     match_len_sec=float(ep_a.get("l", 0)) / NES_FPS,
                     decisions=decisions,
+                    replay=replays[pair_i] or None,
+                )
+                replays[pair_i] = []
+                next_spec = self._assigned[pair_i]
+                replaying[pair_i] = bool(
+                    next_spec is not None
+                    and random.Random(next_spec.seed ^ self.run_seed).random()
+                    < self.replay_sample_rate
                 )
 
 

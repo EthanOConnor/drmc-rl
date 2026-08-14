@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -42,6 +43,7 @@ CREATE TABLE IF NOT EXISTS matches (
   winner TEXT NOT NULL,
   match_len_sec REAL,
   decisions INTEGER,
+  replay TEXT,
   created TEXT NOT NULL,
   UNIQUE(agent_a, agent_b, seed, side_assignment)
 );
@@ -88,6 +90,10 @@ class ArenaStore:
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(matches)")}
+        if "replay" not in columns:
+            self.conn.execute("ALTER TABLE matches ADD COLUMN replay TEXT")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -161,12 +167,14 @@ class ArenaStore:
         )
 
     def record(self, a: str, b: str, *, seed: int, side: int, winner: str,
-               match_len_sec: float, decisions: int) -> None:
+               match_len_sec: float, decisions: int,
+               replay: list[dict[str, Any]] | None = None) -> None:
         self.conn.execute(
             """INSERT OR IGNORE INTO matches
-               (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,created)
-               VALUES(?,?,?,?,?,?,?,?)""",
-            (a, b, seed, side, winner, match_len_sec, decisions, utc_now()),
+               (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,replay,created)
+               VALUES(?,?,?,?,?,?,?,?,?)""",
+            (a, b, seed, side, winner, match_len_sec, decisions,
+             json.dumps(replay, separators=(",", ":")) if replay else None, utc_now()),
         )
         self.conn.commit()
 
@@ -225,13 +233,55 @@ class ArenaStore:
         for event in events:
             event["detail"] = json.loads(event["detail"])
         recent = [dict(row) for row in self.conn.execute(
-            "SELECT * FROM matches ORDER BY id DESC LIMIT 50"
+            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,created,replay IS NOT NULL AS has_replay FROM matches ORDER BY id DESC LIMIT 50"
         )]
+        training = self._training_snapshot()
         return {
             "generated": utc_now(), "agents": board, "games": len(games),
             "pairs": [{"a": k[0], "b": k[1], "wins_a": v[0], "draws": v[1], "wins_b": v[2]}
                       for k, v in pair.items()],
-            "events": events, "recent": recent,
+            "events": events, "recent": recent, "training": training,
+        }
+
+    def replay(self, match_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT agent_a,agent_b,winner,match_len_sec,replay FROM matches WHERE id=?",
+            (match_id,),
+        ).fetchone()
+        if row is None or row["replay"] is None:
+            return None
+        return {**dict(row), "replay": json.loads(row["replay"])}
+
+    def _training_snapshot(self) -> dict[str, Any]:
+        runs_root = self.path.parent.parent
+        streams = sorted(runs_root.glob("*/**/metrics.jsonl.gz"),
+                         key=lambda path: path.stat().st_mtime, reverse=True)
+        if not streams:
+            return {}
+        path = streams[0]
+        latest: dict[str, Any] = {}
+        history: dict[str, list[list[float]]] = {}
+        try:
+            with gzip.open(path, "rt") as handle:
+                for line in handle:
+                    try:
+                        row = json.loads(line)
+                    except Exception:
+                        break
+                    if row.get("type") != "scalar":
+                        continue
+                    name = str(row["name"])
+                    latest[name] = row["value"]
+                    if name in {"perf/sps", "perf/dps", "train/return_mean",
+                                "search_distill/searched_fraction_actual"}:
+                        history.setdefault(name, []).append([row["step"], row["value"]])
+        except (EOFError, OSError):
+            pass
+        return {
+            "run": str(path.parent.relative_to(runs_root)),
+            "updated": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat(),
+            "latest": latest,
+            "history": {name: points[-60:] for name, points in history.items()},
         }
 
     def matchup_games(self, a: str, b: str) -> list[float]:
