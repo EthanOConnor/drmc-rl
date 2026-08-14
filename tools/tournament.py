@@ -370,6 +370,8 @@ def _entry_board_channels(entry: Dict[str, Any]) -> int:
     if not ckpt.exists():
         ckpt = Path(str(entry["checkpoint"]))
     payload = load_checkpoint(ckpt, map_location="cpu")
+    if payload.get("schema") == "drmc-human-afterstate-v3":
+        return 16
     cfg = payload.get("cfg", {})
     sp = cfg.get("smdp_ppo", cfg)
     return int(sp.get("candidate_board_channels", 8))
@@ -386,9 +388,7 @@ def pick_state_repr(entries: Sequence[Dict[str, Any]]) -> str:
     if not needs_vs:
         return "bitplane_bottle_conn_mask"
     bad = [
-        e["name"]
-        for e in needs_vs
-        if str(e.get("mode", "plain")).lower() != "plain"
+        e["name"] for e in needs_vs if str(e.get("mode", "plain")).lower() not in {"plain", "human"}
     ]
     if bad:
         raise SystemExit(
@@ -531,8 +531,7 @@ class VsMatchRunner:
                 ended = bool(term[i0] or trunc[i0] or term[i0 + 1] or trunc[i0 + 1])
                 timed_out = bool(
                     self.max_decisions_per_side
-                    and max(ep_decisions[i0], ep_decisions[i0 + 1])
-                    >= self.max_decisions_per_side
+                    and max(ep_decisions[i0], ep_decisions[i0 + 1]) >= self.max_decisions_per_side
                 )
                 if not (ended or timed_out):
                     continue
@@ -609,6 +608,7 @@ class _EntryPolicy:
             raise SystemExit(f"entry '{entry.get('name')}': checkpoint not found: {ckpt}")
         self.search = None
         self.human = None
+        self.human_v3 = False
         # Reliance probe: zero the opponent planes (ch 8-15) and the v1_vs aux
         # tail before the net sees them — measures how much a 20-ch checkpoint
         # actually uses opponent information.
@@ -622,18 +622,23 @@ class _EntryPolicy:
                 )
             return
         if self.mode == "human":
+            from drmc_rl.human.afterstate_model import HUMAN_AFTERSTATE_SCHEMA
+            from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
             from drmc_rl.human.runtime import HumanPolicyRuntime
+            from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
-            self.human = HumanPolicyRuntime(
-                ckpt,
-                device=str(params.get("device", "cpu")),
-                seed=int(params.get("seed", runner.run_seed + 1)),
+            runtime_args = {
+                "device": str(params.get("device", "cpu")),
+                "seed": int(params.get("seed", runner.run_seed + 1)),
+            }
+            self.human_v3 = (
+                load_checkpoint(ckpt, map_location="cpu").get("schema") == HUMAN_AFTERSTATE_SCHEMA
             )
+            runtime = AfterstatePolicyRuntime if self.human_v3 else HumanPolicyRuntime
+            self.human = runtime(ckpt, **runtime_args)
             self.human_rating = float(params["rating"])
             self.human_rating_sd = float(params.get("rating_sd", 0.0))
-            self.human_opponent_rating = float(
-                params.get("opponent_rating", self.human_rating)
-            )
+            self.human_opponent_rating = float(params.get("opponent_rating", self.human_rating))
             self.human_temperature = float(params.get("temperature", 1.0))
             return
         if self.mask_opponent:
@@ -658,6 +663,10 @@ class _EntryPolicy:
     def close(self) -> None:
         if self.search is not None:
             self.search.close()
+        if self.human is not None:
+            close = getattr(self.human, "close", None)
+            if close is not None:
+                close()
 
     def decide(
         self,
@@ -673,12 +682,7 @@ class _EntryPolicy:
                 sub_obs = sub_obs.copy()
                 sub_obs[:, 8:16] = 0
                 sub_infos = [
-                    {
-                        k: v
-                        for k, v in info.items()
-                        if not k.startswith("vs/")
-                    }
-                    for info in sub_infos
+                    {k: v for k, v in info.items() if not k.startswith("vs/")} for info in sub_infos
                 ]
             return self.plain.act(sub_obs, sub_infos)
         if self.mode == "human":
@@ -693,19 +697,21 @@ class _EntryPolicy:
                 packed = pack_feasible_candidates(
                     np.asarray(info["placements/feasible_mask"], dtype=bool),
                     info["placements/cost_to_lock"],
-                    max_candidates=int(self.human.cfg["smdp_ppo"]["candidate_max_candidates"]),
+                    max_candidates=(
+                        128
+                        if self.human_v3
+                        else int(self.human.cfg["smdp_ppo"]["candidate_max_candidates"])
+                    ),
                     sort_by_cost=True,
                 )
                 if not packed.mask.any():
                     continue
                 recent = [
                     {"action": int(action), "tau_frames": float(tau)}
-                    for action, tau in zip(
-                        env._human_recent_actions[i], env._human_recent_tau[i]
-                    )
+                    for action, tau in zip(env._human_recent_actions[i], env._human_recent_tau[i])
                     if int(action) >= 0
                 ]
-                logits, _value, _rating, _clamped = self.human.score(
+                score_args = dict(
                     board_planes=obs[i, :8],
                     opponent_board_planes=obs[i, 8:16],
                     opponent_state_age_frames=0,
@@ -720,9 +726,28 @@ class _EntryPolicy:
                     candidate_mask=packed.mask,
                     rating=self.human_rating,
                 )
-                slot = self.human.choose(
-                    logits, packed.mask, temperature=self.human_temperature
-                )
+                if self.human_v3:
+                    speed_ups = min(
+                        _SPEEDUPS_MAX,
+                        max(0, self.runner.level - 20) + int(ep_decisions[i]) // 10,
+                    )
+                    details = self.human.score(
+                        **score_args,
+                        speed=self.runner.speed_setting,
+                        speed_ups=speed_ups,
+                    )
+                    slot, _strength = self.human.choose_strength(
+                        details["competitive_score"],
+                        details["human_logits"],
+                        packed.mask,
+                        rating=float(details["resolved_rating"]),
+                        temperature=self.human_temperature,
+                    )
+                else:
+                    logits, _value, _rating, _clamped = self.human.score(**score_args)
+                    slot = self.human.choose(
+                        logits, packed.mask, temperature=self.human_temperature
+                    )
                 acts[k] = int(packed.actions[slot])
             return acts
         acts = np.full(len(idxs), -1, dtype=np.int32)
@@ -859,9 +884,7 @@ def render_report(store: TournamentStore, name: str) -> str:
     if games:
         ratings, ses = elo_mle(len(names), games)
         order = np.argsort(-ratings)
-        lines.append(
-            f"  {'name'.ljust(width)}  {'elo':>8}  {'±95':>7}  {'games':>5}  W-D-L"
-        )
+        lines.append(f"  {'name'.ljust(width)}  {'elo':>8}  {'±95':>7}  {'games':>5}  W-D-L")
         for o in order:
             n = names[int(o)]
             w, d, lo = totals[n]
