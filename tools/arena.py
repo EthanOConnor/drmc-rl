@@ -185,14 +185,19 @@ def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]
         for b in agents[i + 1:]:
             n = len(store.matchup_games(a.id, b.id))
             priority = 1.0 / (1.0 + n)
-            if "candidate" in {a.status, b.status}:
-                priority *= 8.0
+            statuses = {a.status, b.status}
+            # Establish a connected comparison graph before spending heavily on
+            # repeated gates or expensive search-vs-search matches.
+            if n == 0:
+                priority += 1_000.0
+                if "provisional" in statuses:
+                    priority += 1_000.0
+            if "candidate" in statuses:
+                priority += 80.0 / (1.0 + n)
             if champion and champion.id in {a.id, b.id} and "candidate" in {a.status, b.status}:
-                priority *= 4.0
-            # Historical champions never leave the tournament: sparse old-era
-            # edges eventually outrank saturated recent matchups.
-            if "lineage" in {a.status, b.status}:
-                priority *= 1.5
+                priority += 160.0 / (1.0 + n)
+            if n and (a.mode != "plain" or b.mode != "plain"):
+                priority *= 0.15
             priority *= random.uniform(0.98, 1.02)
             scored.append((priority, a, b))
     if not scored:
@@ -233,11 +238,12 @@ def run_worker(args: argparse.Namespace) -> None:
     runner = VsMatchRunner(level=args.level, speed_setting=args.speed_setting,
                            num_pairs=args.batch, device=args.device, threads=args.threads,
                            run_seed=args.seed, state_repr=args.state_repr,
-                           replay_sample_rate=args.replay_sample_rate)
+                           replay_sample_rate=args.replay_sample_rate,
+                           max_decisions_per_side=args.max_decisions_per_side)
     serial = int(store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
     try:
         while not stopped:
-            agents = store.agents(("candidate", "champion", "lineage", "anchor"))
+            agents = store.agents(("candidate", "champion", "provisional", "lineage", "anchor"))
             if len(agents) < 2:
                 time.sleep(args.poll)
                 continue
@@ -358,6 +364,8 @@ def main() -> None:
     worker.add_argument("--beta", type=float, default=0.05)
     worker.add_argument("--max-gate-games", type=int, default=400)
     worker.add_argument("--replay-sample-rate", type=float, default=0.2)
+    worker.add_argument("--max-decisions-per-side", type=int, default=500,
+                        help="adjudicate unresolved games as draws at this placement horizon (0 disables)")
     args = parser.parse_args()
     if args.command == "register":
         store = ArenaStore(args.db)

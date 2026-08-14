@@ -222,11 +222,15 @@ class ArenaStore:
         for i, agent in enumerate(agents):
             board.append({
                 **agent.__dict__,
-                "rating": round(float(ratings[i]), 1),
-                "rating95": round(float(errors[i] * 1.96), 1),
+                "rating": round(float(ratings[i]), 1) if counts[i] else None,
+                "rating95": round(float(errors[i] * 1.96), 1) if counts[i] else None,
                 "games": counts[i],
             })
-        board.sort(key=lambda item: (-item["rating"], item["name"]))
+        board.sort(key=lambda item: (
+            item["rating"] is None,
+            -(item["rating"] if item["rating"] is not None else 0),
+            item["name"],
+        ))
         events = [dict(row) for row in self.conn.execute(
             "SELECT * FROM events ORDER BY id DESC LIMIT 30"
         )]

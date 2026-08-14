@@ -417,6 +417,7 @@ class VsMatchRunner:
         run_seed: int = 0,
         state_repr: str = "bitplane_bottle_conn_mask",
         replay_sample_rate: float = 0.0,
+        max_decisions_per_side: int = 500,
     ) -> None:
         import torch
 
@@ -431,6 +432,7 @@ class VsMatchRunner:
         self.num_pairs = int(num_pairs)
         self.run_seed = int(run_seed)
         self.replay_sample_rate = min(max(float(replay_sample_rate), 0.0), 1.0)
+        self.max_decisions_per_side = max(0, int(max_decisions_per_side))
         self._assigned: List[Optional[GameSpec]] = [None] * self.num_pairs
         self.env = DrMarioVsPoolVecEnv(
             num_pairs=self.num_pairs,
@@ -525,8 +527,27 @@ class VsMatchRunner:
 
             for pair_i in range(self.num_pairs):
                 i0 = pair_i * 2
-                if not (term[i0] or trunc[i0] or term[i0 + 1] or trunc[i0 + 1]):
+                ended = bool(term[i0] or trunc[i0] or term[i0 + 1] or trunc[i0 + 1])
+                timed_out = bool(
+                    self.max_decisions_per_side
+                    and max(ep_decisions[i0], ep_decisions[i0 + 1])
+                    >= self.max_decisions_per_side
+                )
+                if not (ended or timed_out):
                     continue
+                decision_count = int(ep_decisions[i0] + ep_decisions[i0 + 1])
+                frame_count = int(max(self.env._ep_frames[i0], self.env._ep_frames[i0 + 1]))
+                if timed_out and not ended:
+                    # Arena adjudication only: a policy pair that survives without
+                    # resolving the board has reached the match horizon. Reset this
+                    # vector lane on its next step, just like a native terminal.
+                    self.env._pending_reset[pair_i] = True
+                    for side_i in (i0, i0 + 1):
+                        self.env._ep_return[side_i] = 0.0
+                        self.env._ep_frames[side_i] = 0
+                        self.env._ep_decisions[side_i] = 0
+                        self.env._ep_pills[side_i] = 0
+                        self.env._ep_viruses_cleared[side_i] = 0
                 ep_decisions[i0] = 0
                 ep_decisions[i0 + 1] = 0
                 spec = self._assigned[pair_i]
@@ -534,18 +555,20 @@ class VsMatchRunner:
                 if spec is None:
                     continue
                 ga = i0 + spec.a_side
-                oc = str(infos[ga].get("vs/outcome", ""))
+                oc = str(infos[ga].get("vs/outcome", "")) if ended else ""
                 winner = "a" if oc == "win" else ("b" if oc == "loss" else "draw")
-                ep_a = infos[ga].get("episode", {})
-                decisions = int(infos[i0].get("episode", {}).get("decisions", 0)) + int(
-                    infos[i0 + 1].get("episode", {}).get("decisions", 0)
-                )
+                if ended:
+                    ep_a = infos[ga].get("episode", {})
+                    frame_count = int(ep_a.get("l", frame_count))
+                    decision_count = int(infos[i0].get("episode", {}).get("decisions", 0)) + int(
+                        infos[i0 + 1].get("episode", {}).get("decisions", 0)
+                    )
                 remaining -= 1
                 yield GameResult(
                     spec=spec,
                     winner=winner,
-                    match_len_sec=float(ep_a.get("l", 0)) / NES_FPS,
-                    decisions=decisions,
+                    match_len_sec=float(frame_count) / NES_FPS,
+                    decisions=decision_count,
                     replay=replays[pair_i] or None,
                 )
                 replays[pair_i] = []
