@@ -25,6 +25,26 @@ def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     assert {a["status"] for a in snap["agents"]} == {"lineage", "champion", "candidate"}
 
 
+def test_snapshot_exposes_record_and_terminal_causes(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    store.record("alpha", "beta", seed=1, side=0, winner="a",
+                 match_len_sec=60, decisions=20, terminal_reason="clear")
+    store.record("alpha", "beta", seed=2, side=1, winner="b",
+                 match_len_sec=60, decisions=20, terminal_reason="topout")
+    store.record("alpha", "beta", seed=3, side=0, winner="draw",
+                 match_len_sec=60, decisions=20, terminal_reason="horizon")
+
+    by_id = {agent["id"]: agent for agent in store.snapshot()["agents"]}
+    assert (by_id["alpha"]["wins"], by_id["alpha"]["losses"],
+            by_id["alpha"]["draws"], by_id["alpha"]["clears"],
+            by_id["alpha"]["topouts"]) == (1, 1, 1, 1, 1)
+    assert (by_id["beta"]["wins"], by_id["beta"]["losses"],
+            by_id["beta"]["draws"], by_id["beta"]["clears"],
+            by_id["beta"]["topouts"]) == (1, 1, 1, 0, 0)
+
+
 def test_promotion_demotes_champion_to_active_lineage(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "old", "champion")

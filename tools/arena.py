@@ -254,7 +254,8 @@ def run_worker(args: argparse.Namespace) -> None:
             for result in results:
                 store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
                              winner=result.winner, match_len_sec=result.match_len_sec,
-                             decisions=result.decisions, replay=result.replay)
+                             decisions=result.decisions,
+                             terminal_reason=result.terminal_reason, replay=result.replay)
                 serial += 1
             results.close()
             champion = next((x for x in store.agents(("champion",)) if x.family == a.family), None)

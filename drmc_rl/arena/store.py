@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS matches (
   winner TEXT NOT NULL,
   match_len_sec REAL,
   decisions INTEGER,
+  terminal_reason TEXT NOT NULL DEFAULT 'unknown',
   replay TEXT,
   created TEXT NOT NULL,
   UNIQUE(agent_a, agent_b, seed, side_assignment)
@@ -93,7 +94,11 @@ class ArenaStore:
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(matches)")}
         if "replay" not in columns:
             self.conn.execute("ALTER TABLE matches ADD COLUMN replay TEXT")
-            self.conn.commit()
+        if "terminal_reason" not in columns:
+            self.conn.execute(
+                "ALTER TABLE matches ADD COLUMN terminal_reason TEXT NOT NULL DEFAULT 'unknown'"
+            )
+        self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -167,13 +172,14 @@ class ArenaStore:
         )
 
     def record(self, a: str, b: str, *, seed: int, side: int, winner: str,
-               match_len_sec: float, decisions: int,
+               match_len_sec: float, decisions: int, terminal_reason: str = "unknown",
                replay: list[dict[str, Any]] | None = None) -> None:
         self.conn.execute(
             """INSERT OR IGNORE INTO matches
-               (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,replay,created)
-               VALUES(?,?,?,?,?,?,?,?,?)""",
-            (a, b, seed, side, winner, match_len_sec, decisions,
+               (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,
+                terminal_reason,replay,created)
+               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (a, b, seed, side, winner, match_len_sec, decisions, terminal_reason,
              json.dumps(replay, separators=(",", ":")) if replay else None, utc_now()),
         )
         self.conn.commit()
@@ -215,9 +221,23 @@ class ArenaStore:
             np.zeros(len(agents)), np.zeros(len(agents))
         )
         counts = [0] * len(agents)
-        for i, j, _ in games:
+        records = [{"wins": 0, "losses": 0, "draws": 0, "clears": 0, "topouts": 0}
+                   for _ in agents]
+        match_rows = list(self.conn.execute("SELECT * FROM matches ORDER BY id"))
+        for row, (i, j, score) in zip(match_rows, games, strict=True):
             counts[i] += 1
             counts[j] += 1
+            if score == 0.5:
+                records[i]["draws"] += 1
+                records[j]["draws"] += 1
+                continue
+            winner_i, loser_i = (i, j) if score == 1.0 else (j, i)
+            records[winner_i]["wins"] += 1
+            records[loser_i]["losses"] += 1
+            if row["terminal_reason"] == "clear":
+                records[winner_i]["clears"] += 1
+            elif row["terminal_reason"] == "topout":
+                records[loser_i]["topouts"] += 1
         board = []
         for i, agent in enumerate(agents):
             board.append({
@@ -225,6 +245,7 @@ class ArenaStore:
                 "rating": round(float(ratings[i]), 1) if counts[i] else None,
                 "rating95": round(float(errors[i] * 1.96), 1) if counts[i] else None,
                 "games": counts[i],
+                **records[i],
             })
         board.sort(key=lambda item: (
             item["rating"] is None,
@@ -237,7 +258,7 @@ class ArenaStore:
         for event in events:
             event["detail"] = json.loads(event["detail"])
         recent = [dict(row) for row in self.conn.execute(
-            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,created,replay IS NOT NULL AS has_replay FROM matches ORDER BY id DESC LIMIT 50"
+            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,replay IS NOT NULL AS has_replay FROM matches ORDER BY id DESC LIMIT 50"
         )]
         training = self._training_snapshot()
         return {

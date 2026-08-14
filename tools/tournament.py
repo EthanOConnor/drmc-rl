@@ -171,6 +171,7 @@ class GameResult:
     winner: str  # 'a' | 'b' | 'draw'
     match_len_sec: float
     decisions: int
+    terminal_reason: str = "unknown"  # clear | topout | horizon | simultaneous | unknown
     replay: Optional[List[Dict[str, Any]]] = None
 
 
@@ -555,20 +556,32 @@ class VsMatchRunner:
                 if spec is None:
                     continue
                 ga = i0 + spec.a_side
+                gb = i0 + (1 - spec.a_side)
                 oc = str(infos[ga].get("vs/outcome", "")) if ended else ""
                 winner = "a" if oc == "win" else ("b" if oc == "loss" else "draw")
+                terminal_reason = "horizon" if timed_out and not ended else "simultaneous"
                 if ended:
                     ep_a = infos[ga].get("episode", {})
                     frame_count = int(ep_a.get("l", frame_count))
                     decision_count = int(infos[i0].get("episode", {}).get("decisions", 0)) + int(
                         infos[i0 + 1].get("episode", {}).get("decisions", 0)
                     )
+                    if winner != "draw":
+                        winner_i = ga if winner == "a" else gb
+                        loser_i = gb if winner == "a" else ga
+                        if bool(infos[winner_i].get("drm", {}).get("cleared", False)):
+                            terminal_reason = "clear"
+                        elif bool(infos[loser_i].get("drm", {}).get("top_out", False)):
+                            terminal_reason = "topout"
+                        else:
+                            terminal_reason = "unknown"
                 remaining -= 1
                 yield GameResult(
                     spec=spec,
                     winner=winner,
                     match_len_sec=float(frame_count) / NES_FPS,
                     decisions=decision_count,
+                    terminal_reason=terminal_reason,
                     replay=replays[pair_i] or None,
                 )
                 replays[pair_i] = []
