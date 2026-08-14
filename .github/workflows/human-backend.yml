@@ -26,6 +26,14 @@ jobs:
       - uses: astral-sh/setup-uv@v7
 
       - name: Install packaging environment
+        run: uv sync --group package
+
+      - name: Install CPU-only PyTorch (Linux)
+        if: runner.os == 'Linux'
+        run: uv pip install 'torch>=2.13,<2.14' --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install PyTorch
+        if: runner.os != 'Linux'
         run: uv sync --group package --extra rl
 
       - name: Fetch published human policy
@@ -34,7 +42,7 @@ jobs:
         run: gh release download human-policy-v2 --pattern human_policy_v2.pt.gz --dir model
 
       - name: Build standalone backend
-        run: uv run --group package --extra rl python -m tools.package_human_backend --checkpoint model/human_policy_v2.pt.gz
+        run: uv run --no-sync python -m tools.package_human_backend --checkpoint model/human_policy_v2.pt.gz
 
       - name: Archive backend
         if: runner.os != 'Windows'
