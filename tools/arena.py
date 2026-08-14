@@ -129,41 +129,21 @@ def run_telemetry(args: argparse.Namespace) -> None:
     remote = (
         f"cd {args.remote_repo} && "
         "find runs -name metrics.jsonl.gz -mmin -15 -printf '%T@ %p\\n' | sort -n | "
-        "while read -r stamp path; do printf '@@RUN %s\\n' \"$path\"; "
-        "gzip -cd \"$path\" 2>/dev/null; done"
+        "while read -r stamp path; do printf '@@JSON %s\\n' \"$path\"; "
+        "gzip -cd \"$path\" 2>/dev/null; done; "
+        "find runs/human_policy -name '*_train.log' -mmin -15 -print 2>/dev/null | "
+        "while read -r path; do printf '@@AFTERSTATE %s\\n' \"$path\"; "
+        "tail -400 \"$path\"; done"
     )
     while not stopped:
         result = subprocess.run(
             ["ssh", args.ssh, remote], capture_output=True, text=True, timeout=args.timeout,
             check=False,
         )
-        lines = result.stdout.splitlines()
+        tasks = parse_telemetry(result.stdout)
         # A live gzip stream legitimately exits nonzero because its writer has
         # not emitted the final trailer yet; every complete JSONL row is valid.
-        if lines:
-            tasks: list[dict[str, Any]] = []
-            task: dict[str, Any] | None = None
-            for line in lines:
-                if line.startswith("@@RUN "):
-                    if task is not None:
-                        tasks.append(task)
-                    task = {"run": line[6:].removeprefix("runs/"), "latest": {}, "history": {}}
-                    continue
-                if task is None:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("type") != "scalar":
-                    continue
-                name = str(row["name"])
-                task["latest"][name] = row["value"]
-                if name in {"perf/sps", "perf/dps", "train/return_mean",
-                            "search_distill/searched_fraction_actual"}:
-                    task["history"].setdefault(name, []).append([row["step"], row["value"]])
-            if task is not None:
-                tasks.append(task)
+        if tasks:
             for item in tasks:
                 item["history"] = {
                     name: points[-60:] for name, points in item["history"].items()
@@ -191,6 +171,96 @@ def run_telemetry(args: argparse.Namespace) -> None:
         if args.once:
             break
         time.sleep(args.poll)
+
+
+_AFTERSTATE_PROGRESS = re.compile(
+    r"epoch=(?P<epoch>\d+) step=(?P<step>\d+) decisions/s=(?P<dps>[\d,]+) "
+    r"loss=(?P<loss>[\d.eE+-]+)(?P<parts>.*)"
+)
+_SCALAR_PART = re.compile(r"(?P<name>[a-z_]+)=(?P<value>[\d.eE+-]+)")
+_VALIDATION_SCALAR = re.compile(
+    r'"(?P<name>validation_(?:objective|top1|outcome_brier|mean_regret|rows))"\s*:\s*'
+    r"(?P<value>[\d.eE+-]+)"
+)
+
+
+def parse_telemetry(text: str) -> list[dict[str, Any]]:
+    """Parse both standard scalar streams and the live V3 corpus trainer log."""
+    tasks: list[dict[str, Any]] = []
+    kind: str | None = None
+    task: dict[str, Any] | None = None
+    afterstate_lines: list[str] = []
+
+    def finish() -> None:
+        nonlocal task, afterstate_lines
+        if task is None:
+            return
+        if kind == "afterstate":
+            _parse_afterstate_lines(task, afterstate_lines)
+        task["history"] = {
+            name: points[-60:] for name, points in task["history"].items()
+        }
+        if task["latest"]:
+            tasks.append(task)
+        task = None
+        afterstate_lines = []
+
+    for line in text.splitlines():
+        if line.startswith("@@JSON ") or line.startswith("@@RUN "):
+            finish()
+            prefix = "@@JSON " if line.startswith("@@JSON ") else "@@RUN "
+            kind = "json"
+            task = {"run": line[len(prefix):].removeprefix("runs/"), "latest": {}, "history": {}}
+            continue
+        if line.startswith("@@AFTERSTATE "):
+            finish()
+            kind = "afterstate"
+            task = {"run": line[13:].removeprefix("runs/"), "latest": {}, "history": {}}
+            continue
+        if task is None:
+            continue
+        if kind == "afterstate":
+            afterstate_lines.append(line)
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if row.get("type") != "scalar":
+            continue
+        name = str(row["name"])
+        task["latest"][name] = row["value"]
+        if name in {"perf/sps", "perf/dps", "train/return_mean",
+                    "search_distill/searched_fraction_actual"}:
+            task["history"].setdefault(name, []).append([row["step"], row["value"]])
+    finish()
+    return tasks
+
+
+def _parse_afterstate_lines(task: dict[str, Any], lines: list[str]) -> None:
+    latest = task["latest"]
+    history = task["history"]
+    for line in lines:
+        match = _AFTERSTATE_PROGRESS.search(line)
+        if match is None:
+            continue
+        epoch = int(match["epoch"])
+        step = int(match["step"])
+        dps = float(match["dps"].replace(",", ""))
+        latest.update({
+            "train/epoch": epoch,
+            "train/step": step,
+            "perf/dps": dps,
+            "train/loss": float(match["loss"]),
+        })
+        history.setdefault("perf/dps", []).append([step, dps])
+        history.setdefault("train/loss", []).append([step, float(match["loss"])])
+        for part in _SCALAR_PART.finditer(match["parts"]):
+            latest[f"train/{part['name']}"] = float(part["value"])
+    joined = "\n".join(lines)
+    for match in _VALIDATION_SCALAR.finditer(joined):
+        name = match["name"].removeprefix("validation_")
+        latest[f"validation/{name}"] = float(match["value"])
 
 
 def utc_timestamp() -> str:

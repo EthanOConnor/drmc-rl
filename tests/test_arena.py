@@ -3,7 +3,7 @@ import gzip
 import json
 
 from drmc_rl.arena.store import ArenaStore
-from tools.arena import discover_once, maybe_promote, pair_priority
+from tools.arena import discover_once, maybe_promote, pair_priority, parse_telemetry
 
 
 def add(store: ArenaStore, agent_id: str, status: str, generation: int = 0) -> None:
@@ -111,3 +111,29 @@ def test_replay_and_training_metrics_feed_dashboard(tmp_path: Path) -> None:
     assert snap["recent"][0]["has_replay"] == 1
     assert store.replay(snap["recent"][0]["id"])["replay"] == frames
     assert snap["training"]["latest"]["perf/sps"] == 123456
+
+
+def test_telemetry_parses_live_afterstate_training_and_validation() -> None:
+    text = """@@AFTERSTATE runs/human_policy/human_afterstate_v3_train.log
+schema=drmc-human-afterstate-v3 parameters=10,897,863 shards=48 bf16=True
+epoch=1 step=100 decisions/s=2,586 loss=3.3554 style=2.6901 outcome=0.5450
+epoch=1 step=200 decisions/s=2,666 loss=3.0865 style=2.4608 outcome=0.5871
+{
+  "epoch": 1,
+  "metrics": {
+    "validation_objective": 2.2,
+    "validation_top1": 0.42,
+    "validation_outcome_brier": 0.19,
+    "validation_mean_regret": 0.31
+  }
+}
+"""
+    tasks = parse_telemetry(text)
+    assert len(tasks) == 1
+    latest = tasks[0]["latest"]
+    assert latest["train/epoch"] == 1
+    assert latest["train/step"] == 200
+    assert latest["perf/dps"] == 2666
+    assert latest["train/style"] == 2.4608
+    assert latest["validation/top1"] == 0.42
+    assert tasks[0]["history"]["perf/dps"] == [[100, 2586.0], [200, 2666.0]]
