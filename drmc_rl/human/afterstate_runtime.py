@@ -184,6 +184,16 @@ class AfterstatePolicyRuntime:
         probability /= probability.sum()
         return int(self.rng.choice(valid, p=probability))
 
+    @staticmethod
+    def choose_quality(competitive_scores: np.ndarray, candidate_mask: np.ndarray) -> int:
+        """Choose the rating-independent competitive head's best candidate."""
+
+        valid = np.flatnonzero(np.asarray(candidate_mask, dtype=np.bool_))
+        if valid.size == 0:
+            raise ValueError("cannot choose without a valid candidate")
+        scores = np.asarray(competitive_scores, dtype=np.float64)[valid]
+        return int(valid[int(np.argmax(scores))])
+
     def timing_prediction(
         self,
         *,

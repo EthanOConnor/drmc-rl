@@ -110,6 +110,15 @@
       "params": {"rating": 1900, "temperature": 0.0, "strength_control": "style", "device": "mps", "seed": 302},
       "status": "candidate",
       "metadata": {"era": "exact-afterstate deterministic decode", "strength_claim": "none"}
+    },
+    {
+      "id": "human-v3-e1-quality", "name": "V3 Competitive · E1",
+      "family": "central-v3", "generation": 1,
+      "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/human_policy/v3_lineage/human_afterstate_v3_epoch01_strength.pt.gz",
+      "mode": "human",
+      "params": {"rating": 1900, "temperature": 0.0, "strength_control": "quality", "device": "mps", "seed": 303},
+      "status": "candidate",
+      "metadata": {"era": "rating-independent exact-afterstate value", "strength_claim": "none"}
     }
   ]
 }

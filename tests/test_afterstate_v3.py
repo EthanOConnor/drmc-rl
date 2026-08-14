@@ -127,6 +127,7 @@ def test_v3_runtime_style_choice_does_not_use_quality() -> None:
     runtime.rng = np.random.default_rng(2)
     logits = np.asarray([-5.0, 8.0, 0.0])
     assert runtime.choose_style(logits, np.ones(3, bool), temperature=0) == 1
+    assert runtime.choose_quality(-logits, np.ones(3, bool)) == 0
 
 
 def test_sparse_afterstates_round_trip_exactly() -> None:

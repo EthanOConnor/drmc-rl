@@ -641,13 +641,14 @@ class _EntryPolicy:
             self.human_opponent_rating = float(params.get("opponent_rating", self.human_rating))
             self.human_temperature = float(params.get("temperature", 1.0))
             self.human_strength_control = str(params.get("strength_control", "regret")).lower()
-            if self.human_strength_control not in {"regret", "style"}:
+            if self.human_strength_control not in {"regret", "style", "quality"}:
                 raise SystemExit(
-                    f"entry '{entry.get('name')}': strength_control must be regret or style"
+                    f"entry '{entry.get('name')}': strength_control must be regret, style, or quality"
                 )
-            if self.human_strength_control == "style" and not self.human_v3:
+            if self.human_strength_control in {"style", "quality"} and not self.human_v3:
                 raise SystemExit(
-                    f"entry '{entry.get('name')}': pure style control requires a V3 checkpoint"
+                    f"entry '{entry.get('name')}': {self.human_strength_control} control "
+                    "requires a V3 checkpoint"
                 )
             return
         if self.mask_opponent:
@@ -745,7 +746,11 @@ class _EntryPolicy:
                         speed=self.runner.speed_setting,
                         speed_ups=speed_ups,
                     )
-                    if self.human_strength_control == "style":
+                    if self.human_strength_control == "quality":
+                        slot = self.human.choose_quality(
+                            details["competitive_score"], packed.mask
+                        )
+                    elif self.human_strength_control == "style":
                         slot = self.human.choose_style(
                             details["human_logits"],
                             packed.mask,
