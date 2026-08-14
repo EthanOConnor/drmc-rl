@@ -137,7 +137,9 @@ def run_telemetry(args: argparse.Namespace) -> None:
             check=False,
         )
         lines = result.stdout.splitlines()
-        if result.returncode == 0 and lines:
+        # A live gzip stream legitimately exits nonzero because its writer has
+        # not emitted the final trailer yet; every complete JSONL row is valid.
+        if lines:
             run = lines[0]
             latest: dict[str, Any] = {}
             history: dict[str, list[list[float]]] = {}
