@@ -73,7 +73,10 @@ def test_coach_keeps_human_norm_and_competitive_quality_separate() -> None:
     assert result["alternatives"][0]["human_rank"] == 1
     assert result["chosen"]["human_rank"] == 2
     assert result["chosen"]["competitive_rank"] == 3
-    assert result["interpretation"]["human_probability"] != result["interpretation"]["competitive_score"]
+    assert (
+        result["interpretation"]["human_probability"]
+        != result["interpretation"]["competitive_score"]
+    )
 
 
 def test_semantic_board_round_trip_input_and_search_blend() -> None:
@@ -307,6 +310,44 @@ def _checkpoint(path) -> None:
     )
 
 
+def _afterstate_checkpoint(path) -> None:
+    from drmc_rl.human.afterstate_model import (
+        HUMAN_AFTERSTATE_SCHEMA,
+        afterstate_policy_config,
+        build_afterstate_policy,
+    )
+    from drmc_rl.human.conditioning import HumanSkillCondition
+    from drmc_rl.human.model import POLICY_CONDITION_DIM, build_timing_model
+    from drmc_rl.human.strength import RegretCalibration
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
+
+    condition = HumanSkillCondition.fit(np.asarray([800.0, 1500.0, 2400.0]))
+    calibration = RegretCalibration(
+        rating_edges=np.asarray([800.0, 1300.0, 1900.0, 2400.0]),
+        median_regret=np.asarray([1.0, 0.5, 0.1]),
+        log_regret_std=np.asarray([0.5, 0.4, 0.3]),
+        counts=np.asarray([100, 100, 100]),
+    )
+    cfg = afterstate_policy_config(capacity="small")
+    model = build_afterstate_policy(cfg, condition_dim=POLICY_CONDITION_DIM)
+    timing = build_timing_model()
+    save_checkpoint(
+        {
+            "schema": HUMAN_AFTERSTATE_SCHEMA,
+            "cfg": cfg,
+            "state_dict": model.state_dict(),
+            "timing_state_dict": timing.state_dict(),
+            "human_meta": {
+                "skill_condition": condition.to_dict(),
+                "regret_calibration": calibration.to_dict(),
+                "source_dataset": "fixture",
+                "parameters": sum(parameter.numel() for parameter in model.parameters()),
+            },
+        },
+        path,
+    )
+
+
 def test_opponent_pool_loads_fixed_rating_human_checkpoint(tmp_path) -> None:
     from drmc_rl.training.envs.vs_opponents import OpponentPool
 
@@ -427,3 +468,46 @@ def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None
     assert coach["result"]["search"] is not None
     assert "competitive_rank" in coach["result"]["coach"]["chosen"]
     backend.close()
+
+
+@pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
+def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -> None:
+    from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
+
+    checkpoint = tmp_path / "human-v3.pt.gz"
+    _afterstate_checkpoint(checkpoint)
+    backend = HumanBackend(str(checkpoint), seed=3)
+    try:
+        hello = backend.handle({"schema": PROTOCOL_SCHEMA, "type": "hello"})
+        assert hello["capabilities"]["model"]["schema"] == "drmc-human-afterstate-v3"
+        assert hello["capabilities"]["search"]["exact_afterstate"] is True
+        planes = np.zeros((8, 16, 8), dtype=np.float32)
+        planes[0, 15, 0] = 1.0
+        planes[3, 15, 0] = 1.0
+        response = backend.handle(
+            {
+                "schema": PROTOCOL_SCHEMA,
+                "type": "decide",
+                "request_id": 1,
+                "frame_id": 10,
+                "deadline_ms": 10_000,
+                "target_rating": 1600,
+                "temperature": 0,
+                "state": {
+                    "board_planes": planes.tolist(),
+                    "opponent_board_planes": np.zeros_like(planes).tolist(),
+                    "pill": [0, 1],
+                    "preview": [2, 0],
+                    "speed": 2,
+                    "speed_ups": 0,
+                    "falling": {"x": 3, "y": 0, "rotation": 0, "frame_parity": 0},
+                },
+            }
+        )
+        assert response["type"] == "result"
+        result = response["result"]
+        assert result["search"]["stage"] == "exact-afterstate"
+        assert len(result["competitive_scores"]) == result["candidate_count"]
+        assert result["strength"]["chosen_regret"] >= 0
+    finally:
+        backend.close()

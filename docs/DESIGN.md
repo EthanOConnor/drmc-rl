@@ -50,9 +50,11 @@ Training either exposes both sides for self-play or one learner side against a
 frozen opponent pool. Optional CUDA planning batches parked decision states
 before reinjecting exact costs into the native pool.
 
-Pure self-play previously learned ceiling attrition instead of clearing. The
-current design therefore uses human-policy opponents, real clear-endgame start
-states, a small clear-win bonus, and anchored tournament gates.
+Pure reward-shaped self-play learned ceiling attrition rather than decisive
+clearing and attack. The current path begins with exact human-corpus
+afterstates, improves them with search, then fine-tunes on actual match outcomes
+against human anchors and frozen lineage. Start banks remain curriculum tools,
+not substitutes for full-game evaluation.
 
 ### Search and live play
 
@@ -70,10 +72,13 @@ until independently audited through script replay or an emulator.
 
 ## Model
 
-The production policy encodes bottle planes with a CNN, embeds current and
-preview pills, and scores only packed feasible candidates. Candidate features
-include pose, cost-to-lock, local occupancy, gathered board features, and
-optional scalar context. The value head shares the board context.
+The V3 policy encodes the root and opponent bottles once. Each legal action is
+represented by the exact sparse tile changes produced after lock, clear, and
+cascade, plus pose, movement cost, current pill, and preview. Cross-candidate
+attention compares alternatives directly. Rating-independent heads predict
+competitive quality, outcome, clear, top-out, virus progress, and attack;
+rating/history condition only the human-style head. A separate empirical
+regret model controls human strength.
 
 ## Independent verification boundary
 

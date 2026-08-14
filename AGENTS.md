@@ -1,7 +1,8 @@
 # Repository guidance
 
-- The supported trainer is placement-level SMDP PPO over `cpp-pool` or
-  `cpp-vs-pool`; do not add alternate trainer stacks without a measured need.
+- Supported learning paths are placement-level SMDP PPO over the native pools
+  and measured offline afterstate learning from `HumanCorpus`. Keep one stack
+  per objective; do not add framework-level trainer duplication.
 - Preserve the policy/planner contract: the policy selects a feasible final
   pose and the planner supplies timing or an executable script.
 - `drm_reach_bfs_full` is the planner oracle. Changes to v4 or CUDA planning

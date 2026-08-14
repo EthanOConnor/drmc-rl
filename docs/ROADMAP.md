@@ -1,14 +1,46 @@
 # Roadmap
 
-1. Validate the continuous WHR-C-conditioned human policy across rating,
-   identity, era, and opponent holdouts; integrate it into the VS league.
-2. Gate each change with anchored tournaments or SPRT: search distillation,
-   acting from search, opponent observation, then model capacity.
-3. Calibrate human-policy win rate monotonically across WHR-C, then add the
-   competitive-policy quality axis and curriculum selection to the coach.
-4. Run seedlab coverage passes and independently audit publishable record times.
-5. Expand native-versus-emulator traces around spawn, lock, cascade, garbage,
-   top-out, and clear boundaries.
+## Objective
 
-Deferred until evidence calls for them: recurrence, larger networks,
-cross-candidate attention, and opponent-aware live search.
+Build one strong Dr. Mario decision system, then derive calibrated human
+opponents and coaching from it. Tournament outcomes are real comparative
+evidence. Labels such as source rating band are hypotheses until play verifies
+them, and field-relative Elo is not Fightcade Elo until identified human games
+anchor it.
+
+## Current program
+
+1. **Exact alternatives.** For every sampled Fightcade decision, simulate every
+   reachable placement through the native engine. Store exact sparse afterstate
+   deltas and immediate clear, top-out, virus, attack, and duration targets.
+2. **Afterstate pretraining.** Encode the root and opponent bottles once, then
+   score exact candidate deltas. Jointly learn rating-independent competitive
+   value, tactical outcomes, human style, game outcome, and execution timing.
+3. **Human strength calibration.** Measure each observed human choice's regret
+   against its legal alternatives. Fit a monotone rating-to-regret distribution.
+   Requested strength changes planning reliability, mistake cost, and timing;
+   it does not merely perturb placement predictions.
+4. **Policy improvement.** Search from the afterstate value model, retain
+   improved targets, and distill them into the fast competitive head. Increase
+   depth only when strength per millisecond improves.
+5. **Outcome self-play.** Fine-tune on actual clears, attacks, top-outs, and
+   wins against human anchors plus frozen historical lineage. Search supplies
+   improvement targets; PFSP prevents narrow or cyclic promotion.
+6. **Deployment.** Professor Pills remains a thin non-blocking host. The V3
+   backend exposes exact-afterstate quality, calibrated regret, timing, health,
+   and coach explanations. Consented identified games calibrate the internal
+   ladder to real human strength.
+
+## Gates
+
+- Offline: held-out action NLL, outcome Brier score, tactical calibration,
+  rating-versus-regret monotonicity, and identity/time holdouts.
+- Full games: W/L/D, clear and top-out rates, pills and wall time per game, and
+  pairwise matrices—not Elo alone.
+- Promotion: beat the current champion and a representative frozen lineage with
+  confidence; do not remove historical entrants.
+- Strength dial: adjacent requested levels must be ordered across diverse
+  opponents and difficult-position strata. Real players provide the absolute
+  anchor.
+- Performance: report decisions/sec, candidate afterstates/sec, inference
+  latency, search nodes, and strength gained per millisecond.

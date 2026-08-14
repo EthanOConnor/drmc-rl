@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 
+from drmc_rl.human.afterstate_model import HUMAN_AFTERSTATE_SCHEMA
+from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
 from drmc_rl.human.coach import analyze_choice
 from drmc_rl.human.cadence import add_thinking_delay, hold_soft_drop_suffix
 from drmc_rl.human.model import canonicalize_same_color_action
@@ -20,6 +23,7 @@ from drmc_rl.human.search import (
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 from drmc_rl.planning.fast_reach import FrameState, HoldDir, Rotation, compute_speed_threshold
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 from tools.annotate_replay_events import POSE_TO_ACTION
 
 PROTOCOL_SCHEMA = "drmc-human-backend-v1"
@@ -124,7 +128,12 @@ class HumanBackend:
         realtime_profile: str = "auto",
     ):
         started = time.perf_counter()
-        self.runtime = HumanPolicyRuntime(checkpoint, device=device, seed=seed)
+        schema = load_checkpoint(Path(checkpoint), map_location="cpu").get("schema")
+        self.afterstate_v3 = schema == HUMAN_AFTERSTATE_SCHEMA
+        if self.afterstate_v3:
+            self.runtime = AfterstatePolicyRuntime(checkpoint, device=device, seed=seed)
+        else:
+            self.runtime = HumanPolicyRuntime(checkpoint, device=device, seed=seed)
         self.device = device
         self.seed = int(seed)
         if realtime_profile == "auto":
@@ -164,6 +173,7 @@ class HumanBackend:
             },
             "search": {
                 "available": True,
+                "exact_afterstate": self.afterstate_v3,
                 "default_for_coach": True,
                 "play_control": "search_weight >= 0; zero is pure human imitation",
                 "realtime_profile": self.realtime_profile,
@@ -244,6 +254,9 @@ class HumanBackend:
             self.search.close()
             self.search = None
         self.planner.close()
+        close_runtime = getattr(self.runtime, "close", None)
+        if close_runtime is not None:
+            close_runtime()
 
     def _value_search(self) -> HumanValueSearch:
         if self.search is None:
@@ -278,7 +291,7 @@ class HumanBackend:
         opponent_rating_sd = float(state.get("opponent_rating_sd", 0.0))
         game_phase = float(state.get("game_phase", 0.0))
         recent_decisions = state.get("recent_decisions", ())
-        logits, state_value, resolved_rating, rating_clamped = self.runtime.score(
+        score_args = dict(
             board_planes=planes,
             opponent_board_planes=opponent_planes,
             opponent_state_age_frames=int(state.get("opponent_state_age_frames", 0)),
@@ -294,17 +307,32 @@ class HumanBackend:
             candidate_mask=packed.mask,
             rating=rating,
         )
+        if self.afterstate_v3:
+            details = self.runtime.score(**score_args, speed=speed, speed_ups=speed_ups)
+            logits = details["human_logits"]
+            resolved_rating = float(details["resolved_rating"])
+            rating_clamped = bool(details["rating_clamped"])
+            state_value = float(np.max(details["outcome_logit"][packed.mask]))
+        else:
+            logits, state_value, resolved_rating, rating_clamped = self.runtime.score(**score_args)
         valid_actions = packed.actions[packed.mask]
         valid_logits = logits[packed.mask]
         search_info = None
-        comp = None
+        comp = details["competitive_score"][packed.mask] if self.afterstate_v3 else None
         search_error = None
         search_weight = max(float(request.get("search_weight", 0.0)), 0.0)
-        use_search = bool(request.get("search", request.get("type") == "coach")) or search_weight > 0
+        use_search = (
+            bool(request.get("search", request.get("type") == "coach")) or search_weight > 0
+        )
         search_deadline_ms = self.search_budget.resolve(
             remaining_ms, request.get("search_deadline_ms")
         )
-        if use_search and search_deadline_ms >= self.search_budget.minimum_ms:
+        if self.afterstate_v3:
+            search_info = {
+                "stage": "exact-afterstate",
+                "nodes_expanded": int(packed.count),
+            }
+        elif use_search and search_deadline_ms >= self.search_budget.minimum_ms:
             try:
                 search_info = self._value_search().analyze(
                     board_planes=planes,
@@ -330,17 +358,27 @@ class HumanBackend:
                 if request.get("require_search"):
                     raise
                 search_error = {"kind": type(exc).__name__, "message": str(exc)}
-        decision_logits = (
-            valid_logits
-            if comp is None or search_weight <= 0
-            else blend_human_and_search(valid_logits, comp, weight=search_weight)
-        )
-        slot = self.runtime.choose(
-            decision_logits,
-            np.ones(len(decision_logits), dtype=np.bool_),
-            temperature=temperature,
-        )
-        packed_slot = int(np.flatnonzero(packed.mask)[slot])
+        strength = None
+        if self.afterstate_v3:
+            packed_slot, strength = self.runtime.choose_strength(
+                details["competitive_score"],
+                details["human_logits"],
+                packed.mask,
+                rating=resolved_rating,
+                temperature=temperature,
+            )
+        else:
+            decision_logits = (
+                valid_logits
+                if comp is None or search_weight <= 0
+                else blend_human_and_search(valid_logits, comp, weight=search_weight)
+            )
+            slot = self.runtime.choose(
+                decision_logits,
+                np.ones(len(decision_logits), dtype=np.bool_),
+                temperature=temperature,
+            )
+            packed_slot = int(np.flatnonzero(packed.mask)[slot])
         action = int(packed.actions[packed_slot])
         if pill[0] == pill[1]:
             action = canonicalize_same_color_action(action)
@@ -399,6 +437,8 @@ class HumanBackend:
             "candidate_count": int(packed.count),
             "human_logits": valid_logits.tolist(),
             "candidate_actions": valid_actions.tolist(),
+            "competitive_scores": None if comp is None else comp.tolist(),
+            "strength": strength,
             "search": None
             if search_info is None
             else {
@@ -452,7 +492,9 @@ class HumanBackend:
                 return response
             if kind == "cancel":
                 self.cancelled.add(int(request["cancel_request_id"]))
-                response.update(type="cancelled", cancel_request_id=int(request["cancel_request_id"]))
+                response.update(
+                    type="cancelled", cancel_request_id=int(request["cancel_request_id"])
+                )
                 return response
             if kind not in {"decide", "coach"}:
                 raise ValueError(f"unsupported request type {kind!r}")

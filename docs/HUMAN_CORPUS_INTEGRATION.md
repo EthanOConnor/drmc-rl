@@ -185,29 +185,38 @@ extrapolation (grade mode flags them); self-play metric distributions are
 not identical to human-vs-human ones, so stage-over-stage comparisons are
 more meaningful than absolute levels. Refit as the corpus grows.
 
-## Continuous human opponent
+## Human policy and strength
 
-`tools/train_human_policy.py` supersedes the old independent rating-bucket
-trainers. It reads only `HumanCorpus`, joins current WHR-C trajectories, and
-trains one rating-conditioned candidate policy with an outcome-supervised value
-head plus a separate execution-slack model. The policy can represent any observed human strength without abrupt
-bucket boundaries or four independently drifting networks. Rating-density
-weights retain tail behavior; replay splits plus a complete player fold are
-held out. Version 2 also conditions on both ratings and uncertainty, match
-phase, opponent snapshot age, and four preceding semantic placements. Month
-shards are prefetched one at a time so all 54.8 million decisions remain
-trainable within tf3090's 16 GB system memory.
+V2 is a retained historical baseline: continuous rating-conditioned behavior
+cloning with outcome and timing heads. Its requested rating changes imitation
+logits, so it must not be treated as a reliable strength dial. Similar-strength
+placements are common across human ratings; decisive separation is concentrated
+in difficult and rare states.
 
-Unlike v1, the v2 board trunk encodes all sixteen own/opponent semantic board
-planes. Merely placing opponent planes in the 20-channel observation is not
-sufficient: the candidate network's `board_channels` must be sixteen or those
-planes never enter either its global or local candidate representation.
+V3 separates quality from human behavior:
 
-`tools/human_backend.py` serves that checkpoint as the out-of-process human
-player and backend-only coach. Professor Pills is the thin, non-blocking host.
-It finds `runs/human_policy/human_policy_v2.pt.gz` automatically in a
-development checkout, or accepts `--checkpoint`/`DRMC_HUMAN_MODEL` explicitly.
-For distribution, build the native, self-contained sidecar directory with:
+- `tools/annotate_afterstates.py` runs every sampled legal alternative through
+  the native engine. Exact afterstates are stored as sparse cell deltas from the
+  root (median two changed cells) with immediate tactical targets.
+- `tools/train_afterstate_policy.py` encodes root/opponent bottles once and
+  scores the exact candidate deltas. Competitive and tactical heads never see
+  requested rating. A separate style head sees rating, uncertainty, phase, and
+  recent decisions.
+- After training, each observed choice's competitive regret is measured. A
+  weighted monotone calibration maps WHR-C to a regret distribution. Runtime
+  strength changes tolerated regret while timing remains an independent model.
+
+On tf3090:
+
+```bash
+.venv/bin/python -m tools.annotate_afterstates --num-envs 4096
+.venv/bin/python -m tools.train_afterstate_policy \
+  --device cuda --capacity base --batch-size 512 --epochs 6
+```
+
+`tools/human_backend.py` serves V2 historical checkpoints and V3 checkpoints
+through the same host-neutral protocol. Professor Pills remains the thin,
+non-blocking host. For distribution, build the native sidecar with:
 
 ```bash
 uv run --group package --extra rl python -m tools.package_human_backend \
@@ -219,12 +228,9 @@ model, Python runtime, PyTorch, and native reachability library. Keep the
 directory intact when copying it beside a host application.
 The complete semantic contract is in `HUMAN_BACKEND_PROTOCOL.md`.
 
-The coach and optional sparring enhancement reuse the production native
-depth-2 search. Search retains the human prior, freezes semantic opponent and
-history context through leaf simulation, and evaluates branches with the
-outcome head. Coaching reports behavioral typicality and competitive value as
-separate axes. Sparring uses an explicit nonnegative search weight: zero is
-pure imitation; calibrated positive weights strengthen plausible human moves.
+V3 coaching reports human typicality and competitive regret separately. Its
+base decision evaluates every exact one-placement afterstate; deeper native
+search is promoted only after tournaments show strength gained per millisecond.
 
 Human checkpoints are also first-class PFSP pool entries. Training must use
 the opponent-aware representation so the same two-board model is exercised:
@@ -243,10 +249,8 @@ env:
         rating: 1900
 ```
 
-Each entry shares checkpoint weights but gets its own continuous rating and
-PFSP record. The VS environment supplies live opponent planes, match phase,
-and the human side's four preceding placements. Human entries default to
-protected so learner snapshots cannot evict the fixed calibration anchors.
+Each entry gets its own requested rating and PFSP record. Human entries remain
+protected so learner snapshots cannot evict calibration anchors.
 
 Do not equate requested WHR with realized native-engine strength. A fixed-anchor
 probe reports score rate and Wilson intervals, but its logistic-Elo equivalent
