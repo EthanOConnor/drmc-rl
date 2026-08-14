@@ -16,6 +16,7 @@ import os
 import random
 import signal
 import re
+import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -111,6 +112,65 @@ def run_registrar(args: argparse.Namespace) -> None:
             time.sleep(args.poll)
     finally:
         store.close()
+
+
+def run_telemetry(args: argparse.Namespace) -> None:
+    """Mirror the remote trainer's scalar stream without moving run artifacts."""
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    stopped = False
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    remote = (
+        f"cd {args.remote_repo} && "
+        "latest=$(find runs -name metrics.jsonl.gz -printf '%T@ %p\\n' | sort -n | tail -1 | cut -d' ' -f2-); "
+        "printf '%s\\n' \"$latest\"; gzip -cd \"$latest\" 2>/dev/null"
+    )
+    while not stopped:
+        result = subprocess.run(
+            ["ssh", args.ssh, remote], capture_output=True, text=True, timeout=args.timeout,
+            check=False,
+        )
+        lines = result.stdout.splitlines()
+        if result.returncode == 0 and lines:
+            run = lines[0]
+            latest: dict[str, Any] = {}
+            history: dict[str, list[list[float]]] = {}
+            for line in lines[1:]:
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("type") != "scalar":
+                    continue
+                name = str(row["name"])
+                latest[name] = row["value"]
+                if name in {"perf/sps", "perf/dps", "train/return_mean",
+                            "search_distill/searched_fraction_actual"}:
+                    history.setdefault(name, []).append([row["step"], row["value"]])
+            payload = {
+                "run": run.removeprefix("runs/"), "updated": utc_timestamp(),
+                "latest": latest,
+                "history": {name: points[-60:] for name, points in history.items()},
+                "source": args.ssh,
+            }
+            temporary = output.with_suffix(output.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, separators=(",", ":")))
+            temporary.replace(output)
+        if args.once:
+            break
+        time.sleep(args.poll)
+
+
+def utc_timestamp() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]:
@@ -271,6 +331,13 @@ def main() -> None:
     discover.add_argument("config", type=Path)
     discover.add_argument("--poll", type=float, default=60)
     discover.add_argument("--once", action="store_true")
+    telemetry = sub.add_parser("telemetry")
+    telemetry.add_argument("--ssh", default="tf3090")
+    telemetry.add_argument("--remote-repo", default="/home/ethan/drmario/drmc-rl")
+    telemetry.add_argument("--output", default=str(DEFAULT_DB.parent / "training.json"))
+    telemetry.add_argument("--poll", type=float, default=10)
+    telemetry.add_argument("--timeout", type=float, default=20)
+    telemetry.add_argument("--once", action="store_true")
     web = sub.add_parser("serve")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8097)
@@ -298,6 +365,8 @@ def main() -> None:
             store.close()
     elif args.command == "discover":
         run_registrar(args)
+    elif args.command == "telemetry":
+        run_telemetry(args)
     elif args.command == "serve":
         serve(args)
     else:

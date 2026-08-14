@@ -253,6 +253,12 @@ class ArenaStore:
         return {**dict(row), "replay": json.loads(row["replay"])}
 
     def _training_snapshot(self) -> dict[str, Any]:
+        telemetry = self.path.parent / "training.json"
+        if telemetry.is_file():
+            try:
+                return json.loads(telemetry.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
         runs_root = self.path.parent.parent
         streams = sorted(runs_root.glob("*/**/metrics.jsonl.gz"),
                          key=lambda path: path.stat().st_mtime, reverse=True)
