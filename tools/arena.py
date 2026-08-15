@@ -233,7 +233,10 @@ def run_telemetry(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, stop)
     remote = (
         f"cd {args.remote_repo} && "
-        "find runs -name metrics.jsonl.gz -mmin -15 -printf '%T@ %p\\n' | sort -n | "
+        # PPO emits every few seconds.  A short freshness window prevents a
+        # completed smoke run (or a stopped service) from being summed into
+        # the dashboard's live throughput for another quarter hour.
+        "find runs -name metrics.jsonl.gz -mmin -3 -printf '%T@ %p\\n' | sort -n | "
         "while read -r stamp path; do printf '@@JSON %s\\n' \"$path\"; "
         "gzip -cd \"$path\" 2>/dev/null; done; "
         "find runs/human_policy -name '*_train.log' -mmin -15 -print 2>/dev/null | "
