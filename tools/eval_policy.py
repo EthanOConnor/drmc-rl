@@ -43,10 +43,9 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     aux_dim = int(_AUX_DIM_BY_SPEC.get(str(g("aux_spec", "none")).strip().lower(), 0))
     if str(g("policy_type", "candidate")).lower() != "candidate":
         raise SystemExit("eval_policy currently supports policy_type=candidate checkpoints")
-    net = CandidatePlacementPolicyNet(
+    common = dict(
         in_channels=int(in_channels),
         board_channels=int(g("candidate_board_channels", 8)),
-        board_encoder=str(g("candidate_board_encoder", "cnn")),
         encoder_blocks=int(g("encoder_blocks", 0)),
         d_model=int(g("candidate_d_model", 128)),
         pill_embed_dim=int(g("pill_embed_dim", 128)),
@@ -56,12 +55,30 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
         pos_embed_dim=int(g("candidate_pos_embed_dim", 32)),
         cost_embed_dim=int(g("candidate_cost_embed_dim", 32)),
         cand_hidden_dim=int(g("candidate_hidden_dim", 256)),
-        transformer_layers=int(g("candidate_transformer_layers", 4)),
         cross_layers=int(g("candidate_cross_layers", 0)),
         transformer_heads=int(g("candidate_transformer_heads", 4)),
         transformer_ff_mult=int(g("candidate_transformer_ff_mult", 4)),
         patch_kernel=int(g("candidate_patch_kernel", 9)),
-    ).to(device)
+    )
+    architecture = str(g("candidate_architecture", "g4")).strip().lower()
+    if architecture == "g5":
+        from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
+
+        net = G5CandidatePlacementPolicyNet(
+            **common,
+            interaction_layers=int(g("candidate_interaction_layers", 2)),
+            value_atoms=int(g("candidate_value_atoms", 51)),
+            conditioned_trunk=bool(g("candidate_conditioned_trunk", True)),
+            opponent_features=bool(g("candidate_opponent_features", True)),
+        ).to(device)
+    elif architecture == "g4":
+        net = CandidatePlacementPolicyNet(
+            **common,
+            board_encoder=str(g("candidate_board_encoder", "cnn")),
+            transformer_layers=int(g("candidate_transformer_layers", 4)),
+        ).to(device)
+    else:
+        raise ValueError(f"unknown candidate_architecture {architecture!r}")
     net.eval()
     return net, aux_dim, int(g("candidate_max_candidates", 128))
 

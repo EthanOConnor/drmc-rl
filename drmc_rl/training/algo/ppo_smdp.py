@@ -123,6 +123,7 @@ class SMDPPPOConfig:
 
     # Candidate-scoring policy params (policy_type=candidate)
     candidate_board_encoder: str = "cnn"  # cnn|col_transformer
+    candidate_architecture: str = "g4"  # g4|g5
     candidate_board_channels: int = 0  # 0=auto: non-feasibility bottle channels
     candidate_max_candidates: int = 512
     candidate_d_model: int = 128
@@ -133,6 +134,10 @@ class SMDPPPOConfig:
     candidate_cross_layers: int = 0
     candidate_transformer_heads: int = 4
     candidate_transformer_ff_mult: int = 4
+    candidate_interaction_layers: int = 2
+    candidate_value_atoms: int = 51
+    candidate_conditioned_trunk: bool = True
+    candidate_opponent_features: bool = True
     candidate_patch_kernel: int = 3
 
     # Optional auxiliary vector inputs (derived from obs + info).
@@ -290,6 +295,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             encoder_blocks=int(ppo_cfg_dict.get("encoder_blocks", 0)),
             policy_type=str(ppo_cfg_dict.get("policy_type", "heatmap")),
             candidate_board_encoder=str(ppo_cfg_dict.get("candidate_board_encoder", "cnn")),
+            candidate_architecture=str(ppo_cfg_dict.get("candidate_architecture", "g4")),
             candidate_board_channels=int(ppo_cfg_dict.get("candidate_board_channels", 0)),
             candidate_max_candidates=int(ppo_cfg_dict.get("candidate_max_candidates", 512)),
             candidate_d_model=int(ppo_cfg_dict.get("candidate_d_model", 128)),
@@ -300,6 +306,14 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_cross_layers=int(ppo_cfg_dict.get("candidate_cross_layers", 0)),
             candidate_transformer_heads=int(ppo_cfg_dict.get("candidate_transformer_heads", 4)),
             candidate_transformer_ff_mult=int(ppo_cfg_dict.get("candidate_transformer_ff_mult", 4)),
+            candidate_interaction_layers=int(ppo_cfg_dict.get("candidate_interaction_layers", 2)),
+            candidate_value_atoms=int(ppo_cfg_dict.get("candidate_value_atoms", 51)),
+            candidate_conditioned_trunk=bool(
+                ppo_cfg_dict.get("candidate_conditioned_trunk", True)
+            ),
+            candidate_opponent_features=bool(
+                ppo_cfg_dict.get("candidate_opponent_features", True)
+            ),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
@@ -414,10 +428,10 @@ class SMDPPPOAdapter(AlgoAdapter):
                         f"got {candidate_board_channels} for state_repr={state_repr!r}."
                     )
 
-            self.net = CandidatePlacementPolicyNet(
+            architecture = self.hparams.candidate_architecture.strip().lower()
+            common = dict(
                 in_channels=int(in_channels),
                 board_channels=int(candidate_board_channels),
-                board_encoder=str(self.hparams.candidate_board_encoder),
                 encoder_blocks=self.hparams.encoder_blocks,
                 d_model=self.hparams.candidate_d_model,
                 pill_embed_dim=self.hparams.pill_embed_dim,
@@ -427,12 +441,31 @@ class SMDPPPOAdapter(AlgoAdapter):
                 pos_embed_dim=self.hparams.candidate_pos_embed_dim,
                 cost_embed_dim=self.hparams.candidate_cost_embed_dim,
                 cand_hidden_dim=self.hparams.candidate_hidden_dim,
-                transformer_layers=self.hparams.candidate_transformer_layers,
-                cross_layers=self.hparams.candidate_cross_layers,
                 transformer_heads=self.hparams.candidate_transformer_heads,
                 transformer_ff_mult=self.hparams.candidate_transformer_ff_mult,
+                cross_layers=self.hparams.candidate_cross_layers,
                 patch_kernel=self.hparams.candidate_patch_kernel,
-            ).to(self.device)
+            )
+            if architecture == "g5":
+                from drmc_rl.models.policy.candidate_policy_g5 import (
+                    G5CandidatePlacementPolicyNet,
+                )
+
+                self.net = G5CandidatePlacementPolicyNet(
+                    **common,
+                    interaction_layers=self.hparams.candidate_interaction_layers,
+                    value_atoms=self.hparams.candidate_value_atoms,
+                    conditioned_trunk=self.hparams.candidate_conditioned_trunk,
+                    opponent_features=self.hparams.candidate_opponent_features,
+                ).to(self.device)
+            elif architecture == "g4":
+                self.net = CandidatePlacementPolicyNet(
+                    **common,
+                    board_encoder=str(self.hparams.candidate_board_encoder),
+                    transformer_layers=self.hparams.candidate_transformer_layers,
+                ).to(self.device)
+            else:
+                raise ValueError(f"Unknown candidate_architecture: {architecture!r}")
         else:
             self.net = PlacementPolicyNet(
                 in_channels=in_channels,
@@ -1297,6 +1330,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                 mb_returns = returns[mb_indices]
                 mb_advantages = advantages[mb_indices]
 
+                value_aux = None
                 if self.policy_type == "candidate":
                     if (
                         cand_actions_all_t is None
@@ -1310,15 +1344,28 @@ class SMDPPPOAdapter(AlgoAdapter):
 
                     # Forward pass
                     with self._autocast("update"):
-                        logits, values = self.net(  # type: ignore[misc]
-                            mb_obs,
-                            mb_colors,
-                            mb_preview,
-                            cand_actions_t,
-                            cand_cost_t,
-                            cand_mask_t,
-                            aux=mb_aux,
-                        )
+                        if self.hparams.candidate_architecture.strip().lower() == "g5":
+                            logits, values, value_aux = self.net(  # type: ignore[misc]
+                                mb_obs,
+                                mb_colors,
+                                mb_preview,
+                                cand_actions_t,
+                                cand_cost_t,
+                                cand_mask_t,
+                                aux=mb_aux,
+                                return_aux=True,
+                            )
+                        else:
+                            logits, values = self.net(  # type: ignore[misc]
+                                mb_obs,
+                                mb_colors,
+                                mb_preview,
+                                cand_actions_t,
+                                cand_cost_t,
+                                cand_mask_t,
+                                aux=mb_aux,
+                            )
+                            value_aux = None
                     logits = logits.float()
                     values = values.float()
 
@@ -1397,7 +1444,11 @@ class SMDPPPOAdapter(AlgoAdapter):
                         sd_mask_t[mb_indices],
                         sd_value_mix,
                     )
-                if self.hparams.value_loss_type == "huber":
+                if value_aux is not None:
+                    value_loss = self.net.distributional_value_loss(  # type: ignore[attr-defined]
+                        value_aux["value_logits"], mb_value_targets
+                    )
+                elif self.hparams.value_loss_type == "huber":
                     value_loss = F.huber_loss(values.squeeze(-1), mb_value_targets)
                 else:
                     value_loss = F.mse_loss(values.squeeze(-1), mb_value_targets)
