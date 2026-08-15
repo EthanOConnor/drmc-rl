@@ -292,7 +292,9 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         lower = position.floor().long().clamp(0, self.value_atoms - 1)
         upper = position.ceil().long().clamp(0, self.value_atoms - 1)
         upper_weight = position - lower.to(position.dtype)
-        target_dist = torch.zeros_like(value_logits)
+        # Distributional projection is a loss calculation, so keep it in
+        # FP32 under mixed precision just like log_softmax below.
+        target_dist = torch.zeros_like(value_logits, dtype=torch.float32)
         target_dist.scatter_add_(1, lower.unsqueeze(1), (1.0 - upper_weight).unsqueeze(1))
         target_dist.scatter_add_(1, upper.unsqueeze(1), upper_weight.unsqueeze(1))
         return -(target_dist * F.log_softmax(value_logits.float(), dim=-1)).sum(dim=-1).mean()

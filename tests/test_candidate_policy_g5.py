@@ -81,3 +81,12 @@ def test_g5_valid_outputs_do_not_depend_on_padding_width():
 def test_g5_requires_full_vs_observation():
     with pytest.raises(ValueError, match="16 board channels"):
         _net(board_channels=8)
+
+
+def test_g5_distributional_loss_accepts_bfloat16_logits():
+    net = _net()
+    logits = torch.randn(4, 21, dtype=torch.bfloat16, requires_grad=True)
+    loss = net.distributional_value_loss(logits, torch.tensor([-1.0, -0.1, 0.4, 1.0]))
+    assert loss.dtype == torch.float32 and torch.isfinite(loss)
+    loss.backward()
+    assert logits.grad is not None and torch.isfinite(logits.grad).all()
