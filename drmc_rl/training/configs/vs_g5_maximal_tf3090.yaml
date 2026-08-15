@@ -5,7 +5,7 @@ algo: ppo_smdp
 
 train:
   total_steps: 250000000
-  checkpoint_interval: 5000000
+  checkpoint_interval: 1000000
   checkpoint_keep_last: 12
   strict_checkpoint: true
   resume_step: false
@@ -42,11 +42,13 @@ smdp_ppo:
   candidate_transformer_ff_mult: 4
   candidate_patch_kernel: 9
   candidate_cross_layers: 3
-  candidate_cross_ff_mult: 2
+  candidate_cross_ff_mult: 4
   candidate_interaction_layers: 2
   candidate_value_atoms: 51
   candidate_conditioned_trunk: true
   candidate_opponent_features: true
+  candidate_bottle_block: dense
+  candidate_compact_features: false
   aux_spec: v1_vs
   value_loss_type: huber
 

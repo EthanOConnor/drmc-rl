@@ -139,6 +139,8 @@ class SMDPPPOConfig:
     candidate_conditioned_trunk: bool = True
     candidate_opponent_features: bool = True
     candidate_cross_ff_mult: int = 2
+    candidate_bottle_block: str = "dense"
+    candidate_compact_features: bool = False
     candidate_patch_kernel: int = 3
 
     # Optional auxiliary vector inputs (derived from obs + info).
@@ -316,6 +318,10 @@ class SMDPPPOAdapter(AlgoAdapter):
                 ppo_cfg_dict.get("candidate_opponent_features", True)
             ),
             candidate_cross_ff_mult=int(ppo_cfg_dict.get("candidate_cross_ff_mult", 2)),
+            candidate_bottle_block=str(ppo_cfg_dict.get("candidate_bottle_block", "dense")),
+            candidate_compact_features=bool(
+                ppo_cfg_dict.get("candidate_compact_features", False)
+            ),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
@@ -460,6 +466,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                     conditioned_trunk=self.hparams.candidate_conditioned_trunk,
                     opponent_features=self.hparams.candidate_opponent_features,
                     cross_ff_mult=self.hparams.candidate_cross_ff_mult,
+                    bottle_block=self.hparams.candidate_bottle_block,
+                    compact_candidate_features=self.hparams.candidate_compact_features,
                 ).to(self.device)
             elif architecture == "g4":
                 self.net = CandidatePlacementPolicyNet(

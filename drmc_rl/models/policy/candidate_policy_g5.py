@@ -52,13 +52,41 @@ class _FiLMResidual(nn.Module):
         return x + self.expand(F.silu(y))
 
 
+class _FiLMDenseResidual(nn.Module):
+    """Full-capacity dense spatial block retained as the maximal variant."""
+
+    def __init__(self, channels: int, cond_dim: int) -> None:
+        super().__init__()
+        self.norm1 = nn.GroupNorm(_groups(channels), channels)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.norm2 = nn.GroupNorm(_groups(channels), channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.film = nn.Linear(cond_dim, 4 * channels)
+
+    def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        scale1, shift1, scale2, shift2 = self.film(cond).chunk(4, dim=-1)
+        y = self.norm1(x)
+        y = y * (1.0 + scale1[:, :, None, None]) + shift1[:, :, None, None]
+        y = self.conv1(F.silu(y))
+        y = self.norm2(y)
+        y = y * (1.0 + scale2[:, :, None, None]) + shift2[:, :, None, None]
+        return x + self.conv2(F.silu(y))
+
+
 class _SharedBottleEncoder(nn.Module):
-    def __init__(self, in_channels: int, d_model: int, blocks: int, cond_dim: int) -> None:
+    def __init__(
+        self, in_channels: int, d_model: int, blocks: int, cond_dim: int, block_type: str
+    ) -> None:
         super().__init__()
         self.stem = nn.Conv2d(in_channels + 2, d_model, 3, padding=1)
-        self.blocks = nn.ModuleList(
-            [_FiLMResidual(d_model, cond_dim) for _ in range(int(blocks))]
-        )
+        block_name = block_type.strip().lower()
+        if block_name == "dense":
+            block_cls = _FiLMDenseResidual
+        elif block_name == "bottleneck":
+            block_cls = _FiLMResidual
+        else:
+            raise ValueError(f"unknown G5 bottle block {block_type!r}")
+        self.blocks = nn.ModuleList([block_cls(d_model, cond_dim) for _ in range(int(blocks))])
         rows = torch.linspace(0.0, 1.0, GRID_H).view(1, 1, GRID_H, 1)
         cols = torch.linspace(0.0, 1.0, GRID_W).view(1, 1, 1, GRID_W)
         self.register_buffer("rows", rows.expand(1, 1, GRID_H, GRID_W), persistent=False)
@@ -121,6 +149,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         conditioned_trunk: bool = True,
         opponent_features: bool = True,
         cross_ff_mult: int = 2,
+        bottle_block: str = "dense",
+        compact_candidate_features: bool = False,
     ) -> None:
         super().__init__()
         if board_channels != 16:
@@ -153,7 +183,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             nn.Linear(cond_in, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
         )
 
-        self.bottle = _SharedBottleEncoder(8, d_model, encoder_blocks, d_model)
+        self.bottle = _SharedBottleEncoder(8, d_model, encoder_blocks, d_model, bottle_block)
         self.column_pos = nn.Parameter(torch.randn(1, GRID_W, d_model) * 0.02)
         self.side = nn.Parameter(torch.randn(1, 2, 1, d_model) * 0.02)
         self.interaction = nn.ModuleList(
@@ -173,22 +203,34 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             nn.Linear(1, cost_embed_dim), nn.SiLU(), nn.Linear(cost_embed_dim, cost_embed_dim)
         )
         patch_dim = 2 * 4 * patch_kernel * patch_kernel
+        self.compact_candidate_features = bool(compact_candidate_features)
+        candidate_in = pos_embed_dim + cost_embed_dim + patch_dim + 4 * d_model
+        if self.compact_candidate_features:
+            candidate_in = 2 * d_model
         self.candidate = nn.Sequential(
-            nn.Linear(2 * d_model, cand_hidden_dim),
+            nn.Linear(candidate_in, cand_hidden_dim),
             nn.SiLU(),
             nn.Linear(cand_hidden_dim, d_model),
         )
         projection_dim = d_model // 2
-        self.pose_cost = nn.Sequential(
-            nn.Linear(pos_embed_dim + cost_embed_dim, projection_dim), nn.SiLU()
-        )
-        self.patch_projection = nn.Sequential(nn.Linear(patch_dim, projection_dim), nn.SiLU())
-        self.local_projection = nn.Sequential(
-            nn.Linear(2 * d_model, projection_dim), nn.SiLU()
-        )
-        self.threat_projection = nn.Sequential(
-            nn.Linear(2 * d_model, projection_dim), nn.SiLU()
-        )
+        if self.compact_candidate_features:
+            self.pose_cost = nn.Sequential(
+                nn.Linear(pos_embed_dim + cost_embed_dim, projection_dim), nn.SiLU()
+            )
+            self.patch_projection = nn.Sequential(
+                nn.Linear(patch_dim, projection_dim), nn.SiLU()
+            )
+            self.local_projection = nn.Sequential(
+                nn.Linear(2 * d_model, projection_dim), nn.SiLU()
+            )
+            self.threat_projection = nn.Sequential(
+                nn.Linear(2 * d_model, projection_dim), nn.SiLU()
+            )
+        else:
+            self.pose_cost = None
+            self.patch_projection = None
+            self.local_projection = None
+            self.threat_projection = None
         self.candidate_blocks = nn.ModuleList(
             [_TokenBlock(d_model, transformer_heads, cross_ff_mult) for _ in range(cross_layers)]
         )
@@ -297,15 +339,18 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         threat = torch.cat(
             (opponent_columns.gather(1, col_index), opponent_columns.gather(1, col2_index)), dim=-1
         )
-        candidate_features = torch.cat(
-            (
-                self.pose_cost(torch.cat((pose, cost), dim=-1)),
-                self.patch_projection(patches),
-                self.local_projection(own_local),
-                self.threat_projection(threat),
-            ),
-            dim=-1,
-        )
+        if self.compact_candidate_features:
+            candidate_features = torch.cat(
+                (
+                    self.pose_cost(torch.cat((pose, cost), dim=-1)),  # type: ignore[misc]
+                    self.patch_projection(patches),  # type: ignore[misc]
+                    self.local_projection(own_local),  # type: ignore[misc]
+                    self.threat_projection(threat),  # type: ignore[misc]
+                ),
+                dim=-1,
+            )
+        else:
+            candidate_features = torch.cat((pose, cost, patches, own_local, threat), dim=-1)
         candidate = self.candidate(candidate_features)
         candidate = candidate + global_context.unsqueeze(1)
         padding = ~valid

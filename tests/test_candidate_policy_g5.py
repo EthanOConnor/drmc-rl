@@ -90,3 +90,10 @@ def test_g5_distributional_loss_accepts_bfloat16_logits():
     assert loss.dtype == torch.float32 and torch.isfinite(loss)
     loss.backward()
     assert logits.grad is not None and torch.isfinite(logits.grad).all()
+
+
+def test_g5_efficient_variant_preserves_contract():
+    net = _net(bottle_block="bottleneck", compact_candidate_features=True, cross_ff_mult=2)
+    logits, value = net(**_inputs())
+    assert logits.shape == (3, 32)
+    assert value.shape == (3, 1)
