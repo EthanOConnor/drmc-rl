@@ -1176,8 +1176,8 @@ def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rating-samples", type=int, default=1_200)
     parser.add_argument("--rating-seed", type=int, default=0xD0C70A11)
     parser.add_argument("--rating-refresh-games", type=int, default=16)
-    parser.add_argument("--rating-full-refresh-games", type=int, default=512)
-    parser.add_argument("--rating-min-ess-fraction", type=float, default=0.50)
+    parser.add_argument("--rating-full-refresh-games", type=int, default=20_000)
+    parser.add_argument("--rating-min-ess-fraction", type=float, default=0.10)
     parser.add_argument("--rating-poll", type=float, default=5.0)
 
 

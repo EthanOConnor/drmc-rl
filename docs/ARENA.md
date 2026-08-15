@@ -50,8 +50,10 @@ uv run python -m tools.arena serve --host 0.0.0.0 --port 8097
 ```
 
 `serve` owns a non-blocking rating thread by default. It checks every five
-seconds, publishes a fast sequential update after 16 new games, and runs a
-fresh HMC fit every 512 games. Run a
+seconds and publishes an exact sequential importance update after 16 new
+games. It forces a fresh HMC fit after 20,000 games or sooner when the
+importance posterior falls below 10% effective samples; with the default
+posterior this is still at least 480 effective draws. Run a
 one-off fit with `uv run python -m tools.arena rate --once`; use `--no-ratings`
 on `serve` only when another supervised `rate` process owns that work.
 

@@ -876,8 +876,8 @@ class ArenaStore:
         config: RatingConfig | None = None,
         *,
         min_new_matches: int = 16,
-        full_refresh_matches: int = 512,
-        min_importance_ess_fraction: float = 0.50,
+        full_refresh_matches: int = 20_000,
+        min_importance_ess_fraction: float = 0.10,
     ) -> dict[str, Any] | None:
         """Publish a fast exact sequential update, or refresh with HMC."""
 
