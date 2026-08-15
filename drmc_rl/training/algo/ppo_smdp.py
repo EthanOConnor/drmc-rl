@@ -1353,6 +1353,19 @@ class SMDPPPOAdapter(AlgoAdapter):
                     cand_mask_t = cand_mask_all_t[mb_indices]
                     cand_cost_t = cand_cost_all_t[mb_indices]
 
+                    # The rollout buffer is padded to the widest wave in the
+                    # whole update. Crop each shuffled minibatch to its own
+                    # lossless 32-candidate bucket; otherwise one rare 65th
+                    # action makes every candidate-attention layer process 96
+                    # slots for all 12,800 decisions.
+                    valid_max = int(cand_mask_t.sum(dim=1).amax().item())
+                    candidate_width = min(
+                        int(cand_mask_t.shape[1]), max(32, ((valid_max + 31) // 32) * 32)
+                    )
+                    cand_actions_t = cand_actions_t[:, :candidate_width]
+                    cand_mask_t = cand_mask_t[:, :candidate_width]
+                    cand_cost_t = cand_cost_t[:, :candidate_width]
+
                     # Forward pass
                     with self._autocast("update"):
                         if self.hparams.candidate_architecture.strip().lower() == "g5":
@@ -1409,7 +1422,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                     if sd_targets_t is not None:
                         log_probs_all = torch.log(dist.probs + 1e-9)
                         kl_sum, kl_n = masked_distill_kl(
-                            sd_targets_t[mb_indices], log_probs_all, sd_mask_t[mb_indices]
+                            sd_targets_t[mb_indices, :candidate_width],
+                            log_probs_all,
+                            sd_mask_t[mb_indices],
                         )
                         sd_kl_loss = kl_sum / kl_n.clamp(min=1.0)
                         with torch.no_grad():
