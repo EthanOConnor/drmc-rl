@@ -513,3 +513,19 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -
         assert result["strength"]["chosen_regret"] >= 0
     finally:
         backend.close()
+
+
+def test_corpus_weights_reduce_prolific_player_dominance() -> None:
+    from tools.train_human_policy import _sample_weights, _stable_player_key
+
+    ratings = np.full(4, 1800.0, dtype=np.float32)
+    keys = np.asarray([1, 1, 1, 2], dtype=np.uint64)
+    weights = _sample_weights(
+        ratings,
+        player_keys=keys,
+        player_counts={1: 100, 2: 1},
+    )
+    assert weights[3] > weights[0]
+    assert float(weights.mean()) == pytest.approx(1.0)
+    assert _stable_player_key("player-a") == _stable_player_key("player-a")
+    assert _stable_player_key("player-a") != _stable_player_key("player-b")

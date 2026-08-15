@@ -54,6 +54,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATASET = REPO_ROOT / "data" / "human_vs" / "human_policy_v2"
 DEFAULT_OUTPUT = REPO_ROOT / "runs" / "human_policy" / "human_policy_v2.pt.gz"
 KMAX = 128
+DERIVED_DATASET_VERSION = 2
 
 _COLUMNS = (
     "decision_id",
@@ -90,6 +91,13 @@ def _stable_keep(decision_id: str, modulus: int, seed: int) -> bool:
         f"{int(seed)}:{decision_id}".encode(), digest_size=8, person=b"drmc-hum"
     ).digest()
     return int.from_bytes(digest, "little") % int(modulus) == 0
+
+
+def _stable_player_key(player: str) -> np.uint64:
+    """Privacy-preserving stable key used only for corpus balancing."""
+
+    digest = hashlib.blake2b(str(player).encode(), digest_size=8, person=b"drmc-ply").digest()
+    return np.uint64(int.from_bytes(digest, "little"))
 
 
 def _controller_state(held: int) -> tuple[int, int]:
@@ -154,6 +162,7 @@ def _empty_arrays() -> dict[str, list[Any]]:
             "speed",
             "speed_ups",
             "player_fold",
+            "player_key",
             "split",
             "time_split",
         )
@@ -231,6 +240,7 @@ def _append_batch(
         output["speed"].append(int(row["speed"]))
         output["speed_ups"].append(int(row["speed_ups"]))
         output["player_fold"].append(int(row["player_fold"]))
+        output["player_key"].append(_stable_player_key(str(row["player"])))
         output["split"].append({"train": 0, "validation": 1, "test": 2}[row["random_split"]])
         output["time_split"].append(
             {"train": 0, "validation": 1, "test": 2}[corpus.time_split(int(row["day"]))]
@@ -318,6 +328,7 @@ def extract_dataset(
 
     arrays = {key: np.asarray(value) for key, value in output.items()}
     arrays["corpus_release_id"] = np.asarray(corpus.release_id)
+    arrays["derived_dataset_version"] = np.asarray(DERIVED_DATASET_VERSION)
     arrays["sample_modulus"] = np.asarray(int(sample_modulus))
     arrays["seed"] = np.asarray(int(seed))
     return arrays
@@ -359,11 +370,13 @@ def extract_shards(
             try:
                 with np.load(path, allow_pickle=False) as existing:
                     release = str(existing["corpus_release_id"])
+                    version = int(existing["derived_dataset_version"])
                     modulus = int(existing["sample_modulus"])
                     existing_seed = int(existing["seed"])
                     rows = len(existing["rating"])
                 if (
                     release != corpus.release_id
+                    or version != DERIVED_DATASET_VERSION
                     or modulus != int(sample_modulus)
                     or existing_seed != int(seed)
                     or rows == 0
@@ -544,12 +557,33 @@ def timing_features(
     return features, np.log1p(slack).astype(np.float32)
 
 
-def _sample_weights(ratings: np.ndarray, bins: int = 20) -> np.ndarray:
+def _sample_weights(
+    ratings: np.ndarray,
+    bins: int = 20,
+    *,
+    player_keys: np.ndarray | None = None,
+    player_counts: dict[int, int] | None = None,
+    rating_edges: np.ndarray | None = None,
+    rating_counts: np.ndarray | None = None,
+) -> np.ndarray:
     if len(ratings) == 0:
         return np.empty(0, dtype=np.float32)
-    counts, edges = np.histogram(ratings, bins=bins)
+    if rating_edges is None or rating_counts is None:
+        counts, edges = np.histogram(ratings, bins=bins)
+    else:
+        counts, edges = rating_counts, rating_edges
     bucket = np.clip(np.searchsorted(edges, ratings, side="right") - 1, 0, bins - 1)
     weights = 1.0 / np.sqrt(np.maximum(counts[bucket], 1))
+    if player_keys is not None and player_counts:
+        frequencies = np.fromiter(
+            (player_counts.get(int(key), 1) for key in player_keys),
+            dtype=np.float64,
+            count=len(player_keys),
+        )
+        # Square-root balancing prevents prolific players from dominating
+        # without giving a one-game account the same total mass as a deeply
+        # observed player.
+        weights *= 1.0 / np.sqrt(np.maximum(frequencies, 1.0))
     return (weights / weights.mean()).astype(np.float32)
 
 
@@ -861,7 +895,14 @@ def _concat_rows(parts: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
 
 def _shard_statistics(
     paths: list[Path], *, seed: int, validation_rows_per_shard: int = 2048
-) -> tuple[HumanSkillCondition, dict[str, np.ndarray], int]:
+) -> tuple[
+    HumanSkillCondition,
+    dict[str, np.ndarray],
+    int,
+    dict[int, int],
+    np.ndarray,
+    np.ndarray,
+]:
     """Streaming skill moments plus a deterministic cross-shard validation set."""
 
     count = 0
@@ -869,10 +910,18 @@ def _shard_statistics(
     minimum = float("inf")
     maximum = float("-inf")
     validation_parts = []
+    player_counts: dict[int, int] = {}
+    rating_edges = np.linspace(0.0, 4000.0, 21)
+    rating_counts = np.zeros(20, dtype=np.int64)
     rng = np.random.default_rng(int(seed))
     for _path, arrays in _prefetched(paths):
         train_mask = _training_mask(arrays)
         ratings = arrays["rating"][train_mask].astype(np.float64)
+        rating_counts += np.histogram(ratings, bins=rating_edges)[0]
+        if "player_key" in arrays:
+            keys, counts = np.unique(arrays["player_key"][train_mask], return_counts=True)
+            for key, player_count in zip(keys, counts):
+                player_counts[int(key)] = player_counts.get(int(key), 0) + int(player_count)
         count += len(ratings)
         rating_sum += float(ratings.sum())
         rating_square_sum += float(np.square(ratings).sum())
@@ -911,7 +960,14 @@ def _shard_statistics(
         minimum=float(minimum),
         maximum=float(maximum),
     )
-    return condition, _concat_rows(validation_parts), count
+    return (
+        condition,
+        _concat_rows(validation_parts),
+        count,
+        player_counts,
+        rating_edges,
+        rating_counts,
+    )
 
 
 def _evaluate_compact(
@@ -1006,7 +1062,14 @@ def train_sharded(
     import torch
     import torch.nn.functional as F
 
-    condition, validation, train_rows = _shard_statistics(paths, seed=seed)
+    (
+        condition,
+        validation,
+        train_rows,
+        player_counts,
+        rating_edges,
+        rating_counts,
+    ) = _shard_statistics(paths, seed=seed)
     cfg = human_policy_config(capacity=capacity, candidate_max=KMAX)
     policy = build_human_policy(cfg, device=device)
     timing = build_timing_model(device=device)
@@ -1040,7 +1103,15 @@ def train_sharded(
         for path, arrays in _prefetched(ordered_paths):
             train_idx = np.flatnonzero(_training_mask(arrays))
             rng.shuffle(train_idx)
-            weights = _sample_weights(arrays["rating"][train_idx])
+            weights = _sample_weights(
+                arrays["rating"][train_idx],
+                player_keys=arrays.get("player_key", None)[train_idx]
+                if "player_key" in arrays
+                else None,
+                player_counts=player_counts,
+                rating_edges=rating_edges,
+                rating_counts=rating_counts,
+            )
             for start in range(0, len(train_idx), int(batch_size)):
                 idx = train_idx[start : start + int(batch_size)]
                 local = np.arange(start, start + len(idx))
