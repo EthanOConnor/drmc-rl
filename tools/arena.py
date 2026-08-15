@@ -139,7 +139,11 @@ def run_telemetry(args: argparse.Namespace) -> None:
         "gzip -cd \"$path\" 2>/dev/null; done; "
         "find runs/human_policy -name '*_train.log' -mmin -15 -print 2>/dev/null | "
         "while read -r path; do printf '@@AFTERSTATE %s\\n' \"$path\"; "
-        "tail -400 \"$path\"; done"
+        "tail -400 \"$path\"; done; "
+        "find /home/ethan/.cache/drmc-rl/training-store/human-v5/full-corpus "
+        "-maxdepth 1 -name 'extract*.log' -mmin -15 -print 2>/dev/null | "
+        "while read -r path; do printf '@@CORPUS %s\n' \"$path\"; "
+        "tail -200 \"$path\"; done"
     )
     while not stopped:
         result = subprocess.run(
@@ -189,6 +193,10 @@ _VALIDATION_SCALAR = re.compile(
     r'low_rating_regret_q90|high_rating_regret_q90|regret_tail_gap|rows))"\s*:\s*'
     r"(?P<value>[\d.eE+-]+)"
 )
+_CORPUS_PROGRESS = re.compile(
+    r"scanned=(?P<scanned>[\d,]+) sampled=(?P<sampled>[\d,]+) "
+    r"kept=(?P<kept>[\d,]+) rate=(?P<rate>[\d,]+)/s"
+)
 
 
 def parse_telemetry(text: str) -> list[dict[str, Any]]:
@@ -204,6 +212,8 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             return
         if kind == "afterstate":
             _parse_afterstate_lines(task, afterstate_lines)
+        elif kind == "corpus":
+            _parse_corpus_lines(task, afterstate_lines)
         task["history"] = {
             name: points[-60:] for name, points in task["history"].items()
         }
@@ -224,9 +234,14 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             kind = "afterstate"
             task = {"run": line[13:].removeprefix("runs/"), "latest": {}, "history": {}}
             continue
+        if line.startswith("@@CORPUS "):
+            finish()
+            kind = "corpus"
+            task = {"run": line[9:], "latest": {}, "history": {}}
+            continue
         if task is None:
             continue
-        if kind == "afterstate":
+        if kind in {"afterstate", "corpus"}:
             afterstate_lines.append(line)
             continue
         try:
@@ -268,6 +283,27 @@ def _parse_afterstate_lines(task: dict[str, Any], lines: list[str]) -> None:
     for match in _VALIDATION_SCALAR.finditer(joined):
         name = match["name"].removeprefix("validation_")
         latest[f"validation/{name}"] = float(match["value"])
+
+
+def _parse_corpus_lines(task: dict[str, Any], lines: list[str]) -> None:
+    latest = task["latest"]
+    history = task["history"]
+    for line in lines:
+        match = _CORPUS_PROGRESS.search(line)
+        if match is None:
+            continue
+        scanned = int(match["scanned"].replace(",", ""))
+        rate = float(match["rate"].replace(",", ""))
+        latest.update(
+            {
+                "global_step": scanned,
+                "perf/dps": rate,
+                "corpus/sampled": int(match["sampled"].replace(",", "")),
+                "corpus/kept": int(match["kept"].replace(",", "")),
+                "corpus/total": 54_873_706,
+            }
+        )
+        history.setdefault("perf/dps", []).append([scanned, rate])
 
 
 def utc_timestamp() -> str:

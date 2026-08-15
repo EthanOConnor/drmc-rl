@@ -312,3 +312,18 @@ epoch=1 step=200 decisions/s=2,666 loss=3.0865 style=2.4608 outcome=0.5871
     assert latest["validation/top1"] == 0.42
     assert latest["validation/quality_top1"] == 0.37
     assert tasks[0]["history"]["perf/dps"] == [[100, 2586.0], [200, 2666.0]]
+
+
+def test_telemetry_parses_full_corpus_extraction() -> None:
+    tasks = parse_telemetry(
+        """@@CORPUS /store/human-v5/full-corpus/extract-v2.log
+scanned=12,288 sampled=12,288 kept=12,223 rate=3,814/s
+scanned=20,422 sampled=20,422 kept=20,337 rate=3,880/s
+"""
+    )
+    assert len(tasks) == 1
+    latest = tasks[0]["latest"]
+    assert latest["global_step"] == 20_422
+    assert latest["corpus/kept"] == 20_337
+    assert latest["corpus/total"] == 54_873_706
+    assert latest["perf/dps"] == 3_880
