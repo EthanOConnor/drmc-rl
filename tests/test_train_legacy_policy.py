@@ -103,6 +103,7 @@ def test_legacy_training_smoke_writes_all_three_bands(tmp_path) -> None:
             log_every=0,
             validation_rows_per_shard=8,
             max_shards=None,
+            max_rows_per_shard=None,
         )
     )
     for band in ("lt1600", "1600to2000", "gt2000"):

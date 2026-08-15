@@ -260,6 +260,12 @@ def train(args) -> dict[str, Any]:
             train = _training_mask(arrays)
             for band, rating_mask in band_masks(arrays["rating"]).items():
                 indices = np.flatnonzero(train & rating_mask)
+                if args.max_rows_per_shard is not None and len(indices) > int(
+                    args.max_rows_per_shard
+                ):
+                    indices = rng.choice(
+                        indices, size=int(args.max_rows_per_shard), replace=False
+                    )
                 rng.shuffle(indices)
                 stat = statistics[band]
                 weights = _sample_weights(
@@ -355,6 +361,7 @@ def main() -> None:
     parser.add_argument("--log-every", type=int, default=200)
     parser.add_argument("--validation-rows-per-shard", type=int, default=1024)
     parser.add_argument("--max-shards", type=int)
+    parser.add_argument("--max-rows-per-shard", type=int)
     train(parser.parse_args())
 
 
