@@ -34,6 +34,20 @@ anchor it.
    and coach explanations. Consented identified games calibrate the internal
    ladder to real human strength.
 
+## Recorded experiments
+
+- **Terminal-outcome play styles.** Develop practice opponents from a shared
+  policy by conditioning or fine-tuning on how a win ends: a pressure archetype
+  values victories where the opponent tops out, while a clear-race archetype
+  values victories where its own bottle clears. Keep the ordinary win reward
+  positive in both cases and add only an outcome-specific preference, so style
+  does not replace competence. Use the engine's canonical terminal cause rather
+  than inferred attack statistics, and measure both overall strength and style
+  expression separately. In particular, distinguish pressure-induced top-outs
+  from an opponent's unforced failure before claiming the first archetype has
+  learned attack. A single style-conditioned model may provide both endpoints
+  and useful interpolation more cleanly than unrelated specialist checkpoints.
+
 ## Gates
 
 - Offline: held-out action NLL, outcome Brier score, tactical calibration,
