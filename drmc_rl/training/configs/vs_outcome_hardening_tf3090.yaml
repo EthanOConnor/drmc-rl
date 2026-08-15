@@ -1,17 +1,16 @@
-# Continue the first successful outcome-trained generalist against a frozen
-# copy of itself and the strongest distinct historical anchors.  This stage
-# prioritizes transitive full-game strength and regression resistance over
-# another broad recovery pass.
+# Continue the successful outcome-hardened generalist without changing its
+# objective or league. Milestones are evaluated every 100M frames; only the
+# 250M cadence becomes permanent arena lineage.
 algo: ppo_smdp
 
 train:
-  total_steps: 1000000000
+  total_steps: 1500000000
   checkpoint_interval: 25000000
-  checkpoint_keep_last: 12
-  init_checkpoint: runs/best_agents/outcome_recovery_g3_step500374980.pt.gz
+  checkpoint_keep_last: 24
+  init_checkpoint: runs/vs_outcome_hardening_01/20260814-174843_4676ca70/checkpoints/smdp_ppo_step1000023912.pt.gz
   strict_checkpoint: true
-  resume_step: false
-  resume_optimizer: false
+  resume_step: true
+  resume_optimizer: true
 
 smdp_ppo:
   lr: 1.5e-5
@@ -99,4 +98,4 @@ env:
 curriculum:
   enabled: false
 
-logdir: runs/vs_outcome_hardening_01
+logdir: runs/vs_outcome_hardening_02
