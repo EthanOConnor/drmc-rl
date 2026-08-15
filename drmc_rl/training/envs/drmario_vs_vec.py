@@ -158,9 +158,10 @@ class DrMarioVsPoolVecEnv:
         # the opponent bottle planes (8..15) ahead of the feasible planes.
         self.opponent_obs = state_repr_norm == "bitplane_bottle_conn_mask_vs"
         human_opponents = list(opp_cfg.get("human_opponents") or [])
-        if human_opponents and not self.opponent_obs:
+        afterstate_opponents = list(opp_cfg.get("afterstate_opponents") or [])
+        if (human_opponents or afterstate_opponents) and not self.opponent_obs:
             raise ValueError(
-                "opponent_pool.human_opponents requires state_repr="
+                "semantic human/afterstate opponents require state_repr="
                 "bitplane_bottle_conn_mask_vs"
             )
         ram_specs.set_state_representation(state_repr_norm)
@@ -313,6 +314,8 @@ class DrMarioVsPoolVecEnv:
                 )
                 if human_opponents:
                     pool.seed_humans(human_opponents)
+                if afterstate_opponents:
+                    pool.seed_afterstates(afterstate_opponents)
                 if league.mode != "exploiter" and not pool.entries:
                     seed_paths = opp_cfg.get("seed_paths") or default_seed_paths()
                     if not seed_paths:
@@ -628,6 +631,8 @@ class DrMarioVsPoolVecEnv:
         return self._obs, rewards.astype(np.float32), terminated, truncated, list(self._infos)
 
     def close(self) -> None:
+        if self._opp_pool is not None:
+            self._opp_pool.close()
         if hasattr(self._runner, "close"):
             self._runner.close()
 
@@ -942,6 +947,22 @@ class DrMarioVsPoolVecEnv:
             entries[entry.id] = entry
         if not groups:
             return acts
+        # V3 owns an exact native afterstate simulator and exposes multiple
+        # semantically distinct heads.  Score every parked side for one entry
+        # in a single simulation/network batch, then leave ordinary frozen
+        # candidate nets on the existing optimized path.
+        afterstate_ids = [
+            entry_id
+            for entry_id in groups
+            if getattr(entries[entry_id], "kind", "rl") == "afterstate"
+        ]
+        for entry_id in afterstate_ids:
+            side_idxs = groups.pop(entry_id)
+            chosen = self._afterstate_opponent_actions(entries[entry_id], side_idxs)
+            for gi, action in zip(side_idxs, chosen):
+                acts[gi // 2] = int(action)
+        if not groups:
+            return acts
         # Fast path (all-CUDA pool): ONE host->device upload for every parked
         # opponent side, per-entry forwards on device-side slices, GPU argmax,
         # and one tiny device->host copy of the chosen slots. The old
@@ -962,6 +983,66 @@ class DrMarioVsPoolVecEnv:
             for k, gi in enumerate(side_idxs):
                 acts[gi // 2] = int(chosen[k])
         return acts
+
+    def _afterstate_opponent_actions(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
+        """Exact V3 actions for one opponent entry, losslessly batched."""
+
+        from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
+
+        sides = np.asarray(side_idxs, dtype=np.int64)
+        packed = pack_feasible_candidates_batch(
+            self._mask[sides].astype(bool, copy=False),
+            self._cost[sides],
+            max_candidates=int(entry.candidate_max),
+            sort_by_cost=True,
+        )
+        rating = float(
+            entry.rating if entry.rating is not None else entry.runtime.condition.mean
+        )
+        requests = []
+        for row, side in enumerate(sides):
+            recent = [
+                {"action": int(action), "tau_frames": float(tau)}
+                for action, tau in zip(
+                    self._human_recent_actions[int(side)],
+                    self._human_recent_tau[int(side)],
+                )
+                if int(action) >= 0
+            ]
+            requests.append(
+                {
+                    "board_planes": self._obs[int(side), :8],
+                    "opponent_board_planes": self._obs[int(side), 8:16],
+                    "opponent_state_age_frames": 0,
+                    "rating_sd": float(entry.rating_sd),
+                    "opponent_rating": rating,
+                    "opponent_rating_sd": float(entry.rating_sd),
+                    "game_phase": min(float(self._ep_pills[int(side)]) / 100.0, 1.0),
+                    "recent_decisions": recent,
+                    "pill": self._runner.buffers.pill_colors[int(side)],
+                    "preview": self._runner.buffers.preview_colors[int(side)],
+                    "candidate_actions": packed.actions[row],
+                    "candidate_costs": packed.cost[row],
+                    "candidate_mask": packed.mask[row],
+                    "rating": rating,
+                    "speed": self.speed_setting,
+                    # Native play increments speed every ten placed pills.
+                    "speed_ups": int(self._ep_pills[int(side)]) // 10,
+                }
+            )
+        results = entry.runtime.score_batch(requests)
+        selected = np.empty(len(sides), dtype=np.int32)
+        for row, result in enumerate(results):
+            if entry.selection == "style":
+                slot = entry.runtime.choose_style(
+                    result["human_logits"], packed.mask[row], temperature=0.0
+                )
+            else:
+                slot = entry.runtime.choose_quality(
+                    result["competitive_score"], packed.mask[row]
+                )
+            selected[row] = int(packed.actions[row, slot])
+        return selected
 
     def _opponent_actions_cuda(self, groups: Dict[str, List[int]], entries: Dict[str, Any]):
         """Deterministic opponent actions with a single H2D and a single D2H.

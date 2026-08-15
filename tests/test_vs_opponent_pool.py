@@ -123,6 +123,48 @@ def test_manifest_roundtrip(tmp_path) -> None:
     assert re_entry.path.is_file()
 
 
+def test_afterstate_manifest_roundtrip_preserves_explicit_head(tmp_path) -> None:
+    checkpoint = tmp_path / "v3.pt.gz"
+    checkpoint.write_bytes(b"fixture")
+
+    pool_dir = tmp_path / "pool"
+    pool = OpponentPool(pool_dir, max_pool=12)
+    pool.seed_afterstates(
+        [
+            {
+                "id": "v3-style",
+                "checkpoint": checkpoint,
+                "selection": "style",
+                "rating": 1875,
+                "rating_sd": 75,
+            }
+        ]
+    )
+    entry = pool.entries[0]
+    assert entry.kind == "afterstate"
+    assert entry.selection == "style"
+    assert entry.rating == 1875
+    assert entry.protected
+
+    reloaded = OpponentPool(pool_dir, max_pool=12)
+    restored = reloaded.entries[0]
+    assert restored.kind == "afterstate"
+    assert restored.selection == "style"
+    assert restored.rating == 1875
+    assert restored.rating_sd == 75
+
+
+def test_afterstate_seed_rejects_implicit_or_unknown_selection(tmp_path) -> None:
+    checkpoint = tmp_path / "v3.pt.gz"
+    checkpoint.write_bytes(b"fixture")
+    pool = OpponentPool(tmp_path / "pool")
+
+    with pytest.raises(ValueError, match="selection"):
+        pool.seed_afterstates(
+            [{"checkpoint": checkpoint, "selection": "strength-controller"}]
+        )
+
+
 def test_snapshot_eviction_keeps_protected_seed(tmp_path) -> None:
     torch = pytest.importorskip("torch")
     from drmc_rl.training.utils.checkpoint_io import save_checkpoint

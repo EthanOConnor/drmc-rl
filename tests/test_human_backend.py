@@ -371,6 +371,37 @@ def test_opponent_pool_loads_fixed_rating_human_checkpoint(tmp_path) -> None:
 
 
 @pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
+def test_opponent_pool_loads_explicit_afterstate_teacher(tmp_path) -> None:
+    from drmc_rl.training.envs.vs_opponents import OpponentPool
+
+    checkpoint = tmp_path / "afterstate.pt.gz"
+    _afterstate_checkpoint(checkpoint)
+    pool = OpponentPool(tmp_path / "pool", device="cpu")
+    pool.seed_afterstates(
+        [
+            {
+                "checkpoint": str(checkpoint),
+                "id": "v3-quality",
+                "selection": "quality",
+                "rating": 1900,
+            }
+        ]
+    )
+    entry = pool.entries[0]
+    pool.ensure_loaded(entry)
+    try:
+        assert entry.kind == "afterstate"
+        assert entry.selection == "quality"
+        assert entry.rating == 1900
+        assert entry.runtime is not None
+        assert entry.net is entry.runtime
+    finally:
+        pool.close()
+    assert entry.runtime is None
+    assert entry.net is None
+
+
+@pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
 def test_vs_pool_can_step_against_fixed_rating_human(tmp_path) -> None:
     from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
     from drmc_rl.training.envs.vs_opponents import OpponentPool
@@ -392,6 +423,35 @@ def test_vs_pool_can_step_against_fixed_rating_human(tmp_path) -> None:
         next_obs, _reward, _term, _trunc, _infos = env.step([action])
         assert next_obs.shape == obs.shape
         assert env._human_recent_actions[1, 0] >= 0
+    finally:
+        env.close()
+
+
+@pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
+def test_vs_pool_batches_exact_afterstate_opponents(tmp_path) -> None:
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+    from drmc_rl.training.envs.vs_opponents import OpponentPool
+
+    checkpoint = tmp_path / "afterstate.pt.gz"
+    _afterstate_checkpoint(checkpoint)
+    pool = OpponentPool(tmp_path / "pool", device="cpu")
+    pool.seed_afterstates(
+        [{"checkpoint": checkpoint, "selection": "quality", "rating": 1900}]
+    )
+    env = DrMarioVsPoolVecEnv(
+        num_pairs=2,
+        state_repr="bitplane_bottle_conn_mask_vs",
+        opponent_pool_cfg={"enabled": True, "pool": pool},
+    )
+    try:
+        obs, infos = env.reset(seed=5)
+        actions = []
+        for info in infos:
+            mask = np.asarray(info["placements/feasible_mask"], dtype=bool).reshape(-1)
+            actions.append(int(np.flatnonzero(mask)[0]) if mask.any() else -1)
+        next_obs, _reward, _term, _trunc, _infos = env.step(actions)
+        assert next_obs.shape == obs.shape
+        assert np.all(env._human_recent_actions[1::2, 0] >= 0)
     finally:
         env.close()
 

@@ -35,7 +35,7 @@ CHAMPION_CHECKPOINT = Path("runs/best_agents/smdp_ppo_step535164979.pt.gz")
 _PFSP_FLOOR = 0.05
 # weight(p) = (p*(1-p))**2 + floor is maximized at p=0.5.
 _PFSP_MAX_WEIGHT = 0.25**2 + _PFSP_FLOOR
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
 
 _LEAGUE_MODES = ("pfsp", "exploiter", "mixed")
 
@@ -86,7 +86,9 @@ class OpponentEntry:
     kind: str = "rl"
     rating: Optional[float] = None
     rating_sd: float = 0.0
+    selection: str = "quality"
     condition: Any = field(default=None, repr=False)
+    runtime: Any = field(default=None, repr=False)
 
     def smoothed_winrate(self) -> float:
         """Laplace-smoothed learner win rate vs this opponent."""
@@ -234,6 +236,54 @@ class OpponentPool:
             )
         self._save_manifest()
 
+    def seed_afterstates(self, specifications: Sequence[Dict[str, Any]]) -> None:
+        """Register V3 exact-afterstate policies as protected opponents.
+
+        ``selection`` deliberately names the head used by the frozen teacher:
+        ``style`` is deterministic corpus imitation and ``quality`` is the
+        rating-independent competitive head.  Strength interpolation is not
+        implicit here; a training league should say exactly which teacher it
+        is facing.
+        """
+
+        existing = {
+            (e.path.name if e.path is not None else "", e.selection)
+            for e in self.entries
+            if e.kind == "afterstate"
+        }
+        for specification in specifications:
+            src = Path(str(specification["checkpoint"]))
+            if not src.is_file():
+                raise FileNotFoundError(f"Afterstate opponent checkpoint not found: {src}")
+            selection = str(specification.get("selection", "quality")).strip().lower()
+            if selection not in {"style", "quality"}:
+                raise ValueError(
+                    "afterstate opponent selection must be 'style' or 'quality', "
+                    f"got {selection!r}"
+                )
+            if (src.name, selection) in existing:
+                continue
+            dst = self.dir / src.name
+            if not dst.is_file():
+                shutil.copy2(src, dst)
+            label = str(specification.get("id") or f"afterstate_{selection}")
+            self._add_entry(
+                OpponentEntry(
+                    id=self._unique_id(label),
+                    path=dst,
+                    protected=bool(specification.get("protected", True)),
+                    kind="afterstate",
+                    rating=(
+                        None
+                        if specification.get("rating") is None
+                        else float(specification["rating"])
+                    ),
+                    rating_sd=float(specification.get("rating_sd", 0.0)),
+                    selection=selection,
+                )
+            )
+        self._save_manifest()
+
     def add_loaded(
         self,
         opponent_id: str,
@@ -342,7 +392,24 @@ class OpponentPool:
         from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
         payload = load_checkpoint(entry.path, map_location="cpu")
-        if str(payload.get("schema", "")).startswith("drmc-human-policy-"):
+        schema = str(payload.get("schema", ""))
+        if schema == "drmc-human-afterstate-v3":
+            from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
+
+            runtime = AfterstatePolicyRuntime(entry.path, device=self.device)
+            entry.kind = "afterstate"
+            entry.runtime = runtime
+            entry.condition = runtime.condition
+            entry.candidate_max = int(
+                runtime.cfg.get("candidate_max_candidates", 128)
+            )
+            # `net` is also the lazy-load sentinel used by sample().  V3 is
+            # intentionally routed through runtime.score_batch, never called
+            # through the ordinary candidate-policy forward path.
+            entry.net = runtime
+            entry.device = self.device
+            return
+        if schema.startswith("drmc-human-policy-"):
             from drmc_rl.human.conditioning import HumanSkillCondition
             from drmc_rl.human.model import POLICY_CONDITION_DIM, build_human_policy
 
@@ -375,6 +442,16 @@ class OpponentPool:
             p.requires_grad_(False)
         entry.net = net
         entry.device = self.device
+
+    def close(self) -> None:
+        """Release native afterstate simulators owned by loaded opponents."""
+
+        for entry in self.entries:
+            runtime = entry.runtime
+            if runtime is not None:
+                runtime.close()
+                entry.runtime = None
+                entry.net = None
 
     # ------------------------------------------------------------------ internals
     def _add_entry(self, entry: OpponentEntry) -> None:
@@ -416,6 +493,7 @@ class OpponentPool:
                     "kind": str(e.kind),
                     "rating": e.rating,
                     "rating_sd": float(e.rating_sd),
+                    "selection": str(e.selection),
                 }
                 for e in self.entries
                 if e.path is not None
@@ -443,6 +521,7 @@ class OpponentPool:
                     kind=str(row.get("kind", "rl")),
                     rating=None if row.get("rating") is None else float(row["rating"]),
                     rating_sd=float(row.get("rating_sd", 0.0)),
+                    selection=str(row.get("selection", "quality")),
                 )
             )
 

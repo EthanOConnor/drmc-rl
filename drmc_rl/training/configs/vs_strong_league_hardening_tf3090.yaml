@@ -1,0 +1,116 @@
+# Outcome hardening against the strongest frozen arena teachers.  The parent
+# checkpoint is selected from the 1.5B--1.8B continuation tournament before
+# launch; 1.8B is the provisional value while its arena evidence accumulates.
+algo: ppo_smdp
+
+train:
+  total_steps: 2300397488
+  checkpoint_interval: 25000000
+  checkpoint_keep_last: 24
+  init_checkpoint: runs/strong_league/parents/outcome-hardening-g4-step1800397488.pt.gz
+  strict_checkpoint: true
+  resume_step: true
+  resume_optimizer: true
+
+smdp_ppo:
+  lr: 1.5e-5
+  gamma: 1.0
+  gae_lambda: 0.98
+  clip_epsilon: 0.12
+  value_coef: 0.6
+  entropy_coef: 0.0015
+  entropy_schedule_end: 0.0005
+  entropy_schedule_steps: 250000000
+  max_grad_norm: 0.7
+  decisions_per_update: 12800
+  num_epochs: 2
+  minibatch_size: 1600
+  compile_mode: default
+  rollout_compute_dtype: fp32
+  update_compute_dtype: bf16
+  policy_type: candidate
+  head_type: dense
+  pill_embed_dim: 128
+  pill_embed_type: ordered_pair
+  encoder_blocks: 4
+  candidate_max_candidates: 128
+  candidate_d_model: 192
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 384
+  candidate_board_encoder: cnn
+  candidate_board_channels: 16
+  candidate_transformer_layers: 4
+  candidate_transformer_heads: 4
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
+  aux_spec: v1_vs
+  value_loss_type: huber
+
+env:
+  id: drmario-vs
+  obs_mode: state
+  backend: cpp-vs-pool
+  gpu_planner: true
+  direct_policy_batch: true
+  state_repr: bitplane_bottle_conn_mask_vs
+  num_pairs: 320
+  frame_stack: 1
+  randomize_rng: true
+  level: 14
+  speed_setting: 2
+  # Deliberately unchanged from Outcome Hardening: win the game first; dense
+  # tactical terms may guide learning but cannot pay for a loss.
+  garbage_reward_coef: 0.01
+  clear_win_bonus: 0.35
+  virus_progress_reward_coef: 0.003
+  decision_penalty: 0.0001
+  match_horizon_pills: 500
+  horizon_penalty: 0.25
+  start_bank:
+    enabled: true
+    path: runs/start_bank/clear_endgame_v1.npz
+    fraction: 0.20
+  opponent_pool:
+    enabled: true
+    max_pool: 32
+    snapshot_every_matches: 400
+    snapshot_gate:
+      enabled: true
+      min_match_len_sec: 30
+      league_wr_frac: 0.50
+    device: auto
+    opponent_temperature: 0.0
+    afterstate_opponents:
+      - id: v3-e4-style
+        checkpoint: runs/strong_league/teachers/human-afterstate-v3-style-epoch04.pt.gz
+        selection: style
+        rating: 1900
+        protected: true
+      - id: v3-e2-quality
+        checkpoint: runs/strong_league/teachers/human-afterstate-v3-quality-epoch02.pt.gz
+        selection: quality
+        rating: 1900
+        protected: true
+    seed_paths:
+      - runs/strong_league/teachers/bc_lt1600.pt.gz
+      - runs/strong_league/landmarks/outcome-hardening-g4-step1250930856.pt.gz
+      - runs/strong_league/landmarks/outcome-hardening-g4-step1500287362.pt.gz
+      - runs/strong_league/landmarks/outcome-hardening-g4-step1700542673.pt.gz
+      - runs/strong_league/landmarks/outcome-hardening-g4-step1800397488.pt.gz
+    league:
+      mode: mixed
+      exploiter_fraction: 0.75
+      main_agents:
+        - runs/strong_league/teachers/human-afterstate-v3-style-epoch04.pt.gz
+        - runs/strong_league/teachers/human-afterstate-v3-quality-epoch02.pt.gz
+        - runs/strong_league/teachers/bc_lt1600.pt.gz
+        - runs/strong_league/landmarks/outcome-hardening-g4-step1250930856.pt.gz
+        - runs/strong_league/landmarks/outcome-hardening-g4-step1500287362.pt.gz
+        - runs/strong_league/landmarks/outcome-hardening-g4-step1700542673.pt.gz
+        - runs/strong_league/landmarks/outcome-hardening-g4-step1800397488.pt.gz
+
+curriculum:
+  enabled: false
+
+logdir: runs/vs_strong_league_hardening_01
