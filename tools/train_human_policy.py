@@ -344,6 +344,7 @@ def extract_shards(
     seed: int,
     months: list[str] | None = None,
     max_rows: int | None = None,
+    resume: bool = False,
 ) -> list[Path]:
     """Extract independently loadable month shards for bounded-memory training."""
 
@@ -353,6 +354,28 @@ def extract_shards(
     for month in months or corpus_months(corpus):
         if remaining is not None and remaining <= 0:
             break
+        path = output_dir / f"{month}.npz"
+        if resume and path.is_file():
+            try:
+                with np.load(path, allow_pickle=False) as existing:
+                    release = str(existing["corpus_release_id"])
+                    modulus = int(existing["sample_modulus"])
+                    existing_seed = int(existing["seed"])
+                    rows = len(existing["rating"])
+                if (
+                    release != corpus.release_id
+                    or modulus != int(sample_modulus)
+                    or existing_seed != int(seed)
+                    or rows == 0
+                ):
+                    raise ValueError("provenance mismatch or empty shard")
+            except Exception as exc:
+                raise ValueError(f"cannot resume from {path}: {exc}") from exc
+            print(f"resume {path} rows={rows:,}", flush=True)
+            paths.append(path)
+            if remaining is not None:
+                remaining -= rows
+            continue
         arrays = extract_dataset(
             corpus,
             planner_backend=planner_backend,
@@ -361,7 +384,6 @@ def extract_shards(
             max_rows=remaining,
             months=[month],
         )
-        path = output_dir / f"{month}.npz"
         np.savez_compressed(path, **arrays)
         rows = len(arrays["rating"])
         print(f"wrote {path} rows={rows:,}", flush=True)
@@ -1157,6 +1179,11 @@ def main() -> None:
         help="optional comma-separated YYYY-MM shards (use a spread across eras for pilots)",
     )
     extract.add_argument("--seed", type=int, default=0)
+    extract.add_argument(
+        "--resume",
+        action="store_true",
+        help="reuse provenance-matched completed month shards",
+    )
 
     train_parser = sub.add_parser("train")
     train_parser.add_argument("--dataset", type=Path, default=DEFAULT_DATASET)
@@ -1181,6 +1208,7 @@ def main() -> None:
             seed=args.seed,
             max_rows=args.max_rows,
             months=None if not args.months else [value.strip() for value in args.months.split(",")],
+            resume=args.resume,
         )
         print(f"wrote {len(paths)} shards under {args.out} release={corpus.release_id}")
         return
