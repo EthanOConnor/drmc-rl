@@ -42,6 +42,7 @@ smdp_ppo:
   candidate_transformer_ff_mult: 4
   candidate_patch_kernel: 9
   candidate_cross_layers: 3
+  candidate_cross_ff_mult: 2
   candidate_interaction_layers: 2
   candidate_value_atoms: 51
   candidate_conditioned_trunk: true

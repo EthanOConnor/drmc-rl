@@ -70,6 +70,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
             value_atoms=int(g("candidate_value_atoms", 51)),
             conditioned_trunk=bool(g("candidate_conditioned_trunk", True)),
             opponent_features=bool(g("candidate_opponent_features", True)),
+            cross_ff_mult=int(g("candidate_cross_ff_mult", 2)),
         ).to(device)
     elif architecture == "g4":
         net = CandidatePlacementPolicyNet(

@@ -138,6 +138,7 @@ class SMDPPPOConfig:
     candidate_value_atoms: int = 51
     candidate_conditioned_trunk: bool = True
     candidate_opponent_features: bool = True
+    candidate_cross_ff_mult: int = 2
     candidate_patch_kernel: int = 3
 
     # Optional auxiliary vector inputs (derived from obs + info).
@@ -314,6 +315,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_opponent_features=bool(
                 ppo_cfg_dict.get("candidate_opponent_features", True)
             ),
+            candidate_cross_ff_mult=int(ppo_cfg_dict.get("candidate_cross_ff_mult", 2)),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
@@ -457,6 +459,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                     value_atoms=self.hparams.candidate_value_atoms,
                     conditioned_trunk=self.hparams.candidate_conditioned_trunk,
                     opponent_features=self.hparams.candidate_opponent_features,
+                    cross_ff_mult=self.hparams.candidate_cross_ff_mult,
                 ).to(self.device)
             elif architecture == "g4":
                 self.net = CandidatePlacementPolicyNet(

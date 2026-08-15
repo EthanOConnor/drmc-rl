@@ -29,21 +29,27 @@ def _groups(channels: int) -> int:
 class _FiLMResidual(nn.Module):
     def __init__(self, channels: int, cond_dim: int) -> None:
         super().__init__()
-        groups = _groups(channels)
-        self.norm1 = nn.GroupNorm(groups, channels)
-        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.norm2 = nn.GroupNorm(groups, channels)
-        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.film = nn.Linear(cond_dim, 4 * channels)
+        inner = max(32, channels // 2)
+        self.norm1 = nn.GroupNorm(_groups(channels), channels)
+        self.reduce = nn.Conv2d(channels, inner, 1)
+        self.norm2 = nn.GroupNorm(_groups(inner), inner)
+        self.spatial = nn.Conv2d(inner, inner, 3, padding=1)
+        self.expand = nn.Conv2d(inner, channels, 1)
+        self.film = nn.Linear(cond_dim, 2 * channels + 2 * inner)
+        self.channels = channels
+        self.inner = inner
 
     def forward(self, x: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        scale1, shift1, scale2, shift2 = self.film(cond).chunk(4, dim=-1)
+        film = self.film(cond)
+        split = (self.channels, self.channels, self.inner, self.inner)
+        scale1, shift1, scale2, shift2 = film.split(split, dim=-1)
         y = self.norm1(x)
         y = y * (1.0 + scale1[:, :, None, None]) + shift1[:, :, None, None]
-        y = self.conv1(F.silu(y))
+        y = self.reduce(F.silu(y))
         y = self.norm2(y)
         y = y * (1.0 + scale2[:, :, None, None]) + shift2[:, :, None, None]
-        return x + self.conv2(F.silu(y))
+        y = self.spatial(F.silu(y))
+        return x + self.expand(F.silu(y))
 
 
 class _SharedBottleEncoder(nn.Module):
@@ -114,6 +120,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         value_atoms: int = 51,
         conditioned_trunk: bool = True,
         opponent_features: bool = True,
+        cross_ff_mult: int = 2,
     ) -> None:
         super().__init__()
         if board_channels != 16:
@@ -166,14 +173,24 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             nn.Linear(1, cost_embed_dim), nn.SiLU(), nn.Linear(cost_embed_dim, cost_embed_dim)
         )
         patch_dim = 2 * 4 * patch_kernel * patch_kernel
-        candidate_in = pos_embed_dim + cost_embed_dim + patch_dim + 4 * d_model
         self.candidate = nn.Sequential(
-            nn.Linear(candidate_in, cand_hidden_dim),
+            nn.Linear(2 * d_model, cand_hidden_dim),
             nn.SiLU(),
             nn.Linear(cand_hidden_dim, d_model),
         )
+        projection_dim = d_model // 2
+        self.pose_cost = nn.Sequential(
+            nn.Linear(pos_embed_dim + cost_embed_dim, projection_dim), nn.SiLU()
+        )
+        self.patch_projection = nn.Sequential(nn.Linear(patch_dim, projection_dim), nn.SiLU())
+        self.local_projection = nn.Sequential(
+            nn.Linear(2 * d_model, projection_dim), nn.SiLU()
+        )
+        self.threat_projection = nn.Sequential(
+            nn.Linear(2 * d_model, projection_dim), nn.SiLU()
+        )
         self.candidate_blocks = nn.ModuleList(
-            [_TokenBlock(d_model, transformer_heads, transformer_ff_mult) for _ in range(cross_layers)]
+            [_TokenBlock(d_model, transformer_heads, cross_ff_mult) for _ in range(cross_layers)]
         )
         self.policy = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model))
         self.value_head = nn.Sequential(
@@ -182,6 +199,14 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         self.register_buffer("value_support", torch.linspace(-1.0, 1.0, value_atoms), persistent=False)
         self.register_buffer("_dr", torch.tensor([0, 1, 0, -1], dtype=torch.int64), persistent=False)
         self.register_buffer("_dc", torch.tensor([1, 0, -1, 0], dtype=torch.int64), persistent=False)
+        radius = self.patch_kernel // 2
+        padded_width = GRID_W + 2 * radius
+        offsets = [
+            dy * padded_width + dx
+            for dy in range(-radius, radius + 1)
+            for dx in range(-radius, radius + 1)
+        ]
+        self.register_buffer("_patch_offsets", torch.tensor(offsets), persistent=False)
 
     @staticmethod
     def _gather_map(fmap: torch.Tensor, row: torch.Tensor, col: torch.Tensor) -> torch.Tensor:
@@ -192,9 +217,16 @@ class G5CandidatePlacementPolicyNet(nn.Module):
 
     def _patch(self, planes: torch.Tensor, row: torch.Tensor, col: torch.Tensor) -> torch.Tensor:
         radius = self.patch_kernel // 2
-        unfolded = F.unfold(planes, self.patch_kernel, padding=radius)
-        index = row * GRID_W + col
-        return unfolded.gather(2, index.unsqueeze(1).expand(-1, unfolded.shape[1], -1)).transpose(1, 2)
+        padded_width = GRID_W + 2 * radius
+        padded = F.pad(planes, (radius, radius, radius, radius))
+        flat = padded.flatten(2)
+        center = (row + radius) * padded_width + col + radius
+        index = center.unsqueeze(-1) + self._patch_offsets.view(1, 1, -1)
+        expanded = index.unsqueeze(1).expand(-1, planes.shape[1], -1, -1).flatten(2)
+        patch = flat.gather(2, expanded)
+        return patch.reshape(planes.shape[0], planes.shape[1], row.shape[1], -1).permute(
+            0, 2, 1, 3
+        ).flatten(2)
 
     def forward(
         self,
@@ -265,7 +297,16 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         threat = torch.cat(
             (opponent_columns.gather(1, col_index), opponent_columns.gather(1, col2_index)), dim=-1
         )
-        candidate = self.candidate(torch.cat((pose, cost, patches, own_local, threat), dim=-1))
+        candidate_features = torch.cat(
+            (
+                self.pose_cost(torch.cat((pose, cost), dim=-1)),
+                self.patch_projection(patches),
+                self.local_projection(own_local),
+                self.threat_projection(threat),
+            ),
+            dim=-1,
+        )
+        candidate = self.candidate(candidate_features)
         candidate = candidate + global_context.unsqueeze(1)
         padding = ~valid
         safe_padding = padding & ~padding.all(dim=1, keepdim=True)
