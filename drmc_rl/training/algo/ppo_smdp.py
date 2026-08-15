@@ -1448,6 +1448,7 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         # Current entropy coefficient (annealed)
         entropy_coef = self._get_entropy_coef(step=schedule_step)
+        effective_schedule_step = self.global_step if schedule_step is None else schedule_step
 
         # Search-distillation targets (docs/SEARCH_DISTILL.md). None unless the
         # feature is enabled AND this batch contains searched decisions, so the
@@ -1458,7 +1459,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         sd_kl_sum: Optional[torch.Tensor] = None
         sd_kl_n: Optional[torch.Tensor] = None
         if self.teacher_distill_cfg.enabled:
-            sd_beta, sd_value_mix = self.teacher_distill_cfg.weights(schedule_step)
+            sd_beta, sd_value_mix = self.teacher_distill_cfg.weights(effective_schedule_step)
         else:
             sd_beta = float(self.search_distill_cfg.beta)
             sd_value_mix = float(self.search_distill_cfg.value_mix)
