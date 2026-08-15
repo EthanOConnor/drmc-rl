@@ -17,11 +17,13 @@ import random
 import signal
 import re
 import subprocess
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from drmc_rl.arena.ratings import RatingConfig, RatingConvergenceError
 from drmc_rl.arena.store import Agent, ArenaStore
 from tools.tournament import GameSpec, VsMatchRunner, sprt_bounds, sprt_llr
 
@@ -271,14 +273,50 @@ def utc_timestamp() -> str:
 
 
 def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]:
-    """Choose the most useful matchup, retaining coverage of every lineage era."""
+    """Sample matchups by expected posterior information gain per unit cost."""
     champion = next((a for a in agents if a.status == "champion"), None)
+    information = store.matchup_information()
+    counts = store.matchup_counts()
+    if information:
+        maximum_information = max(information.values(), default=1e-6)
+        weighted: list[tuple[float, Agent, Agent]] = []
+        for i, a in enumerate(agents):
+            for b in agents[i + 1:]:
+                key = tuple(sorted((a.id, b.id)))
+                games = counts.get(key, 0)
+                # A missing posterior edge means a newly registered entrant;
+                # give it an intentionally high provisional information value
+                # until the roster-change HMC fit publishes.
+                gain = information.get(key, maximum_information * 2.0 / (1.0 + games))
+                weight = max(gain, maximum_information * 1e-4)
+                statuses = {a.status, b.status}
+                if "provisional" in statuses:
+                    weight *= 6.0
+                if "candidate" in statuses:
+                    weight *= 3.0
+                if a.status == b.status == "candidate":
+                    weight *= 1.5
+                if (
+                    champion
+                    and champion.id in {a.id, b.id}
+                    and "candidate" in statuses
+                ):
+                    weight *= 1.5
+                # Search games are useful but materially more expensive; use
+                # information per approximate compute cost rather than count.
+                if a.mode != "plain" or b.mode != "plain":
+                    weight *= 0.15
+                weighted.append((weight, a, b))
+        if not weighted:
+            raise RuntimeError("arena needs at least two active agents")
+        _, a, b = random.choices(weighted, weights=[item[0] for item in weighted], k=1)[0]
+        return a, b
+
+    # Bootstrap fallback before the first posterior exists.
     scored: list[tuple[float, Agent, Agent]] = []
-    now = time.time()
-    del now  # reserved for age weighting once timestamps become material
     for i, a in enumerate(agents):
         for b in agents[i + 1:]:
-            n = len(store.matchup_games(a.id, b.id))
+            n = counts.get(tuple(sorted((a.id, b.id))), 0)
             priority = 1.0 / (1.0 + n)
             statuses = {a.status, b.status}
             # Establish a connected comparison graph before spending heavily on
@@ -363,6 +401,57 @@ def run_worker(args: argparse.Namespace) -> None:
         store.close()
 
 
+def rating_config(args: argparse.Namespace) -> RatingConfig:
+    return RatingConfig(
+        chains=args.rating_chains,
+        warmup=args.rating_warmup,
+        samples=args.rating_samples,
+        seed=args.rating_seed,
+    )
+
+
+def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None) -> None:
+    """Keep a converged posterior cache current without blocking match play."""
+
+    stopped = stopped or threading.Event()
+    while not stopped.is_set():
+        store = ArenaStore(args.db)
+        try:
+            if store.ratings_need_refresh(min_new_matches=args.rating_refresh_games):
+                started = time.monotonic()
+                result = store.update_ratings(
+                    rating_config(args),
+                    min_new_matches=args.rating_refresh_games,
+                    full_refresh_matches=args.rating_full_refresh_games,
+                    min_importance_ess_fraction=args.rating_min_ess_fraction,
+                )
+                if result is not None:
+                    diagnostics = result["diagnostics"]
+                    quality = (
+                        f"importance ESS {diagnostics['importance_ess']:.0f}"
+                        if result["method"] == "sequential"
+                        else f"R-hat {diagnostics['max_rhat']:.3f}, "
+                        f"ESS {diagnostics['min_ess']:.0f}"
+                    )
+                    print(
+                        f"ratings: {result['method']} fit {result['id']} over "
+                        f"{result['match_count']} games in "
+                        f"{time.monotonic() - started:.3f}s; {quality}",
+                        flush=True,
+                    )
+        except RatingConvergenceError as error:
+            # Never publish a suspect posterior. The last converged fit remains
+            # visible and the next polling interval retries from fresh chains.
+            print(f"ratings: fit rejected: {error}", flush=True)
+        except Exception as error:
+            print(f"ratings: update failed: {type(error).__name__}: {error}", flush=True)
+        finally:
+            store.close()
+        if getattr(args, "once", False):
+            return
+        stopped.wait(args.rating_poll)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     db: Path
 
@@ -421,8 +510,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def serve(args: argparse.Namespace) -> None:
     DashboardHandler.db = Path(args.db)
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
+    rating_stop = threading.Event()
+    rating_thread = None
+    if args.ratings:
+        rating_thread = threading.Thread(
+            target=rating_loop, args=(args, rating_stop), name="arena-ratings", daemon=True
+        )
+        rating_thread.start()
     print(f"arena dashboard: http://{args.host}:{args.port}", flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        rating_stop.set()
+        if rating_thread is not None:
+            rating_thread.join(timeout=5)
+
+
+def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--rating-chains", type=int, default=4)
+    parser.add_argument("--rating-warmup", type=int, default=800)
+    parser.add_argument("--rating-samples", type=int, default=1_200)
+    parser.add_argument("--rating-seed", type=int, default=0xD0C70A11)
+    parser.add_argument("--rating-refresh-games", type=int, default=16)
+    parser.add_argument("--rating-full-refresh-games", type=int, default=512)
+    parser.add_argument("--rating-min-ess-fraction", type=float, default=0.50)
+    parser.add_argument("--rating-poll", type=float, default=30.0)
 
 
 def main() -> None:
@@ -445,6 +557,11 @@ def main() -> None:
     web = sub.add_parser("serve")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8097)
+    web.add_argument("--ratings", action=argparse.BooleanOptionalAction, default=True)
+    add_rating_arguments(web)
+    rate = sub.add_parser("rate")
+    rate.add_argument("--once", action="store_true")
+    add_rating_arguments(rate)
     worker = sub.add_parser("worker")
     worker.add_argument("--device", default="cuda")
     worker.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 4) // 2))
@@ -475,6 +592,8 @@ def main() -> None:
         run_telemetry(args)
     elif args.command == "serve":
         serve(args)
+    elif args.command == "rate":
+        rating_loop(args)
     else:
         run_worker(args)
 

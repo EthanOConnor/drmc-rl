@@ -2,6 +2,7 @@ from pathlib import Path
 import gzip
 import json
 
+from drmc_rl.arena.ratings import RatingConfig
 from drmc_rl.arena.store import ArenaStore
 from tools.arena import discover_once, maybe_promote, pair_priority, parse_telemetry
 
@@ -9,6 +10,11 @@ from tools.arena import discover_once, maybe_promote, pair_priority, parse_telem
 def add(store: ArenaStore, agent_id: str, status: str, generation: int = 0) -> None:
     store.register(agent_id=agent_id, name=agent_id.title(), family="central",
                    generation=generation, checkpoint=f"/{agent_id}.pt.gz", status=status)
+
+
+FAST_RATING = RatingConfig(
+    chains=2, warmup=80, samples=120, require_convergence=False, seed=7
+)
 
 
 def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
@@ -19,10 +25,62 @@ def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     for seed in range(12):
         store.record("new", "champ", seed=seed, side=seed % 2, winner="a",
                      match_len_sec=60, decisions=20)
+    store.refit_ratings(FAST_RATING)
     snap = store.snapshot()
     assert snap["games"] == 12
     assert snap["agents"][0]["id"] == "new"
     assert {a["status"] for a in snap["agents"]} == {"lineage", "champion", "candidate"}
+
+
+def test_snapshot_initializes_unplayed_child_at_parent_rating(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "anchor", "lineage")
+    add(store, "parent", "champion", 1)
+    store.register(
+        agent_id="child", name="Child", family="central", generation=2,
+        parent_id="parent", checkpoint="/child.pt.gz", status="candidate",
+    )
+    for seed in range(20):
+        store.record(
+            "parent", "anchor", seed=seed, side=seed % 2,
+            winner="a" if seed < 14 else "b", match_len_sec=60, decisions=20,
+        )
+    store.refit_ratings(FAST_RATING)
+    by_id = {agent["id"]: agent for agent in store.snapshot()["agents"]}
+    assert by_id["child"]["games"] == 0
+    assert abs(by_id["child"]["rating"] - by_id["parent"]["rating"]) < 35
+    assert by_id["child"]["rating95"] > by_id["parent"]["rating95"]
+    assert by_id["child"]["rating_low"] < by_id["child"]["rating_high"]
+
+
+def test_snapshot_uses_cached_posterior_and_reports_staleness(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    for seed in range(12):
+        store.record(
+            "alpha", "beta", seed=seed, side=seed % 2,
+            winner="a" if seed < 8 else "b", match_len_sec=60, decisions=20,
+        )
+    fit = store.refit_ratings(FAST_RATING)
+    snapshot = store.snapshot()
+    assert snapshot["ratings"]["model"] == "hierarchical-davidson-hmc-v1"
+    assert snapshot["ratings"]["fit_id"] == fit["id"]
+    assert snapshot["ratings"]["status"] == "current"
+    store.record("alpha", "beta", seed=99, side=1, winner="a",
+                 match_len_sec=60, decisions=20)
+    stale = store.snapshot()
+    assert stale["ratings"]["status"] == "updating"
+    assert stale["ratings"]["pending_games"] == 1
+    update = store.update_ratings(
+        FAST_RATING, min_new_matches=1, full_refresh_matches=100,
+        min_importance_ess_fraction=0.05,
+    )
+    assert update is not None
+    assert update["method"] == "sequential"
+    current = store.snapshot()
+    assert current["ratings"]["status"] == "current"
+    assert current["ratings"]["method"] == "sequential"
 
 
 def test_snapshot_exposes_record_and_terminal_causes(tmp_path: Path) -> None:
@@ -70,6 +128,36 @@ def test_scheduler_eventually_prefers_underserved_historical_pair(tmp_path: Path
                      match_len_sec=60, decisions=20)
     a, b = pair_priority(store, store.agents())
     assert "old" in {a.id, b.id}
+
+
+def test_scheduler_weights_posterior_information_gain(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    for agent_id in ("alpha", "beta", "gamma"):
+        add(store, agent_id, "lineage")
+    store.matchup_information = lambda: {  # type: ignore[method-assign]
+        ("alpha", "beta"): 0.20,
+        ("alpha", "gamma"): 0.01,
+        ("beta", "gamma"): 0.01,
+    }
+    store.matchup_counts = lambda: {}  # type: ignore[method-assign]
+    import random
+    random.seed(5)
+    selections = [
+        frozenset(agent.id for agent in pair_priority(store, store.agents()))
+        for _ in range(300)
+    ]
+    assert selections.count(frozenset(("alpha", "beta"))) > 240
+
+
+def test_matchup_counts_canonicalizes_both_agent_orders(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    store.record("alpha", "beta", seed=1, side=0, winner="a",
+                 match_len_sec=10, decisions=4)
+    store.record("beta", "alpha", seed=2, side=1, winner="b",
+                 match_len_sec=10, decisions=4)
+    assert store.matchup_counts() == {("alpha", "beta"): 2}
 
 
 def test_discovery_names_and_links_candidate(tmp_path: Path) -> None:
