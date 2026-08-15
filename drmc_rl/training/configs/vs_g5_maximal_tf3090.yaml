@@ -56,7 +56,8 @@ env:
   gpu_planner: true
   direct_policy_batch: true
   state_repr: bitplane_bottle_conn_mask_vs
-  num_pairs: 192
+  # 200 pairs divides decisions_per_update exactly (64 policy waves).
+  num_pairs: 200
   frame_stack: 1
   randomize_rng: true
   level: 14
