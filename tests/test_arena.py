@@ -1,10 +1,14 @@
 from pathlib import Path
 import gzip
 import json
+import threading
+from http.server import ThreadingHTTPServer
 
 from drmc_rl.arena.ratings import RatingConfig
+from drmc_rl.arena.remote import ArenaRemoteClient, PROTOCOL_VERSION
 from drmc_rl.arena.store import ArenaStore
 from tools.arena import (
+    DashboardHandler,
     discover_once,
     matchup_schedule,
     maybe_promote,
@@ -50,6 +54,130 @@ def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     assert snap["games"] == 12
     assert snap["agents"][0]["id"] == "new"
     assert {a["status"] for a in snap["agents"]} == {"lineage", "champion", "candidate"}
+
+
+def test_replays_are_content_addressed_outside_sqlite(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    frames = [{"frame": 1, "a": [[1]], "b": [[2]]}]
+    assert store.record(
+        "alpha", "beta", seed=1, side=0, winner="a", match_len_sec=1,
+        decisions=1, replay=frames, match_key="match-1",
+    )
+    row = store.conn.execute(
+        "SELECT replay,replay_ref,match_key FROM matches"
+    ).fetchone()
+    assert row["replay"] is None
+    assert row["match_key"] == "match-1"
+    assert (store.replay_dir / row["replay_ref"]).is_file()
+    assert store.replay(1)["replay"] == frames
+    assert not store.record(
+        "alpha", "beta", seed=1, side=0, winner="a", match_len_sec=1,
+        decisions=1, replay=frames, match_key="match-1",
+    )
+
+
+def test_expired_lease_is_reclaimed_with_a_new_claim(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    payload = {"protocol_version": 1, "specs": [{"match_id": "m1"}]}
+    first = store.create_lease(
+        lease_id="lease", worker_id="one", agent_a="alpha", agent_b="beta",
+        payload=payload, now=10, ttl_seconds=5,
+    )
+    reclaimed, _token = store.claim_expired_lease(
+        worker_id="two", now=16, ttl_seconds=10
+    )
+    assert reclaimed["lease_id"] == "lease"
+    assert reclaimed["claim_token"] != first["claim_token"]
+    row = store.conn.execute("SELECT worker_id,attempts FROM leases").fetchone()
+    assert (row["worker_id"], row["attempts"]) == ("two", 2)
+
+
+def test_legacy_inline_replays_can_be_externalized(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite", replay_dir=tmp_path / "blobs")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    frames = [{"frame": 7}]
+    store.conn.execute(
+        "INSERT INTO matches(agent_a,agent_b,seed,side_assignment,winner,match_len_sec,"
+        "decisions,terminal_reason,replay,created) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        ("alpha", "beta", 1, 0, "a", 1.0, 2, "clear", json.dumps(frames), "now"),
+    )
+    store.conn.commit()
+    assert store.externalize_replays(limit=10) == 1
+    row = store.conn.execute("SELECT replay,replay_ref FROM matches").fetchone()
+    assert row["replay"] is None and row["replay_ref"]
+    assert store.replay(1)["replay"] == frames
+
+
+def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Path) -> None:
+    db = tmp_path / "arena.sqlite"
+    checkpoint_a = tmp_path / "alpha.pt.gz"
+    checkpoint_b = tmp_path / "beta.pt.gz"
+    checkpoint_a.write_bytes(b"alpha-checkpoint")
+    checkpoint_b.write_bytes(b"beta-checkpoint")
+    store = ArenaStore(db)
+    store.register(
+        agent_id="alpha", name="Alpha", family="test", generation=0,
+        checkpoint=str(checkpoint_a), status="lineage",
+    )
+    store.register(
+        agent_id="beta", name="Beta", family="test", generation=1,
+        checkpoint=str(checkpoint_b), status="candidate",
+    )
+    store.close()
+
+    DashboardHandler.db = db
+    DashboardHandler.replay_dir = tmp_path / "replays"
+    DashboardHandler.worker_token = "test-token"
+    DashboardHandler.lease_ttl = 60
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        client = ArenaRemoteClient(
+            f"http://127.0.0.1:{server.server_port}", "test-token",
+            checkpoint_cache=tmp_path / "cache",
+        )
+        assert client.capabilities()["protocol_version"] == PROTOCOL_VERSION
+        lease = client.lease({
+            "protocol_version": PROTOCOL_VERSION, "worker_id": "worker-1",
+            "device": "cpu", "threads": 1, "batch_size": 2,
+        })
+        assert lease is not None and len(lease["specs"]) == 2
+        renewed = client.renew(lease["lease_id"], lease["claim_token"])
+        assert renewed["expires"] > lease["expires"]
+        assert client.materialize_checkpoint(lease["agent_a"]).is_file()
+        results = [{
+            "match_id": spec["match_id"], "winner": "a",
+            "match_len_sec": 1.5, "decisions": 3,
+            "terminal_reason": "clear", "frames": 90,
+            "replay": [{"frame": 1}],
+        } for spec in lease["specs"]]
+        submission = {
+            "protocol_version": PROTOCOL_VERSION,
+            "claim_token": lease["claim_token"],
+            "results": results,
+            "worker_sample": {
+                "worker_id": "worker-1", "device": "cpu", "threads": 1,
+                "batch_size": 2, "agent_a": lease["agent_a"]["id"],
+                "agent_b": lease["agent_b"]["id"], "games": 2,
+                "simulated_frames": 180, "decisions": 6, "wall_seconds": 2.0,
+            },
+        }
+        assert client.submit(lease["lease_id"], submission)["accepted"] is True
+        assert client.submit(lease["lease_id"], submission)["accepted"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    verify = ArenaStore(db, replay_dir=tmp_path / "replays")
+    assert verify.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 2
+    assert verify.conn.execute("SELECT COUNT(*) FROM worker_samples").fetchone()[0] == 1
+    assert verify.conn.execute("SELECT status FROM leases").fetchone()[0] == "complete"
 
 
 def test_scheduler_focus_is_reversible_and_preserves_agents(tmp_path: Path) -> None:

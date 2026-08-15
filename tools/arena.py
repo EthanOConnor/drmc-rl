@@ -9,22 +9,31 @@ most games on candidates and the current champion.
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import math
 import mimetypes
 import os
 import random
+import secrets
 import signal
 import re
+import socket
 import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from drmc_rl.arena.ratings import RatingConfig, RatingConvergenceError
+from drmc_rl.arena.remote import (
+    ArenaRemoteClient,
+    PROTOCOL_VERSION,
+    content_sha256,
+)
 from drmc_rl.arena.store import DEFAULT_SCHEDULER_BOOST, Agent, ArenaStore
 from tools.tournament import (
     ARENA_MAX_DECISIONS_PER_SIDE,
@@ -41,6 +50,32 @@ STATIC = Path(__file__).with_name("arena_web")
 SCHEDULER_TEMPERATURE = 1.25
 SCHEDULER_COVERAGE_MIX = 0.10
 SEARCH_COMPUTE_FACTOR = 0.15
+
+
+@functools.lru_cache(maxsize=256)
+def _file_sha256_cached(path: str, size: int, modified_ns: int) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(8 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def file_sha256(path: Path) -> str:
+    stat = path.stat()
+    return _file_sha256_cached(str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+
+
+def agent_wire(agent: Agent) -> dict[str, Any]:
+    checkpoint = Path(agent.checkpoint)
+    return {
+        "id": agent.id,
+        "name": agent.name,
+        "mode": agent.mode,
+        "params": agent.params,
+        "checkpoint_name": checkpoint.name,
+        "checkpoint_sha256": file_sha256(checkpoint),
+    }
 
 
 def stable_id(name: str, checkpoint: str) -> str:
@@ -188,6 +223,24 @@ def run_telemetry(args: argparse.Namespace) -> None:
         if args.once:
             break
         time.sleep(args.poll)
+
+
+def run_externalize_replays(args: argparse.Namespace) -> None:
+    store = ArenaStore(args.db, replay_dir=args.replay_dir)
+    moved = 0
+    try:
+        while True:
+            count = store.externalize_replays(limit=args.batch)
+            moved += count
+            if count:
+                print(f"externalized {moved:,} replay rows", flush=True)
+            if count < args.batch:
+                break
+        if args.vacuum:
+            store.conn.execute("VACUUM")
+    finally:
+        store.close()
+    print(f"externalized {moved:,} replay rows total", flush=True)
 
 
 _AFTERSTATE_PROGRESS = re.compile(
@@ -593,6 +646,124 @@ def run_worker(args: argparse.Namespace) -> None:
         store.close()
 
 
+def run_remote_worker(args: argparse.Namespace) -> None:
+    token = Path(args.token_file).expanduser().read_text().strip()
+    client = ArenaRemoteClient(
+        args.coordinator, token, checkpoint_cache=args.checkpoint_cache,
+        timeout=args.request_timeout,
+    )
+    client.capabilities()
+    runner = VsMatchRunner(
+        level=args.level, speed_setting=args.speed_setting, num_pairs=args.batch,
+        device=args.device, threads=args.threads, run_seed=args.seed,
+        state_repr=args.state_repr, replay_sample_rate=args.replay_sample_rate,
+        max_decisions_per_side=args.max_decisions_per_side,
+    )
+    worker_id = args.worker_id or f"{socket.gethostname()}-{runner.device}-{os.getpid()}"
+    stopped = False
+
+    def stop(_signum: int, _frame: Any) -> None:
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
+    try:
+        while not stopped:
+            lease = client.lease({
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": worker_id,
+                "device": runner.device,
+                "threads": args.threads,
+                "batch_size": args.batch,
+            })
+            if lease is None:
+                time.sleep(args.poll)
+                continue
+            renewal_stop = threading.Event()
+            renewal_errors: list[Exception] = []
+
+            def renew() -> None:
+                interval = max(5.0, float(lease.get("ttl_seconds", 600)) / 3.0)
+                while not renewal_stop.wait(interval):
+                    try:
+                        client.renew(str(lease["lease_id"]), str(lease["claim_token"]))
+                    except Exception as error:
+                        renewal_errors.append(error)
+                        return
+
+            renewal_thread = threading.Thread(
+                target=renew, name="arena-lease-renewal", daemon=True
+            )
+            renewal_thread.start()
+            try:
+                entries = []
+                for key in ("agent_a", "agent_b"):
+                    wire = lease[key]
+                    checkpoint = client.materialize_checkpoint(wire)
+                    entries.append({
+                        "name": wire["name"], "checkpoint": str(checkpoint),
+                        "mode": wire["mode"], "params": wire["params"],
+                    })
+                specs = [
+                    GameSpec(
+                        game_idx=int(spec["game_idx"]), seed=int(spec["seed"]),
+                        a_side=int(spec["a_side"]),
+                    )
+                    for spec in lease["specs"]
+                ]
+                match_ids = [str(spec["match_id"]) for spec in lease["specs"]]
+                started = time.perf_counter()
+                played = runner.play(entries[0], entries[1], specs)
+                try:
+                    results = [{
+                        "match_id": match_id,
+                        "winner": result.winner,
+                        "match_len_sec": result.match_len_sec,
+                        "decisions": result.decisions,
+                        "terminal_reason": result.terminal_reason,
+                        "frames": int(result.frames or round(result.match_len_sec * NES_FPS)),
+                        "replay": result.replay,
+                    } for match_id, result in zip(match_ids, played, strict=True)]
+                finally:
+                    played.close()
+            finally:
+                renewal_stop.set()
+                renewal_thread.join(timeout=5)
+            if renewal_errors:
+                print(f"worker: lease renewal warning: {renewal_errors[-1]}", flush=True)
+            wall = time.perf_counter() - started
+            submission = {
+                "protocol_version": PROTOCOL_VERSION,
+                "claim_token": lease["claim_token"],
+                "results": results,
+                "worker_sample": {
+                    "worker_id": worker_id,
+                    "device": runner.device,
+                    "threads": args.threads,
+                    "batch_size": args.batch,
+                    "agent_a": lease["agent_a"]["id"],
+                    "agent_b": lease["agent_b"]["id"],
+                    "games": len(results),
+                    "simulated_frames": sum(int(item["frames"]) for item in results),
+                    "decisions": sum(int(item["decisions"]) for item in results),
+                    "wall_seconds": wall,
+                },
+            }
+            # A lost response is safe to retry because the coordinator hashes
+            # the canonical submission and treats an identical replay as done.
+            for attempt in range(5):
+                try:
+                    client.submit(str(lease["lease_id"]), submission)
+                    break
+                except Exception:
+                    if attempt == 4:
+                        raise
+                    time.sleep(min(2 ** attempt, 8))
+    finally:
+        runner.close()
+
+
 def rating_config(args: argparse.Namespace) -> RatingConfig:
     return RatingConfig(
         chains=args.rating_chains,
@@ -646,11 +817,72 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
 
 class DashboardHandler(BaseHTTPRequestHandler):
     db: Path
+    replay_dir: Path | None = None
+    worker_token: str | None = None
+    lease_ttl: float = 600.0
+    lease_seed: int = 0xA8E4
+    lease_lock = threading.Lock()
+
+    def _authorized(self) -> bool:
+        expected = self.worker_token
+        if expected is None:
+            return False
+        supplied = self.headers.get("Authorization", "")
+        return secrets.compare_digest(supplied, f"Bearer {expected}")
+
+    def _send_json(self, status: int, value: Any) -> None:
+        payload = json.dumps(value, separators=(",", ":")).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def _read_json(self, *, limit: int = 64 << 20) -> dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0 or length > limit:
+            raise ValueError("invalid request body size")
+        payload = json.loads(self.rfile.read(length))
+        if not isinstance(payload, dict):
+            raise ValueError("request body must be an object")
+        return payload
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        if path == "/api/v1/capabilities":
+            self._send_json(200, {
+                "protocol_version": PROTOCOL_VERSION,
+                "leases": True,
+                "checkpoint_delivery": True,
+                "idempotent_submission": True,
+                "external_replays": True,
+            })
+            return
+        if path.startswith("/api/v1/checkpoints/"):
+            if not self._authorized():
+                self._send_json(401, {"error": "unauthorized"})
+                return
+            agent_id = unquote(path.rsplit("/", 1)[1])
+            store = ArenaStore(self.db, replay_dir=self.replay_dir)
+            try:
+                try:
+                    checkpoint = Path(store.agent(agent_id).checkpoint)
+                except KeyError:
+                    self.send_error(404)
+                    return
+                payload = checkpoint.read_bytes()
+            finally:
+                store.close()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("X-Content-SHA256", hashlib.sha256(payload).hexdigest())
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         if path == "/api/snapshot":
-            store = ArenaStore(self.db)
+            store = ArenaStore(self.db, replay_dir=self.replay_dir)
             try:
                 snapshot = store.snapshot()
                 snapshot["scheduler"] = scheduler_snapshot(store)
@@ -670,7 +902,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             except ValueError:
                 self.send_error(400)
                 return
-            store = ArenaStore(self.db)
+            store = ArenaStore(self.db, replay_dir=self.replay_dir)
             try:
                 replay = store.replay(match_id)
             finally:
@@ -697,12 +929,143 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def do_POST(self) -> None:  # noqa: N802
+        path = self.path.split("?", 1)[0]
+        if not self._authorized():
+            self._send_json(401, {"error": "unauthorized"})
+            return
+        try:
+            request = self._read_json()
+            if int(request.get("protocol_version", -1)) != PROTOCOL_VERSION:
+                self._send_json(409, {"error": "protocol version mismatch"})
+                return
+            if path == "/api/v1/leases":
+                self._lease(request)
+                return
+            renew_suffix = "/renew"
+            if path.startswith("/api/v1/leases/") and path.endswith(renew_suffix):
+                lease_id = unquote(path[len("/api/v1/leases/"):-len(renew_suffix)])
+                self._renew(lease_id, request)
+                return
+            prefix, suffix = "/api/v1/leases/", "/results"
+            if path.startswith(prefix) and path.endswith(suffix):
+                lease_id = unquote(path[len(prefix):-len(suffix)])
+                self._submit(lease_id, request)
+                return
+            self.send_error(404)
+        except (KeyError, TypeError, ValueError) as error:
+            self._send_json(400, {"error": str(error)})
+        except PermissionError as error:
+            self._send_json(409, {"error": str(error)})
+        except Exception as error:
+            print(f"coordinator: {type(error).__name__}: {error}", flush=True)
+            self._send_json(500, {"error": "internal coordinator error"})
+
+    def _lease(self, request: dict[str, Any]) -> None:
+        with self.lease_lock:
+            self._lease_locked(request)
+
+    def _lease_locked(self, request: dict[str, Any]) -> None:
+        worker_id = str(request["worker_id"]).strip()
+        batch_size = int(request["batch_size"])
+        if not worker_id or not 1 <= batch_size <= 64:
+            raise ValueError("invalid worker_id or batch_size")
+        now = time.time()
+        store = ArenaStore(self.db, replay_dir=self.replay_dir)
+        try:
+            reclaimed = store.claim_expired_lease(
+                worker_id=worker_id, now=now, ttl_seconds=self.lease_ttl
+            )
+            if reclaimed is not None:
+                payload, _token = reclaimed
+                self._send_json(200, payload)
+                return
+            agents = eligible_agents(store)
+            if len(agents) < 2:
+                self.send_response(204)
+                self.end_headers()
+                return
+            a, b = pair_priority(store, agents)
+            serial = store.reserve_serials(batch_size)
+            used = store.pair_seed_assignments(a.id, b.id)
+            specs = []
+            for offset in range(batch_size):
+                game_index = serial + offset
+                seed = (self.lease_seed + game_index) & 0xFFFF
+                side = game_index % 2
+                for _candidate in range(1 << 16):
+                    if (seed, side) not in used:
+                        break
+                    seed = (seed + 1) & 0xFFFF
+                else:
+                    raise RuntimeError(
+                        f"seed space exhausted for {a.id} vs {b.id}, side {side}"
+                    )
+                used.add((seed, side))
+                match_id = hashlib.sha256(
+                    f"{a.id}\0{b.id}\0{game_index}\0{seed}\0{side}".encode()
+                ).hexdigest()
+                specs.append({
+                    "match_id": match_id, "game_idx": game_index,
+                    "seed": seed, "a_side": side,
+                })
+            payload = {
+                "protocol_version": PROTOCOL_VERSION,
+                "agent_a": agent_wire(a), "agent_b": agent_wire(b), "specs": specs,
+                "ttl_seconds": self.lease_ttl,
+            }
+            lease = store.create_lease(
+                lease_id=secrets.token_hex(16), worker_id=worker_id,
+                agent_a=a.id, agent_b=b.id, payload=payload, now=now,
+                ttl_seconds=self.lease_ttl,
+            )
+            self._send_json(200, lease)
+        finally:
+            store.close()
+
+    def _submit(self, lease_id: str, request: dict[str, Any]) -> None:
+        results = request["results"]
+        sample = request["worker_sample"]
+        if not isinstance(results, list) or not isinstance(sample, dict):
+            raise ValueError("invalid result submission")
+        digest = content_sha256({"results": results, "worker_sample": sample})
+        store = ArenaStore(self.db, replay_dir=self.replay_dir)
+        try:
+            accepted = store.submit_lease(
+                lease_id=lease_id, claim_token=str(request["claim_token"]),
+                submission_sha256=digest, results=results, worker_sample=sample,
+                now=time.time(),
+            )
+        finally:
+            store.close()
+        self._send_json(200, {"accepted": accepted, "submission_sha256": digest})
+
+    def _renew(self, lease_id: str, request: dict[str, Any]) -> None:
+        store = ArenaStore(self.db, replay_dir=self.replay_dir)
+        try:
+            expires = store.renew_lease(
+                lease_id=lease_id, claim_token=str(request["claim_token"]),
+                now=time.time(), ttl_seconds=self.lease_ttl,
+            )
+        finally:
+            store.close()
+        self._send_json(200, {"expires": expires, "ttl_seconds": self.lease_ttl})
+
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"dashboard: {fmt % args}", flush=True)
 
 
 def serve(args: argparse.Namespace) -> None:
     DashboardHandler.db = Path(args.db)
+    DashboardHandler.replay_dir = None if args.replay_dir is None else Path(args.replay_dir)
+    DashboardHandler.lease_ttl = float(args.lease_ttl)
+    DashboardHandler.lease_seed = int(args.lease_seed)
+    DashboardHandler.worker_token = (
+        None if args.worker_token_file is None
+        else Path(args.worker_token_file).expanduser().read_text().strip()
+    )
+    if args.host not in {"127.0.0.1", "localhost", "::1"} and not DashboardHandler.worker_token:
+        raise ValueError("a worker token file is required when serving beyond loopback")
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     rating_stop = threading.Event()
     rating_thread = None
@@ -748,9 +1111,17 @@ def main() -> None:
     telemetry.add_argument("--poll", type=float, default=10)
     telemetry.add_argument("--timeout", type=float, default=20)
     telemetry.add_argument("--once", action="store_true")
+    externalize = sub.add_parser("externalize-replays")
+    externalize.add_argument("--replay-dir", required=True)
+    externalize.add_argument("--batch", type=int, default=1000)
+    externalize.add_argument("--vacuum", action="store_true")
     web = sub.add_parser("serve")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8097)
+    web.add_argument("--worker-token-file")
+    web.add_argument("--lease-ttl", type=float, default=600)
+    web.add_argument("--lease-seed", type=int, default=0xA8E4)
+    web.add_argument("--replay-dir")
     web.add_argument("--ratings", action=argparse.BooleanOptionalAction, default=True)
     add_rating_arguments(web)
     rate = sub.add_parser("rate")
@@ -780,6 +1151,14 @@ def main() -> None:
     worker.add_argument("--max-decisions-per-side", type=int,
                         default=ARENA_MAX_DECISIONS_PER_SIDE,
                         help="adjudicate unresolved games as draws at this placement horizon (0 disables)")
+    worker.add_argument("--coordinator", help="remote arena coordinator base URL")
+    worker.add_argument("--token-file", help="shared worker token file for remote mode")
+    worker.add_argument(
+        "--checkpoint-cache", default="~/.cache/drmc-rl/arena-checkpoints",
+        help="content-addressed checkpoint cache used by remote workers",
+    )
+    worker.add_argument("--request-timeout", type=float, default=60)
+    worker.add_argument("--worker-id")
     args = parser.parse_args()
     if args.command == "register":
         store = ArenaStore(args.db)
@@ -791,6 +1170,8 @@ def main() -> None:
         run_registrar(args)
     elif args.command == "telemetry":
         run_telemetry(args)
+    elif args.command == "externalize-replays":
+        run_externalize_replays(args)
     elif args.command == "serve":
         serve(args)
     elif args.command == "rate":
@@ -808,7 +1189,12 @@ def main() -> None:
         finally:
             store.close()
     else:
-        run_worker(args)
+        if args.coordinator:
+            if not args.token_file:
+                parser.error("worker --coordinator requires --token-file")
+            run_remote_worker(args)
+        else:
+            run_worker(args)
 
 
 if __name__ == "__main__":

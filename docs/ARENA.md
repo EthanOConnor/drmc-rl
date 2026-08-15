@@ -55,6 +55,58 @@ fresh HMC fit every 512 games. Run a
 one-off fit with `uv run python -m tools.arena rate --once`; use `--no-ratings`
 on `serve` only when another supervised `rate` process owns that work.
 
+## Distributed coordinator and workers
+
+SQLite always belongs to exactly one host and stays on that host's local
+filesystem. Never put `arena.sqlite` on SSHFS, SMB, NFS, OneDrive, or another
+network-synchronized directory. Remote machines lease deterministic match
+batches over HTTP and submit immutable results; they never open the database.
+
+Create a private worker token outside the repository on the coordinator, then
+start the dashboard/coordinator on a trusted encrypted network such as
+Tailscale:
+
+```bash
+umask 077
+openssl rand -hex 32 > ~/.config/drmc-rl/arena-worker.token
+uv run python -m tools.arena serve \
+  --host 0.0.0.0 --port 8097 \
+  --worker-token-file ~/.config/drmc-rl/arena-worker.token \
+  --replay-dir /data/drmc-arena/replays
+```
+
+Copy the token through an authenticated channel to each worker and launch it
+without any `--db` access:
+
+```bash
+uv run python -m tools.arena worker \
+  --coordinator http://green:8097 \
+  --token-file ~/.config/drmc-rl/arena-worker.token \
+  --worker-id macbook-mps \
+  --device mps --threads 2 --batch 12
+```
+
+The coordinator reserves globally unique game serials, issues expiring leases,
+and reassigns abandoned work. Workers renew long-running leases in the
+background. Each claim has a fresh secret, each match has a deterministic
+SHA-256 ID, and an identical retried submission is acknowledged without
+creating duplicate games or telemetry. Checkpoints are delivered by the
+authenticated coordinator and cached by content hash on each worker.
+
+New replay samples are gzip-compressed into content-addressed files and the
+database stores only their relative hashes. Before migrating an existing
+database, operate on a local copy while the old arena remains authoritative:
+
+```bash
+uv run python -m tools.arena --db /data/staging/arena.sqlite \
+  externalize-replays --replay-dir /data/drmc-arena/replays --vacuum
+```
+
+Verify the copied database, replay hashes, checkpoint paths, API integration,
+and remote worker throughput before cutover. The final cutover is a brief
+worker pause, WAL checkpoint, checksummed copy, and single-writer ownership
+switch; never run Mac and Green coordinators against the same history.
+
 ## Rating model
 
 Every checkpoint is treated as an immutable player with one fixed latent

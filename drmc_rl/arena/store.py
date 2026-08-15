@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import json
 import gzip
+import hashlib
+import hmac
+import math
+import os
+import secrets
 import sqlite3
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,12 +133,31 @@ CREATE TABLE IF NOT EXISTS worker_samples (
   wall_seconds REAL NOT NULL,
   created TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS arena_state (
+  key TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS leases (
+  id TEXT PRIMARY KEY,
+  agent_a TEXT NOT NULL REFERENCES agents(id),
+  agent_b TEXT NOT NULL REFERENCES agents(id),
+  payload TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'leased',
+  worker_id TEXT NOT NULL,
+  claim_token_hash TEXT NOT NULL,
+  expires REAL NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 1,
+  submission_sha256 TEXT,
+  created TEXT NOT NULL,
+  completed TEXT
+);
 CREATE INDEX IF NOT EXISTS matches_pair ON matches(agent_a, agent_b);
 CREATE INDEX IF NOT EXISTS matches_created ON matches(created);
 CREATE INDEX IF NOT EXISTS matches_outcomes
   ON matches(id, agent_a, agent_b, winner, terminal_reason, side_assignment);
 CREATE INDEX IF NOT EXISTS rating_estimates_agent ON rating_estimates(agent_id, fit_id);
 CREATE INDEX IF NOT EXISTS worker_samples_created ON worker_samples(created);
+CREATE INDEX IF NOT EXISTS leases_status_expires ON leases(status, expires);
 """
 
 
@@ -161,8 +186,9 @@ class Agent:
 
 
 class ArenaStore:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, replay_dir: str | Path | None = None) -> None:
         self.path = Path(path)
+        self.replay_dir = Path(replay_dir) if replay_dir is not None else self.path.parent / "replays"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
@@ -174,6 +200,14 @@ class ArenaStore:
             self.conn.execute(
                 "ALTER TABLE matches ADD COLUMN terminal_reason TEXT NOT NULL DEFAULT 'unknown'"
             )
+        if "match_key" not in columns:
+            self.conn.execute("ALTER TABLE matches ADD COLUMN match_key TEXT")
+        if "replay_ref" not in columns:
+            self.conn.execute("ALTER TABLE matches ADD COLUMN replay_ref TEXT")
+        self.conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS matches_match_key "
+            "ON matches(match_key) WHERE match_key IS NOT NULL"
+        )
         rating_columns = {
             row[1] for row in self.conn.execute("PRAGMA table_info(rating_fits)")
         }
@@ -298,18 +332,227 @@ class ArenaStore:
             metadata=json.loads(row["metadata"]),
         )
 
+    def _store_replay(self, replay: list[dict[str, Any]]) -> str:
+        raw = json.dumps(replay, sort_keys=True, separators=(",", ":")).encode()
+        digest = hashlib.sha256(raw).hexdigest()
+        relative = Path(digest[:2]) / f"{digest}.json.gz"
+        target = self.replay_dir / relative
+        if not target.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            compressed = gzip.compress(raw, compresslevel=6, mtime=0)
+            fd, temporary_name = tempfile.mkstemp(
+                prefix=f".{digest}.", suffix=".tmp", dir=target.parent
+            )
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    stream.write(compressed)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary_name, target)
+            finally:
+                if os.path.exists(temporary_name):
+                    os.unlink(temporary_name)
+        return relative.as_posix()
+
     def record(self, a: str, b: str, *, seed: int, side: int, winner: str,
                match_len_sec: float, decisions: int, terminal_reason: str = "unknown",
-               replay: list[dict[str, Any]] | None = None) -> None:
-        self.conn.execute(
+               replay: list[dict[str, Any]] | None = None,
+               match_key: str | None = None, commit: bool = True) -> bool:
+        replay_ref = self._store_replay(replay) if replay else None
+        cursor = self.conn.execute(
             """INSERT OR IGNORE INTO matches
                (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,
-                terminal_reason,replay,created)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                terminal_reason,replay,replay_ref,match_key,created)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
             (a, b, seed, side, winner, match_len_sec, decisions, terminal_reason,
-             json.dumps(replay, separators=(",", ":")) if replay else None, utc_now()),
+             None, replay_ref, match_key, utc_now()),
+        )
+        if commit:
+            self.conn.commit()
+        return cursor.rowcount > 0
+
+    def reserve_serials(self, count: int) -> int:
+        if count <= 0:
+            raise ValueError("serial reservation count must be positive")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM arena_state WHERE key='next_game_serial'"
+            ).fetchone()
+            if row is None:
+                start = int(self.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
+                self.conn.execute(
+                    "INSERT INTO arena_state(key,value) VALUES('next_game_serial',?)",
+                    (start + count,),
+                )
+            else:
+                start = int(row["value"])
+                self.conn.execute(
+                    "UPDATE arena_state SET value=? WHERE key='next_game_serial'",
+                    (start + count,),
+                )
+            self.conn.commit()
+            return start
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @staticmethod
+    def _claim_hash(token: str) -> str:
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def claim_expired_lease(
+        self, *, worker_id: str, now: float, ttl_seconds: float
+    ) -> tuple[dict[str, Any], str] | None:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT * FROM leases WHERE status='leased' AND expires<=? "
+                "ORDER BY expires,id LIMIT 1", (float(now),),
+            ).fetchone()
+            if row is None:
+                self.conn.commit()
+                return None
+            token = secrets.token_urlsafe(32)
+            self.conn.execute(
+                "UPDATE leases SET worker_id=?,claim_token_hash=?,expires=?,attempts=attempts+1 "
+                "WHERE id=?",
+                (worker_id, self._claim_hash(token), now + ttl_seconds, row["id"]),
+            )
+            self.conn.commit()
+            payload = json.loads(row["payload"])
+            payload.update({"lease_id": row["id"], "claim_token": token,
+                            "expires": now + ttl_seconds})
+            return payload, token
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def create_lease(
+        self, *, lease_id: str, worker_id: str, agent_a: str, agent_b: str,
+        payload: dict[str, Any], now: float, ttl_seconds: float,
+    ) -> dict[str, Any]:
+        token = secrets.token_urlsafe(32)
+        self.conn.execute(
+            "INSERT INTO leases(id,agent_a,agent_b,payload,worker_id,claim_token_hash,"
+            "expires,created) VALUES(?,?,?,?,?,?,?,?)",
+            (lease_id, agent_a, agent_b, json.dumps(payload, sort_keys=True), worker_id,
+             self._claim_hash(token), now + ttl_seconds, utc_now()),
         )
         self.conn.commit()
+        return {**payload, "lease_id": lease_id, "claim_token": token,
+                "expires": now + ttl_seconds}
+
+    def submit_lease(
+        self, *, lease_id: str, claim_token: str, submission_sha256: str,
+        results: list[dict[str, Any]], worker_sample: dict[str, Any], now: float,
+    ) -> bool:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM leases WHERE id=?", (lease_id,)).fetchone()
+            if row is None:
+                raise KeyError(lease_id)
+            if row["status"] == "complete":
+                if hmac.compare_digest(str(row["submission_sha256"]), submission_sha256):
+                    self.conn.commit()
+                    return False
+                raise ValueError("completed lease received a different submission")
+            if float(row["expires"]) < now:
+                raise PermissionError("lease expired")
+            if not hmac.compare_digest(
+                str(row["claim_token_hash"]), self._claim_hash(claim_token)
+            ):
+                raise PermissionError("invalid lease claim token")
+            expected = {
+                item["match_id"]: item for item in json.loads(row["payload"])["specs"]
+            }
+            supplied = {item["match_id"]: item for item in results}
+            if supplied.keys() != expected.keys() or len(supplied) != len(results):
+                raise ValueError("submission does not exactly cover the leased match IDs")
+            if (
+                str(worker_sample.get("worker_id")) != str(row["worker_id"])
+                or str(worker_sample.get("agent_a")) != str(row["agent_a"])
+                or str(worker_sample.get("agent_b")) != str(row["agent_b"])
+                or int(worker_sample.get("games", -1)) != len(results)
+            ):
+                raise ValueError("worker sample does not match its lease")
+            for result in results:
+                if result.get("winner") not in {"a", "b", "draw"}:
+                    raise ValueError("invalid match winner")
+                match_len = float(result["match_len_sec"])
+                decisions = int(result["decisions"])
+                if not math.isfinite(match_len) or match_len < 0 or decisions < 0:
+                    raise ValueError("invalid match measurements")
+                spec = expected[result["match_id"]]
+                self.record(
+                    row["agent_a"], row["agent_b"], seed=int(spec["seed"]),
+                    side=int(spec["a_side"]), winner=str(result["winner"]),
+                    match_len_sec=match_len, decisions=decisions,
+                    terminal_reason=str(result.get("terminal_reason", "unknown")),
+                    replay=result.get("replay"), match_key=result["match_id"], commit=False,
+                )
+            self.record_worker_sample(commit=False, **worker_sample)
+            self.conn.execute(
+                "UPDATE leases SET status='complete',submission_sha256=?,completed=? WHERE id=?",
+                (submission_sha256, utc_now(), lease_id),
+            )
+            self.conn.commit()
+            return True
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def pair_seed_assignments(self, agent_a: str, agent_b: str) -> set[tuple[int, int]]:
+        used = {
+            (int(row["seed"]), int(row["side_assignment"]))
+            for row in self.conn.execute(
+                "SELECT seed,side_assignment FROM matches WHERE agent_a=? AND agent_b=?",
+                (agent_a, agent_b),
+            )
+        }
+        for row in self.conn.execute(
+            "SELECT payload FROM leases WHERE agent_a=? AND agent_b=? AND status='leased'",
+            (agent_a, agent_b),
+        ):
+            for spec in json.loads(row["payload"])["specs"]:
+                used.add((int(spec["seed"]), int(spec["a_side"])))
+        return used
+
+    def renew_lease(
+        self, *, lease_id: str, claim_token: str, now: float, ttl_seconds: float
+    ) -> float:
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM leases WHERE id=?", (lease_id,)).fetchone()
+            if row is None:
+                raise KeyError(lease_id)
+            if row["status"] != "leased":
+                raise ValueError("lease is not active")
+            if not hmac.compare_digest(
+                str(row["claim_token_hash"]), self._claim_hash(claim_token)
+            ):
+                raise PermissionError("invalid lease claim token")
+            expires = now + ttl_seconds
+            self.conn.execute("UPDATE leases SET expires=? WHERE id=?", (expires, lease_id))
+            self.conn.commit()
+            return expires
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def externalize_replays(self, *, limit: int = 1000) -> int:
+        rows = self.conn.execute(
+            "SELECT id,replay FROM matches WHERE replay IS NOT NULL "
+            "ORDER BY id LIMIT ?", (int(limit),),
+        ).fetchall()
+        for row in rows:
+            replay_ref = self._store_replay(json.loads(row["replay"]))
+            self.conn.execute(
+                "UPDATE matches SET replay=NULL,replay_ref=? WHERE id=?",
+                (replay_ref, row["id"]),
+            )
+        self.conn.commit()
+        return len(rows)
 
     def record_worker_sample(
         self,
@@ -324,7 +567,14 @@ class ArenaStore:
         simulated_frames: int,
         decisions: int,
         wall_seconds: float,
+        commit: bool = True,
     ) -> None:
+        if int(threads) <= 0 or int(batch_size) <= 0 or any(
+            int(value) < 0 for value in (games, simulated_frames, decisions)
+        ):
+            raise ValueError("worker sample counters must be nonnegative")
+        if not math.isfinite(float(wall_seconds)) or float(wall_seconds) <= 0:
+            raise ValueError("worker sample wall time must be finite and positive")
         self.conn.execute(
             """INSERT INTO worker_samples
                (worker_id,device,threads,batch_size,agent_a,agent_b,games,
@@ -342,7 +592,8 @@ class ArenaStore:
             "DELETE FROM worker_samples WHERE id <= "
             "MAX(0,(SELECT MAX(id) FROM worker_samples)-5000)"
         )
-        self.conn.commit()
+        if commit:
+            self.conn.commit()
 
     def promote(self, agent_id: str, *, detail: dict[str, Any]) -> None:
         now = utc_now()
@@ -774,7 +1025,9 @@ class ArenaStore:
         for event in events:
             event["detail"] = json.loads(event["detail"])
         recent = [dict(row) for row in self.conn.execute(
-            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,replay IS NOT NULL AS has_replay FROM matches ORDER BY id DESC LIMIT 50"
+            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,"
+            "(replay IS NOT NULL OR replay_ref IS NOT NULL) AS has_replay "
+            "FROM matches ORDER BY id DESC LIMIT 50"
         )]
         training = self._training_snapshot()
         game_count = sum(sum(record) for record in pair.values())
@@ -830,12 +1083,24 @@ class ArenaStore:
 
     def replay(self, match_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT agent_a,agent_b,winner,match_len_sec,replay FROM matches WHERE id=?",
+            "SELECT agent_a,agent_b,winner,match_len_sec,replay,replay_ref "
+            "FROM matches WHERE id=?",
             (match_id,),
         ).fetchone()
-        if row is None or row["replay"] is None:
+        if row is None or (row["replay"] is None and row["replay_ref"] is None):
             return None
-        return {**dict(row), "replay": json.loads(row["replay"])}
+        payload = dict(row)
+        if row["replay"] is not None:
+            replay = json.loads(row["replay"])
+        else:
+            path = (self.replay_dir / row["replay_ref"]).resolve()
+            root = self.replay_dir.resolve()
+            if root not in path.parents:
+                raise ValueError("invalid replay reference")
+            replay = json.loads(gzip.decompress(path.read_bytes()))
+        payload.pop("replay_ref", None)
+        payload["replay"] = replay
+        return payload
 
     def _training_snapshot(self) -> dict[str, Any]:
         telemetry = self.path.parent / "training.json"
