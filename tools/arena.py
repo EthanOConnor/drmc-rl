@@ -26,7 +26,14 @@ from typing import Any
 
 from drmc_rl.arena.ratings import RatingConfig, RatingConvergenceError
 from drmc_rl.arena.store import DEFAULT_SCHEDULER_BOOST, Agent, ArenaStore
-from tools.tournament import NES_FPS, GameSpec, VsMatchRunner, sprt_bounds, sprt_llr
+from tools.tournament import (
+    ARENA_MAX_DECISIONS_PER_SIDE,
+    NES_FPS,
+    GameSpec,
+    VsMatchRunner,
+    sprt_bounds,
+    sprt_llr,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "runs" / "arena" / "arena.sqlite"
@@ -770,7 +777,8 @@ def main() -> None:
     worker.add_argument("--beta", type=float, default=0.05)
     worker.add_argument("--max-gate-games", type=int, default=400)
     worker.add_argument("--replay-sample-rate", type=float, default=0.2)
-    worker.add_argument("--max-decisions-per-side", type=int, default=500,
+    worker.add_argument("--max-decisions-per-side", type=int,
+                        default=ARENA_MAX_DECISIONS_PER_SIDE,
                         help="adjudicate unresolved games as draws at this placement horizon (0 disables)")
     args = parser.parse_args()
     if args.command == "register":

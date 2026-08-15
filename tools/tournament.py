@@ -50,6 +50,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "runs" / "tournaments" / "tournaments.sqlite"
 NES_FPS = 60.1
+ARENA_MAX_DECISIONS_PER_SIDE = 1000
 _ELO_K = math.log(10.0) / 400.0
 _CANON_TO_RAW = (1, 0, 2)
 _SPEEDUPS_MAX = 0x31
@@ -428,7 +429,7 @@ class VsMatchRunner:
         run_seed: int = 0,
         state_repr: str = "bitplane_bottle_conn_mask",
         replay_sample_rate: float = 0.0,
-        max_decisions_per_side: int = 500,
+        max_decisions_per_side: int = ARENA_MAX_DECISIONS_PER_SIDE,
     ) -> None:
         import torch
 

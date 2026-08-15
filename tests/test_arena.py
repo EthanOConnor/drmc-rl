@@ -25,6 +25,18 @@ FAST_RATING = RatingConfig(
 )
 
 
+def test_arena_match_horizon_defaults_to_one_thousand_per_side() -> None:
+    import inspect
+
+    from tools.tournament import ARENA_MAX_DECISIONS_PER_SIDE, VsMatchRunner
+
+    assert ARENA_MAX_DECISIONS_PER_SIDE == 1000
+    assert (
+        inspect.signature(VsMatchRunner).parameters["max_decisions_per_side"].default
+        == ARENA_MAX_DECISIONS_PER_SIDE
+    )
+
+
 def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "old", "lineage")
