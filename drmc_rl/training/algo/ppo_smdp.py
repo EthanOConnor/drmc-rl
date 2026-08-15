@@ -94,6 +94,49 @@ _UPDATE_METRIC_KEYS = (
 )
 
 
+@dataclass(frozen=True, slots=True)
+class TeacherDistillConfig:
+    enabled: bool = False
+    checkpoint: str = ""
+    beta: float = 1.0
+    value_mix: float = 0.5
+    temperature: float = 1.0
+
+    @classmethod
+    def from_dict(cls, value: Dict[str, Any]) -> "TeacherDistillConfig":
+        enabled = bool(value.get("enabled", False))
+        checkpoint = str(value.get("checkpoint", "")).strip()
+        if enabled and not checkpoint:
+            raise ValueError("teacher_distill.enabled requires teacher_distill.checkpoint")
+        temperature = float(value.get("temperature", 1.0))
+        if temperature <= 0:
+            raise ValueError("teacher_distill.temperature must be positive")
+        return cls(
+            enabled=enabled,
+            checkpoint=checkpoint,
+            beta=float(value.get("beta", 1.0)),
+            value_mix=float(value.get("value_mix", 0.5)),
+            temperature=temperature,
+        )
+
+
+def _teacher_policy_targets(
+    logits: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    target_width: int,
+    temperature: float,
+) -> torch.Tensor:
+    """Return padded teacher probabilities in packed-candidate order."""
+
+    scaled = logits.float() / float(temperature)
+    probs = MaskedPlacementDist(scaled, mask).probs
+    missing = int(target_width) - int(probs.shape[1])
+    if missing < 0:
+        raise ValueError(f"teacher target width {target_width} < packed width {probs.shape[1]}")
+    return probs if missing == 0 else F.pad(probs, (0, missing))
+
+
 def _candidate_bucketed_indices(candidate_mask: torch.Tensor) -> torch.Tensor:
     """Shuffle rows while keeping similar candidate widths contiguous.
 
@@ -405,6 +448,18 @@ class SMDPPPOAdapter(AlgoAdapter):
             sd_dict = sd_dict.to_dict()
         self.search_distill_cfg = SearchDistillConfig.from_dict(sd_dict)
         self._sd_runner = None
+        teacher_dict = ppo_cfg_dict.get("teacher_distill", {}) or {}
+        if hasattr(teacher_dict, "to_dict"):
+            teacher_dict = teacher_dict.to_dict()
+        self.teacher_distill_cfg = TeacherDistillConfig.from_dict(teacher_dict)
+        if self.search_distill_cfg.enabled and self.teacher_distill_cfg.enabled:
+            raise ValueError("search_distill and teacher_distill cannot both be enabled")
+        self._teacher_net: Optional[nn.Module] = None
+        self._pending_teacher_targets: Optional[np.ndarray] = None
+        self._pending_teacher_values: Optional[np.ndarray] = None
+        self._distill_enabled = bool(
+            self.search_distill_cfg.enabled or self.teacher_distill_cfg.enabled
+        )
 
         # Environment info
         obs_space = getattr(env, "single_observation_space", env.observation_space)
@@ -540,7 +595,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             gae_lambda=self.hparams.gae_lambda,
             aux_dim=self.aux_dim,
             store_costs_to_lock=(self.policy_type == "candidate"),
-            search_target_dim=(self.candidate_max if self.search_distill_cfg.enabled else 0),
+            search_target_dim=(self.candidate_max if self._distill_enabled else 0),
         )
         self._rollout_env_ids = np.arange(env.num_envs, dtype=np.int32)
         self._pending_device_wave: Optional[_DeviceRolloutWave] = None
@@ -598,6 +653,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         # so the first searched rollout uses the loaded weights).
         if self.search_distill_cfg.enabled:
             self._sd_runner = self._build_search_distill_runner()
+        if self.teacher_distill_cfg.enabled:
+            self._teacher_net = self._build_teacher_distill_net(in_channels)
 
         # Entropy annealing
         self._entropy_coef_initial = self.hparams.entropy_coef
@@ -613,6 +670,31 @@ class SMDPPPOAdapter(AlgoAdapter):
         )
 
     # ----------------------------------------------------- search distillation
+    def _build_teacher_distill_net(self, in_channels: int) -> nn.Module:
+        from tools.eval_policy import _build_net_from_cfg
+
+        payload = load_checkpoint(
+            Path(self.teacher_distill_cfg.checkpoint).expanduser(), map_location="cpu"
+        )
+        teacher, teacher_aux_dim, teacher_max = _build_net_from_cfg(
+            payload.get("cfg") or {}, in_channels, str(self.device)
+        )
+        if teacher_aux_dim != self.aux_dim:
+            raise ValueError(
+                f"teacher aux_dim={teacher_aux_dim} does not match student aux_dim={self.aux_dim}"
+            )
+        if teacher_max < self.candidate_max:
+            raise ValueError(
+                f"teacher candidate_max={teacher_max} < student candidate_max={self.candidate_max}"
+            )
+        state = payload.get("ema_state_dict") or payload.get("state_dict")
+        if state is None:
+            raise ValueError("teacher checkpoint has no EMA or policy state_dict")
+        teacher.load_state_dict(state, strict=True)
+        teacher.eval()
+        teacher.requires_grad_(False)
+        return teacher
+
     def _build_search_distill_runner(self):
         """Validate + build the rollout-side search runner (enabled=true only).
 
@@ -719,6 +801,12 @@ class SMDPPPOAdapter(AlgoAdapter):
                         obs=decision_obs,
                         aux=aux_batch,
                     )
+                elif self._teacher_net is not None:
+                    if self._pending_teacher_targets is None or self._pending_teacher_values is None:
+                        raise RuntimeError("teacher distillation targets are missing")
+                    sd_targets = self._pending_teacher_targets
+                    sd_values = self._pending_teacher_values
+                    sd_flags = np.ones(self.env.num_envs, dtype=np.bool_)
 
                 # Step environment once for the full batch.
                 obs_after, rewards, terminated, truncated, info_after = self.env.step(actions)
@@ -1097,11 +1185,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                 colors_t = torch.from_numpy(pill_colors).to(self.device)
                 preview_t = torch.from_numpy(preview_pill_colors).to(self.device)
                 aux_t = None if aux_batch is None else torch.from_numpy(aux_batch).to(self.device)
-                packed_width = (
-                    self.candidate_max
-                    if self._sd_runner is not None
-                    else candidate_bucket_width(masks, max_candidates=self.candidate_max)
-                )
+                packed_width = candidate_bucket_width(masks, max_candidates=self.candidate_max)
                 packed = pack_feasible_candidates_tensor_batch(
                     torch.from_numpy(masks).to(self.device),
                     torch.from_numpy(costs_to_lock).to(self.device),
@@ -1121,6 +1205,26 @@ class SMDPPPOAdapter(AlgoAdapter):
                         cand_mask_t,
                         aux=aux_t,
                     )
+                    if self._teacher_net is not None and net is self.net:
+                        teacher_logits, teacher_values = self._teacher_net(  # type: ignore[misc]
+                            obs_t,
+                            colors_t,
+                            preview_t,
+                            cand_actions_t,
+                            cand_cost_t,
+                            cand_mask_t,
+                            aux=aux_t,
+                        )
+                        targets = _teacher_policy_targets(
+                            teacher_logits,
+                            cand_mask_t,
+                            target_width=self.candidate_max,
+                            temperature=self.teacher_distill_cfg.temperature,
+                        )
+                        self._pending_teacher_targets = targets.cpu().numpy()
+                        self._pending_teacher_values = (
+                            teacher_values.float().reshape(-1).cpu().numpy().astype(np.float32)
+                        )
                 dist = MaskedPlacementDist(logits.float(), cand_mask_t)
                 if deterministic:
                     slot = dist.mode()
@@ -1296,10 +1400,21 @@ class SMDPPPOAdapter(AlgoAdapter):
         sd_mask_t: Optional[torch.Tensor] = None
         sd_kl_sum: Optional[torch.Tensor] = None
         sd_kl_n: Optional[torch.Tensor] = None
-        sd_beta = float(self.search_distill_cfg.beta)
-        sd_value_mix = float(self.search_distill_cfg.value_mix)
+        sd_beta = float(
+            self.teacher_distill_cfg.beta
+            if self.teacher_distill_cfg.enabled
+            else self.search_distill_cfg.beta
+        )
+        sd_value_mix = float(
+            self.teacher_distill_cfg.value_mix
+            if self.teacher_distill_cfg.enabled
+            else self.search_distill_cfg.value_mix
+        )
+        distill_enabled = bool(
+            self.search_distill_cfg.enabled or self.teacher_distill_cfg.enabled
+        )
         if (
-            self.search_distill_cfg.enabled
+            distill_enabled
             and batch.search_targets is not None
             and batch.search_mask is not None
             and bool(batch.search_mask.any())
@@ -1555,7 +1670,12 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         if sd_kl_sum is not None:
             # On-device accumulation; one host sync for the whole update.
-            metrics_accum["search_distill/kl_target_net"] = float(
+            metric_name = (
+                "teacher_distill/kl_teacher_student"
+                if self.teacher_distill_cfg.enabled
+                else "search_distill/kl_target_net"
+            )
+            metrics_accum[metric_name] = float(
                 (sd_kl_sum / sd_kl_n.clamp(min=1.0)).cpu()
             )
 

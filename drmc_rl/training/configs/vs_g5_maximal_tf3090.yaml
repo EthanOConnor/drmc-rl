@@ -51,6 +51,12 @@ smdp_ppo:
   candidate_compact_features: false
   aux_spec: v1_vs
   value_loss_type: huber
+  teacher_distill:
+    enabled: true
+    checkpoint: runs/best_agents/outcome_hardening_g4_step1500287362.pt.gz
+    beta: 2.0
+    value_mix: 0.5
+    temperature: 1.0
 
 env:
   id: drmario-vs

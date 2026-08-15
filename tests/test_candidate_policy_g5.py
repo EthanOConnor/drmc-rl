@@ -5,7 +5,11 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
-from drmc_rl.training.algo.ppo_smdp import _candidate_bucketed_indices
+from drmc_rl.training.algo.ppo_smdp import (
+    TeacherDistillConfig,
+    _candidate_bucketed_indices,
+    _teacher_policy_targets,
+)
 
 
 def _net(**overrides):
@@ -110,3 +114,22 @@ def test_candidate_bucket_order_is_lossless_and_width_local():
     # Each width group is contiguous even though group and row order vary.
     transitions = sum(a != b for a, b in zip(ordered_buckets, ordered_buckets[1:]))
     assert transitions == len(set(ordered_buckets)) - 1
+
+
+def test_teacher_targets_are_masked_normalized_and_padded():
+    logits = torch.tensor([[1.0, 3.0, 99.0], [2.0, -1.0, 0.0]])
+    mask = torch.tensor([[True, True, False], [True, False, True]])
+    targets = _teacher_policy_targets(logits, mask, target_width=8, temperature=1.0)
+    assert targets.shape == (2, 8)
+    torch.testing.assert_close(targets.sum(dim=1), torch.ones(2))
+    assert targets[0, 2] == 0 and targets[1, 1] == 0
+    assert not targets[:, 3:].any()
+
+
+def test_teacher_distill_config_requires_checkpoint_and_temperature():
+    with pytest.raises(ValueError, match="checkpoint"):
+        TeacherDistillConfig.from_dict({"enabled": True})
+    with pytest.raises(ValueError, match="temperature"):
+        TeacherDistillConfig.from_dict(
+            {"enabled": True, "checkpoint": "teacher.pt.gz", "temperature": 0}
+        )
