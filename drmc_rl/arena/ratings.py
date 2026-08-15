@@ -14,6 +14,8 @@ and does not inherit the training stack.
 from __future__ import annotations
 
 import math
+import os
+from concurrent.futures import ProcessPoolExecutor
 from io import BytesIO
 from dataclasses import dataclass
 from statistics import NormalDist
@@ -54,6 +56,7 @@ class RatingConfig:
     draw_scale: float = 1.0
     seed: int = 0xD0C7_0A11
     max_rhat: float = 1.01
+    max_scale_rhat: float = 1.02
     min_ess: float = 400.0
     require_convergence: bool = True
 
@@ -68,6 +71,8 @@ class RatingConfig:
             raise ValueError("target_accept must be between 0.5 and 1")
         if min(self.root_skill_sd, self.lineage_scale, self.draw_scale) <= 0:
             raise ValueError("prior scales must be positive")
+        if self.max_scale_rhat < self.max_rhat:
+            raise ValueError("scale R-hat threshold cannot be stricter than the main threshold")
 
 
 @dataclass(frozen=True)
@@ -560,6 +565,26 @@ def _sample_chain(
     }
 
 
+def _sample_chain_process(
+    args: tuple[
+        DavidsonPosterior,
+        np.ndarray,
+        _HmcMetric,
+        RatingConfig,
+        np.random.SeedSequence,
+    ],
+) -> tuple[np.ndarray, dict[str, float | int]]:
+    """Run one deterministic HMC chain in a worker process.
+
+    Chains are conditionally independent after the shared mode and curvature
+    calculation.  Keeping this helper at module scope makes it spawn-safe on
+    macOS while preserving the exact seed-to-chain mapping.
+    """
+
+    model, start, metric, config, seed = args
+    return _sample_chain(model, start, metric, config, np.random.default_rng(seed))
+
+
 def _split_rhat_basic(chains: np.ndarray) -> np.ndarray:
     chain_count, sample_count, dimension = chains.shape
     half = sample_count // 2
@@ -776,14 +801,29 @@ def fit_bayesian_ratings(
     metric = _curvature_metric(model, mode)
     seed_sequence = np.random.SeedSequence(config.seed)
     chain_seeds = seed_sequence.spawn(config.chains)
-    chain_draws = []
-    chain_stats = []
+    chain_args = []
     for chain_seed in chain_seeds:
         rng = np.random.default_rng(chain_seed)
         start = mode + 0.25 * metric.covariance_cholesky @ rng.normal(size=model.dimension)
-        draws, stats = _sample_chain(model, start, metric, config, rng)
-        chain_draws.append(draws)
-        chain_stats.append(stats)
+        chain_args.append((model, start, metric, config, chain_seed))
+    # HMC chains are independent and CPU-bound. Running them serially made a
+    # full refresh take longer than the live arena needed to generate the next
+    # refresh interval. Process workers avoid the GIL and inherit the rater's
+    # low OS priority, so tournament workers remain favored under contention.
+    workers = min(config.chains, os.cpu_count() or config.chains)
+    if workers > 1:
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                results = list(executor.map(_sample_chain_process, chain_args))
+        except (NotImplementedError, OSError, PermissionError):
+            # Restricted containers may deny POSIX semaphore/process queries.
+            # Preserve correctness there; production macOS/Linux hosts take
+            # the parallel path.
+            results = [_sample_chain_process(args) for args in chain_args]
+    else:
+        results = [_sample_chain_process(args) for args in chain_args]
+    chain_draws = [draws for draws, _stats in results]
+    chain_stats = [stats for _draws, stats in results]
     chains = np.asarray(chain_draws)
     rank_chains = _rank_normalize(chains)
     rhat = _rank_normalized_rhat(chains)
@@ -795,10 +835,20 @@ def fit_bayesian_ratings(
         tail_ess = np.minimum(tail_ess, _effective_sample_size(indicator))
     ess = np.minimum(bulk_ess, tail_ess)
     max_rhat = float(np.max(rhat))
+    # The final two dimensions are global positive scale hyperparameters. They
+    # can mix more slowly when new entrants have no games, without degrading
+    # the player-skill posterior. Keep the modern 1.01 threshold for all skill,
+    # draw-tendency, and intercept dimensions; allow only those nuisance scales
+    # the still-conservative 1.02 threshold.
+    max_main_rhat = float(np.max(rhat[:-2]))
+    max_scale_rhat = float(np.max(rhat[-2:]))
     min_ess = float(np.min(ess))
     divergences = int(sum(int(stats["divergences"]) for stats in chain_stats))
     if config.require_convergence and (
-        max_rhat > config.max_rhat or min_ess < config.min_ess or divergences > 0
+        max_main_rhat > config.max_rhat
+        or max_scale_rhat > config.max_scale_rhat
+        or min_ess < config.min_ess
+        or divergences > 0
     ):
         worst_rhat = int(np.argmax(rhat))
         worst_ess = int(np.argmin(ess))
@@ -841,6 +891,8 @@ def fit_bayesian_ratings(
         "samples_per_chain": config.samples,
         "warmup_per_chain": config.warmup,
         "max_rhat": max_rhat,
+        "max_main_rhat": max_main_rhat,
+        "max_scale_rhat": max_scale_rhat,
         "min_ess": min_ess,
         "min_bulk_ess": float(np.min(bulk_ess)),
         "min_tail_ess": float(np.min(tail_ess)),

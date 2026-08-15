@@ -129,6 +129,8 @@ CREATE TABLE IF NOT EXISTS worker_samples (
 );
 CREATE INDEX IF NOT EXISTS matches_pair ON matches(agent_a, agent_b);
 CREATE INDEX IF NOT EXISTS matches_created ON matches(created);
+CREATE INDEX IF NOT EXISTS matches_outcomes
+  ON matches(id, agent_a, agent_b, winner, terminal_reason, side_assignment);
 CREATE INDEX IF NOT EXISTS rating_estimates_agent ON rating_estimates(agent_id, fit_id);
 CREATE INDEX IF NOT EXISTS worker_samples_created ON worker_samples(created);
 """
@@ -529,7 +531,7 @@ class ArenaStore:
         agents = self.agents()
         idx = {agent.id: i for i, agent in enumerate(agents)}
         rows = list(self.conn.execute(
-            "SELECT id,agent_a,agent_b,winner FROM matches ORDER BY id"
+            "SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes ORDER BY id"
         ))
         pairs = self._rating_pairs(rows, idx)
         parents = [idx.get(agent.parent_id) for agent in agents]
@@ -567,7 +569,7 @@ class ArenaStore:
 
         idx = {agent.id: i for i, agent in enumerate(agents)}
         rows = list(self.conn.execute(
-            """SELECT id,agent_a,agent_b,winner FROM matches
+            """SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes
                WHERE id>? ORDER BY id""",
             (int(latest["last_match_id"]),),
         ))
@@ -596,7 +598,7 @@ class ArenaStore:
                           OR (winner='b' AND side_assignment=1) THEN 1 ELSE 0 END) AS side0_wins,
                SUM(CASE WHEN (winner='a' AND side_assignment=1)
                           OR (winner='b' AND side_assignment=0) THEN 1 ELSE 0 END) AS side1_wins
-               FROM matches"""
+               FROM matches INDEXED BY matches_outcomes"""
         ).fetchone()
         side0_wins = int(side["side0_wins"] or 0)
         side1_wins = int(side["side1_wins"] or 0)
@@ -679,45 +681,61 @@ class ArenaStore:
         return counts
 
     def snapshot(self) -> dict[str, Any]:
+        # Hold one SQLite read snapshot across the aggregate queries. Workers
+        # may continue committing through WAL, while every dashboard section
+        # sees the same completed-match boundary.
+        self.conn.execute("BEGIN")
         agents = self.agents()
-        idx = {a.id: i for i, a in enumerate(agents)}
         pair: dict[tuple[str, str], list[int]] = {}
-        # Materialize the match rows once.  The worker can commit a new match
-        # between separate SELECTs; re-reading here made the two collections
-        # differ and crashed the dashboard's strict zip during live play.
-        match_rows = list(self.conn.execute("SELECT * FROM matches ORDER BY id"))
-        for row in match_rows:
-            score = 1.0 if row["winner"] == "a" else 0.0 if row["winner"] == "b" else 0.5
-            key = tuple(sorted((row["agent_a"], row["agent_b"])))
-            rec = pair.setdefault(key, [0, 0, 0])
-            if score == 0.5:
-                rec[1] += 1
-            elif (row["agent_a"] == key[0] and score == 1) or (row["agent_b"] == key[0] and score == 0):
-                rec[0] += 1
-            else:
-                rec[2] += 1
+        for row in self.conn.execute(
+            """SELECT
+                 CASE WHEN agent_a < agent_b THEN agent_a ELSE agent_b END AS lo,
+                 CASE WHEN agent_a < agent_b THEN agent_b ELSE agent_a END AS hi,
+                 SUM(CASE WHEN winner != 'draw' AND
+                    ((agent_a < agent_b AND winner = 'a') OR
+                     (agent_b < agent_a AND winner = 'b')) THEN 1 ELSE 0 END) AS wins_lo,
+                 SUM(CASE WHEN winner = 'draw' THEN 1 ELSE 0 END) AS draws,
+                 SUM(CASE WHEN winner != 'draw' AND
+                    ((agent_a < agent_b AND winner = 'b') OR
+                     (agent_b < agent_a AND winner = 'a')) THEN 1 ELSE 0 END) AS wins_hi
+               FROM matches INDEXED BY matches_outcomes GROUP BY lo,hi"""
+        ):
+            pair[(row["lo"], row["hi"])] = [
+                int(row["wins_lo"]), int(row["draws"]), int(row["wins_hi"])
+            ]
         ratings, rating_metadata = self._latest_ratings()
-        counts = [0] * len(agents)
-        records = [{"wins": 0, "losses": 0, "draws": 0, "clears": 0, "topouts": 0}
-                   for _ in agents]
-        for row in match_rows:
-            i, j = idx[row["agent_a"]], idx[row["agent_b"]]
-            score = 1.0 if row["winner"] == "a" else 0.0 if row["winner"] == "b" else 0.5
-            counts[i] += 1
-            counts[j] += 1
-            if score == 0.5:
-                records[i]["draws"] += 1
-                records[j]["draws"] += 1
-                continue
-            winner_i, loser_i = (i, j) if score == 1.0 else (j, i)
-            records[winner_i]["wins"] += 1
-            records[loser_i]["losses"] += 1
-            if row["terminal_reason"] == "clear":
-                records[winner_i]["clears"] += 1
-            elif row["terminal_reason"] == "topout":
-                records[loser_i]["topouts"] += 1
+        records = {
+            row["agent_id"]: {
+                "games": int(row["games"]),
+                "wins": int(row["wins"]),
+                "losses": int(row["losses"]),
+                "draws": int(row["draws"]),
+                "clears": int(row["clears"]),
+                "topouts": int(row["topouts"]),
+            }
+            for row in self.conn.execute(
+                """WITH outcomes(agent_id,outcome,terminal_reason) AS (
+                     SELECT agent_a,
+                       CASE winner WHEN 'a' THEN 1 WHEN 'b' THEN -1 ELSE 0 END,
+                       terminal_reason FROM matches INDEXED BY matches_outcomes
+                     UNION ALL
+                     SELECT agent_b,
+                       CASE winner WHEN 'b' THEN 1 WHEN 'a' THEN -1 ELSE 0 END,
+                       terminal_reason FROM matches INDEXED BY matches_outcomes
+                   )
+                   SELECT agent_id,COUNT(*) AS games,
+                     SUM(outcome = 1) AS wins,
+                     SUM(outcome = -1) AS losses,
+                     SUM(outcome = 0) AS draws,
+                     SUM(outcome = 1 AND terminal_reason = 'clear') AS clears,
+                     SUM(outcome = -1 AND terminal_reason = 'topout') AS topouts
+                   FROM outcomes GROUP BY agent_id"""
+            )
+        }
         board = []
-        for i, agent in enumerate(agents):
+        empty_record = {"games": 0, "wins": 0, "losses": 0, "draws": 0,
+                        "clears": 0, "topouts": 0}
+        for agent in agents:
             estimate = ratings.get(agent.id)
             mean = None if estimate is None else float(estimate["mean"])
             board.append({
@@ -743,8 +761,7 @@ class ArenaStore:
                     if estimate is None or estimate["probability_better_parent"] is None
                     else round(float(estimate["probability_better_parent"]), 4)
                 ),
-                "games": counts[i],
-                **records[i],
+                **records.get(agent.id, empty_record),
             })
         board.sort(key=lambda item: (
             item["rating"] is None,
@@ -760,8 +777,10 @@ class ArenaStore:
             "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,replay IS NOT NULL AS has_replay FROM matches ORDER BY id DESC LIMIT 50"
         )]
         training = self._training_snapshot()
+        game_count = sum(sum(record) for record in pair.values())
+        self.conn.commit()
         return {
-            "generated": utc_now(), "agents": board, "games": len(match_rows),
+            "generated": utc_now(), "agents": board, "games": game_count,
             "ratings": rating_metadata,
             "superiority": self._latest_superiority(),
             "pairs": [{"a": k[0], "b": k[1], "wins_a": v[0], "draws": v[1], "wins_b": v[2]}
