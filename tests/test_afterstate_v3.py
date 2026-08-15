@@ -130,6 +130,76 @@ def test_v3_runtime_style_choice_does_not_use_quality() -> None:
     assert runtime.choose_quality(-logits, np.ones(3, bool)) == 0
 
 
+def test_v3_runtime_batches_variable_candidate_widths_losslessly() -> None:
+    from drmc_rl.human.afterstate_model import AfterstatePolicyNet
+    from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
+    from drmc_rl.human.afterstate_sim import AfterstateBatch
+    from drmc_rl.human.conditioning import HumanSkillCondition
+
+    class Simulator:
+        def __init__(self) -> None:
+            self.batch_sizes = []
+
+        def simulate_packed(self, **kwargs):
+            counts = np.asarray(kwargs["candidate_count"], dtype=np.int64)
+            fields = np.repeat(np.asarray(kwargs["fields"], dtype=np.uint8), counts, axis=0)
+            total = int(counts.sum())
+            self.batch_sizes.append(len(counts))
+            return AfterstateBatch(
+                fields=fields,
+                terminal_reason=np.zeros(total, dtype=np.uint8),
+                invalid=np.zeros(total, dtype=np.bool_),
+                tau_frames=np.ones(total, dtype=np.uint32),
+                viruses_remaining=np.zeros(total, dtype=np.uint16),
+                viruses_cleared=np.zeros(total, dtype=np.uint16),
+                nonviruses_cleared=np.zeros(total, dtype=np.uint16),
+                clear_events=np.zeros(total, dtype=np.uint16),
+            )
+
+    torch.manual_seed(8)
+    runtime = object.__new__(AfterstatePolicyRuntime)
+    runtime.device = torch.device("cpu")
+    runtime.condition = HumanSkillCondition.fit(np.asarray([1000.0, 2000.0]))
+    runtime.policy = AfterstatePolicyNet(
+        condition_dim=40, d_model=32, bottle_blocks=0, candidate_layers=1, heads=4
+    ).eval()
+    runtime.simulator = Simulator()
+    requests = []
+    for width, rating in ((3, 1200.0), (5, 1800.0)):
+        requests.append(
+            {
+                "board_planes": np.zeros((8, 16, 8), dtype=np.float32),
+                "opponent_board_planes": np.zeros((8, 16, 8), dtype=np.float32),
+                "opponent_state_age_frames": 0,
+                "pill": np.asarray([0, 1]),
+                "preview": np.asarray([1, 2]),
+                "candidate_actions": np.arange(width, dtype=np.int64),
+                "candidate_costs": np.arange(10, 10 + width, dtype=np.float32),
+                "candidate_mask": np.ones(width, dtype=np.bool_),
+                "rating": rating,
+                "speed": 2,
+                "speed_ups": 0,
+            }
+        )
+
+    batched = runtime.score_batch(requests)
+    assert runtime.simulator.batch_sizes == [2]
+    scalar = [runtime.score(**request) for request in requests]
+    assert runtime.simulator.batch_sizes == [2, 1, 1]
+    for width, batch_result, scalar_result in zip((3, 5), batched, scalar):
+        assert batch_result["competitive_score"].shape == (width,)
+        for key in (
+            "competitive_score",
+            "human_logits",
+            "outcome_logit",
+            "clear_logit",
+            "topout_logit",
+            "virus_delta",
+            "attack",
+        ):
+            np.testing.assert_allclose(batch_result[key], scalar_result[key], rtol=1e-5, atol=1e-6)
+
+
 def test_sparse_afterstates_round_trip_exactly() -> None:
     from drmc_rl.human.afterstate_sim import decode_sparse_deltas, encode_sparse_deltas
 

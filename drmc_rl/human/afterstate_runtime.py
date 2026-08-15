@@ -90,59 +90,118 @@ class AfterstatePolicyRuntime:
         speed: int,
         speed_ups: int,
     ) -> dict[str, Any]:
+        return self.score_batch(
+            [
+                {
+                    "board_planes": board_planes,
+                    "opponent_board_planes": opponent_board_planes,
+                    "opponent_state_age_frames": opponent_state_age_frames,
+                    "rating_sd": rating_sd,
+                    "opponent_rating": opponent_rating,
+                    "opponent_rating_sd": opponent_rating_sd,
+                    "game_phase": game_phase,
+                    "recent_decisions": recent_decisions,
+                    "pill": pill,
+                    "preview": preview,
+                    "candidate_actions": candidate_actions,
+                    "candidate_costs": candidate_costs,
+                    "candidate_mask": candidate_mask,
+                    "rating": rating,
+                    "speed": speed,
+                    "speed_ups": speed_ups,
+                }
+            ]
+        )[0]
+
+    def score_batch(self, requests: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Score independent decisions with one native simulation and network pass."""
         import torch
 
-        actions = np.asarray(candidate_actions, dtype=np.int64)
-        costs = np.asarray(candidate_costs, dtype=np.float32)
-        mask = np.asarray(candidate_mask, dtype=np.bool_)
-        count = int(mask.sum())
-        if count <= 0 or not mask[:count].all() or mask[count:].any():
-            raise ValueError("V3 candidates must be packed contiguously")
-        root = semantic_planes_to_nes_board(board_planes).astype(np.uint8)
-        opponent = semantic_planes_to_nes_board(opponent_board_planes).astype(np.uint8)
-        canonical_pill = np.asarray(pill, dtype=np.int64)
-        canonical_preview = np.asarray(preview, dtype=np.int64)
-        raw_pill = _CANONICAL_TO_NES[canonical_pill]
-        raw_preview = _CANONICAL_TO_NES[canonical_preview]
+        if not requests:
+            return []
+        batch = len(requests)
+        widths = [len(np.asarray(request["candidate_actions"]).reshape(-1)) for request in requests]
+        width = max(widths)
+        actions = np.full((batch, width), -1, dtype=np.int64)
+        costs = np.zeros((batch, width), dtype=np.float32)
+        mask = np.zeros((batch, width), dtype=np.bool_)
+        roots = np.empty((batch, 128), dtype=np.uint8)
+        opponents = np.empty((batch, 128), dtype=np.uint8)
+        pills = np.empty((batch, 2), dtype=np.int64)
+        previews = np.empty((batch, 2), dtype=np.int64)
+        counts = np.empty(batch, dtype=np.int64)
+        conditions = []
+        resolved_ratings = []
+        clamped_ratings = []
+        for row, request in enumerate(requests):
+            row_width = widths[row]
+            row_actions = np.asarray(request["candidate_actions"], dtype=np.int64).reshape(-1)
+            row_costs = np.asarray(request["candidate_costs"], dtype=np.float32).reshape(-1)
+            row_mask = np.asarray(request["candidate_mask"], dtype=np.bool_).reshape(-1)
+            if len(row_costs) != row_width or len(row_mask) != row_width:
+                raise ValueError("V3 candidate arrays must have matching widths")
+            count = int(row_mask.sum())
+            if count <= 0 or not row_mask[:count].all() or row_mask[count:].any():
+                raise ValueError("V3 candidates must be packed contiguously")
+            actions[row, :row_width] = row_actions
+            costs[row, :row_width] = row_costs
+            mask[row, :row_width] = row_mask
+            counts[row] = count
+            roots[row] = semantic_planes_to_nes_board(request["board_planes"])
+            opponents[row] = semantic_planes_to_nes_board(request["opponent_board_planes"])
+            pills[row] = np.asarray(request["pill"], dtype=np.int64)
+            previews[row] = np.asarray(request["preview"], dtype=np.int64)
+            resolved, clamped = self.condition.resolve(float(request["rating"]))
+            resolved_ratings.append(resolved)
+            clamped_ratings.append(clamped)
+            conditions.append(
+                policy_condition_features(
+                    self.condition,
+                    rating=resolved,
+                    rating_sd=float(request.get("rating_sd", 0.0)),
+                    opponent_rating=request.get("opponent_rating"),
+                    opponent_rating_sd=float(request.get("opponent_rating_sd", 0.0)),
+                    opponent_state_age_frames=int(request["opponent_state_age_frames"]),
+                    game_phase=float(request.get("game_phase", 0.0)),
+                    recent_decisions=request.get("recent_decisions", ()),
+                )
+            )
         simulated = self.simulator.simulate_packed(
-            fields=root[None],
-            pills=raw_pill[None],
-            previews=raw_preview[None],
-            candidate_actions=actions[None],
-            candidate_costs=costs.astype(np.uint16)[None],
-            candidate_count=np.asarray([count]),
-            speed=np.asarray([speed]),
-            speed_ups=np.asarray([speed_ups]),
+            fields=roots,
+            pills=_CANONICAL_TO_NES[pills],
+            previews=_CANONICAL_TO_NES[previews],
+            candidate_actions=actions,
+            candidate_costs=costs.astype(np.uint16),
+            candidate_count=counts,
+            speed=np.asarray([request["speed"] for request in requests]),
+            speed_ups=np.asarray([request["speed_ups"] for request in requests]),
         )
-        resolved, clamped = self.condition.resolve(rating)
-        condition = policy_condition_features(
-            self.condition,
-            rating=resolved,
-            rating_sd=rating_sd,
-            opponent_rating=opponent_rating,
-            opponent_rating_sd=opponent_rating_sd,
-            opponent_state_age_frames=opponent_state_age_frames,
-            game_phase=game_phase,
-            recent_decisions=recent_decisions,
-        )
-        width = len(actions)
-        afterstates = np.full((1, width, 128), 0xFF, dtype=np.uint8)
-        afterstates[0, :count] = simulated.fields
+        afterstates = np.full((batch, width, 128), 0xFF, dtype=np.uint8)
+        offset = 0
+        for row, count in enumerate(counts):
+            afterstates[row, :count] = simulated.fields[offset : offset + count]
+            offset += int(count)
         with torch.inference_mode():
             output = self.policy(
                 torch.from_numpy(afterstates).to(self.device),
-                torch.from_numpy(root[None]).to(self.device),
-                torch.from_numpy(opponent[None]).to(self.device),
-                torch.from_numpy(canonical_pill[None]).to(self.device),
-                torch.from_numpy(canonical_preview[None]).to(self.device),
-                torch.from_numpy(actions[None]).to(self.device),
-                torch.from_numpy(costs[None]).to(self.device),
-                torch.from_numpy(mask[None]).to(self.device),
-                torch.from_numpy(condition[None]).to(self.device),
+                torch.from_numpy(roots).to(self.device),
+                torch.from_numpy(opponents).to(self.device),
+                torch.from_numpy(pills).to(self.device),
+                torch.from_numpy(previews).to(self.device),
+                torch.from_numpy(actions).to(self.device),
+                torch.from_numpy(costs).to(self.device),
+                torch.from_numpy(mask).to(self.device),
+                torch.from_numpy(np.stack(conditions)).to(self.device),
             )
-        result = {key: value[0].float().cpu().numpy() for key, value in output.items()}
-        result.update(resolved_rating=resolved, rating_clamped=clamped)
-        return result
+        arrays = {key: value.float().cpu().numpy() for key, value in output.items()}
+        results = []
+        for row, row_width in enumerate(widths):
+            result = {key: value[row, :row_width] for key, value in arrays.items()}
+            result.update(
+                resolved_rating=resolved_ratings[row], rating_clamped=clamped_ratings[row]
+            )
+            results.append(result)
+        return results
 
     def choose_strength(
         self,

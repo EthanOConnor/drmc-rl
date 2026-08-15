@@ -714,6 +714,7 @@ class _EntryPolicy:
                 raise ValueError("human arena entrants require the 20-channel VS observation")
             acts = np.full(len(idxs), -1, dtype=np.int32)
             env = self.runner.env
+            pending = []
             for k, i in enumerate(idxs):
                 info = infos[i]
                 packed = pack_feasible_candidates(
@@ -753,11 +754,27 @@ class _EntryPolicy:
                         _SPEEDUPS_MAX,
                         max(0, self.runner.level - 20) + int(ep_decisions[i]) // 10,
                     )
-                    details = self.human.score(
-                        **score_args,
-                        speed=self.runner.speed_setting,
-                        speed_ups=speed_ups,
+                    pending.append(
+                        (
+                            k,
+                            packed,
+                            {
+                                **score_args,
+                                "speed": self.runner.speed_setting,
+                                "speed_ups": speed_ups,
+                            },
+                        )
                     )
+                    continue
+                else:
+                    logits, _value, _rating, _clamped = self.human.score(**score_args)
+                    slot = self.human.choose(
+                        logits, packed.mask, temperature=self.human_temperature
+                    )
+                acts[k] = int(packed.actions[slot])
+            if pending:
+                details_batch = self.human.score_batch([request for _, _, request in pending])
+                for (k, packed, _request), details in zip(pending, details_batch):
                     if self.human_strength_control == "quality":
                         slot = self.human.choose_quality(
                             details["competitive_score"], packed.mask
@@ -776,12 +793,7 @@ class _EntryPolicy:
                             rating=float(details["resolved_rating"]),
                             temperature=self.human_temperature,
                         )
-                else:
-                    logits, _value, _rating, _clamped = self.human.score(**score_args)
-                    slot = self.human.choose(
-                        logits, packed.mask, temperature=self.human_temperature
-                    )
-                acts[k] = int(packed.actions[slot])
+                    acts[k] = int(packed.actions[slot])
             return acts
         acts = np.full(len(idxs), -1, dtype=np.int32)
         env = self.runner.env
