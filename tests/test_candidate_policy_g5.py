@@ -133,3 +133,27 @@ def test_teacher_distill_config_requires_checkpoint_and_temperature():
         TeacherDistillConfig.from_dict(
             {"enabled": True, "checkpoint": "teacher.pt.gz", "temperature": 0}
         )
+
+
+def test_teacher_distill_weights_anneal_and_preserve_legacy_constant_defaults():
+    constant = TeacherDistillConfig.from_dict(
+        {"enabled": True, "checkpoint": "teacher.pt.gz", "beta": 2.0, "value_mix": 0.5}
+    )
+    assert constant.weights(500_000_000) == (2.0, 0.5)
+
+    scheduled = TeacherDistillConfig.from_dict(
+        {
+            "enabled": True,
+            "checkpoint": "teacher.pt.gz",
+            "beta": 2.0,
+            "value_mix": 0.5,
+            "beta_final": 0.0,
+            "value_mix_final": 0.0,
+            "anneal_start_step": 10_000_000,
+            "anneal_end_step": 50_000_000,
+        }
+    )
+    assert scheduled.weights(0) == (2.0, 0.5)
+    assert scheduled.weights(30_000_000) == (1.0, 0.25)
+    assert scheduled.weights(50_000_000) == (0.0, 0.0)
+    assert scheduled.weights(500_000_000) == (0.0, 0.0)

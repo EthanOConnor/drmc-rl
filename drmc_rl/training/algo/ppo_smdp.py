@@ -100,6 +100,10 @@ class TeacherDistillConfig:
     checkpoint: str = ""
     beta: float = 1.0
     value_mix: float = 0.5
+    beta_final: Optional[float] = None
+    value_mix_final: Optional[float] = None
+    anneal_start_step: int = 0
+    anneal_end_step: int = 0
     temperature: float = 1.0
 
     @classmethod
@@ -111,12 +115,56 @@ class TeacherDistillConfig:
         temperature = float(value.get("temperature", 1.0))
         if temperature <= 0:
             raise ValueError("teacher_distill.temperature must be positive")
+        beta = float(value.get("beta", 1.0))
+        value_mix = float(value.get("value_mix", 0.5))
+        beta_final_raw = value.get("beta_final")
+        value_mix_final_raw = value.get("value_mix_final")
+        beta_final = beta if beta_final_raw is None else float(beta_final_raw)
+        value_mix_final = (
+            value_mix if value_mix_final_raw is None else float(value_mix_final_raw)
+        )
+        anneal_start_step = int(value.get("anneal_start_step", 0))
+        anneal_end_step = int(value.get("anneal_end_step", 0))
+        if min(beta, beta_final) < 0:
+            raise ValueError("teacher_distill beta weights must be non-negative")
+        if not 0.0 <= value_mix <= 1.0 or not 0.0 <= value_mix_final <= 1.0:
+            raise ValueError("teacher_distill value_mix weights must be in [0, 1]")
+        if anneal_start_step < 0 or anneal_end_step < 0:
+            raise ValueError("teacher_distill anneal steps must be non-negative")
+        if anneal_end_step and anneal_end_step <= anneal_start_step:
+            raise ValueError("teacher_distill.anneal_end_step must exceed anneal_start_step")
         return cls(
             enabled=enabled,
             checkpoint=checkpoint,
-            beta=float(value.get("beta", 1.0)),
-            value_mix=float(value.get("value_mix", 0.5)),
+            beta=beta,
+            value_mix=value_mix,
+            beta_final=beta_final,
+            value_mix_final=value_mix_final,
+            anneal_start_step=anneal_start_step,
+            anneal_end_step=anneal_end_step,
             temperature=temperature,
+        )
+
+    def weights(self, step: int) -> tuple[float, float]:
+        """Return scheduled policy-KL and value-target teacher weights."""
+
+        if self.anneal_end_step <= self.anneal_start_step:
+            return self.beta, self.value_mix
+        progress = min(
+            1.0,
+            max(
+                0.0,
+                (int(step) - self.anneal_start_step)
+                / float(self.anneal_end_step - self.anneal_start_step),
+            ),
+        )
+        beta_final = self.beta if self.beta_final is None else self.beta_final
+        value_mix_final = (
+            self.value_mix if self.value_mix_final is None else self.value_mix_final
+        )
+        return (
+            self.beta + progress * (beta_final - self.beta),
+            self.value_mix + progress * (value_mix_final - self.value_mix),
         )
 
 
@@ -801,7 +849,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                         obs=decision_obs,
                         aux=aux_batch,
                     )
-                elif self._teacher_net is not None:
+                elif self._teacher_net is not None and any(
+                    weight > 0.0 for weight in self.teacher_distill_cfg.weights(self.global_step)
+                ):
                     if self._pending_teacher_targets is None or self._pending_teacher_values is None:
                         raise RuntimeError("teacher distillation targets are missing")
                     sd_targets = self._pending_teacher_targets
@@ -1205,7 +1255,14 @@ class SMDPPPOAdapter(AlgoAdapter):
                         cand_mask_t,
                         aux=aux_t,
                     )
-                    if self._teacher_net is not None and net is self.net:
+                    if (
+                        self._teacher_net is not None
+                        and net is self.net
+                        and any(
+                            weight > 0.0
+                            for weight in self.teacher_distill_cfg.weights(self.global_step)
+                        )
+                    ):
                         teacher_logits, teacher_values = self._teacher_net(  # type: ignore[misc]
                             obs_t,
                             colors_t,
@@ -1400,16 +1457,11 @@ class SMDPPPOAdapter(AlgoAdapter):
         sd_mask_t: Optional[torch.Tensor] = None
         sd_kl_sum: Optional[torch.Tensor] = None
         sd_kl_n: Optional[torch.Tensor] = None
-        sd_beta = float(
-            self.teacher_distill_cfg.beta
-            if self.teacher_distill_cfg.enabled
-            else self.search_distill_cfg.beta
-        )
-        sd_value_mix = float(
-            self.teacher_distill_cfg.value_mix
-            if self.teacher_distill_cfg.enabled
-            else self.search_distill_cfg.value_mix
-        )
+        if self.teacher_distill_cfg.enabled:
+            sd_beta, sd_value_mix = self.teacher_distill_cfg.weights(schedule_step)
+        else:
+            sd_beta = float(self.search_distill_cfg.beta)
+            sd_value_mix = float(self.search_distill_cfg.value_mix)
         distill_enabled = bool(
             self.search_distill_cfg.enabled or self.teacher_distill_cfg.enabled
         )
@@ -1681,6 +1733,9 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         metrics_accum["optim/lr"] = self.optimizer.param_groups[0]["lr"]
         metrics_accum["optim/entropy_coef"] = entropy_coef
+        if self.teacher_distill_cfg.enabled:
+            metrics_accum["teacher_distill/beta"] = sd_beta
+            metrics_accum["teacher_distill/value_mix"] = sd_value_mix
 
         return metrics_accum
 
