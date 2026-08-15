@@ -122,6 +122,7 @@ class DrMarioVsPoolVecEnv:
         max_wait_frames: int = 6000,
         lib_path: Optional[str] = None,
         seed_provider: Optional[Callable[[int], Optional[Tuple[int, int]]]] = None,
+        frame_counter_provider: Optional[Callable[[int], Optional[int]]] = None,
         opponent_pool_cfg: Optional[Dict[str, Any]] = None,
         start_bank_cfg: Optional[Dict[str, Any]] = None,
         gpu_planner: bool = False,
@@ -144,6 +145,7 @@ class DrMarioVsPoolVecEnv:
         self.match_horizon_pills = max(0, int(match_horizon_pills))
         self.horizon_penalty = max(0.0, float(horizon_penalty))
         self.seed_provider = seed_provider
+        self.frame_counter_provider = frame_counter_provider
         self.direct_policy_batch = bool(direct_policy_batch)
 
         state_repr_norm = str(state_repr or "").strip().lower().replace("-", "_")
@@ -1209,8 +1211,17 @@ class DrMarioVsPoolVecEnv:
                 seed_bytes = (0, 0)
                 rng_override = False
 
+            provided_frame = (
+                self.frame_counter_provider(pair_i)
+                if self.frame_counter_provider is not None
+                else None
+            )
             frame_counter_base = (
-                int(self._rng.integers(0, 2**16)) if self.rng_randomize else 0
+                int(provided_frame) & 0xFFFF
+                if provided_frame is not None
+                else int(self._rng.integers(0, 2**16))
+                if self.rng_randomize
+                else 0
             )
 
             # Go-Exploit: draw a fraction of resets from the start bank

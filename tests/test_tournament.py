@@ -142,6 +142,8 @@ def test_game_seed_deterministic_and_nonzero():
     assert 0 < s1 <= 0xFFFF
     specs = make_specs(123, "a", "b", range(4))
     assert [s.a_side for s in specs] == [0, 1, 0, 1]  # alternating sides
+    assert specs[0].seed == specs[1].seed
+    assert specs[0].frame_counter_base == specs[1].frame_counter_base
 
 
 # --------------------------------------------------------- store + resumability

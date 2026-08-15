@@ -173,6 +173,12 @@ class GameSpec:
     game_idx: int  # index within the pair's series (0..games_per_pair-1)
     seed: int  # 16-bit NES rng state
     a_side: int  # which physical side entry A plays (0 or 1)
+    frame_counter_base: int = 0  # exact initial phase of the NES frame counter
+    level: int = 14
+    speed_setting: int = 2
+    state_repr: str = "bitplane_bottle_conn_mask"
+    max_decisions_per_side: int = ARENA_MAX_DECISIONS_PER_SIDE
+    policy_run_seed: int = 0
 
 
 @dataclass(frozen=True)
@@ -187,18 +193,47 @@ class GameResult:
 
 
 def game_seed(tournament_seed: int, name_a: str, name_b: str, game_idx: int) -> int:
-    h = hashlib.sha256(f"{tournament_seed}:{name_a}:{name_b}:{game_idx}".encode()).digest()
+    pair_idx = game_idx // 2
+    h = hashlib.sha256(f"{tournament_seed}:{name_a}:{name_b}:{pair_idx}".encode()).digest()
     s = int.from_bytes(h[:2], "little")
     return s if s != 0 else 0x55AA  # avoid the degenerate all-zero LFSR state
 
 
+def game_frame_counter(
+    tournament_seed: int, name_a: str, name_b: str, pair_idx: int
+) -> int:
+    h = hashlib.sha256(
+        f"frame:{tournament_seed}:{name_a}:{name_b}:{pair_idx}".encode()
+    ).digest()
+    return int.from_bytes(h[:2], "little")
+
+
 def make_specs(
-    tournament_seed: int, name_a: str, name_b: str, game_idxs: Iterable[int]
+    tournament_seed: int, name_a: str, name_b: str, game_idxs: Iterable[int], *,
+    level: int = 14, speed_setting: int = 2,
+    state_repr: str = "bitplane_bottle_conn_mask",
+    max_decisions_per_side: int = ARENA_MAX_DECISIONS_PER_SIDE,
+    policy_run_seed: int = 0,
 ) -> List[GameSpec]:
-    return [
-        GameSpec(game_idx=k, seed=game_seed(tournament_seed, name_a, name_b, k), a_side=k % 2)
-        for k in game_idxs
-    ]
+    specs = []
+    for k in game_idxs:
+        pair_idx = k // 2
+        specs.append(
+            GameSpec(
+                game_idx=k,
+                seed=game_seed(tournament_seed, name_a, name_b, k),
+                a_side=k % 2,
+                frame_counter_base=game_frame_counter(
+                    tournament_seed, name_a, name_b, pair_idx
+                ),
+                level=level,
+                speed_setting=speed_setting,
+                state_repr=state_repr,
+                max_decisions_per_side=max_decisions_per_side,
+                policy_run_seed=policy_run_seed,
+            )
+        )
+    return specs
 
 
 # ----------------------------------------------------------------------- store
@@ -353,7 +388,16 @@ def run_tournament(
             todo = [k for k in range(int(games_per_pair)) if k not in done]
             if not todo:
                 continue
-            specs = make_specs(seed, ea["name"], eb["name"], todo)
+            specs = make_specs(
+                seed, ea["name"], eb["name"], todo,
+                level=getattr(runner, "level", level),
+                speed_setting=getattr(runner, "speed_setting", 2),
+                state_repr=getattr(runner, "state_repr", "bitplane_bottle_conn_mask"),
+                max_decisions_per_side=getattr(
+                    runner, "max_decisions_per_side", ARENA_MAX_DECISIONS_PER_SIDE
+                ),
+                policy_run_seed=getattr(runner, "run_seed", 0),
+            )
             if verbose:
                 print(
                     f"pair {ea['name']} vs {eb['name']}: {len(done)} recorded, "
@@ -445,6 +489,7 @@ class VsMatchRunner:
         self.run_seed = int(run_seed)
         self.replay_sample_rate = min(max(float(replay_sample_rate), 0.0), 1.0)
         self.max_decisions_per_side = max(0, int(max_decisions_per_side))
+        self.state_repr = str(state_repr)
         self._assigned: List[Optional[GameSpec]] = [None] * self.num_pairs
         self.env = DrMarioVsPoolVecEnv(
             num_pairs=self.num_pairs,
@@ -452,6 +497,7 @@ class VsMatchRunner:
             speed_setting=self.speed_setting,
             randomize_rng=True,
             seed_provider=self._seed_for_pair,
+            frame_counter_provider=self._frame_counter_for_pair,
             state_repr=state_repr,
         )
         self._policies: Dict[str, Any] = {}
@@ -467,6 +513,10 @@ class VsMatchRunner:
             return None  # idle pair: randomized junk game, results ignored
         return (spec.seed & 0xFF, (spec.seed >> 8) & 0xFF)
 
+    def _frame_counter_for_pair(self, pair_i: int) -> Optional[int]:
+        spec = self._assigned[pair_i]
+        return None if spec is None else spec.frame_counter_base
+
     def _policy_for(self, entry: Dict[str, Any]) -> "_EntryPolicy":
         key = json.dumps(entry, sort_keys=True)
         if key not in self._policies:
@@ -476,6 +526,23 @@ class VsMatchRunner:
     def play(
         self, entry_a: Dict[str, Any], entry_b: Dict[str, Any], specs: Sequence[GameSpec]
     ) -> Iterator[GameResult]:
+        for spec in specs:
+            actual = (
+                spec.level,
+                spec.speed_setting,
+                spec.state_repr,
+                spec.max_decisions_per_side,
+                spec.policy_run_seed,
+            )
+            expected = (
+                self.level,
+                self.speed_setting,
+                self.state_repr,
+                self.max_decisions_per_side,
+                self.run_seed,
+            )
+            if actual != expected:
+                raise ValueError(f"game spec configuration {actual!r} != runner {expected!r}")
         pol_a = self._policy_for(entry_a)
         pol_b = self._policy_for(entry_b)
         queue = deque(specs)
@@ -986,7 +1053,16 @@ def run_sprt(
 
     llr, verdict = _status()
     if verdict is None and len(done) < max_games:
-        specs = make_specs(seed, na, nb, [k for k in range(max_games) if k not in done])
+        specs = make_specs(
+            seed, na, nb, [k for k in range(max_games) if k not in done],
+            level=getattr(runner, "level", level),
+            speed_setting=getattr(runner, "speed_setting", 2),
+            state_repr=getattr(runner, "state_repr", "bitplane_bottle_conn_mask"),
+            max_decisions_per_side=getattr(
+                runner, "max_decisions_per_side", ARENA_MAX_DECISIONS_PER_SIDE
+            ),
+            policy_run_seed=getattr(runner, "run_seed", 0),
+        )
         series = runner.play(entry_a, entry_b, specs)
         for res in series:
             store.insert_game(tid, na, nb, res)

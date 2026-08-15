@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS matches (
   decisions INTEGER,
   terminal_reason TEXT NOT NULL DEFAULT 'unknown',
   replay TEXT,
+  match_key TEXT,
+  replay_ref TEXT,
+  game_index INTEGER,
+  frame_counter_base INTEGER,
+  level INTEGER,
+  speed_setting INTEGER,
+  state_repr TEXT,
+  max_decisions_per_side INTEGER,
+  policy_run_seed INTEGER,
+  provenance TEXT NOT NULL DEFAULT '{}',
   created TEXT NOT NULL,
   UNIQUE(agent_a, agent_b, seed, side_assignment)
 );
@@ -204,6 +214,21 @@ class ArenaStore:
             self.conn.execute("ALTER TABLE matches ADD COLUMN match_key TEXT")
         if "replay_ref" not in columns:
             self.conn.execute("ALTER TABLE matches ADD COLUMN replay_ref TEXT")
+        additive_match_columns = {
+            "game_index": "INTEGER",
+            "frame_counter_base": "INTEGER",
+            "level": "INTEGER",
+            "speed_setting": "INTEGER",
+            "state_repr": "TEXT",
+            "max_decisions_per_side": "INTEGER",
+            "policy_run_seed": "INTEGER",
+            "provenance": "TEXT NOT NULL DEFAULT '{}'",
+        }
+        for name, declaration in additive_match_columns.items():
+            if name not in columns:
+                self.conn.execute(
+                    f"ALTER TABLE matches ADD COLUMN {name} {declaration}"
+                )
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS matches_match_key "
             "ON matches(match_key) WHERE match_key IS NOT NULL"
@@ -357,15 +382,25 @@ class ArenaStore:
     def record(self, a: str, b: str, *, seed: int, side: int, winner: str,
                match_len_sec: float, decisions: int, terminal_reason: str = "unknown",
                replay: list[dict[str, Any]] | None = None,
-               match_key: str | None = None, commit: bool = True) -> bool:
+               match_key: str | None = None, game_index: int | None = None,
+               frame_counter_base: int | None = None, level: int | None = None,
+               speed_setting: int | None = None, state_repr: str | None = None,
+               max_decisions_per_side: int | None = None,
+               policy_run_seed: int | None = None,
+               provenance: dict[str, Any] | None = None,
+               commit: bool = True) -> bool:
         replay_ref = self._store_replay(replay) if replay else None
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO matches
                (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,
-                terminal_reason,replay,replay_ref,match_key,created)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                terminal_reason,replay,replay_ref,match_key,game_index,
+                frame_counter_base,level,speed_setting,state_repr,
+                max_decisions_per_side,policy_run_seed,provenance,created)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (a, b, seed, side, winner, match_len_sec, decisions, terminal_reason,
-             None, replay_ref, match_key, utc_now()),
+             None, replay_ref, match_key, game_index, frame_counter_base, level,
+             speed_setting, state_repr, max_decisions_per_side, policy_run_seed,
+             json.dumps(provenance or {}, sort_keys=True), utc_now()),
         )
         if commit:
             self.conn.commit()
@@ -402,14 +437,30 @@ class ArenaStore:
         return hashlib.sha256(token.encode()).hexdigest()
 
     def claim_expired_lease(
-        self, *, worker_id: str, now: float, ttl_seconds: float
+        self, *, worker_id: str, now: float, ttl_seconds: float,
+        required_protocol_version: int | None = None,
     ) -> tuple[dict[str, Any], str] | None:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            row = self.conn.execute(
+            rows = self.conn.execute(
                 "SELECT * FROM leases WHERE status='leased' AND expires<=? "
-                "ORDER BY expires,id LIMIT 1", (float(now),),
-            ).fetchone()
+                "ORDER BY expires,id", (float(now),),
+            ).fetchall()
+            row = None
+            for candidate in rows:
+                payload = json.loads(candidate["payload"])
+                if (
+                    required_protocol_version is not None
+                    and int(payload.get("protocol_version", -1))
+                    != required_protocol_version
+                ):
+                    self.conn.execute(
+                        "UPDATE leases SET status='rejected',completed=? WHERE id=?",
+                        (utc_now(), candidate["id"]),
+                    )
+                    continue
+                row = candidate
+                break
             if row is None:
                 self.conn.commit()
                 return None
@@ -466,6 +517,17 @@ class ArenaStore:
             expected = {
                 item["match_id"]: item for item in json.loads(row["payload"])["specs"]
             }
+            required_spec_fields = {
+                "match_id", "game_idx", "seed", "a_side", "frame_counter_base",
+                "level", "speed_setting", "state_repr", "max_decisions_per_side",
+                "policy_run_seed",
+            }
+            for spec in expected.values():
+                missing = required_spec_fields - spec.keys()
+                if missing:
+                    raise ValueError(
+                        "lease uses an incomplete reset spec: " + ", ".join(sorted(missing))
+                    )
             supplied = {item["match_id"]: item for item in results}
             if supplied.keys() != expected.keys() or len(supplied) != len(results):
                 raise ValueError("submission does not exactly cover the leased match IDs")
@@ -484,13 +546,24 @@ class ArenaStore:
                 if not math.isfinite(match_len) or match_len < 0 or decisions < 0:
                     raise ValueError("invalid match measurements")
                 spec = expected[result["match_id"]]
-                self.record(
+                inserted = self.record(
                     row["agent_a"], row["agent_b"], seed=int(spec["seed"]),
                     side=int(spec["a_side"]), winner=str(result["winner"]),
                     match_len_sec=match_len, decisions=decisions,
                     terminal_reason=str(result.get("terminal_reason", "unknown")),
-                    replay=result.get("replay"), match_key=result["match_id"], commit=False,
+                    replay=result.get("replay"), match_key=result["match_id"],
+                    game_index=int(spec["game_idx"]),
+                    frame_counter_base=int(spec["frame_counter_base"]),
+                    level=int(spec["level"]), speed_setting=int(spec["speed_setting"]),
+                    state_repr=str(spec["state_repr"]),
+                    max_decisions_per_side=int(spec["max_decisions_per_side"]),
+                    policy_run_seed=int(spec["policy_run_seed"]),
+                    provenance=dict(spec.get("provenance") or {}), commit=False,
                 )
+                if not inserted:
+                    raise ValueError(
+                        f"leased match {result['match_id']} was not committed (duplicate identity)"
+                    )
             self.record_worker_sample(commit=False, **worker_sample)
             self.conn.execute(
                 "UPDATE leases SET status='complete',submission_sha256=?,completed=? WHERE id=?",
@@ -1083,7 +1156,9 @@ class ArenaStore:
 
     def replay(self, match_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT agent_a,agent_b,winner,match_len_sec,replay,replay_ref "
+            "SELECT agent_a,agent_b,winner,match_len_sec,replay,replay_ref,"
+            "seed,side_assignment,game_index,frame_counter_base,level,speed_setting,"
+            "state_repr,max_decisions_per_side,policy_run_seed,provenance "
             "FROM matches WHERE id=?",
             (match_id,),
         ).fetchone()
@@ -1099,6 +1174,7 @@ class ArenaStore:
                 raise ValueError("invalid replay reference")
             replay = json.loads(gzip.decompress(path.read_bytes()))
         payload.pop("replay_ref", None)
+        payload["provenance"] = json.loads(payload["provenance"] or "{}")
         payload["replay"] = replay
         return payload
 

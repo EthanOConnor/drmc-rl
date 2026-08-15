@@ -4,6 +4,8 @@ import json
 import threading
 from http.server import ThreadingHTTPServer
 
+import pytest
+
 from drmc_rl.arena.ratings import RatingConfig
 from drmc_rl.arena.remote import ArenaRemoteClient, PROTOCOL_VERSION
 from drmc_rl.arena.store import ArenaStore
@@ -14,6 +16,7 @@ from tools.arena import (
     maybe_promote,
     pair_priority,
     parse_telemetry,
+    paired_specs,
     scheduler_snapshot,
     eligible_agents,
 )
@@ -82,7 +85,7 @@ def test_expired_lease_is_reclaimed_with_a_new_claim(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "alpha", "lineage")
     add(store, "beta", "lineage")
-    payload = {"protocol_version": 1, "specs": [{"match_id": "m1"}]}
+    payload = {"protocol_version": PROTOCOL_VERSION, "specs": [{"match_id": "m1"}]}
     first = store.create_lease(
         lease_id="lease", worker_id="one", agent_a="alpha", agent_b="beta",
         payload=payload, now=10, ttl_seconds=5,
@@ -134,6 +137,12 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     DashboardHandler.replay_dir = tmp_path / "replays"
     DashboardHandler.worker_token = "test-token"
     DashboardHandler.lease_ttl = 60
+    DashboardHandler.arena_config = {
+        "level": 14, "speed_setting": 2,
+        "state_repr": "bitplane_bottle_conn_mask_vs",
+        "max_decisions_per_side": 1000,
+        "policy_run_seed": 27182,
+    }
     server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -146,6 +155,7 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
         lease = client.lease({
             "protocol_version": PROTOCOL_VERSION, "worker_id": "worker-1",
             "device": "cpu", "threads": 1, "batch_size": 2,
+            "arena_config": DashboardHandler.arena_config,
         })
         assert lease is not None and len(lease["specs"]) == 2
         renewed = client.renew(lease["lease_id"], lease["claim_token"])
@@ -178,6 +188,80 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     assert verify.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 2
     assert verify.conn.execute("SELECT COUNT(*) FROM worker_samples").fetchone()[0] == 1
     assert verify.conn.execute("SELECT status FROM leases").fetchone()[0] == "complete"
+
+
+def test_paired_specs_share_every_reset_field_and_swap_sides() -> None:
+    specs = paired_specs(
+        schedule_seed=7, agent_a="alpha", agent_b="beta", start=40, count=4,
+        level=14, speed_setting=2, state_repr="bitplane_bottle_conn_mask_vs",
+        max_decisions_per_side=1000,
+        policy_run_seed=27182,
+    )
+    assert [spec["a_side"] for spec in specs] == [0, 1, 0, 1]
+    reset_fields = {
+        "seed", "frame_counter_base", "level", "speed_setting", "state_repr",
+        "max_decisions_per_side",
+    }
+    assert {key: specs[0][key] for key in reset_fields} == {
+        key: specs[1][key] for key in reset_fields
+    }
+    assert {key: specs[2][key] for key in reset_fields} == {
+        key: specs[3][key] for key in reset_fields
+    }
+    assert specs == paired_specs(
+        schedule_seed=7, agent_a="alpha", agent_b="beta", start=40, count=4,
+        level=14, speed_setting=2, state_repr="bitplane_bottle_conn_mask_vs",
+        max_decisions_per_side=1000,
+        policy_run_seed=27182,
+    )
+
+
+def test_match_provenance_round_trips_with_replay(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    assert store.record(
+        "alpha", "beta", seed=3, side=0, winner="a", match_len_sec=1,
+        decisions=2, replay=[{"frame": 1}], match_key="complete",
+        game_index=9, frame_counter_base=1234, level=14, speed_setting=2,
+        state_repr="bitplane_bottle_conn_mask_vs", max_decisions_per_side=1000,
+        provenance={"protocol_version": PROTOCOL_VERSION, "worker_id": "green"},
+    )
+    replay = store.replay(1)
+    assert replay["frame_counter_base"] == 1234
+    assert replay["provenance"]["worker_id"] == "green"
+
+
+def test_incomplete_lease_submission_is_rejected_without_telemetry(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    lease = store.create_lease(
+        lease_id="legacy", worker_id="old-worker", agent_a="alpha", agent_b="beta",
+        payload={
+            "protocol_version": 1,
+            "specs": [{"match_id": "old", "game_idx": 0, "seed": 1, "a_side": 0}],
+        },
+        now=1, ttl_seconds=100,
+    )
+    with pytest.raises(ValueError, match="incomplete reset spec"):
+        store.submit_lease(
+            lease_id="legacy", claim_token=lease["claim_token"], submission_sha256="x",
+            results=[{
+                "match_id": "old", "winner": "a", "match_len_sec": 1,
+                "decisions": 1,
+            }],
+            worker_sample={
+                "worker_id": "old-worker", "device": "cpu", "threads": 1,
+                "batch_size": 1, "agent_a": "alpha", "agent_b": "beta",
+                "games": 1, "simulated_frames": 60, "decisions": 1,
+                "wall_seconds": 1,
+            },
+            now=2,
+        )
+    assert store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 0
+    assert store.conn.execute("SELECT COUNT(*) FROM worker_samples").fetchone()[0] == 0
+    assert store.conn.execute("SELECT status FROM leases").fetchone()[0] == "leased"
 
 
 def test_scheduler_focus_is_reversible_and_preserves_agents(tmp_path: Path) -> None:

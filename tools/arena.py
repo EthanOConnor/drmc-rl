@@ -52,6 +52,63 @@ SCHEDULER_COVERAGE_MIX = 0.10
 SEARCH_COMPUTE_FACTOR = 0.15
 
 
+def paired_specs(
+    *, schedule_seed: int, agent_a: str, agent_b: str, start: int, count: int,
+    level: int, speed_setting: int, state_repr: str,
+    max_decisions_per_side: int,
+    policy_run_seed: int,
+    used: set[tuple[int, int]] | None = None,
+) -> list[dict[str, Any]]:
+    """Build deterministic, complete reset specs in side-swapped pairs."""
+    if count <= 0 or count % 2:
+        raise ValueError("arena batches must contain a positive even number of games")
+    used = set() if used is None else used
+    specs: list[dict[str, Any]] = []
+    for offset in range(0, count, 2):
+        pair_serial = start + offset // 2
+        digest = hashlib.sha256(
+            f"arena-v2\0{schedule_seed}\0{agent_a}\0{agent_b}\0{pair_serial}".encode()
+        ).digest()
+        seed = int.from_bytes(digest[:2], "little") or 0x55AA
+        for _candidate in range(1 << 16):
+            if (seed, 0) not in used and (seed, 1) not in used:
+                break
+            seed = (seed + 1) & 0xFFFF or 1
+        else:
+            raise RuntimeError(f"seed space exhausted for {agent_a} vs {agent_b}")
+        frame_counter_base = int.from_bytes(digest[2:4], "little")
+        for side in (0, 1):
+            game_index = start + offset + side
+            spec = {
+                "game_idx": game_index,
+                "seed": seed,
+                "a_side": side,
+                "frame_counter_base": frame_counter_base,
+                "level": int(level),
+                "speed_setting": int(speed_setting),
+                "state_repr": str(state_repr),
+                "max_decisions_per_side": int(max_decisions_per_side),
+                "policy_run_seed": int(policy_run_seed),
+            }
+            identity = {"agent_a": agent_a, "agent_b": agent_b, **spec}
+            spec["match_id"] = content_sha256(identity)
+            specs.append(spec)
+            used.add((seed, side))
+    return specs
+
+
+def game_spec_from_wire(spec: dict[str, Any]) -> GameSpec:
+    required = {
+        "game_idx", "seed", "a_side", "frame_counter_base", "level",
+        "speed_setting", "state_repr", "max_decisions_per_side",
+        "policy_run_seed",
+    }
+    missing = required - spec.keys()
+    if missing:
+        raise ValueError("incomplete reset spec: " + ", ".join(sorted(missing)))
+    return GameSpec(**{key: spec[key] for key in required})
+
+
 @functools.lru_cache(maxsize=256)
 def _file_sha256_cached(path: str, size: int, modified_ns: int) -> str:
     digest = hashlib.sha256()
@@ -599,7 +656,6 @@ def run_worker(args: argparse.Namespace) -> None:
                            replay_sample_rate=args.replay_sample_rate,
                            max_decisions_per_side=args.max_decisions_per_side)
     worker_id = f"{runner.device}-{os.getpid()}"
-    serial = int(store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
     try:
         while not stopped:
             agents = eligible_agents(store)
@@ -607,22 +663,40 @@ def run_worker(args: argparse.Namespace) -> None:
                 time.sleep(args.poll)
                 continue
             a, b = pair_priority(store, agents)
-            specs = [GameSpec(game_idx=serial + i, seed=(args.seed + serial + i) & 0xFFFF,
-                              a_side=(serial + i) % 2) for i in range(args.batch)]
+            serial = store.reserve_serials(args.batch)
+            wire_specs = paired_specs(
+                schedule_seed=args.seed, agent_a=a.id, agent_b=b.id,
+                start=serial, count=args.batch, level=args.level,
+                speed_setting=args.speed_setting, state_repr=args.state_repr,
+                max_decisions_per_side=args.max_decisions_per_side,
+                policy_run_seed=args.seed,
+                used=store.pair_seed_assignments(a.id, b.id),
+            )
+            specs = [game_spec_from_wire(spec) for spec in wire_specs]
+            match_ids = [str(spec["match_id"]) for spec in wire_specs]
             batch_started = time.perf_counter()
             batch_games = 0
             batch_frames = 0
             batch_decisions = 0
             results = runner.play(a.entry(), b.entry(), specs)
-            for result in results:
-                store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
+            for match_id, result in zip(match_ids, results, strict=True):
+                inserted = store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
                              winner=result.winner, match_len_sec=result.match_len_sec,
                              decisions=result.decisions,
-                             terminal_reason=result.terminal_reason, replay=result.replay)
+                             terminal_reason=result.terminal_reason, replay=result.replay,
+                             match_key=match_id, game_index=result.spec.game_idx,
+                             frame_counter_base=result.spec.frame_counter_base,
+                             level=result.spec.level,
+                             speed_setting=result.spec.speed_setting,
+                             state_repr=result.spec.state_repr,
+                             max_decisions_per_side=result.spec.max_decisions_per_side,
+                             provenance={"protocol_version": PROTOCOL_VERSION,
+                                         "worker_id": worker_id, "device": runner.device})
+                if not inserted:
+                    raise RuntimeError(f"arena match was not committed: {match_id}")
                 batch_games += 1
                 batch_frames += int(result.frames or round(result.match_len_sec * NES_FPS))
                 batch_decisions += int(result.decisions)
-                serial += 1
             results.close()
             store.record_worker_sample(
                 worker_id=worker_id,
@@ -676,6 +750,12 @@ def run_remote_worker(args: argparse.Namespace) -> None:
                 "device": runner.device,
                 "threads": args.threads,
                 "batch_size": args.batch,
+                "arena_config": {
+                    "level": args.level, "speed_setting": args.speed_setting,
+                    "state_repr": args.state_repr,
+                    "max_decisions_per_side": args.max_decisions_per_side,
+                    "policy_run_seed": args.seed,
+                },
             })
             if lease is None:
                 time.sleep(args.poll)
@@ -705,13 +785,7 @@ def run_remote_worker(args: argparse.Namespace) -> None:
                         "name": wire["name"], "checkpoint": str(checkpoint),
                         "mode": wire["mode"], "params": wire["params"],
                     })
-                specs = [
-                    GameSpec(
-                        game_idx=int(spec["game_idx"]), seed=int(spec["seed"]),
-                        a_side=int(spec["a_side"]),
-                    )
-                    for spec in lease["specs"]
-                ]
+                specs = [game_spec_from_wire(spec) for spec in lease["specs"]]
                 match_ids = [str(spec["match_id"]) for spec in lease["specs"]]
                 started = time.perf_counter()
                 played = runner.play(entries[0], entries[1], specs)
@@ -821,6 +895,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     worker_token: str | None = None
     lease_ttl: float = 600.0
     lease_seed: int = 0xA8E4
+    arena_config: dict[str, Any] = {}
     lease_lock = threading.Lock()
 
     def _authorized(self) -> bool:
@@ -857,6 +932,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "checkpoint_delivery": True,
                 "idempotent_submission": True,
                 "external_replays": True,
+                "complete_reset_specs": True,
+                "paired_side_swaps": True,
+                "committed_insert_accounting": True,
             })
             return
         if path.startswith("/api/v1/checkpoints/"):
@@ -968,13 +1046,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _lease_locked(self, request: dict[str, Any]) -> None:
         worker_id = str(request["worker_id"]).strip()
         batch_size = int(request["batch_size"])
-        if not worker_id or not 1 <= batch_size <= 64:
+        if not worker_id or not 2 <= batch_size <= 64 or batch_size % 2:
             raise ValueError("invalid worker_id or batch_size")
+        requested_config = request.get("arena_config")
+        if requested_config != self.arena_config:
+            raise ValueError(
+                f"worker arena_config {requested_config!r} does not match "
+                f"coordinator {self.arena_config!r}"
+            )
         now = time.time()
         store = ArenaStore(self.db, replay_dir=self.replay_dir)
         try:
             reclaimed = store.claim_expired_lease(
-                worker_id=worker_id, now=now, ttl_seconds=self.lease_ttl
+                worker_id=worker_id, now=now, ttl_seconds=self.lease_ttl,
+                required_protocol_version=PROTOCOL_VERSION,
             )
             if reclaimed is not None:
                 payload, _token = reclaimed
@@ -988,27 +1073,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             a, b = pair_priority(store, agents)
             serial = store.reserve_serials(batch_size)
             used = store.pair_seed_assignments(a.id, b.id)
-            specs = []
-            for offset in range(batch_size):
-                game_index = serial + offset
-                seed = (self.lease_seed + game_index) & 0xFFFF
-                side = game_index % 2
-                for _candidate in range(1 << 16):
-                    if (seed, side) not in used:
-                        break
-                    seed = (seed + 1) & 0xFFFF
-                else:
-                    raise RuntimeError(
-                        f"seed space exhausted for {a.id} vs {b.id}, side {side}"
-                    )
-                used.add((seed, side))
-                match_id = hashlib.sha256(
-                    f"{a.id}\0{b.id}\0{game_index}\0{seed}\0{side}".encode()
-                ).hexdigest()
-                specs.append({
-                    "match_id": match_id, "game_idx": game_index,
-                    "seed": seed, "a_side": side,
-                })
+            specs = paired_specs(
+                schedule_seed=self.lease_seed, agent_a=a.id, agent_b=b.id,
+                start=serial, count=batch_size, used=used, **self.arena_config,
+            )
+            provenance = {
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": worker_id,
+                "device": str(request.get("device", "unknown")),
+                "checkpoint_a_sha256": agent_wire(a)["checkpoint_sha256"],
+                "checkpoint_b_sha256": agent_wire(b)["checkpoint_sha256"],
+            }
+            for spec in specs:
+                spec["provenance"] = provenance
             payload = {
                 "protocol_version": PROTOCOL_VERSION,
                 "agent_a": agent_wire(a), "agent_b": agent_wire(b), "specs": specs,
@@ -1060,6 +1137,13 @@ def serve(args: argparse.Namespace) -> None:
     DashboardHandler.replay_dir = None if args.replay_dir is None else Path(args.replay_dir)
     DashboardHandler.lease_ttl = float(args.lease_ttl)
     DashboardHandler.lease_seed = int(args.lease_seed)
+    DashboardHandler.arena_config = {
+        "level": int(args.level),
+        "speed_setting": int(args.speed_setting),
+        "state_repr": str(args.state_repr),
+        "max_decisions_per_side": int(args.max_decisions_per_side),
+        "policy_run_seed": int(args.policy_run_seed),
+    }
     DashboardHandler.worker_token = (
         None if args.worker_token_file is None
         else Path(args.worker_token_file).expanduser().read_text().strip()
@@ -1122,6 +1206,12 @@ def main() -> None:
     web.add_argument("--lease-ttl", type=float, default=600)
     web.add_argument("--lease-seed", type=int, default=0xA8E4)
     web.add_argument("--replay-dir")
+    web.add_argument("--level", type=int, default=14)
+    web.add_argument("--speed-setting", type=int, default=2)
+    web.add_argument("--state-repr", default="bitplane_bottle_conn_mask_vs")
+    web.add_argument("--max-decisions-per-side", type=int,
+                     default=ARENA_MAX_DECISIONS_PER_SIDE)
+    web.add_argument("--policy-run-seed", type=int, default=27182)
     web.add_argument("--ratings", action=argparse.BooleanOptionalAction, default=True)
     add_rating_arguments(web)
     rate = sub.add_parser("rate")
