@@ -25,12 +25,14 @@ from pathlib import Path
 from typing import Any
 
 from drmc_rl.arena.ratings import RatingConfig, RatingConvergenceError
-from drmc_rl.arena.store import Agent, ArenaStore
+from drmc_rl.arena.store import DEFAULT_SCHEDULER_BOOST, Agent, ArenaStore
 from tools.tournament import GameSpec, VsMatchRunner, sprt_bounds, sprt_llr
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "runs" / "arena" / "arena.sqlite"
 STATIC = Path(__file__).with_name("arena_web")
+SCHEDULER_TEMPERATURE = 1.25
+SEARCH_COMPUTE_FACTOR = 0.15
 
 
 def stable_id(name: str, checkpoint: str) -> str:
@@ -273,12 +275,57 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, Any]]:
-    """Return the scheduler's current weighted matchup distribution."""
+def _new_entry_boosts(
+    agents: tuple[Agent, ...],
+    agent_games: dict[str, int],
+    superiority: dict[str, dict[str, float]],
+) -> tuple[float, list[dict[str, Any]]]:
+    """Return bounded boosts for entrants that have not settled yet."""
 
-    champion = next((a for a in agents if a.status == "champion"), None)
+    multiplier = 1.0
+    factors: list[dict[str, Any]] = []
+    for agent in agents:
+        config = agent.metadata.get("scheduler_boost")
+        if not isinstance(config, dict):
+            continue
+        cap = int(config.get("max_games", DEFAULT_SCHEDULER_BOOST["max_games"]))
+        target = float(config.get("los_target", DEFAULT_SCHEDULER_BOOST["los_target"]))
+        games = agent_games.get(agent.id, 0)
+        parent_los = (
+            None
+            if agent.parent_id is None
+            else superiority.get(agent.id, {}).get(agent.parent_id)
+        )
+        los_resolved = (
+            parent_los is not None
+            and max(parent_los, 1.0 - parent_los) >= target
+        )
+        if games >= cap or los_resolved:
+            continue
+        boost = float(config.get("multiplier", DEFAULT_SCHEDULER_BOOST["multiplier"]))
+        multiplier *= boost
+        factors.append({"label": "new entrant", "factor": boost})
+    return multiplier, factors
+
+
+def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, Any]]:
+    """Return the scheduler's current weighted matchup distribution.
+
+    Information gain is the only ordinary matchup signal. Temperature flattens
+    the distribution slightly, while bounded metadata on a newly registered
+    entrant supplies a short initial boost. Status labels do not affect mature
+    pairings.
+    """
+
     information = store.matchup_information()
     counts = store.matchup_counts()
+    superiority = store.matchup_superiority()
+    agent_games: dict[str, int] = {agent.id: 0 for agent in agents}
+    for (a_id, b_id), games in counts.items():
+        if a_id in agent_games:
+            agent_games[a_id] += games
+        if b_id in agent_games:
+            agent_games[b_id] += games
     if information:
         maximum_information = max(information.values(), default=1e-6)
         scheduled: list[dict[str, Any]] = []
@@ -290,30 +337,23 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
                 # give it an intentionally high provisional information value
                 # until the roster-change HMC fit publishes.
                 gain = information.get(key, maximum_information * 2.0 / (1.0 + games))
-                weight = max(gain, maximum_information * 1e-4)
-                factors: list[dict[str, Any]] = []
-                statuses = {a.status, b.status}
-                if "provisional" in statuses:
-                    weight *= 6.0
-                    factors.append({"label": "provisional", "factor": 6.0})
-                if "candidate" in statuses:
-                    weight *= 3.0
-                    factors.append({"label": "candidate", "factor": 3.0})
-                if a.status == b.status == "candidate":
-                    weight *= 1.5
-                    factors.append({"label": "candidate pair", "factor": 1.5})
-                if (
-                    champion
-                    and champion.id in {a.id, b.id}
-                    and "candidate" in statuses
-                ):
-                    weight *= 1.5
-                    factors.append({"label": "champion gate", "factor": 1.5})
+                normalized_gain = max(gain / maximum_information, 1e-4)
+                weight = normalized_gain ** (1.0 / SCHEDULER_TEMPERATURE)
+                factors: list[dict[str, Any]] = [{
+                    "label": "temperature",
+                    "factor": SCHEDULER_TEMPERATURE,
+                    "display_only": True,
+                }]
                 # Search games are useful but materially more expensive; use
                 # information per approximate compute cost rather than count.
                 if a.mode != "plain" or b.mode != "plain":
-                    weight *= 0.15
-                    factors.append({"label": "search cost", "factor": 0.15})
+                    weight *= SEARCH_COMPUTE_FACTOR
+                    factors.append({"label": "search cost", "factor": SEARCH_COMPUTE_FACTOR})
+                boost, boost_factors = _new_entry_boosts(
+                    (a, b), agent_games, superiority
+                )
+                weight *= boost
+                factors.extend(boost_factors)
                 scheduled.append({
                     "a": a,
                     "b": b,
@@ -337,26 +377,23 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
         for b in agents[i + 1:]:
             n = counts.get(tuple(sorted((a.id, b.id))), 0)
             priority = 1.0 / (1.0 + n)
-            statuses = {a.status, b.status}
             # Establish a connected comparison graph before spending heavily on
             # repeated gates or expensive search-vs-search matches.
             if n == 0:
                 priority += 1_000.0
-                if "provisional" in statuses:
-                    priority += 1_000.0
-            if "candidate" in statuses:
-                priority += 80.0 / (1.0 + n)
-            if champion and champion.id in {a.id, b.id} and "candidate" in {a.status, b.status}:
-                priority += 160.0 / (1.0 + n)
             if n and (a.mode != "plain" or b.mode != "plain"):
-                priority *= 0.15
+                priority *= SEARCH_COMPUTE_FACTOR
+            boost, boost_factors = _new_entry_boosts(
+                (a, b), agent_games, superiority
+            )
+            priority *= boost
             scheduled.append({
                 "a": a,
                 "b": b,
                 "games": n,
                 "information_gain": None,
                 "weight": priority,
-                "factors": [{"label": "posterior pending", "factor": None}],
+                "factors": [{"label": "posterior pending", "factor": None}, *boost_factors],
                 "posterior": False,
             })
     if not scheduled:
@@ -390,6 +427,8 @@ def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
     posterior = schedule[0]["information_gain"] is not None
     return {
         "mode": "bayesian_information" if posterior else "bootstrap",
+        "temperature": SCHEDULER_TEMPERATURE,
+        "new_entry_boost": dict(DEFAULT_SCHEDULER_BOOST),
         "eligible_agents": len(agents),
         "eligible_pairs": len(schedule),
         "matchups": [{

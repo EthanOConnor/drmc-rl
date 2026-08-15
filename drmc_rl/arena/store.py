@@ -25,6 +25,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+DEFAULT_SCHEDULER_BOOST = {
+    "multiplier": 2.0,
+    "max_games": 256,
+    "los_target": 0.95,
+}
+
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -174,6 +181,19 @@ class ArenaStore:
             self.conn.execute(
                 "ALTER TABLE rating_estimates ADD COLUMN probability_better_parent REAL"
             )
+        # Milestone checkpoints were registered before scheduler policy became
+        # explicit. Give still-active milestone entrants the same bounded
+        # initial boost that future candidate registrations receive.
+        for row in self.conn.execute(
+            "SELECT id,metadata FROM agents WHERE status IN ('candidate','provisional')"
+        ).fetchall():
+            row_metadata = json.loads(row["metadata"])
+            if "scheduler_boost" not in row_metadata and "milestone" in row_metadata:
+                row_metadata["scheduler_boost"] = dict(DEFAULT_SCHEDULER_BOOST)
+                self.conn.execute(
+                    "UPDATE agents SET metadata=? WHERE id=?",
+                    (json.dumps(row_metadata, sort_keys=True), row["id"]),
+                )
         self.conn.commit()
 
     def close(self) -> None:
@@ -194,6 +214,20 @@ class ArenaStore:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         now = utc_now()
+        existing = self.conn.execute(
+            "SELECT metadata FROM agents WHERE id=?", (agent_id,)
+        ).fetchone()
+        supplied_metadata = dict(metadata or {})
+        if existing is not None:
+            # Discovery is idempotent. Preserve scheduler state and other
+            # runtime metadata when a later poll refreshes a checkpoint path.
+            current_metadata = json.loads(existing["metadata"])
+            current_metadata.update(supplied_metadata)
+            supplied_metadata = current_metadata
+        elif status in ("candidate", "provisional"):
+            supplied_metadata.setdefault(
+                "scheduler_boost", dict(DEFAULT_SCHEDULER_BOOST)
+            )
         self.conn.execute(
             """INSERT INTO agents
                (id,name,family,generation,parent_id,checkpoint,mode,params,status,created,metadata)
@@ -211,7 +245,7 @@ class ArenaStore:
                 json.dumps(params or {}, sort_keys=True),
                 status,
                 now,
-                json.dumps(metadata or {}, sort_keys=True),
+                json.dumps(supplied_metadata, sort_keys=True),
             ),
         )
         self.conn.execute(
@@ -543,6 +577,11 @@ class ArenaStore:
                 (fit["id"],),
             )
         }
+
+    def matchup_superiority(self) -> dict[str, dict[str, float]]:
+        """Return posterior P(agent is stronger than opponent)."""
+
+        return self._latest_superiority()
 
     def matchup_counts(self) -> dict[tuple[str, str], int]:
         counts: dict[tuple[str, str], int] = {}

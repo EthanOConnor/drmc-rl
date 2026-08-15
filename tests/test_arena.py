@@ -175,7 +175,35 @@ def test_scheduler_snapshot_exposes_exact_worker_distribution(tmp_path: Path) ->
     assert snapshot["matchups"][0]["b"] == schedule[0]["b"].id
     assert snapshot["matchups"][0]["games"] == 17
     assert abs(sum(item["selection_probability"] for item in schedule) - 1.0) < 1e-12
-    assert {factor["label"] for factor in snapshot["matchups"][0]["factors"]} == {"candidate"}
+    assert {factor["label"] for factor in snapshot["matchups"][0]["factors"]} == {
+        "new entrant", "temperature"
+    }
+
+
+def test_scheduler_drops_new_entry_boost_at_cap_without_status_boost(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    store.register(
+        agent_id="beta", name="Beta", family="central", generation=1,
+        checkpoint="/beta.pt.gz", status="candidate",
+        metadata={"scheduler_boost": {"multiplier": 2.0, "max_games": 10,
+                                      "los_target": 0.95}},
+    )
+    add(store, "gamma", "candidate")
+    store.matchup_information = lambda: {  # type: ignore[method-assign]
+        ("alpha", "beta"): 0.20,
+        ("alpha", "gamma"): 0.20,
+        ("beta", "gamma"): 0.20,
+    }
+    store.matchup_counts = lambda: {("alpha", "beta"): 10}  # type: ignore[method-assign]
+    schedule = matchup_schedule(store, store.agents())
+    beta_gamma = next(
+        item for item in schedule
+        if {item["a"].id, item["b"].id} == {"beta", "gamma"}
+    )
+    labels = {factor["label"] for factor in beta_gamma["factors"]}
+    assert labels == {"temperature", "new entrant"}
+    assert beta_gamma["weight"] > 0
 
 
 def test_matchup_counts_canonicalizes_both_agent_orders(tmp_path: Path) -> None:
