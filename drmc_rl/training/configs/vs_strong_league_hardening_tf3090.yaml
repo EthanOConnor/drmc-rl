@@ -1,13 +1,12 @@
-# Outcome hardening against the strongest frozen arena teachers.  The parent
-# checkpoint is selected from the 1.5B--1.8B continuation tournament before
-# launch; 1.8B is the provisional value while its arena evidence accumulates.
+# Continue the successful Strong League run unchanged from its permanent
+# +500M checkpoint.  Arena checkpoints remain sampled every +100M frames.
 algo: ppo_smdp
 
 train:
-  total_steps: 2300397488
+  total_steps: 2800763296
   checkpoint_interval: 25000000
   checkpoint_keep_last: 24
-  init_checkpoint: runs/strong_league/parents/outcome-hardening-g4-step1800397488.pt.gz
+  init_checkpoint: runs/vs_strong_league_hardening_01/20260815-140730_ee7fe8a1/checkpoints/smdp_ppo_step2300763296.pt.gz
   strict_checkpoint: true
   resume_step: true
   resume_optimizer: true
@@ -113,4 +112,4 @@ env:
 curriculum:
   enabled: false
 
-logdir: runs/vs_strong_league_hardening_01
+logdir: runs/vs_strong_league_hardening_02
