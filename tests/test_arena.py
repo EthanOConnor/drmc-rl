@@ -2,6 +2,7 @@ from pathlib import Path
 import gzip
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
 
 import pytest
@@ -262,6 +263,39 @@ def test_incomplete_lease_submission_is_rejected_without_telemetry(tmp_path: Pat
     assert store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 0
     assert store.conn.execute("SELECT COUNT(*) FROM worker_samples").fetchone()[0] == 0
     assert store.conn.execute("SELECT status FROM leases").fetchone()[0] == "leased"
+
+
+def test_concurrent_store_open_serializes_additive_migration(tmp_path: Path) -> None:
+    db = tmp_path / "arena.sqlite"
+    store = ArenaStore(db)
+    for column in (
+        "game_index", "frame_counter_base", "level", "speed_setting", "state_repr",
+        "max_decisions_per_side", "policy_run_seed", "provenance",
+    ):
+        store.conn.execute(f"ALTER TABLE matches DROP COLUMN {column}")
+    store.conn.commit()
+    store.close()
+
+    barrier = threading.Barrier(8)
+
+    def open_store(_index: int) -> set[str]:
+        barrier.wait()
+        concurrent_store = ArenaStore(db)
+        try:
+            return {
+                str(row[1])
+                for row in concurrent_store.conn.execute("PRAGMA table_info(matches)")
+            }
+        finally:
+            concurrent_store.close()
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        schemas = list(executor.map(open_store, range(8)))
+    required = {
+        "game_index", "frame_counter_base", "level", "speed_setting", "state_repr",
+        "max_decisions_per_side", "policy_run_seed", "provenance",
+    }
+    assert all(required <= schema for schema in schemas)
 
 
 def test_scheduler_focus_is_reversible_and_preserves_agents(tmp_path: Path) -> None:

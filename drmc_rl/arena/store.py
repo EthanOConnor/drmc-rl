@@ -203,6 +203,11 @@ class ArenaStore:
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        # Schema upgrades are intentionally additive, but several arena workers
+        # can open the copied database at once during a cutover.  Acquire the
+        # SQLite writer lock before inspecting table_info so every subsequent
+        # opener observes the columns committed by the first migrator.
+        self.conn.execute("BEGIN IMMEDIATE")
         columns = {row[1] for row in self.conn.execute("PRAGMA table_info(matches)")}
         if "replay" not in columns:
             self.conn.execute("ALTER TABLE matches ADD COLUMN replay TEXT")
