@@ -29,7 +29,7 @@ from drmc_rl.human.afterstate_sim import decode_sparse_deltas
 from drmc_rl.human.model import POLICY_CONDITION_DIM, build_timing_model
 from drmc_rl.human.strength import RegretCalibration, quality_opportunity
 from drmc_rl.training.utils.checkpoint_io import save_checkpoint
-from tools.train_human_policy import condition_features, timing_features
+from tools.train_human_policy import _sample_weights, condition_features, timing_features
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +45,15 @@ class Shard:
     delta_cells: np.ndarray
     delta_values: np.ndarray
     targets: dict[str, np.ndarray]
+
+
+@dataclass(slots=True)
+class TrainingStatistics:
+    condition: HumanSkillCondition
+    rows: int
+    player_counts: dict[int, int]
+    rating_edges: np.ndarray
+    rating_counts: np.ndarray
 
 
 def _load_shard(source: Path, afterstates: Path) -> Shard:
@@ -142,6 +151,20 @@ def _tensor_batch(batch: dict[str, np.ndarray], device: str) -> dict[str, Any]:
     return {key: torch.from_numpy(value).to(device) for key, value in batch.items()}
 
 
+def _weighted_mean(values, weights):
+    """Mean one loss per decision, with stable batch-local normalization."""
+
+    weights = weights.to(values.dtype)
+    return (values * weights).sum() / weights.sum().clamp_min(1e-8)
+
+
+def _masked_row_mean(values, mask):
+    """Reduce candidate losses per decision before reducing across decisions."""
+
+    valid = mask.to(values.dtype)
+    return (values * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
+
+
 def _losses(model, timing, batch, *, autocast):
     import torch
     import torch.nn.functional as F
@@ -160,36 +183,65 @@ def _losses(model, timing, batch, *, autocast):
         )
         row = torch.arange(len(batch["chosen"]), device=batch["chosen"].device)
         chosen = batch["chosen"]
-        style = F.cross_entropy(output["human_logits"], chosen)
-        outcome = F.binary_cross_entropy_with_logits(
-            output["outcome_logit"][row, chosen], batch["won"]
+        weights = batch.get("row_weight")
+        if weights is None:
+            weights = torch.ones_like(batch["won"])
+        style = _weighted_mean(
+            F.cross_entropy(output["human_logits"], chosen, reduction="none"), weights
         )
-        quality_outcome = F.binary_cross_entropy_with_logits(
-            output["competitive_score"][row, chosen], batch["won"]
+        outcome = _weighted_mean(
+            F.binary_cross_entropy_with_logits(
+                output["outcome_logit"][row, chosen], batch["won"], reduction="none"
+            ),
+            weights,
+        )
+        quality_outcome = _weighted_mean(
+            F.binary_cross_entropy_with_logits(
+                output["competitive_score"][row, chosen], batch["won"], reduction="none"
+            ),
+            weights,
         )
         # Bootstrap a coherent rating-independent policy from the observed
         # corpus action. Outcome/search fine-tuning can improve this head later;
         # without this term, only one candidate per row receives a long-horizon
         # label and the remaining ranking is nearly arbitrary.
-        quality_policy = F.cross_entropy(output["competitive_score"], chosen)
+        quality_policy = _weighted_mean(
+            F.cross_entropy(output["competitive_score"], chosen, reduction="none"), weights
+        )
         valid = batch["mask"]
         clear_target = (batch["terminal"] == 1).to(output["clear_logit"].dtype)
         topout_target = (batch["terminal"] == 2).to(output["topout_logit"].dtype)
 
-        def balanced_bce(logits, target):
-            positives = target.sum()
-            negatives = target.numel() - positives
+        def balanced_bce(logits, target, valid):
+            positives = target[valid].sum()
+            negatives = valid.sum() - positives
             if float(positives) > 0:
                 positive_weight = (negatives / positives).clamp(1.0, 100.0)
             else:
                 positive_weight = torch.ones((), dtype=logits.dtype, device=logits.device)
-            return F.binary_cross_entropy_with_logits(logits, target, pos_weight=positive_weight)
+            per_candidate = F.binary_cross_entropy_with_logits(
+                logits, target, pos_weight=positive_weight, reduction="none"
+            )
+            return _weighted_mean(_masked_row_mean(per_candidate, valid), weights)
 
-        clear = balanced_bce(output["clear_logit"][valid], clear_target[valid])
-        topout = balanced_bce(output["topout_logit"][valid], topout_target[valid])
-        virus = F.smooth_l1_loss(output["virus_delta"][valid], torch.log1p(batch["viruses"])[valid])
+        clear = balanced_bce(output["clear_logit"], clear_target, valid)
+        topout = balanced_bce(output["topout_logit"], topout_target, valid)
+        virus = _weighted_mean(
+            _masked_row_mean(
+                F.smooth_l1_loss(
+                    output["virus_delta"], torch.log1p(batch["viruses"]), reduction="none"
+                ),
+                valid,
+            ),
+            weights,
+        )
         attack_target = torch.log1p(batch["nonviruses"] + 2.0 * batch["events"])
-        attack = F.smooth_l1_loss(output["attack"][valid], attack_target[valid])
+        attack = _weighted_mean(
+            _masked_row_mean(
+                F.smooth_l1_loss(output["attack"], attack_target, reduction="none"), valid
+            ),
+            weights,
+        )
 
         # Immediate native consequences bootstrap within-position ordering;
         # centering prevents this auxiliary target from defining absolute value.
@@ -206,12 +258,23 @@ def _losses(model, timing, batch, *, autocast):
         tactical_centered = tactical - (
             tactical.masked_fill(~valid, 0.0).sum(1, keepdim=True) / count
         )
-        ordering = F.smooth_l1_loss(quality_centered[valid], (tactical_centered / 4.0)[valid])
+        ordering = _weighted_mean(
+            _masked_row_mean(
+                F.smooth_l1_loss(
+                    quality_centered, tactical_centered / 4.0, reduction="none"
+                ),
+                valid,
+            ),
+            weights,
+        )
 
         timing_output = timing(batch["timing_x"])
         mean = timing_output[:, 0]
         log_std = timing_output[:, 1].clamp(-3.0, 2.0)
-        timing_nll = (0.5 * ((batch["timing_y"] - mean) / log_std.exp()).square() + log_std).mean()
+        timing_nll = _weighted_mean(
+            0.5 * ((batch["timing_y"] - mean) / log_std.exp()).square() + log_std,
+            weights,
+        )
         total = (
             style
             + 0.5 * outcome
@@ -258,13 +321,48 @@ def _source_paths(dataset: Path, afterstates: Path, max_shards: int | None) -> l
     return paths
 
 
-def _fit_condition(paths: list[Path]) -> HumanSkillCondition:
-    ratings = []
+def _fit_training_statistics(paths: list[Path]) -> TrainingStatistics:
+    """Collect global balance statistics without retaining every shard."""
+
+    count = 0
+    rating_sum = 0.0
+    rating_square_sum = 0.0
+    minimum = float("inf")
+    maximum = float("-inf")
+    player_counts: dict[int, int] = {}
+    rating_edges = np.linspace(0.0, 4000.0, 21)
+    rating_counts = np.zeros(20, dtype=np.int64)
     for path in paths:
         with np.load(path, allow_pickle=False) as data:
             train = (data["split"] == 0) & (data["player_fold"] != 0) & (data["time_split"] == 0)
-            ratings.append(data["rating"][train])
-    return HumanSkillCondition.fit(np.concatenate(ratings))
+            ratings = data["rating"][train].astype(np.float64)
+            count += len(ratings)
+            rating_sum += float(ratings.sum())
+            rating_square_sum += float(np.square(ratings).sum())
+            rating_counts += np.histogram(ratings, bins=rating_edges)[0]
+            if len(ratings):
+                minimum = min(minimum, float(ratings.min()))
+                maximum = max(maximum, float(ratings.max()))
+            if "player_key" in data:
+                keys, counts = np.unique(data["player_key"][train], return_counts=True)
+                for key, player_count in zip(keys, counts):
+                    player_counts[int(key)] = player_counts.get(int(key), 0) + int(player_count)
+    if count == 0:
+        raise ValueError("afterstate dataset contains no training rows")
+    mean = rating_sum / count
+    variance = max(rating_square_sum / count - mean * mean, 1.0)
+    return TrainingStatistics(
+        condition=HumanSkillCondition(
+            mean=float(mean),
+            scale=float(np.sqrt(variance)),
+            minimum=float(minimum),
+            maximum=float(maximum),
+        ),
+        rows=count,
+        player_counts=player_counts,
+        rating_edges=rating_edges,
+        rating_counts=rating_counts,
+    )
 
 
 def _evaluate(
@@ -374,6 +472,7 @@ def _checkpoint_payload(
     step: int,
     epoch: int,
     metrics: dict[str, float],
+    statistics: TrainingStatistics,
 ) -> dict[str, Any]:
     return {
         "schema": HUMAN_AFTERSTATE_SCHEMA,
@@ -389,6 +488,12 @@ def _checkpoint_payload(
             "optimizer_steps": step,
             "epoch": epoch,
             "metrics": metrics,
+            "training_balance": {
+                "scheme": "sqrt-inverse-player-and-rating-frequency",
+                "training_rows": statistics.rows,
+                "players": len(statistics.player_counts),
+                "rating_bins": len(statistics.rating_counts),
+            },
             "trained_at": time.time(),
         },
     }
@@ -400,7 +505,8 @@ def train(args) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     rng = np.random.default_rng(int(args.seed))
     paths = _source_paths(args.dataset, args.afterstates, args.max_shards)
-    condition = _fit_condition(paths)
+    statistics = _fit_training_statistics(paths)
+    condition = statistics.condition
     cfg = afterstate_policy_config(capacity=args.capacity)
     model = build_afterstate_policy(cfg, condition_dim=POLICY_CONDITION_DIM, device=args.device)
     timing = build_timing_model(device=args.device)
@@ -454,11 +560,24 @@ def train(args) -> dict[str, Any]:
             if args.max_rows_per_shard is not None:
                 train_rows = train_rows[: int(args.max_rows_per_shard)]
             rng.shuffle(train_rows)
+            weights = _sample_weights(
+                shard.arrays["rating"][train_rows],
+                player_keys=(
+                    shard.arrays["player_key"][train_rows]
+                    if "player_key" in shard.arrays
+                    else None
+                ),
+                player_counts=statistics.player_counts,
+                rating_edges=statistics.rating_edges,
+                rating_counts=statistics.rating_counts,
+            )
             for start in range(0, len(train_rows), int(args.batch_size)):
                 index = train_rows[start : start + int(args.batch_size)]
                 if len(index) < 2:
                     continue
-                batch = _tensor_batch(make_batch(shard, index, condition), args.device)
+                numpy_batch = make_batch(shard, index, condition)
+                numpy_batch["row_weight"] = weights[start : start + len(index)]
+                batch = _tensor_batch(numpy_batch, args.device)
                 optimizer.zero_grad(set_to_none=True)
                 loss, parts, _output = _losses(model, timing, batch, autocast=autocast)
                 loss.backward()
@@ -497,6 +616,7 @@ def train(args) -> dict[str, Any]:
             step=step,
             epoch=epoch + 1,
             metrics=metrics,
+            statistics=statistics,
         )
         lineage = (
             args.lineage_dir

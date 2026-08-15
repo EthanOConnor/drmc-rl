@@ -148,3 +148,49 @@ def test_sparse_afterstates_round_trip_exactly() -> None:
     np.testing.assert_array_equal(
         decode_sparse_deltas(roots[1], 2, 5, offsets, cells, values), fields[2:]
     )
+
+
+def test_afterstate_auxiliary_losses_reduce_once_per_decision() -> None:
+    from tools.train_afterstate_policy import _masked_row_mean, _weighted_mean
+
+    candidate_losses = torch.tensor([[1.0, 3.0, 100.0], [5.0, 100.0, 100.0]])
+    valid = torch.tensor([[True, True, False], [True, False, False]])
+    row_losses = _masked_row_mean(candidate_losses, valid)
+    torch.testing.assert_close(row_losses, torch.tensor([2.0, 5.0]))
+    torch.testing.assert_close(
+        _weighted_mean(row_losses, torch.tensor([1.0, 3.0])), torch.tensor(4.25)
+    )
+
+
+def test_afterstate_statistics_balance_players_across_shards(tmp_path) -> None:
+    from tools.train_afterstate_policy import _fit_training_statistics
+    from tools.train_human_policy import _sample_weights
+
+    common = {
+        "split": np.zeros(4, dtype=np.uint8),
+        "player_fold": np.ones(4, dtype=np.uint8),
+        "time_split": np.zeros(4, dtype=np.uint8),
+    }
+    np.savez(
+        tmp_path / "a.npz",
+        **common,
+        rating=np.asarray([1000, 1000, 1000, 2000], dtype=np.float32),
+        player_key=np.asarray([1, 1, 1, 2], dtype=np.uint64),
+    )
+    np.savez(
+        tmp_path / "b.npz",
+        **common,
+        rating=np.asarray([1000, 1000, 2000, 2000], dtype=np.float32),
+        player_key=np.asarray([1, 1, 2, 3], dtype=np.uint64),
+    )
+    statistics = _fit_training_statistics(sorted(tmp_path.glob("*.npz")))
+    assert statistics.rows == 8
+    assert statistics.player_counts == {1: 5, 2: 2, 3: 1}
+    weights = _sample_weights(
+        np.asarray([1000, 1000, 1000], dtype=np.float32),
+        player_keys=np.asarray([1, 2, 3], dtype=np.uint64),
+        player_counts=statistics.player_counts,
+        rating_edges=statistics.rating_edges,
+        rating_counts=statistics.rating_counts,
+    )
+    assert weights[0] < weights[1] < weights[2]
