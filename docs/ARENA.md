@@ -49,8 +49,9 @@ uv run python -m tools.arena worker --device cuda --batch 8
 uv run python -m tools.arena serve --host 0.0.0.0 --port 8097
 ```
 
-`serve` owns a non-blocking rating thread by default. It publishes a fast
-sequential update every 16 new games and a fresh HMC fit every 512 games. Run a
+`serve` owns a non-blocking rating thread by default. It checks every five
+seconds, publishes a fast sequential update after 16 new games, and runs a
+fresh HMC fit every 512 games. Run a
 one-off fit with `uv run python -m tools.arena rate --once`; use `--no-ratings`
 on `serve` only when another supervised `rate` process owns that work.
 

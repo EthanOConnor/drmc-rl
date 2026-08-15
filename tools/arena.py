@@ -534,7 +534,7 @@ def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rating-refresh-games", type=int, default=16)
     parser.add_argument("--rating-full-refresh-games", type=int, default=512)
     parser.add_argument("--rating-min-ess-fraction", type=float, default=0.50)
-    parser.add_argument("--rating-poll", type=float, default=30.0)
+    parser.add_argument("--rating-poll", type=float, default=5.0)
 
 
 def main() -> None:
