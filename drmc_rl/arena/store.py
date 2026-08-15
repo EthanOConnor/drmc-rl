@@ -206,7 +206,11 @@ class ArenaStore:
         idx = {a.id: i for i, a in enumerate(agents)}
         games: list[tuple[int, int, float]] = []
         pair: dict[tuple[str, str], list[int]] = {}
-        for row in self.conn.execute("SELECT * FROM matches ORDER BY id"):
+        # Materialize the match rows once.  The worker can commit a new match
+        # between separate SELECTs; re-reading here made the two collections
+        # differ and crashed the dashboard's strict zip during live play.
+        match_rows = list(self.conn.execute("SELECT * FROM matches ORDER BY id"))
+        for row in match_rows:
             score = 1.0 if row["winner"] == "a" else 0.0 if row["winner"] == "b" else 0.5
             games.append((idx[row["agent_a"]], idx[row["agent_b"]], score))
             key = tuple(sorted((row["agent_a"], row["agent_b"])))
@@ -223,8 +227,7 @@ class ArenaStore:
         counts = [0] * len(agents)
         records = [{"wins": 0, "losses": 0, "draws": 0, "clears": 0, "topouts": 0}
                    for _ in agents]
-        match_rows = list(self.conn.execute("SELECT * FROM matches ORDER BY id"))
-        for row, (i, j, score) in zip(match_rows, games, strict=True):
+        for row, (i, j, score) in zip(match_rows, games):
             counts[i] += 1
             counts[j] += 1
             if score == 0.5:
