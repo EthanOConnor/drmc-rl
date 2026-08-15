@@ -11,6 +11,7 @@ from tools.arena import (
     pair_priority,
     parse_telemetry,
     scheduler_snapshot,
+    eligible_agents,
 )
 
 
@@ -37,6 +38,18 @@ def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     assert snap["games"] == 12
     assert snap["agents"][0]["id"] == "new"
     assert {a["status"] for a in snap["agents"]} == {"lineage", "champion", "candidate"}
+
+
+def test_scheduler_focus_is_reversible_and_preserves_agents(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "old", "lineage")
+    add(store, "middle", "candidate", 1)
+    add(store, "new", "candidate", 2)
+    store.set_scheduler_focus(("middle", "new"))
+    assert {agent.id for agent in eligible_agents(store)} == {"middle", "new"}
+    assert len(store.agents()) == 3
+    store.set_scheduler_focus(())
+    assert {agent.id for agent in eligible_agents(store)} == {"old", "middle", "new"}
 
 
 def test_snapshot_initializes_unplayed_child_at_parent_rating(tmp_path: Path) -> None:
@@ -153,7 +166,7 @@ def test_scheduler_weights_posterior_information_gain(tmp_path: Path) -> None:
         frozenset(agent.id for agent in pair_priority(store, store.agents()))
         for _ in range(300)
     ]
-    assert selections.count(frozenset(("alpha", "beta"))) > 240
+    assert selections.count(frozenset(("alpha", "beta"))) > 225
 
 
 def test_scheduler_snapshot_exposes_exact_worker_distribution(tmp_path: Path) -> None:
@@ -176,7 +189,7 @@ def test_scheduler_snapshot_exposes_exact_worker_distribution(tmp_path: Path) ->
     assert snapshot["matchups"][0]["games"] == 17
     assert abs(sum(item["selection_probability"] for item in schedule) - 1.0) < 1e-12
     assert {factor["label"] for factor in snapshot["matchups"][0]["factors"]} == {
-        "new entrant", "temperature"
+        "new entrant", "temperature", "coverage floor"
     }
 
 
@@ -202,7 +215,7 @@ def test_scheduler_drops_new_entry_boost_at_cap_without_status_boost(tmp_path: P
         if {item["a"].id, item["b"].id} == {"beta", "gamma"}
     )
     labels = {factor["label"] for factor in beta_gamma["factors"]}
-    assert labels == {"temperature", "new entrant"}
+    assert labels == {"temperature", "new entrant", "coverage floor"}
     assert beta_gamma["weight"] > 0
 
 
@@ -256,6 +269,21 @@ def test_replay_and_training_metrics_feed_dashboard(tmp_path: Path) -> None:
     assert snap["recent"][0]["has_replay"] == 1
     assert store.replay(snap["recent"][0]["id"])["replay"] == frames
     assert snap["training"]["latest"]["perf/sps"] == 123456
+
+
+def test_worker_throughput_uses_simulated_work_not_game_count(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    store.record_worker_sample(
+        worker_id="cpu-123", device="cpu", threads=6, batch_size=4,
+        agent_a="alpha", agent_b="beta", games=4,
+        simulated_frames=120_000, decisions=800, wall_seconds=20.0,
+    )
+    worker = store.snapshot()["workers"][0]
+    assert worker["games_per_min"] == 12.0
+    assert worker["frames_per_sec"] == 6_000.0
+    assert worker["frames_per_min"] == 360_000.0
+    assert worker["decisions_per_sec"] == 40.0
+    assert worker["frames_per_game"] == 30_000.0
 
 
 def test_telemetry_parses_live_afterstate_training_and_validation() -> None:

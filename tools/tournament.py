@@ -180,6 +180,7 @@ class GameResult:
     winner: str  # 'a' | 'b' | 'draw'
     match_len_sec: float
     decisions: int
+    frames: int = 0
     terminal_reason: str = "unknown"  # clear | topout | horizon | simultaneous | unknown
     replay: Optional[List[Dict[str, Any]]] = None
 
@@ -589,6 +590,7 @@ class VsMatchRunner:
                     winner=winner,
                     match_len_sec=float(frame_count) / NES_FPS,
                     decisions=decision_count,
+                    frames=frame_count,
                     terminal_reason=terminal_reason,
                     replay=replays[pair_i] or None,
                 )
@@ -623,7 +625,7 @@ class _EntryPolicy:
         # actually uses opponent information.
         self.mask_opponent = bool(params.get("mask_opponent", False))
         if self.mode == "plain":
-            self.plain = PlainPolicy(ckpt, device=str(params.get("device", "cpu")))
+            self.plain = PlainPolicy(ckpt, device=str(params.get("device", runner.device)))
             if self.mask_opponent and self.plain.in_channels != 20:
                 raise SystemExit(
                     f"entry '{entry.get('name')}': mask_opponent requires an "
@@ -637,7 +639,7 @@ class _EntryPolicy:
             from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
             runtime_args = {
-                "device": str(params.get("device", "cpu")),
+                "device": str(params.get("device", runner.device)),
                 "seed": int(params.get("seed", runner.run_seed + 1)),
             }
             self.human_v3 = (

@@ -26,12 +26,13 @@ from typing import Any
 
 from drmc_rl.arena.ratings import RatingConfig, RatingConvergenceError
 from drmc_rl.arena.store import DEFAULT_SCHEDULER_BOOST, Agent, ArenaStore
-from tools.tournament import GameSpec, VsMatchRunner, sprt_bounds, sprt_llr
+from tools.tournament import NES_FPS, GameSpec, VsMatchRunner, sprt_bounds, sprt_llr
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DB = REPO_ROOT / "runs" / "arena" / "arena.sqlite"
 STATIC = Path(__file__).with_name("arena_web")
 SCHEDULER_TEMPERATURE = 1.25
+SCHEDULER_COVERAGE_MIX = 0.10
 SEARCH_COMPUTE_FACTOR = 0.15
 
 
@@ -367,7 +368,17 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
             raise RuntimeError("arena needs at least two active agents")
         total = sum(item["weight"] for item in scheduled)
         for item in scheduled:
-            item["selection_probability"] = item["weight"] / total
+            information_share = item["weight"] / total
+            item["selection_probability"] = (
+                (1.0 - SCHEDULER_COVERAGE_MIX) * information_share
+                + SCHEDULER_COVERAGE_MIX / len(scheduled)
+            )
+            item["weight"] = item["selection_probability"]
+            item["factors"].append({
+                "label": "coverage floor",
+                "factor": SCHEDULER_COVERAGE_MIX,
+                "display_only": True,
+            })
         scheduled.sort(key=lambda item: item["weight"], reverse=True)
         return scheduled
 
@@ -400,7 +411,12 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
         raise RuntimeError("arena needs at least two active agents")
     total = sum(item["weight"] for item in scheduled)
     for item in scheduled:
-        item["selection_probability"] = item["weight"] / total
+        information_share = item["weight"] / total
+        item["selection_probability"] = (
+            (1.0 - SCHEDULER_COVERAGE_MIX) * information_share
+            + SCHEDULER_COVERAGE_MIX / len(scheduled)
+        )
+        item["weight"] = item["selection_probability"]
     scheduled.sort(key=lambda item: item["weight"], reverse=True)
     return scheduled
 
@@ -417,10 +433,16 @@ def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]
     return selected["a"], selected["b"]
 
 
+def eligible_agents(store: ArenaStore) -> list[Agent]:
+    active = store.agents(("candidate", "champion", "provisional", "lineage", "anchor"))
+    focused = [agent for agent in active if agent.metadata.get("scheduler_focus") is True]
+    return focused or active
+
+
 def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
     """Serialize the most useful portion of the live worker schedule."""
 
-    agents = store.agents(("candidate", "champion", "provisional", "lineage", "anchor"))
+    agents = eligible_agents(store)
     if len(agents) < 2:
         return {"mode": "waiting", "matchups": []}
     schedule = matchup_schedule(store, agents)
@@ -428,6 +450,7 @@ def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
     return {
         "mode": "bayesian_information" if posterior else "bootstrap",
         "temperature": SCHEDULER_TEMPERATURE,
+        "coverage_mix": SCHEDULER_COVERAGE_MIX,
         "new_entry_boost": dict(DEFAULT_SCHEDULER_BOOST),
         "eligible_agents": len(agents),
         "eligible_pairs": len(schedule),
@@ -479,24 +502,44 @@ def run_worker(args: argparse.Namespace) -> None:
                            run_seed=args.seed, state_repr=args.state_repr,
                            replay_sample_rate=args.replay_sample_rate,
                            max_decisions_per_side=args.max_decisions_per_side)
+    worker_id = f"{runner.device}-{os.getpid()}"
     serial = int(store.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
     try:
         while not stopped:
-            agents = store.agents(("candidate", "champion", "provisional", "lineage", "anchor"))
+            agents = eligible_agents(store)
             if len(agents) < 2:
                 time.sleep(args.poll)
                 continue
             a, b = pair_priority(store, agents)
             specs = [GameSpec(game_idx=serial + i, seed=(args.seed + serial + i) & 0xFFFF,
                               a_side=(serial + i) % 2) for i in range(args.batch)]
+            batch_started = time.perf_counter()
+            batch_games = 0
+            batch_frames = 0
+            batch_decisions = 0
             results = runner.play(a.entry(), b.entry(), specs)
             for result in results:
                 store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
                              winner=result.winner, match_len_sec=result.match_len_sec,
                              decisions=result.decisions,
                              terminal_reason=result.terminal_reason, replay=result.replay)
+                batch_games += 1
+                batch_frames += int(result.frames or round(result.match_len_sec * NES_FPS))
+                batch_decisions += int(result.decisions)
                 serial += 1
             results.close()
+            store.record_worker_sample(
+                worker_id=worker_id,
+                device=runner.device,
+                threads=args.threads,
+                batch_size=args.batch,
+                agent_a=a.id,
+                agent_b=b.id,
+                games=batch_games,
+                simulated_frames=batch_frames,
+                decisions=batch_decisions,
+                wall_seconds=time.perf_counter() - batch_started,
+            )
             champion = next((x for x in store.agents(("champion",)) if x.family == a.family), None)
             for candidate in (a, b):
                 if candidate.status == "candidate" and champion and candidate.family == champion.family:
@@ -670,6 +713,12 @@ def main() -> None:
     rate = sub.add_parser("rate")
     rate.add_argument("--once", action="store_true")
     add_rating_arguments(rate)
+    focus = sub.add_parser("focus")
+    focus.add_argument("agents", nargs="*", help="agent IDs; omit to clear focus")
+    status = sub.add_parser("status")
+    status.add_argument("agent")
+    status.add_argument("status")
+    status.add_argument("--reason", required=True)
     worker = sub.add_parser("worker")
     worker.add_argument("--device", default="cuda")
     worker.add_argument("--threads", type=int, default=max(1, (os.cpu_count() or 4) // 2))
@@ -702,6 +751,18 @@ def main() -> None:
         serve(args)
     elif args.command == "rate":
         rating_loop(args)
+    elif args.command == "focus":
+        store = ArenaStore(args.db)
+        try:
+            store.set_scheduler_focus(args.agents)
+        finally:
+            store.close()
+    elif args.command == "status":
+        store = ArenaStore(args.db)
+        try:
+            store.set_status(args.agent, args.status, reason=args.reason)
+        finally:
+            store.close()
     else:
         run_worker(args)
 

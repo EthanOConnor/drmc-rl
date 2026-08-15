@@ -24,6 +24,33 @@ from tools.tournament import (
 )
 
 
+def test_entry_policy_inherits_runner_device(tmp_path, monkeypatch) -> None:
+    import tools.vs_head_to_head as head_to_head
+    from tools.tournament import _EntryPolicy
+
+    checkpoint = tmp_path / "model.pt.gz"
+    checkpoint.touch()
+    seen: list[str] = []
+
+    class FakePlainPolicy:
+        in_channels = 20
+
+        def __init__(self, _checkpoint, device="cpu") -> None:
+            seen.append(device)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(head_to_head, "PlainPolicy", FakePlainPolicy)
+    runner = type("Runner", (), {"device": "mps", "run_seed": 1})()
+    policy = _EntryPolicy(
+        {"name": "test", "checkpoint": str(checkpoint), "mode": "plain"},
+        runner=runner,
+    )
+    policy.close()
+    assert seen == ["mps"]
+
+
 # ----------------------------------------------------------------- Wilson CI
 def test_wilson_ci_known_values():
     lo, hi = wilson_ci(8, 10)

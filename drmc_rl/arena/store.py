@@ -113,9 +113,24 @@ CREATE TABLE IF NOT EXISTS rating_matchup_information (
   information_gain REAL NOT NULL,
   PRIMARY KEY(fit_id, agent_a, agent_b)
 );
+CREATE TABLE IF NOT EXISTS worker_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  worker_id TEXT NOT NULL,
+  device TEXT NOT NULL,
+  threads INTEGER NOT NULL,
+  batch_size INTEGER NOT NULL,
+  agent_a TEXT NOT NULL,
+  agent_b TEXT NOT NULL,
+  games INTEGER NOT NULL,
+  simulated_frames INTEGER NOT NULL,
+  decisions INTEGER NOT NULL,
+  wall_seconds REAL NOT NULL,
+  created TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS matches_pair ON matches(agent_a, agent_b);
 CREATE INDEX IF NOT EXISTS matches_created ON matches(created);
 CREATE INDEX IF NOT EXISTS rating_estimates_agent ON rating_estimates(agent_id, fit_id);
+CREATE INDEX IF NOT EXISTS worker_samples_created ON worker_samples(created);
 """
 
 
@@ -294,6 +309,39 @@ class ArenaStore:
         )
         self.conn.commit()
 
+    def record_worker_sample(
+        self,
+        *,
+        worker_id: str,
+        device: str,
+        threads: int,
+        batch_size: int,
+        agent_a: str,
+        agent_b: str,
+        games: int,
+        simulated_frames: int,
+        decisions: int,
+        wall_seconds: float,
+    ) -> None:
+        self.conn.execute(
+            """INSERT INTO worker_samples
+               (worker_id,device,threads,batch_size,agent_a,agent_b,games,
+                simulated_frames,decisions,wall_seconds,created)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                worker_id, device, int(threads), int(batch_size), agent_a, agent_b,
+                int(games), int(simulated_frames), int(decisions),
+                float(wall_seconds), utc_now(),
+            ),
+        )
+        # This is operational telemetry, not tournament evidence. Bound it so
+        # continuous play cannot grow the database indefinitely.
+        self.conn.execute(
+            "DELETE FROM worker_samples WHERE id <= "
+            "MAX(0,(SELECT MAX(id) FROM worker_samples)-5000)"
+        )
+        self.conn.commit()
+
     def promote(self, agent_id: str, *, detail: dict[str, Any]) -> None:
         now = utc_now()
         agent = self.agent(agent_id)
@@ -308,6 +356,44 @@ class ArenaStore:
         self.conn.execute(
             "INSERT INTO events(kind,agent_id,detail,created) VALUES('promoted',?,?,?)",
             (agent_id, json.dumps(detail, sort_keys=True), now),
+        )
+        self.conn.commit()
+
+    def set_status(self, agent_id: str, status: str, *, reason: str) -> None:
+        """Change scheduling status while preserving the entrant and all evidence."""
+
+        self.agent(agent_id)  # validate before mutating
+        now = utc_now()
+        self.conn.execute("UPDATE agents SET status=? WHERE id=?", (status, agent_id))
+        self.conn.execute(
+            "INSERT INTO events(kind,agent_id,detail,created) VALUES('status',?,?,?)",
+            (agent_id, json.dumps({"status": status, "reason": reason}), now),
+        )
+        self.conn.commit()
+
+    def set_scheduler_focus(self, agent_ids: Iterable[str]) -> None:
+        """Restrict scheduling to an explicit reversible entrant set."""
+
+        selected = set(agent_ids)
+        known = {agent.id for agent in self.agents()}
+        missing = selected - known
+        if missing:
+            raise KeyError(f"unknown arena agents: {', '.join(sorted(missing))}")
+        if selected and len(selected) < 2:
+            raise ValueError("scheduler focus needs at least two agents")
+        for row in self.conn.execute("SELECT id,metadata FROM agents"):
+            metadata = json.loads(row["metadata"])
+            if row["id"] in selected:
+                metadata["scheduler_focus"] = True
+            else:
+                metadata.pop("scheduler_focus", None)
+            self.conn.execute(
+                "UPDATE agents SET metadata=? WHERE id=?",
+                (json.dumps(metadata, sort_keys=True), row["id"]),
+            )
+        self.conn.execute(
+            "INSERT INTO events(kind,detail,created) VALUES('scheduler_focus',?,?)",
+            (json.dumps({"agents": sorted(selected)}), utc_now()),
         )
         self.conn.commit()
 
@@ -681,7 +767,47 @@ class ArenaStore:
             "pairs": [{"a": k[0], "b": k[1], "wins_a": v[0], "draws": v[1], "wins_b": v[2]}
                       for k, v in pair.items()],
             "events": events, "recent": recent, "training": training,
+            "workers": self._worker_snapshot(),
         }
+
+    def _worker_snapshot(self, *, window_seconds: float = 120.0) -> list[dict[str, Any]]:
+        cutoff = datetime.now(timezone.utc).timestamp() - float(window_seconds)
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in self.conn.execute(
+            "SELECT * FROM worker_samples ORDER BY id DESC LIMIT 1000"
+        ):
+            created = datetime.fromisoformat(row["created"])
+            if created.timestamp() < cutoff:
+                continue
+            sample = grouped.setdefault(row["worker_id"], {
+                "worker_id": row["worker_id"],
+                "device": row["device"],
+                "threads": int(row["threads"]),
+                "batch_size": int(row["batch_size"]),
+                "games": 0,
+                "simulated_frames": 0,
+                "decisions": 0,
+                "wall_seconds": 0.0,
+                "latest": row["created"],
+            })
+            sample["games"] += int(row["games"])
+            sample["simulated_frames"] += int(row["simulated_frames"])
+            sample["decisions"] += int(row["decisions"])
+            sample["wall_seconds"] += float(row["wall_seconds"])
+        output = []
+        for sample in grouped.values():
+            wall = sample["wall_seconds"]
+            games = sample["games"]
+            frames = sample["simulated_frames"]
+            sample.update({
+                "games_per_min": 60.0 * games / wall if wall else 0.0,
+                "frames_per_sec": frames / wall if wall else 0.0,
+                "frames_per_min": 60.0 * frames / wall if wall else 0.0,
+                "decisions_per_sec": sample["decisions"] / wall if wall else 0.0,
+                "frames_per_game": frames / games if games else 0.0,
+            })
+            output.append(sample)
+        return sorted(output, key=lambda item: (item["device"], item["worker_id"]))
 
     def replay(self, match_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
