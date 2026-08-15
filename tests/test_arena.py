@@ -585,3 +585,13 @@ scanned=20,422 sampled=20,422 kept=20,337 rate=3,880/s
     assert latest["corpus/kept"] == 20_337
     assert latest["corpus/total"] == 54_873_706
     assert latest["perf/dps"] == 3_880
+
+
+def test_telemetry_preserves_latest_scalar_training_step() -> None:
+    tasks = parse_telemetry(
+        """@@JSON runs/campaign/run/metrics.jsonl.gz
+{"step":1900000000,"type":"scalar","name":"perf/sps","value":120000}
+{"step":1900012800,"type":"scalar","name":"loss/total","value":0.125}
+"""
+    )
+    assert tasks[0]["latest"]["global_step"] == 1_900_012_800

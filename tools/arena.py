@@ -370,6 +370,10 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             continue
         if row.get("type") != "scalar":
             continue
+        if row.get("step") is not None:
+            task["latest"]["global_step"] = max(
+                int(task["latest"].get("global_step", 0)), int(row["step"])
+            )
         name = str(row["name"])
         task["latest"][name] = row["value"]
         if name in {"perf/sps", "perf/dps", "train/return_mean",
