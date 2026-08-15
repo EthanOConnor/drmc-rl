@@ -40,6 +40,30 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _write_json_atomic(path: Path, payload: dict) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    os.replace(temporary, path)
+
+
+def _collect_reports(output: Path, source: Path) -> dict:
+    """Merge legacy manifest rows with authoritative per-shard reports."""
+
+    manifest_path = output / "manifest.json"
+    by_source = {}
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        by_source.update({row["source"]: row for row in manifest.get("shards", ())})
+    for path in sorted(output.glob("*.report.json")):
+        report = json.loads(path.read_text())
+        by_source[report["source"]] = report
+    return {
+        "schema": HUMAN_AFTERSTATE_SCHEMA,
+        "source": str(source),
+        "shards": [by_source[key] for key in sorted(by_source)],
+    }
+
+
 def annotate_shard(
     source: Path,
     output: Path,
@@ -176,25 +200,34 @@ def main() -> None:
     parser.add_argument("--max-rows-per-shard", type=int)
     parser.add_argument("--shard", action="append", help="source shard stem; repeatable")
     parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument(
+        "--manifest-only",
+        action="store_true",
+        help="atomically rebuild the aggregate manifest from per-shard reports and exit",
+    )
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
+    manifest_path = args.output / "manifest.json"
+    if args.manifest_only:
+        manifest = _collect_reports(args.output, args.dataset)
+        _write_json_atomic(manifest_path, manifest)
+        print(json.dumps(manifest, indent=2), flush=True)
+        return
     selected = set(args.shard or ())
     sources = [
         path for path in sorted(args.dataset.glob("*.npz")) if not selected or path.stem in selected
     ]
     if not sources:
         raise SystemExit(f"no source shards found in {args.dataset}")
-    manifest_path = args.output / "manifest.json"
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-    else:
-        manifest = {"schema": HUMAN_AFTERSTATE_SCHEMA, "source": str(args.dataset), "shards": []}
+    manifest = _collect_reports(args.output, args.dataset)
     by_source = {row["source"]: row for row in manifest["shards"]}
     with NativeAfterstateSimulator(num_envs=args.num_envs) as simulator:
         for source in sources:
+            existing = by_source.get(source.name)
             if (
-                source.name in by_source
-                and by_source[source.name].get("complete")
+                existing
+                and existing.get("complete")
+                and existing.get("source_sha256") == _sha256(source)
                 and not args.overwrite
             ):
                 print(f"skip complete {source.name}", flush=True)
@@ -206,9 +239,13 @@ def main() -> None:
                 row_batch=args.row_batch,
                 max_rows=args.max_rows_per_shard,
             )
-            by_source[source.name] = report
-            manifest["shards"] = [by_source[key] for key in sorted(by_source)]
-            manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+            report_path = args.output / f"{source.stem}.report.json"
+            _write_json_atomic(report_path, report)
+            # Aggregate metadata is a convenience view. Per-shard reports are
+            # the concurrency-safe completion authority for distributed workers.
+            manifest = _collect_reports(args.output, args.dataset)
+            _write_json_atomic(manifest_path, manifest)
+            by_source = {row["source"]: row for row in manifest["shards"]}
             print(json.dumps(report, indent=2), flush=True)
 
 
