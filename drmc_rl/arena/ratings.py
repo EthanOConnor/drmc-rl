@@ -787,6 +787,7 @@ def fit_bayesian_ratings(
     parents: Sequence[int | None],
     *,
     config: RatingConfig | None = None,
+    agent_labels: Sequence[str] | None = None,
 ) -> RatingFit:
     """Sample and summarize the fixed-skill arena posterior."""
 
@@ -797,6 +798,8 @@ def fit_bayesian_ratings(
         lineage_scale=config.lineage_scale,
         draw_scale=config.draw_scale,
     )
+    if agent_labels is not None and len(agent_labels) != num_agents:
+        raise ValueError("agent_labels must contain one label per agent")
     mode = _posterior_mode(model)
     metric = _curvature_metric(model, mode)
     seed_sequence = np.random.SeedSequence(config.seed)
@@ -852,6 +855,17 @@ def fit_bayesian_ratings(
     ):
         worst_rhat = int(np.argmax(rhat))
         worst_ess = int(np.argmin(ess))
+
+        def dimension_label(index: int) -> str:
+            labels = agent_labels or tuple(str(i) for i in range(num_agents))
+            if index < num_agents:
+                return f"skill:{labels[index]}"
+            if index < 2 * num_agents:
+                return f"draw:{labels[index - num_agents]}"
+            return ("draw_intercept", "lineage_scale", "draw_scale")[
+                index - 2 * num_agents
+            ]
+
         chain_detail = ", ".join(
             f"a={float(stats['acceptance']):.2f}/eps={float(stats['step_size']):.4g}"
             for stats in chain_stats
@@ -859,7 +873,8 @@ def fit_bayesian_ratings(
         raise RatingConvergenceError(
             f"rating posterior did not converge: max R-hat={max_rhat:.3f}, "
             f"min ESS={min_ess:.0f}, divergences={divergences}; "
-            f"worst dimensions rhat={worst_rhat}, ess={worst_ess}; chains {chain_detail}"
+            f"worst dimensions rhat={dimension_label(worst_rhat)}, "
+            f"ess={dimension_label(worst_ess)}; chains {chain_detail}"
         )
 
     flat = chains.reshape(-1, model.dimension)

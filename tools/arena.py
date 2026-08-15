@@ -464,7 +464,11 @@ def _new_entry_boosts(
         if games >= cap or los_resolved:
             continue
         boost = float(config.get("multiplier", DEFAULT_SCHEDULER_BOOST["multiplier"]))
-        multiplier *= boost
+        # Multiple unsettled entrants in the same matchup share one bounded
+        # boost. Compounding two 6x boosts into 36x over-prioritizes a weakly
+        # identified new-vs-new edge instead of connecting each entrant to the
+        # established graph.
+        multiplier = max(multiplier, boost)
         factors.append({"label": "new entrant", "factor": boost})
     return multiplier, factors
 
@@ -609,6 +613,7 @@ def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
     posterior = schedule[0]["information_gain"] is not None
     return {
         "mode": "bayesian_information" if posterior else "bootstrap",
+        "rating_pending_games": store.rating_backlog(),
         "temperature": SCHEDULER_TEMPERATURE,
         "coverage_mix": SCHEDULER_COVERAGE_MIX,
         "new_entry_boost": dict(DEFAULT_SCHEDULER_BOOST),
@@ -904,6 +909,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     lease_seed: int = 0xA8E4
     arena_config: dict[str, Any] = {}
     lease_lock = threading.Lock()
+    rating_backpressure_high: int = 0
+    rating_backpressure_low: int = 0
+    rating_backpressure_paused: bool = False
 
     def _authorized(self) -> bool:
         expected = self.worker_token
@@ -942,6 +950,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "complete_reset_specs": True,
                 "paired_side_swaps": True,
                 "committed_insert_accounting": True,
+                "rating_backpressure": {
+                    "high": self.rating_backpressure_high,
+                    "low": self.rating_backpressure_low,
+                    "paused": self.rating_backpressure_paused,
+                },
             })
             return
         if path.startswith("/api/v1/checkpoints/"):
@@ -1072,6 +1085,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 payload, _token = reclaimed
                 self._send_json(200, payload)
                 return
+            pending = store.rating_backlog()
+            handler = type(self)
+            was_paused = handler.rating_backpressure_paused
+            if handler.rating_backpressure_high > 0:
+                if was_paused and pending <= handler.rating_backpressure_low:
+                    handler.rating_backpressure_paused = False
+                elif not was_paused and pending >= handler.rating_backpressure_high:
+                    handler.rating_backpressure_paused = True
+            if handler.rating_backpressure_paused != was_paused:
+                state = "paused" if handler.rating_backpressure_paused else "resumed"
+                print(
+                    f"coordinator: rating backpressure {state} at {pending} pending games",
+                    flush=True,
+                )
+            if handler.rating_backpressure_paused:
+                self.send_response(204)
+                self.send_header("Retry-After", "10")
+                self.end_headers()
+                return
             agents = eligible_agents(store)
             if len(agents) < 2:
                 self.send_response(204)
@@ -1144,6 +1176,14 @@ def serve(args: argparse.Namespace) -> None:
     DashboardHandler.replay_dir = None if args.replay_dir is None else Path(args.replay_dir)
     DashboardHandler.lease_ttl = float(args.lease_ttl)
     DashboardHandler.lease_seed = int(args.lease_seed)
+    if args.rating_backpressure_high < 0 or args.rating_backpressure_low < 0:
+        raise ValueError("rating backpressure thresholds cannot be negative")
+    if (args.rating_backpressure_high > 0
+            and args.rating_backpressure_low >= args.rating_backpressure_high):
+        raise ValueError("rating backpressure low must be below high")
+    DashboardHandler.rating_backpressure_high = int(args.rating_backpressure_high)
+    DashboardHandler.rating_backpressure_low = int(args.rating_backpressure_low)
+    DashboardHandler.rating_backpressure_paused = False
     DashboardHandler.arena_config = {
         "level": int(args.level),
         "speed_setting": int(args.speed_setting),
@@ -1219,6 +1259,10 @@ def main() -> None:
     web.add_argument("--max-decisions-per-side", type=int,
                      default=ARENA_MAX_DECISIONS_PER_SIDE)
     web.add_argument("--policy-run-seed", type=int, default=27182)
+    web.add_argument("--rating-backpressure-high", type=int, default=0,
+                     help="pause new leases at this accepted-fit backlog (0 disables)")
+    web.add_argument("--rating-backpressure-low", type=int, default=0,
+                     help="resume new leases at or below this backlog")
     web.add_argument("--ratings", action=argparse.BooleanOptionalAction, default=True)
     add_rating_arguments(web)
     rate = sub.add_parser("rate")

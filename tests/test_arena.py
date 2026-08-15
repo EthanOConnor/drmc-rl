@@ -12,6 +12,7 @@ from drmc_rl.arena.remote import ArenaRemoteClient, PROTOCOL_VERSION
 from drmc_rl.arena.store import ArenaStore
 from tools.arena import (
     DashboardHandler,
+    _new_entry_boosts,
     discover_once,
     matchup_schedule,
     maybe_promote,
@@ -138,6 +139,9 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     DashboardHandler.replay_dir = tmp_path / "replays"
     DashboardHandler.worker_token = "test-token"
     DashboardHandler.lease_ttl = 60
+    DashboardHandler.rating_backpressure_high = 0
+    DashboardHandler.rating_backpressure_low = 0
+    DashboardHandler.rating_backpressure_paused = False
     DashboardHandler.arena_config = {
         "level": 14, "speed_setting": 2,
         "state_repr": "bitplane_bottle_conn_mask_vs",
@@ -189,6 +193,65 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     assert verify.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 2
     assert verify.conn.execute("SELECT COUNT(*) FROM worker_samples").fetchone()[0] == 1
     assert verify.conn.execute("SELECT status FROM leases").fetchone()[0] == "complete"
+
+
+def test_remote_coordinator_backpressures_rating_backlog(tmp_path: Path) -> None:
+    db = tmp_path / "arena.sqlite"
+    for name in ("alpha", "beta"):
+        (tmp_path / f"{name}.pt.gz").write_bytes(name.encode())
+    store = ArenaStore(db)
+    for name in ("alpha", "beta"):
+        store.register(
+            agent_id=name, name=name.title(), family="test", generation=0,
+            checkpoint=str(tmp_path / f"{name}.pt.gz"), status="lineage",
+        )
+    for seed in range(4):
+        store.record("alpha", "beta", seed=seed, side=seed % 2, winner="a",
+                     match_len_sec=1, decisions=1)
+    store.refit_ratings(FAST_RATING)
+    for seed in range(4, 8):
+        store.record("alpha", "beta", seed=seed, side=seed % 2, winner="b",
+                     match_len_sec=1, decisions=1)
+    assert store.rating_backlog() == 4
+    store.close()
+
+    DashboardHandler.db = db
+    DashboardHandler.replay_dir = tmp_path / "replays"
+    DashboardHandler.worker_token = "test-token"
+    DashboardHandler.lease_ttl = 60
+    DashboardHandler.rating_backpressure_high = 4
+    DashboardHandler.rating_backpressure_low = 2
+    DashboardHandler.rating_backpressure_paused = False
+    DashboardHandler.arena_config = {
+        "level": 14, "speed_setting": 2,
+        "state_repr": "bitplane_bottle_conn_mask_vs",
+        "max_decisions_per_side": 1000, "policy_run_seed": 27182,
+    }
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DashboardHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    client = ArenaRemoteClient(
+        f"http://127.0.0.1:{server.server_port}", "test-token",
+        checkpoint_cache=tmp_path / "cache",
+    )
+    request = {
+        "protocol_version": PROTOCOL_VERSION, "worker_id": "worker-1",
+        "device": "cpu", "threads": 1, "batch_size": 2,
+        "arena_config": DashboardHandler.arena_config,
+    }
+    try:
+        assert client.lease(request) is None
+        catch_up = ArenaStore(db)
+        catch_up.refit_ratings(FAST_RATING)
+        catch_up.close()
+        assert client.lease(request) is not None
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        DashboardHandler.rating_backpressure_high = 0
+        DashboardHandler.rating_backpressure_low = 0
+        DashboardHandler.rating_backpressure_paused = False
 
 
 def test_paired_specs_share_every_reset_field_and_swap_sides() -> None:
@@ -475,6 +538,22 @@ def test_scheduler_drops_new_entry_boost_at_cap_without_status_boost(tmp_path: P
     labels = {factor["label"] for factor in beta_gamma["factors"]}
     assert labels == {"temperature", "new entrant", "coverage floor"}
     assert beta_gamma["weight"] > 0
+
+
+def test_scheduler_does_not_compound_two_new_entry_boosts(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    for agent_id in ("alpha", "beta"):
+        store.register(
+            agent_id=agent_id, name=agent_id.title(), family="central", generation=1,
+            checkpoint=f"/{agent_id}.pt.gz", status="candidate",
+            metadata={"scheduler_boost": {"multiplier": 6.0, "max_games": 512,
+                                          "los_target": 0.98}},
+        )
+    multiplier, factors = _new_entry_boosts(
+        tuple(store.agents()), {"alpha": 0, "beta": 0}, {},
+    )
+    assert multiplier == 6.0
+    assert [factor["factor"] for factor in factors] == [6.0, 6.0]
 
 
 def test_matchup_counts_canonicalizes_both_agent_orders(tmp_path: Path) -> None:

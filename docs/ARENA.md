@@ -1,5 +1,18 @@
 # Continuous arena
 
+## Rating backpressure
+
+The coordinator can bound accepted-rating latency without dropping completed
+work. `serve --rating-backpressure-high 500 --rating-backpressure-low 200`
+stops issuing new leases once 500 committed games are newer than the latest
+accepted posterior and resumes at 200. Existing leases may renew and submit
+normally, so throttling is lossless. The live backlog is exposed as
+`scheduler.rating_pending_games` in `/api/snapshot` and the hysteresis state is
+reported by `/api/v1/capabilities`.
+
+Multiple unsettled entrants share one bounded new-entry multiplier; their
+pairing no longer compounds two 6x boosts into a 36x new-vs-new preference.
+
 The arena is the durable evaluation loop around VS training. It records every
 game in `runs/arena/arena.sqlite`, computes one connected Bayesian rating
 posterior, promotes candidates through an SPRT against the current champion,

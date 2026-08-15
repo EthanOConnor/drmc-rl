@@ -728,6 +728,15 @@ class ArenaStore:
         )
         self.conn.commit()
 
+    def rating_backlog(self) -> int:
+        """Return committed matches not covered by the latest accepted fit."""
+
+        current = int(self.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
+        latest = self.conn.execute(
+            "SELECT match_count FROM rating_fits ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return current if latest is None else max(0, current - int(latest["match_count"]))
+
     def ratings_need_refresh(self, *, min_new_matches: int = 64) -> bool:
         latest = self.conn.execute(
             """SELECT match_count,agent_count,hmc_match_count,sample_state IS NOT NULL AS has_samples
@@ -864,7 +873,10 @@ class ArenaStore:
         ))
         pairs = self._rating_pairs(rows, idx)
         parents = [idx.get(agent.parent_id) for agent in agents]
-        fit = fit_bayesian_ratings(len(agents), pairs, parents, config=config)
+        fit = fit_bayesian_ratings(
+            len(agents), pairs, parents, config=config,
+            agent_labels=[agent.id for agent in agents],
+        )
         return self._publish_rating_fit(
             fit, agents, match_count=len(rows),
             last_match_id=int(rows[-1]["id"]) if rows else 0,
