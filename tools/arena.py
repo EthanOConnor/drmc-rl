@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import mimetypes
 import os
 import random
@@ -272,14 +273,15 @@ def utc_timestamp() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]:
-    """Sample matchups by expected posterior information gain per unit cost."""
+def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, Any]]:
+    """Return the scheduler's current weighted matchup distribution."""
+
     champion = next((a for a in agents if a.status == "champion"), None)
     information = store.matchup_information()
     counts = store.matchup_counts()
     if information:
         maximum_information = max(information.values(), default=1e-6)
-        weighted: list[tuple[float, Agent, Agent]] = []
+        scheduled: list[dict[str, Any]] = []
         for i, a in enumerate(agents):
             for b in agents[i + 1:]:
                 key = tuple(sorted((a.id, b.id)))
@@ -289,31 +291,48 @@ def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]
                 # until the roster-change HMC fit publishes.
                 gain = information.get(key, maximum_information * 2.0 / (1.0 + games))
                 weight = max(gain, maximum_information * 1e-4)
+                factors: list[dict[str, Any]] = []
                 statuses = {a.status, b.status}
                 if "provisional" in statuses:
                     weight *= 6.0
+                    factors.append({"label": "provisional", "factor": 6.0})
                 if "candidate" in statuses:
                     weight *= 3.0
+                    factors.append({"label": "candidate", "factor": 3.0})
                 if a.status == b.status == "candidate":
                     weight *= 1.5
+                    factors.append({"label": "candidate pair", "factor": 1.5})
                 if (
                     champion
                     and champion.id in {a.id, b.id}
                     and "candidate" in statuses
                 ):
                     weight *= 1.5
+                    factors.append({"label": "champion gate", "factor": 1.5})
                 # Search games are useful but materially more expensive; use
                 # information per approximate compute cost rather than count.
                 if a.mode != "plain" or b.mode != "plain":
                     weight *= 0.15
-                weighted.append((weight, a, b))
-        if not weighted:
+                    factors.append({"label": "search cost", "factor": 0.15})
+                scheduled.append({
+                    "a": a,
+                    "b": b,
+                    "games": games,
+                    "information_gain": gain,
+                    "weight": weight,
+                    "factors": factors,
+                    "posterior": key in information,
+                })
+        if not scheduled:
             raise RuntimeError("arena needs at least two active agents")
-        _, a, b = random.choices(weighted, weights=[item[0] for item in weighted], k=1)[0]
-        return a, b
+        total = sum(item["weight"] for item in scheduled)
+        for item in scheduled:
+            item["selection_probability"] = item["weight"] / total
+        scheduled.sort(key=lambda item: item["weight"], reverse=True)
+        return scheduled
 
     # Bootstrap fallback before the first posterior exists.
-    scored: list[tuple[float, Agent, Agent]] = []
+    scheduled = []
     for i, a in enumerate(agents):
         for b in agents[i + 1:]:
             n = counts.get(tuple(sorted((a.id, b.id))), 0)
@@ -331,12 +350,60 @@ def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]
                 priority += 160.0 / (1.0 + n)
             if n and (a.mode != "plain" or b.mode != "plain"):
                 priority *= 0.15
-            priority *= random.uniform(0.98, 1.02)
-            scored.append((priority, a, b))
-    if not scored:
+            scheduled.append({
+                "a": a,
+                "b": b,
+                "games": n,
+                "information_gain": None,
+                "weight": priority,
+                "factors": [{"label": "posterior pending", "factor": None}],
+                "posterior": False,
+            })
+    if not scheduled:
         raise RuntimeError("arena needs at least two active agents")
-    _, a, b = max(scored, key=lambda item: item[0])
-    return a, b
+    total = sum(item["weight"] for item in scheduled)
+    for item in scheduled:
+        item["selection_probability"] = item["weight"] / total
+    scheduled.sort(key=lambda item: item["weight"], reverse=True)
+    return scheduled
+
+
+def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]:
+    """Sample matchups by expected posterior information gain per unit cost."""
+
+    schedule = matchup_schedule(store, agents)
+    if schedule[0]["information_gain"] is None:
+        return schedule[0]["a"], schedule[0]["b"]
+    selected = random.choices(
+        schedule, weights=[item["weight"] for item in schedule], k=1
+    )[0]
+    return selected["a"], selected["b"]
+
+
+def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
+    """Serialize the most useful portion of the live worker schedule."""
+
+    agents = store.agents(("candidate", "champion", "provisional", "lineage", "anchor"))
+    if len(agents) < 2:
+        return {"mode": "waiting", "matchups": []}
+    schedule = matchup_schedule(store, agents)
+    posterior = schedule[0]["information_gain"] is not None
+    return {
+        "mode": "bayesian_information" if posterior else "bootstrap",
+        "eligible_agents": len(agents),
+        "eligible_pairs": len(schedule),
+        "matchups": [{
+            "a": item["a"].id,
+            "b": item["b"].id,
+            "games": item["games"],
+            "information_bits": (
+                None if item["information_gain"] is None
+                else item["information_gain"] / math.log(2.0)
+            ),
+            "selection_probability": item["selection_probability"],
+            "factors": item["factors"],
+        } for item in schedule[:12]],
+    }
 
 
 def maybe_promote(store: ArenaStore, candidate: Agent, champion: Agent, *, elo0: float,
@@ -460,7 +527,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path == "/api/snapshot":
             store = ArenaStore(self.db)
             try:
-                payload = json.dumps(store.snapshot(), separators=(",", ":")).encode()
+                snapshot = store.snapshot()
+                snapshot["scheduler"] = scheduler_snapshot(store)
+                payload = json.dumps(snapshot, separators=(",", ":")).encode()
             finally:
                 store.close()
             self.send_response(200)

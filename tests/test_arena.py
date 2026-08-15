@@ -4,7 +4,14 @@ import json
 
 from drmc_rl.arena.ratings import RatingConfig
 from drmc_rl.arena.store import ArenaStore
-from tools.arena import discover_once, maybe_promote, pair_priority, parse_telemetry
+from tools.arena import (
+    discover_once,
+    matchup_schedule,
+    maybe_promote,
+    pair_priority,
+    parse_telemetry,
+    scheduler_snapshot,
+)
 
 
 def add(store: ArenaStore, agent_id: str, status: str, generation: int = 0) -> None:
@@ -147,6 +154,28 @@ def test_scheduler_weights_posterior_information_gain(tmp_path: Path) -> None:
         for _ in range(300)
     ]
     assert selections.count(frozenset(("alpha", "beta"))) > 240
+
+
+def test_scheduler_snapshot_exposes_exact_worker_distribution(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "candidate")
+    add(store, "gamma", "lineage")
+    store.matchup_information = lambda: {  # type: ignore[method-assign]
+        ("alpha", "beta"): 0.20,
+        ("alpha", "gamma"): 0.01,
+        ("beta", "gamma"): 0.03,
+    }
+    store.matchup_counts = lambda: {("alpha", "beta"): 17}  # type: ignore[method-assign]
+    schedule = matchup_schedule(store, store.agents())
+    snapshot = scheduler_snapshot(store)
+    assert snapshot["mode"] == "bayesian_information"
+    assert snapshot["eligible_pairs"] == 3
+    assert snapshot["matchups"][0]["a"] == schedule[0]["a"].id
+    assert snapshot["matchups"][0]["b"] == schedule[0]["b"].id
+    assert snapshot["matchups"][0]["games"] == 17
+    assert abs(sum(item["selection_probability"] for item in schedule) - 1.0) < 1e-12
+    assert {factor["label"] for factor in snapshot["matchups"][0]["factors"]} == {"candidate"}
 
 
 def test_matchup_counts_canonicalizes_both_agent_orders(tmp_path: Path) -> None:

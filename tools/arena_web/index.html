@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Dr. Mario Arena</title><link rel="stylesheet" href="/style.css">
-  <style>.ratings-table th,.ratings-table td{padding:8px 11px;white-space:nowrap}.ratings-table .rating{font-size:16px}.status-dot{display:block;width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}.los-next{color:var(--cyan);font-weight:700}.los-parent{color:var(--muted)}</style>
+  <style>.ratings-table th,.ratings-table td{padding:8px 11px;white-space:nowrap}.ratings-table .rating{font-size:16px}.status-dot{display:block;width:9px;height:9px;border-radius:50%;background:currentColor;box-shadow:0 0 8px currentColor}.los-next{color:var(--cyan);font-weight:700}.los-parent{color:var(--muted)}.schedule-table td{padding:10px 13px}.schedule-share{color:var(--lime);font-weight:800}.factor{display:inline-block;margin:2px 5px 2px 0;padding:2px 6px;border:1px solid var(--line);border-radius:99px;color:var(--muted);font-size:11px}.factor.boost{color:var(--cyan);border-color:#285854}.factor.cost{color:var(--gold);border-color:#594c29}</style>
 </head>
 <body>
   <header><div><p class="eyebrow">DRMC · CONTINUOUS ARENA</p><h1>The Bottle League</h1></div>
@@ -19,6 +19,8 @@
     <section><div class="section-title"><h3>Ratings</h3><p id="ratings-status">hierarchical Bayesian W/D/L · active roster; historical evidence retained</p></div>
       <div class="table-wrap"><table class="ratings-table"><thead><tr><th title="Status">●</th><th>#</th><th>Entrant</th><th>Lineage</th><th>Games</th><th>Rating</th><th>95% credible</th><th>LOS ↓ next</th><th>LOS ↳ parent</th><th>Best</th><th>Rank 95%</th><th>W %</th><th>L %</th><th>D %</th><th>Clear %</th><th>T/O %</th></tr></thead><tbody id="ratings"></tbody></table></div></section>
     <section id="replay-section" hidden><div class="section-title"><h3>Live arena sample</h3><p><button id="replay-toggle">Pause</button> · <select id="replay-speed"><option value="1">1×</option><option value="2">2×</option><option value="4" selected>4×</option><option value="8">8×</option><option value="16">16×</option></select></p></div><div class="replay-head"><strong id="replay-title"></strong><span id="replay-pos"></span></div><div class="bottles"><div id="bottle-a"></div><div id="bottle-b"></div></div></section>
+    <section><div class="section-title"><h3>Scheduler outlook</h3><p id="scheduler-status">waiting for posterior</p></div>
+      <div class="table-wrap"><table class="schedule-table"><thead><tr><th>Likely matchup</th><th>Next-draw share</th><th>Expected information</th><th>Played</th><th>Priority factors</th></tr></thead><tbody id="scheduler"></tbody></table></div></section>
     <div class="grid"><section><div class="section-title"><h3>Recent matches</h3></div><div id="matches" class="cards"></div></section>
       <section><div class="section-title"><h3>Lineage events</h3></div><div id="events" class="timeline"></div></section></div>
   </main><script src="/app.js"></script>
