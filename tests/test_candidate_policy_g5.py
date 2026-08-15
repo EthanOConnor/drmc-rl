@@ -5,6 +5,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
+from drmc_rl.training.algo.ppo_smdp import _candidate_bucketed_indices
 
 
 def _net(**overrides):
@@ -97,3 +98,15 @@ def test_g5_efficient_variant_preserves_contract():
     logits, value = net(**_inputs())
     assert logits.shape == (3, 32)
     assert value.shape == (3, 1)
+
+
+def test_candidate_bucket_order_is_lossless_and_width_local():
+    counts = torch.tensor([3, 65, 31, 33, 96, 5, 64, 120, 32, 34])
+    mask = torch.arange(128).unsqueeze(0) < counts.unsqueeze(1)
+    torch.manual_seed(8)
+    order = _candidate_bucketed_indices(mask)
+    assert sorted(order.tolist()) == list(range(len(counts)))
+    ordered_buckets = ((counts[order] - 1) // 32).tolist()
+    # Each width group is contiguous even though group and row order vary.
+    transitions = sum(a != b for a, b in zip(ordered_buckets, ordered_buckets[1:]))
+    assert transitions == len(set(ordered_buckets)) - 1

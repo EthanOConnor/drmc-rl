@@ -94,6 +94,25 @@ _UPDATE_METRIC_KEYS = (
 )
 
 
+def _candidate_bucketed_indices(candidate_mask: torch.Tensor) -> torch.Tensor:
+    """Shuffle rows while keeping similar candidate widths contiguous.
+
+    This changes only minibatch ordering. Every rollout row appears exactly
+    once per epoch, but fixed-size minibatches no longer inherit 96 slots from
+    a handful of unusually wide candidate sets.
+    """
+
+    counts = candidate_mask.sum(dim=1).clamp_min(1)
+    buckets = torch.div(counts - 1, 32, rounding_mode="floor")
+    bucket_ids = torch.unique(buckets)
+    bucket_ids = bucket_ids[torch.randperm(len(bucket_ids), device=bucket_ids.device)]
+    groups = []
+    for bucket in bucket_ids:
+        group = (buckets == bucket).nonzero(as_tuple=False).squeeze(1)
+        groups.append(group[torch.randperm(len(group), device=group.device)])
+    return torch.cat(groups) if groups else torch.empty(0, dtype=torch.long, device=buckets.device)
+
+
 @dataclass(slots=True)
 class SMDPPPOConfig:
     """Configuration for SMDP-PPO."""
@@ -1324,7 +1343,10 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         for epoch in range(self.hparams.num_epochs):
             # Shuffle indices
-            indices = torch.randperm(T, device=self.device)
+            if self.policy_type == "candidate" and cand_mask_all_t is not None:
+                indices = _candidate_bucketed_indices(cand_mask_all_t)
+            else:
+                indices = torch.randperm(T, device=self.device)
 
             for start in range(0, T, self.hparams.minibatch_size):
                 end = min(start + self.hparams.minibatch_size, T)

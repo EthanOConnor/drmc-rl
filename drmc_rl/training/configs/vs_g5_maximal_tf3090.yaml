@@ -23,9 +23,7 @@ smdp_ppo:
   max_grad_norm: 0.7
   decisions_per_update: 12800
   num_epochs: 2
-  # Larger learner batches improve tensor-core occupancy; per-minibatch
-  # candidate cropping keeps the 27.7M maximal model within 24 GB.
-  minibatch_size: 1280
+  minibatch_size: 800
   compile_mode: default
   rollout_compute_dtype: bf16
   update_compute_dtype: bf16
