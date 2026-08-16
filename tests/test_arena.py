@@ -4,6 +4,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,25 +13,66 @@ from drmc_rl.arena.remote import ArenaRemoteClient, PROTOCOL_VERSION
 from drmc_rl.arena.store import ArenaStore
 from tools.arena import (
     DashboardHandler,
+    _new_entry_boosts,
     discover_once,
     matchup_schedule,
     maybe_promote,
     pair_priority,
     parse_telemetry,
     paired_specs,
+    rating_config,
+    dashboard_snapshot_loop,
     scheduler_snapshot,
     eligible_agents,
 )
 
 
 def add(store: ArenaStore, agent_id: str, status: str, generation: int = 0) -> None:
-    store.register(agent_id=agent_id, name=agent_id.title(), family="central",
-                   generation=generation, checkpoint=f"/{agent_id}.pt.gz", status=status)
+    store.register(
+        agent_id=agent_id,
+        name=agent_id.title(),
+        family="central",
+        generation=generation,
+        checkpoint=f"/{agent_id}.pt.gz",
+        status=status,
+    )
 
 
-FAST_RATING = RatingConfig(
-    chains=2, warmup=80, samples=120, require_convergence=False, seed=7
-)
+FAST_RATING = RatingConfig(chains=2, warmup=80, samples=120, require_convergence=False, seed=7)
+
+
+def test_rating_config_accepts_fresh_retry_seed() -> None:
+    args = SimpleNamespace(
+        rating_chains=8,
+        rating_warmup=4000,
+        rating_samples=12000,
+        rating_seed=17,
+    )
+    assert rating_config(args).seed == 17
+    assert rating_config(args, seed=18).seed == 18
+
+
+def test_dashboard_snapshot_is_materialized_off_request_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tools.arena as arena_module
+
+    calls = 0
+    stopped = threading.Event()
+
+    def build(_db: Path, _replay_dir: Path | None) -> bytes:
+        nonlocal calls
+        calls += 1
+        stopped.set()
+        return b'{"games":123}'
+
+    monkeypatch.setattr(arena_module, "refresh_dashboard_snapshot", build)
+    DashboardHandler.snapshot_payload = None
+    dashboard_snapshot_loop(tmp_path / "arena.sqlite", None, interval=5.0, stopped=stopped)
+    assert calls == 1
+    assert DashboardHandler.snapshot_payload == b'{"games":123}'
+    assert DashboardHandler.snapshot_created_monotonic > 0
 
 
 def test_arena_match_horizon_defaults_to_one_thousand_per_side() -> None:
@@ -51,8 +93,9 @@ def test_snapshot_rates_and_keeps_lineage(tmp_path: Path) -> None:
     add(store, "champ", "champion", 1)
     add(store, "new", "candidate", 2)
     for seed in range(12):
-        store.record("new", "champ", seed=seed, side=seed % 2, winner="a",
-                     match_len_sec=60, decisions=20)
+        store.record(
+            "new", "champ", seed=seed, side=seed % 2, winner="a", match_len_sec=60, decisions=20
+        )
     store.refit_ratings(FAST_RATING)
     snap = store.snapshot()
     assert snap["games"] == 12
@@ -66,19 +109,31 @@ def test_replays_are_content_addressed_outside_sqlite(tmp_path: Path) -> None:
     add(store, "beta", "lineage")
     frames = [{"frame": 1, "a": [[1]], "b": [[2]]}]
     assert store.record(
-        "alpha", "beta", seed=1, side=0, winner="a", match_len_sec=1,
-        decisions=1, replay=frames, match_key="match-1",
+        "alpha",
+        "beta",
+        seed=1,
+        side=0,
+        winner="a",
+        match_len_sec=1,
+        decisions=1,
+        replay=frames,
+        match_key="match-1",
     )
-    row = store.conn.execute(
-        "SELECT replay,replay_ref,match_key FROM matches"
-    ).fetchone()
+    row = store.conn.execute("SELECT replay,replay_ref,match_key FROM matches").fetchone()
     assert row["replay"] is None
     assert row["match_key"] == "match-1"
     assert (store.replay_dir / row["replay_ref"]).is_file()
     assert store.replay(1)["replay"] == frames
     assert not store.record(
-        "alpha", "beta", seed=1, side=0, winner="a", match_len_sec=1,
-        decisions=1, replay=frames, match_key="match-1",
+        "alpha",
+        "beta",
+        seed=1,
+        side=0,
+        winner="a",
+        match_len_sec=1,
+        decisions=1,
+        replay=frames,
+        match_key="match-1",
     )
 
 
@@ -88,12 +143,15 @@ def test_expired_lease_is_reclaimed_with_a_new_claim(tmp_path: Path) -> None:
     add(store, "beta", "lineage")
     payload = {"protocol_version": PROTOCOL_VERSION, "specs": [{"match_id": "m1"}]}
     first = store.create_lease(
-        lease_id="lease", worker_id="one", agent_a="alpha", agent_b="beta",
-        payload=payload, now=10, ttl_seconds=5,
+        lease_id="lease",
+        worker_id="one",
+        agent_a="alpha",
+        agent_b="beta",
+        payload=payload,
+        now=10,
+        ttl_seconds=5,
     )
-    reclaimed, _token = store.claim_expired_lease(
-        worker_id="two", now=16, ttl_seconds=10
-    )
+    reclaimed, _token = store.claim_expired_lease(worker_id="two", now=16, ttl_seconds=10)
     assert reclaimed["lease_id"] == "lease"
     assert reclaimed["claim_token"] != first["claim_token"]
     row = store.conn.execute("SELECT worker_id,attempts FROM leases").fetchone()
@@ -125,12 +183,20 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     checkpoint_b.write_bytes(b"beta-checkpoint")
     store = ArenaStore(db)
     store.register(
-        agent_id="alpha", name="Alpha", family="test", generation=0,
-        checkpoint=str(checkpoint_a), status="lineage",
+        agent_id="alpha",
+        name="Alpha",
+        family="test",
+        generation=0,
+        checkpoint=str(checkpoint_a),
+        status="lineage",
     )
     store.register(
-        agent_id="beta", name="Beta", family="test", generation=1,
-        checkpoint=str(checkpoint_b), status="candidate",
+        agent_id="beta",
+        name="Beta",
+        family="test",
+        generation=1,
+        checkpoint=str(checkpoint_b),
+        status="candidate",
     )
     store.close()
 
@@ -139,7 +205,8 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     DashboardHandler.worker_token = "test-token"
     DashboardHandler.lease_ttl = 60
     DashboardHandler.arena_config = {
-        "level": 14, "speed_setting": 2,
+        "level": 14,
+        "speed_setting": 2,
         "state_repr": "bitplane_bottle_conn_mask_vs",
         "max_decisions_per_side": 1000,
         "policy_run_seed": 27182,
@@ -149,34 +216,52 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
     thread.start()
     try:
         client = ArenaRemoteClient(
-            f"http://127.0.0.1:{server.server_port}", "test-token",
+            f"http://127.0.0.1:{server.server_port}",
+            "test-token",
             checkpoint_cache=tmp_path / "cache",
         )
         assert client.capabilities()["protocol_version"] == PROTOCOL_VERSION
-        lease = client.lease({
-            "protocol_version": PROTOCOL_VERSION, "worker_id": "worker-1",
-            "device": "cpu", "threads": 1, "batch_size": 2,
-            "arena_config": DashboardHandler.arena_config,
-        })
+        lease = client.lease(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "worker_id": "worker-1",
+                "device": "cpu",
+                "threads": 1,
+                "batch_size": 2,
+                "arena_config": DashboardHandler.arena_config,
+            }
+        )
         assert lease is not None and len(lease["specs"]) == 2
         renewed = client.renew(lease["lease_id"], lease["claim_token"])
         assert renewed["expires"] > lease["expires"]
         assert client.materialize_checkpoint(lease["agent_a"]).is_file()
-        results = [{
-            "match_id": spec["match_id"], "winner": "a",
-            "match_len_sec": 1.5, "decisions": 3,
-            "terminal_reason": "clear", "frames": 90,
-            "replay": [{"frame": 1}],
-        } for spec in lease["specs"]]
+        results = [
+            {
+                "match_id": spec["match_id"],
+                "winner": "a",
+                "match_len_sec": 1.5,
+                "decisions": 3,
+                "terminal_reason": "clear",
+                "frames": 90,
+                "replay": [{"frame": 1}],
+            }
+            for spec in lease["specs"]
+        ]
         submission = {
             "protocol_version": PROTOCOL_VERSION,
             "claim_token": lease["claim_token"],
             "results": results,
             "worker_sample": {
-                "worker_id": "worker-1", "device": "cpu", "threads": 1,
-                "batch_size": 2, "agent_a": lease["agent_a"]["id"],
-                "agent_b": lease["agent_b"]["id"], "games": 2,
-                "simulated_frames": 180, "decisions": 6, "wall_seconds": 2.0,
+                "worker_id": "worker-1",
+                "device": "cpu",
+                "threads": 1,
+                "batch_size": 2,
+                "agent_a": lease["agent_a"]["id"],
+                "agent_b": lease["agent_b"]["id"],
+                "games": 2,
+                "simulated_frames": 180,
+                "decisions": 6,
+                "wall_seconds": 2.0,
             },
         }
         assert client.submit(lease["lease_id"], submission)["accepted"] is True
@@ -193,14 +278,24 @@ def test_remote_coordinator_lease_checkpoint_and_idempotent_submit(tmp_path: Pat
 
 def test_paired_specs_share_every_reset_field_and_swap_sides() -> None:
     specs = paired_specs(
-        schedule_seed=7, agent_a="alpha", agent_b="beta", start=40, count=4,
-        level=14, speed_setting=2, state_repr="bitplane_bottle_conn_mask_vs",
+        schedule_seed=7,
+        agent_a="alpha",
+        agent_b="beta",
+        start=40,
+        count=4,
+        level=14,
+        speed_setting=2,
+        state_repr="bitplane_bottle_conn_mask_vs",
         max_decisions_per_side=1000,
         policy_run_seed=27182,
     )
     assert [spec["a_side"] for spec in specs] == [0, 1, 0, 1]
     reset_fields = {
-        "seed", "frame_counter_base", "level", "speed_setting", "state_repr",
+        "seed",
+        "frame_counter_base",
+        "level",
+        "speed_setting",
+        "state_repr",
         "max_decisions_per_side",
     }
     assert {key: specs[0][key] for key in reset_fields} == {
@@ -210,8 +305,14 @@ def test_paired_specs_share_every_reset_field_and_swap_sides() -> None:
         key: specs[3][key] for key in reset_fields
     }
     assert specs == paired_specs(
-        schedule_seed=7, agent_a="alpha", agent_b="beta", start=40, count=4,
-        level=14, speed_setting=2, state_repr="bitplane_bottle_conn_mask_vs",
+        schedule_seed=7,
+        agent_a="alpha",
+        agent_b="beta",
+        start=40,
+        count=4,
+        level=14,
+        speed_setting=2,
+        state_repr="bitplane_bottle_conn_mask_vs",
         max_decisions_per_side=1000,
         policy_run_seed=27182,
     )
@@ -222,10 +323,21 @@ def test_match_provenance_round_trips_with_replay(tmp_path: Path) -> None:
     add(store, "alpha", "lineage")
     add(store, "beta", "lineage")
     assert store.record(
-        "alpha", "beta", seed=3, side=0, winner="a", match_len_sec=1,
-        decisions=2, replay=[{"frame": 1}], match_key="complete",
-        game_index=9, frame_counter_base=1234, level=14, speed_setting=2,
-        state_repr="bitplane_bottle_conn_mask_vs", max_decisions_per_side=1000,
+        "alpha",
+        "beta",
+        seed=3,
+        side=0,
+        winner="a",
+        match_len_sec=1,
+        decisions=2,
+        replay=[{"frame": 1}],
+        match_key="complete",
+        game_index=9,
+        frame_counter_base=1234,
+        level=14,
+        speed_setting=2,
+        state_repr="bitplane_bottle_conn_mask_vs",
+        max_decisions_per_side=1000,
         provenance={"protocol_version": PROTOCOL_VERSION, "worker_id": "green"},
     )
     replay = store.replay(1)
@@ -238,24 +350,40 @@ def test_incomplete_lease_submission_is_rejected_without_telemetry(tmp_path: Pat
     add(store, "alpha", "lineage")
     add(store, "beta", "lineage")
     lease = store.create_lease(
-        lease_id="legacy", worker_id="old-worker", agent_a="alpha", agent_b="beta",
+        lease_id="legacy",
+        worker_id="old-worker",
+        agent_a="alpha",
+        agent_b="beta",
         payload={
             "protocol_version": 1,
             "specs": [{"match_id": "old", "game_idx": 0, "seed": 1, "a_side": 0}],
         },
-        now=1, ttl_seconds=100,
+        now=1,
+        ttl_seconds=100,
     )
     with pytest.raises(ValueError, match="incomplete reset spec"):
         store.submit_lease(
-            lease_id="legacy", claim_token=lease["claim_token"], submission_sha256="x",
-            results=[{
-                "match_id": "old", "winner": "a", "match_len_sec": 1,
-                "decisions": 1,
-            }],
+            lease_id="legacy",
+            claim_token=lease["claim_token"],
+            submission_sha256="x",
+            results=[
+                {
+                    "match_id": "old",
+                    "winner": "a",
+                    "match_len_sec": 1,
+                    "decisions": 1,
+                }
+            ],
             worker_sample={
-                "worker_id": "old-worker", "device": "cpu", "threads": 1,
-                "batch_size": 1, "agent_a": "alpha", "agent_b": "beta",
-                "games": 1, "simulated_frames": 60, "decisions": 1,
+                "worker_id": "old-worker",
+                "device": "cpu",
+                "threads": 1,
+                "batch_size": 1,
+                "agent_a": "alpha",
+                "agent_b": "beta",
+                "games": 1,
+                "simulated_frames": 60,
+                "decisions": 1,
                 "wall_seconds": 1,
             },
             now=2,
@@ -269,8 +397,14 @@ def test_concurrent_store_open_serializes_additive_migration(tmp_path: Path) -> 
     db = tmp_path / "arena.sqlite"
     store = ArenaStore(db)
     for column in (
-        "game_index", "frame_counter_base", "level", "speed_setting", "state_repr",
-        "max_decisions_per_side", "policy_run_seed", "provenance",
+        "game_index",
+        "frame_counter_base",
+        "level",
+        "speed_setting",
+        "state_repr",
+        "max_decisions_per_side",
+        "policy_run_seed",
+        "provenance",
     ):
         store.conn.execute(f"ALTER TABLE matches DROP COLUMN {column}")
     store.conn.commit()
@@ -283,8 +417,7 @@ def test_concurrent_store_open_serializes_additive_migration(tmp_path: Path) -> 
         concurrent_store = ArenaStore(db)
         try:
             return {
-                str(row[1])
-                for row in concurrent_store.conn.execute("PRAGMA table_info(matches)")
+                str(row[1]) for row in concurrent_store.conn.execute("PRAGMA table_info(matches)")
             }
         finally:
             concurrent_store.close()
@@ -292,8 +425,14 @@ def test_concurrent_store_open_serializes_additive_migration(tmp_path: Path) -> 
     with ThreadPoolExecutor(max_workers=8) as executor:
         schemas = list(executor.map(open_store, range(8)))
     required = {
-        "game_index", "frame_counter_base", "level", "speed_setting", "state_repr",
-        "max_decisions_per_side", "policy_run_seed", "provenance",
+        "game_index",
+        "frame_counter_base",
+        "level",
+        "speed_setting",
+        "state_repr",
+        "max_decisions_per_side",
+        "policy_run_seed",
+        "provenance",
     }
     assert all(required <= schema for schema in schemas)
 
@@ -315,13 +454,23 @@ def test_snapshot_initializes_unplayed_child_at_parent_rating(tmp_path: Path) ->
     add(store, "anchor", "lineage")
     add(store, "parent", "champion", 1)
     store.register(
-        agent_id="child", name="Child", family="central", generation=2,
-        parent_id="parent", checkpoint="/child.pt.gz", status="candidate",
+        agent_id="child",
+        name="Child",
+        family="central",
+        generation=2,
+        parent_id="parent",
+        checkpoint="/child.pt.gz",
+        status="candidate",
     )
     for seed in range(20):
         store.record(
-            "parent", "anchor", seed=seed, side=seed % 2,
-            winner="a" if seed < 14 else "b", match_len_sec=60, decisions=20,
+            "parent",
+            "anchor",
+            seed=seed,
+            side=seed % 2,
+            winner="a" if seed < 14 else "b",
+            match_len_sec=60,
+            decisions=20,
         )
     store.refit_ratings(FAST_RATING)
     by_id = {agent["id"]: agent for agent in store.snapshot()["agents"]}
@@ -337,48 +486,190 @@ def test_snapshot_uses_cached_posterior_and_reports_staleness(tmp_path: Path) ->
     add(store, "beta", "lineage")
     for seed in range(12):
         store.record(
-            "alpha", "beta", seed=seed, side=seed % 2,
-            winner="a" if seed < 8 else "b", match_len_sec=60, decisions=20,
+            "alpha",
+            "beta",
+            seed=seed,
+            side=seed % 2,
+            winner="a" if seed < 8 else "b",
+            match_len_sec=60,
+            decisions=20,
         )
     fit = store.refit_ratings(FAST_RATING)
     snapshot = store.snapshot()
-    assert snapshot["ratings"]["model"] == "hierarchical-davidson-hmc-v1"
+    assert snapshot["ratings"]["model"] == "hierarchical-davidson-v2"
     assert snapshot["ratings"]["fit_id"] == fit["id"]
     assert snapshot["ratings"]["status"] == "current"
-    store.record("alpha", "beta", seed=99, side=1, winner="a",
-                 match_len_sec=60, decisions=20)
+    store.record("alpha", "beta", seed=99, side=1, winner="a", match_len_sec=60, decisions=20)
     stale = store.snapshot()
     assert stale["ratings"]["status"] == "updating"
     assert stale["ratings"]["pending_games"] == 1
-    update = store.update_ratings(
-        FAST_RATING, min_new_matches=1, full_refresh_matches=100,
-        min_importance_ess_fraction=0.05,
-    )
+    update = store.update_ratings(FAST_RATING, min_new_matches=1, laplace_samples=512)
     assert update is not None
-    assert update["method"] == "sequential"
+    assert update["method"] == "laplace"
     current = store.snapshot()
     assert current["ratings"]["status"] == "current"
-    assert current["ratings"]["method"] == "sequential"
+    assert current["ratings"]["method"] == "laplace"
+
+
+def test_compact_rating_counts_match_full_match_scan(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    for agent in ("alpha", "beta", "gamma"):
+        add(store, agent, "lineage")
+    outcomes = (
+        ("alpha", "beta", "a"),
+        ("beta", "alpha", "a"),
+        ("alpha", "beta", "draw"),
+        ("gamma", "alpha", "b"),
+    )
+    for seed, (a, b, winner) in enumerate(outcomes):
+        store.record(
+            a,
+            b,
+            seed=seed,
+            side=seed % 2,
+            winner=winner,
+            match_len_sec=1,
+            decisions=1,
+        )
+    agents = store.agents()
+    idx = {agent.id: i for i, agent in enumerate(agents)}
+    rows = list(store.conn.execute("SELECT agent_a,agent_b,winner FROM matches"))
+    assert store._aggregated_rating_pairs(idx) == store._rating_pairs(rows, idx)
+
+
+def test_live_table_reuses_scheduler_information_between_cadences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drmc_rl.arena.store as store_module
+
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    for seed in range(12):
+        store.record(
+            "alpha",
+            "beta",
+            seed=seed,
+            side=seed % 2,
+            winner="a" if seed < 8 else "b",
+            match_len_sec=1,
+            decisions=1,
+        )
+    store.refit_ratings(FAST_RATING)
+    information_before = store.matchup_information()
+    store.record(
+        "alpha",
+        "beta",
+        seed=99,
+        side=1,
+        winner="a",
+        match_len_sec=1,
+        decisions=1,
+    )
+
+    def unexpected_information(_samples: object) -> object:
+        raise AssertionError("scheduler information refreshed before its cadence")
+
+    monkeypatch.setattr(store_module, "matchup_information_matrix", unexpected_information)
+    result = store.update_ratings(
+        FAST_RATING,
+        min_new_matches=1,
+        laplace_samples=512,
+        information_refresh_matches=1_024,
+    )
+    assert result is not None
+    assert store.matchup_information() == information_before
+
+
+def test_rating_matrices_are_built_before_publish_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drmc_rl.arena.store as store_module
+
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    for seed in range(12):
+        store.record(
+            "alpha",
+            "beta",
+            seed=seed,
+            side=seed % 2,
+            winner="a" if seed < 8 else "b",
+            match_len_sec=60,
+            decisions=20,
+        )
+
+    transaction_states: list[bool] = []
+    original_information = store_module.matchup_information_matrix
+    original_superiority = store_module.superiority_matrix
+
+    def information(samples):
+        transaction_states.append(store.conn.in_transaction)
+        return original_information(samples)
+
+    def superiority(samples):
+        transaction_states.append(store.conn.in_transaction)
+        return original_superiority(samples)
+
+    monkeypatch.setattr(store_module, "matchup_information_matrix", information)
+    monkeypatch.setattr(store_module, "superiority_matrix", superiority)
+    store.refit_ratings(FAST_RATING)
+    assert transaction_states == [False, False]
 
 
 def test_snapshot_exposes_record_and_terminal_causes(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "alpha", "lineage")
     add(store, "beta", "lineage")
-    store.record("alpha", "beta", seed=1, side=0, winner="a",
-                 match_len_sec=60, decisions=20, terminal_reason="clear")
-    store.record("alpha", "beta", seed=2, side=1, winner="b",
-                 match_len_sec=60, decisions=20, terminal_reason="topout")
-    store.record("alpha", "beta", seed=3, side=0, winner="draw",
-                 match_len_sec=60, decisions=20, terminal_reason="horizon")
+    store.record(
+        "alpha",
+        "beta",
+        seed=1,
+        side=0,
+        winner="a",
+        match_len_sec=60,
+        decisions=20,
+        terminal_reason="clear",
+    )
+    store.record(
+        "alpha",
+        "beta",
+        seed=2,
+        side=1,
+        winner="b",
+        match_len_sec=60,
+        decisions=20,
+        terminal_reason="topout",
+    )
+    store.record(
+        "alpha",
+        "beta",
+        seed=3,
+        side=0,
+        winner="draw",
+        match_len_sec=60,
+        decisions=20,
+        terminal_reason="horizon",
+    )
 
     by_id = {agent["id"]: agent for agent in store.snapshot()["agents"]}
-    assert (by_id["alpha"]["wins"], by_id["alpha"]["losses"],
-            by_id["alpha"]["draws"], by_id["alpha"]["clears"],
-            by_id["alpha"]["topouts"]) == (1, 1, 1, 1, 1)
-    assert (by_id["beta"]["wins"], by_id["beta"]["losses"],
-            by_id["beta"]["draws"], by_id["beta"]["clears"],
-            by_id["beta"]["topouts"]) == (1, 1, 1, 0, 0)
+    assert (
+        by_id["alpha"]["wins"],
+        by_id["alpha"]["losses"],
+        by_id["alpha"]["draws"],
+        by_id["alpha"]["clears"],
+        by_id["alpha"]["topouts"],
+    ) == (1, 1, 1, 1, 1)
+    assert (
+        by_id["beta"]["wins"],
+        by_id["beta"]["losses"],
+        by_id["beta"]["draws"],
+        by_id["beta"]["clears"],
+        by_id["beta"]["topouts"],
+    ) == (1, 1, 1, 0, 0)
 
 
 def test_promotion_demotes_champion_to_active_lineage(tmp_path: Path) -> None:
@@ -386,10 +677,19 @@ def test_promotion_demotes_champion_to_active_lineage(tmp_path: Path) -> None:
     add(store, "old", "champion")
     add(store, "new", "candidate", 1)
     for seed in range(400):
-        store.record("new", "old", seed=seed, side=seed % 2, winner="a",
-                     match_len_sec=60, decisions=20)
-    verdict = maybe_promote(store, store.agent("new"), store.agent("old"), elo0=0,
-                            elo1=10, alpha=.05, beta=.05, max_games=400)
+        store.record(
+            "new", "old", seed=seed, side=seed % 2, winner="a", match_len_sec=60, decisions=20
+        )
+    verdict = maybe_promote(
+        store,
+        store.agent("new"),
+        store.agent("old"),
+        elo0=0,
+        elo1=10,
+        alpha=0.05,
+        beta=0.05,
+        max_games=400,
+    )
     assert verdict == "promoted"
     assert store.agent("new").status == "champion"
     assert store.agent("old").status == "lineage"
@@ -402,8 +702,9 @@ def test_scheduler_eventually_prefers_underserved_historical_pair(tmp_path: Path
     add(store, "champ", "champion", 1)
     add(store, "new", "candidate", 2)
     for seed in range(100):
-        store.record("new", "champ", seed=seed, side=seed % 2, winner="a",
-                     match_len_sec=60, decisions=20)
+        store.record(
+            "new", "champ", seed=seed, side=seed % 2, winner="a", match_len_sec=60, decisions=20
+        )
     a, b = pair_priority(store, store.agents())
     assert "old" in {a.id, b.id}
 
@@ -419,10 +720,10 @@ def test_scheduler_weights_posterior_information_gain(tmp_path: Path) -> None:
     }
     store.matchup_counts = lambda: {}  # type: ignore[method-assign]
     import random
+
     random.seed(5)
     selections = [
-        frozenset(agent.id for agent in pair_priority(store, store.agents()))
-        for _ in range(300)
+        frozenset(agent.id for agent in pair_priority(store, store.agents())) for _ in range(300)
     ]
     assert selections.count(frozenset(("alpha", "beta"))) > 225
 
@@ -447,7 +748,9 @@ def test_scheduler_snapshot_exposes_exact_worker_distribution(tmp_path: Path) ->
     assert snapshot["matchups"][0]["games"] == 17
     assert abs(sum(item["selection_probability"] for item in schedule) - 1.0) < 1e-12
     assert {factor["label"] for factor in snapshot["matchups"][0]["factors"]} == {
-        "new entrant", "temperature", "coverage floor"
+        "new entrant",
+        "temperature",
+        "coverage floor",
     }
 
 
@@ -455,10 +758,13 @@ def test_scheduler_drops_new_entry_boost_at_cap_without_status_boost(tmp_path: P
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "alpha", "lineage")
     store.register(
-        agent_id="beta", name="Beta", family="central", generation=1,
-        checkpoint="/beta.pt.gz", status="candidate",
-        metadata={"scheduler_boost": {"multiplier": 2.0, "max_games": 10,
-                                      "los_target": 0.95}},
+        agent_id="beta",
+        name="Beta",
+        family="central",
+        generation=1,
+        checkpoint="/beta.pt.gz",
+        status="candidate",
+        metadata={"scheduler_boost": {"multiplier": 2.0, "max_games": 10, "los_target": 0.95}},
     )
     add(store, "gamma", "candidate")
     store.matchup_information = lambda: {  # type: ignore[method-assign]
@@ -469,22 +775,40 @@ def test_scheduler_drops_new_entry_boost_at_cap_without_status_boost(tmp_path: P
     store.matchup_counts = lambda: {("alpha", "beta"): 10}  # type: ignore[method-assign]
     schedule = matchup_schedule(store, store.agents())
     beta_gamma = next(
-        item for item in schedule
-        if {item["a"].id, item["b"].id} == {"beta", "gamma"}
+        item for item in schedule if {item["a"].id, item["b"].id} == {"beta", "gamma"}
     )
     labels = {factor["label"] for factor in beta_gamma["factors"]}
     assert labels == {"temperature", "new entrant", "coverage floor"}
     assert beta_gamma["weight"] > 0
 
 
+def test_scheduler_does_not_compound_two_new_entry_boosts(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    for agent_id in ("alpha", "beta"):
+        store.register(
+            agent_id=agent_id,
+            name=agent_id.title(),
+            family="central",
+            generation=1,
+            checkpoint=f"/{agent_id}.pt.gz",
+            status="candidate",
+            metadata={"scheduler_boost": {"multiplier": 6.0, "max_games": 512, "los_target": 0.98}},
+        )
+    multiplier, factors = _new_entry_boosts(
+        tuple(store.agents()),
+        {"alpha": 0, "beta": 0},
+        {},
+    )
+    assert multiplier == 6.0
+    assert [factor["factor"] for factor in factors] == [6.0, 6.0]
+
+
 def test_matchup_counts_canonicalizes_both_agent_orders(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "alpha", "lineage")
     add(store, "beta", "lineage")
-    store.record("alpha", "beta", seed=1, side=0, winner="a",
-                 match_len_sec=10, decisions=4)
-    store.record("beta", "alpha", seed=2, side=1, winner="b",
-                 match_len_sec=10, decisions=4)
+    store.record("alpha", "beta", seed=1, side=0, winner="a", match_len_sec=10, decisions=4)
+    store.record("beta", "alpha", seed=2, side=1, winner="b", match_len_sec=10, decisions=4)
     assert store.matchup_counts() == {("alpha", "beta"): 2}
 
 
@@ -514,15 +838,18 @@ def test_replay_and_training_metrics_feed_dashboard(tmp_path: Path) -> None:
     add(store, "old", "lineage")
     add(store, "new", "champion", 1)
     frames = [{"boards": [[[0] * 128], [[0] * 128]], "decision": 0}]
-    store.record("new", "old", seed=7, side=0, winner="a", match_len_sec=20,
-                 decisions=4, replay=frames)
+    store.record(
+        "new", "old", seed=7, side=0, winner="a", match_len_sec=20, decisions=4, replay=frames
+    )
     run = tmp_path / "runs" / "campaign" / "run-1"
     run.mkdir(parents=True)
     with gzip.open(run / "metrics.jsonl.gz", "wt") as handle:
-        handle.write(json.dumps({"step": 10, "type": "scalar", "name": "perf/sps",
-                                 "value": 123456}) + "\n")
-        handle.write(json.dumps({"step": 10, "type": "scalar", "name": "perf/dps",
-                                 "value": 3456}) + "\n")
+        handle.write(
+            json.dumps({"step": 10, "type": "scalar", "name": "perf/sps", "value": 123456}) + "\n"
+        )
+        handle.write(
+            json.dumps({"step": 10, "type": "scalar", "name": "perf/dps", "value": 3456}) + "\n"
+        )
     snap = store.snapshot()
     assert snap["recent"][0]["has_replay"] == 1
     assert store.replay(snap["recent"][0]["id"])["replay"] == frames
@@ -532,9 +859,16 @@ def test_replay_and_training_metrics_feed_dashboard(tmp_path: Path) -> None:
 def test_worker_throughput_uses_simulated_work_not_game_count(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     store.record_worker_sample(
-        worker_id="cpu-123", device="cpu", threads=6, batch_size=4,
-        agent_a="alpha", agent_b="beta", games=4,
-        simulated_frames=120_000, decisions=800, wall_seconds=20.0,
+        worker_id="cpu-123",
+        device="cpu",
+        threads=6,
+        batch_size=4,
+        agent_a="alpha",
+        agent_b="beta",
+        games=4,
+        simulated_frames=120_000,
+        decisions=800,
+        wall_seconds=20.0,
     )
     worker = store.snapshot()["workers"][0]
     assert worker["games_per_min"] == 12.0

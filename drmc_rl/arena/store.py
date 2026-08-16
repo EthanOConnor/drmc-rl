@@ -19,10 +19,9 @@ from drmc_rl.arena.ratings import (
     PairCounts,
     RatingConfig,
     RatingFit,
-    PosteriorSamples,
     fit_bayesian_ratings,
+    fit_laplace_ratings,
     matchup_information_matrix,
-    sequential_update,
     superiority_matrix,
 )
 
@@ -198,7 +197,9 @@ class Agent:
 class ArenaStore:
     def __init__(self, path: str | Path, *, replay_dir: str | Path | None = None) -> None:
         self.path = Path(path)
-        self.replay_dir = Path(replay_dir) if replay_dir is not None else self.path.parent / "replays"
+        self.replay_dir = (
+            Path(replay_dir) if replay_dir is not None else self.path.parent / "replays"
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
@@ -231,16 +232,12 @@ class ArenaStore:
         }
         for name, declaration in additive_match_columns.items():
             if name not in columns:
-                self.conn.execute(
-                    f"ALTER TABLE matches ADD COLUMN {name} {declaration}"
-                )
+                self.conn.execute(f"ALTER TABLE matches ADD COLUMN {name} {declaration}")
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS matches_match_key "
             "ON matches(match_key) WHERE match_key IS NOT NULL"
         )
-        rating_columns = {
-            row[1] for row in self.conn.execute("PRAGMA table_info(rating_fits)")
-        }
+        rating_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(rating_fits)")}
         if "method" not in rating_columns:
             self.conn.execute(
                 "ALTER TABLE rating_fits ADD COLUMN method TEXT NOT NULL DEFAULT 'hmc'"
@@ -306,9 +303,7 @@ class ArenaStore:
             current_metadata.update(supplied_metadata)
             supplied_metadata = current_metadata
         elif status in ("candidate", "provisional"):
-            supplied_metadata.setdefault(
-                "scheduler_boost", dict(DEFAULT_SCHEDULER_BOOST)
-            )
+            supplied_metadata.setdefault("scheduler_boost", dict(DEFAULT_SCHEDULER_BOOST))
         self.conn.execute(
             """INSERT INTO agents
                (id,name,family,generation,parent_id,checkpoint,mode,params,status,created,metadata)
@@ -354,11 +349,17 @@ class ArenaStore:
     @staticmethod
     def _agent(row: sqlite3.Row) -> Agent:
         return Agent(
-            id=row["id"], name=row["name"], family=row["family"],
-            generation=row["generation"], parent_id=row["parent_id"],
-            checkpoint=row["checkpoint"], mode=row["mode"],
-            params=json.loads(row["params"]), status=row["status"],
-            created=row["created"], promoted=row["promoted"],
+            id=row["id"],
+            name=row["name"],
+            family=row["family"],
+            generation=row["generation"],
+            parent_id=row["parent_id"],
+            checkpoint=row["checkpoint"],
+            mode=row["mode"],
+            params=json.loads(row["params"]),
+            status=row["status"],
+            created=row["created"],
+            promoted=row["promoted"],
             metadata=json.loads(row["metadata"]),
         )
 
@@ -384,16 +385,29 @@ class ArenaStore:
                     os.unlink(temporary_name)
         return relative.as_posix()
 
-    def record(self, a: str, b: str, *, seed: int, side: int, winner: str,
-               match_len_sec: float, decisions: int, terminal_reason: str = "unknown",
-               replay: list[dict[str, Any]] | None = None,
-               match_key: str | None = None, game_index: int | None = None,
-               frame_counter_base: int | None = None, level: int | None = None,
-               speed_setting: int | None = None, state_repr: str | None = None,
-               max_decisions_per_side: int | None = None,
-               policy_run_seed: int | None = None,
-               provenance: dict[str, Any] | None = None,
-               commit: bool = True) -> bool:
+    def record(
+        self,
+        a: str,
+        b: str,
+        *,
+        seed: int,
+        side: int,
+        winner: str,
+        match_len_sec: float,
+        decisions: int,
+        terminal_reason: str = "unknown",
+        replay: list[dict[str, Any]] | None = None,
+        match_key: str | None = None,
+        game_index: int | None = None,
+        frame_counter_base: int | None = None,
+        level: int | None = None,
+        speed_setting: int | None = None,
+        state_repr: str | None = None,
+        max_decisions_per_side: int | None = None,
+        policy_run_seed: int | None = None,
+        provenance: dict[str, Any] | None = None,
+        commit: bool = True,
+    ) -> bool:
         replay_ref = self._store_replay(replay) if replay else None
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO matches
@@ -402,10 +416,28 @@ class ArenaStore:
                 frame_counter_base,level,speed_setting,state_repr,
                 max_decisions_per_side,policy_run_seed,provenance,created)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (a, b, seed, side, winner, match_len_sec, decisions, terminal_reason,
-             None, replay_ref, match_key, game_index, frame_counter_base, level,
-             speed_setting, state_repr, max_decisions_per_side, policy_run_seed,
-             json.dumps(provenance or {}, sort_keys=True), utc_now()),
+            (
+                a,
+                b,
+                seed,
+                side,
+                winner,
+                match_len_sec,
+                decisions,
+                terminal_reason,
+                None,
+                replay_ref,
+                match_key,
+                game_index,
+                frame_counter_base,
+                level,
+                speed_setting,
+                state_repr,
+                max_decisions_per_side,
+                policy_run_seed,
+                json.dumps(provenance or {}, sort_keys=True),
+                utc_now(),
+            ),
         )
         if commit:
             self.conn.commit()
@@ -442,22 +474,25 @@ class ArenaStore:
         return hashlib.sha256(token.encode()).hexdigest()
 
     def claim_expired_lease(
-        self, *, worker_id: str, now: float, ttl_seconds: float,
+        self,
+        *,
+        worker_id: str,
+        now: float,
+        ttl_seconds: float,
         required_protocol_version: int | None = None,
     ) -> tuple[dict[str, Any], str] | None:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             rows = self.conn.execute(
-                "SELECT * FROM leases WHERE status='leased' AND expires<=? "
-                "ORDER BY expires,id", (float(now),),
+                "SELECT * FROM leases WHERE status='leased' AND expires<=? ORDER BY expires,id",
+                (float(now),),
             ).fetchall()
             row = None
             for candidate in rows:
                 payload = json.loads(candidate["payload"])
                 if (
                     required_protocol_version is not None
-                    and int(payload.get("protocol_version", -1))
-                    != required_protocol_version
+                    and int(payload.get("protocol_version", -1)) != required_protocol_version
                 ):
                     self.conn.execute(
                         "UPDATE leases SET status='rejected',completed=? WHERE id=?",
@@ -477,31 +512,52 @@ class ArenaStore:
             )
             self.conn.commit()
             payload = json.loads(row["payload"])
-            payload.update({"lease_id": row["id"], "claim_token": token,
-                            "expires": now + ttl_seconds})
+            payload.update(
+                {"lease_id": row["id"], "claim_token": token, "expires": now + ttl_seconds}
+            )
             return payload, token
         except Exception:
             self.conn.rollback()
             raise
 
     def create_lease(
-        self, *, lease_id: str, worker_id: str, agent_a: str, agent_b: str,
-        payload: dict[str, Any], now: float, ttl_seconds: float,
+        self,
+        *,
+        lease_id: str,
+        worker_id: str,
+        agent_a: str,
+        agent_b: str,
+        payload: dict[str, Any],
+        now: float,
+        ttl_seconds: float,
     ) -> dict[str, Any]:
         token = secrets.token_urlsafe(32)
         self.conn.execute(
             "INSERT INTO leases(id,agent_a,agent_b,payload,worker_id,claim_token_hash,"
             "expires,created) VALUES(?,?,?,?,?,?,?,?)",
-            (lease_id, agent_a, agent_b, json.dumps(payload, sort_keys=True), worker_id,
-             self._claim_hash(token), now + ttl_seconds, utc_now()),
+            (
+                lease_id,
+                agent_a,
+                agent_b,
+                json.dumps(payload, sort_keys=True),
+                worker_id,
+                self._claim_hash(token),
+                now + ttl_seconds,
+                utc_now(),
+            ),
         )
         self.conn.commit()
-        return {**payload, "lease_id": lease_id, "claim_token": token,
-                "expires": now + ttl_seconds}
+        return {**payload, "lease_id": lease_id, "claim_token": token, "expires": now + ttl_seconds}
 
     def submit_lease(
-        self, *, lease_id: str, claim_token: str, submission_sha256: str,
-        results: list[dict[str, Any]], worker_sample: dict[str, Any], now: float,
+        self,
+        *,
+        lease_id: str,
+        claim_token: str,
+        submission_sha256: str,
+        results: list[dict[str, Any]],
+        worker_sample: dict[str, Any],
+        now: float,
     ) -> bool:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -515,16 +571,19 @@ class ArenaStore:
                 raise ValueError("completed lease received a different submission")
             if float(row["expires"]) < now:
                 raise PermissionError("lease expired")
-            if not hmac.compare_digest(
-                str(row["claim_token_hash"]), self._claim_hash(claim_token)
-            ):
+            if not hmac.compare_digest(str(row["claim_token_hash"]), self._claim_hash(claim_token)):
                 raise PermissionError("invalid lease claim token")
-            expected = {
-                item["match_id"]: item for item in json.loads(row["payload"])["specs"]
-            }
+            expected = {item["match_id"]: item for item in json.loads(row["payload"])["specs"]}
             required_spec_fields = {
-                "match_id", "game_idx", "seed", "a_side", "frame_counter_base",
-                "level", "speed_setting", "state_repr", "max_decisions_per_side",
+                "match_id",
+                "game_idx",
+                "seed",
+                "a_side",
+                "frame_counter_base",
+                "level",
+                "speed_setting",
+                "state_repr",
+                "max_decisions_per_side",
                 "policy_run_seed",
             }
             for spec in expected.values():
@@ -552,18 +611,25 @@ class ArenaStore:
                     raise ValueError("invalid match measurements")
                 spec = expected[result["match_id"]]
                 inserted = self.record(
-                    row["agent_a"], row["agent_b"], seed=int(spec["seed"]),
-                    side=int(spec["a_side"]), winner=str(result["winner"]),
-                    match_len_sec=match_len, decisions=decisions,
+                    row["agent_a"],
+                    row["agent_b"],
+                    seed=int(spec["seed"]),
+                    side=int(spec["a_side"]),
+                    winner=str(result["winner"]),
+                    match_len_sec=match_len,
+                    decisions=decisions,
                     terminal_reason=str(result.get("terminal_reason", "unknown")),
-                    replay=result.get("replay"), match_key=result["match_id"],
+                    replay=result.get("replay"),
+                    match_key=result["match_id"],
                     game_index=int(spec["game_idx"]),
                     frame_counter_base=int(spec["frame_counter_base"]),
-                    level=int(spec["level"]), speed_setting=int(spec["speed_setting"]),
+                    level=int(spec["level"]),
+                    speed_setting=int(spec["speed_setting"]),
                     state_repr=str(spec["state_repr"]),
                     max_decisions_per_side=int(spec["max_decisions_per_side"]),
                     policy_run_seed=int(spec["policy_run_seed"]),
-                    provenance=dict(spec.get("provenance") or {}), commit=False,
+                    provenance=dict(spec.get("provenance") or {}),
+                    commit=False,
                 )
                 if not inserted:
                     raise ValueError(
@@ -606,9 +672,7 @@ class ArenaStore:
                 raise KeyError(lease_id)
             if row["status"] != "leased":
                 raise ValueError("lease is not active")
-            if not hmac.compare_digest(
-                str(row["claim_token_hash"]), self._claim_hash(claim_token)
-            ):
+            if not hmac.compare_digest(str(row["claim_token_hash"]), self._claim_hash(claim_token)):
                 raise PermissionError("invalid lease claim token")
             expires = now + ttl_seconds
             self.conn.execute("UPDATE leases SET expires=? WHERE id=?", (expires, lease_id))
@@ -620,8 +684,8 @@ class ArenaStore:
 
     def externalize_replays(self, *, limit: int = 1000) -> int:
         rows = self.conn.execute(
-            "SELECT id,replay FROM matches WHERE replay IS NOT NULL "
-            "ORDER BY id LIMIT ?", (int(limit),),
+            "SELECT id,replay FROM matches WHERE replay IS NOT NULL ORDER BY id LIMIT ?",
+            (int(limit),),
         ).fetchall()
         for row in rows:
             replay_ref = self._store_replay(json.loads(row["replay"]))
@@ -647,8 +711,10 @@ class ArenaStore:
         wall_seconds: float,
         commit: bool = True,
     ) -> None:
-        if int(threads) <= 0 or int(batch_size) <= 0 or any(
-            int(value) < 0 for value in (games, simulated_frames, decisions)
+        if (
+            int(threads) <= 0
+            or int(batch_size) <= 0
+            or any(int(value) < 0 for value in (games, simulated_frames, decisions))
         ):
             raise ValueError("worker sample counters must be nonnegative")
         if not math.isfinite(float(wall_seconds)) or float(wall_seconds) <= 0:
@@ -659,9 +725,17 @@ class ArenaStore:
                 simulated_frames,decisions,wall_seconds,created)
                VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                worker_id, device, int(threads), int(batch_size), agent_a, agent_b,
-                int(games), int(simulated_frames), int(decisions),
-                float(wall_seconds), utc_now(),
+                worker_id,
+                device,
+                int(threads),
+                int(batch_size),
+                agent_a,
+                agent_b,
+                int(games),
+                int(simulated_frames),
+                int(decisions),
+                float(wall_seconds),
+                utc_now(),
             ),
         )
         # This is operational telemetry, not tournament evidence. Bound it so
@@ -728,9 +802,18 @@ class ArenaStore:
         )
         self.conn.commit()
 
+    def rating_backlog(self) -> int:
+        """Return committed matches not covered by the latest accepted fit."""
+
+        current = int(self.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
+        latest = self.conn.execute(
+            "SELECT match_count FROM rating_fits ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return current if latest is None else max(0, current - int(latest["match_count"]))
+
     def ratings_need_refresh(self, *, min_new_matches: int = 64) -> bool:
         latest = self.conn.execute(
-            """SELECT match_count,agent_count,hmc_match_count,sample_state IS NOT NULL AS has_samples
+            """SELECT match_count,agent_count,sample_state IS NOT NULL AS has_samples
                FROM rating_fits ORDER BY id DESC LIMIT 1"""
         ).fetchone()
         match_count = int(self.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
@@ -739,14 +822,11 @@ class ArenaStore:
             latest is None
             or int(latest["agent_count"]) != agent_count
             or not bool(latest["has_samples"])
-            or int(latest["hmc_match_count"]) <= 0
             or match_count - int(latest["match_count"]) >= min_new_matches
         )
 
     @staticmethod
-    def _rating_pairs(
-        rows: list[sqlite3.Row], idx: dict[str, int]
-    ) -> list[PairCounts]:
+    def _rating_pairs(rows: list[sqlite3.Row], idx: dict[str, int]) -> list[PairCounts]:
         aggregate: dict[tuple[int, int], list[int]] = {}
         for row in rows:
             a, b = idx[row["agent_a"]], idx[row["agent_b"]]
@@ -757,6 +837,27 @@ class ArenaStore:
             else:
                 winner = a if row["winner"] == "a" else b
                 counts[0 if winner == i else 2] += 1
+        return [PairCounts(i, j, *counts) for (i, j), counts in sorted(aggregate.items())]
+
+    def _aggregated_rating_pairs(self, idx: dict[str, int]) -> list[PairCounts]:
+        """Load compact W/D/L counts instead of every individual match row."""
+
+        aggregate: dict[tuple[int, int], list[int]] = {}
+        rows = self.conn.execute(
+            """SELECT agent_a,agent_b,winner,COUNT(*) AS games
+               FROM matches INDEXED BY matches_outcomes
+               GROUP BY agent_a,agent_b,winner"""
+        )
+        for row in rows:
+            a, b = idx[row["agent_a"]], idx[row["agent_b"]]
+            i, j = sorted((a, b))
+            counts = aggregate.setdefault((i, j), [0, 0, 0])
+            games = int(row["games"])
+            if row["winner"] == "draw":
+                counts[1] += games
+            else:
+                winner = a if row["winner"] == "a" else b
+                counts[0 if winner == i else 2] += games
         return [PairCounts(i, j, *counts) for (i, j), counts in sorted(aggregate.items())]
 
     def _publish_rating_fit(
@@ -770,16 +871,57 @@ class ArenaStore:
         method: str,
         config: dict[str, Any],
         replace_fit_id: int | None = None,
+        refresh_information: bool = True,
     ) -> dict[str, Any]:
         created = utc_now()
-        with self.conn:
-            values = (
-                MODEL_VERSION, match_count, len(agents),
-                json.dumps(config, sort_keys=True),
-                json.dumps(fit.diagnostics, sort_keys=True),
-                json.dumps(fit.hyperparameters, sort_keys=True),
-                method, last_match_id, hmc_match_count, fit.samples.encode(), created,
+        values = (
+            MODEL_VERSION,
+            match_count,
+            len(agents),
+            json.dumps(config, sort_keys=True),
+            json.dumps(fit.diagnostics, sort_keys=True),
+            json.dumps(fit.hyperparameters, sort_keys=True),
+            method,
+            last_match_id,
+            hmc_match_count,
+            fit.samples.encode(),
+            created,
+        )
+        estimate_rows = [
+            (
+                agent.id,
+                rating.mean,
+                rating.sd,
+                rating.low,
+                rating.high,
+                rating.probability_best,
+                rating.rank_median,
+                rating.rank_low,
+                rating.rank_high,
+                rating.draw_propensity,
+                rating.probability_better_parent,
             )
+            for agent, rating in zip(agents, fit.agents, strict=True)
+        ]
+        # These posterior reductions dominate sequential update time. Build
+        # them before opening the atomic publish transaction so arena workers
+        # can continue committing completed leases while ratings are reduced.
+        information_rows = None
+        if refresh_information:
+            information = matchup_information_matrix(fit.samples)
+            information_rows = [
+                (agents[i].id, agents[j].id, float(information[i, j]))
+                for i in range(len(agents))
+                for j in range(i + 1, len(agents))
+            ]
+        superiority = superiority_matrix(fit.samples)
+        superiority_rows = [
+            (agent.id, opponent.id, float(superiority[i, j]))
+            for i, agent in enumerate(agents)
+            for j, opponent in enumerate(agents)
+            if i != j
+        ]
+        with self.conn:
             if replace_fit_id is None:
                 # Posterior arrays are useful only for the current sequential
                 # updater. Keep historical summaries, not duplicate megabyte
@@ -804,44 +946,27 @@ class ArenaStore:
                 )
                 self.conn.execute("DELETE FROM rating_estimates WHERE fit_id=?", (fit_id,))
                 self.conn.execute("DELETE FROM rating_superiority WHERE fit_id=?", (fit_id,))
-                self.conn.execute(
-                    "DELETE FROM rating_matchup_information WHERE fit_id=?", (fit_id,)
-                )
+                if refresh_information:
+                    self.conn.execute(
+                        "DELETE FROM rating_matchup_information WHERE fit_id=?", (fit_id,)
+                    )
             self.conn.executemany(
                 """INSERT INTO rating_estimates
                    (fit_id,agent_id,mean,sd,low,high,probability_best,
                     rank_median,rank_low,rank_high,draw_propensity,probability_better_parent)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                [
-                    (
-                        fit_id, agent.id, rating.mean, rating.sd, rating.low, rating.high,
-                        rating.probability_best, rating.rank_median, rating.rank_low,
-                        rating.rank_high, rating.draw_propensity,
-                        rating.probability_better_parent,
-                    )
-                    for agent, rating in zip(agents, fit.agents, strict=True)
-                ],
+                [(fit_id, *row) for row in estimate_rows],
             )
-            information = matchup_information_matrix(fit.samples)
-            self.conn.executemany(
-                """INSERT INTO rating_matchup_information
-                   (fit_id,agent_a,agent_b,information_gain) VALUES(?,?,?,?)""",
-                [
-                    (fit_id, agents[i].id, agents[j].id, float(information[i, j]))
-                    for i in range(len(agents))
-                    for j in range(i + 1, len(agents))
-                ],
-            )
-            superiority = superiority_matrix(fit.samples)
+            if information_rows is not None:
+                self.conn.executemany(
+                    """INSERT INTO rating_matchup_information
+                       (fit_id,agent_a,agent_b,information_gain) VALUES(?,?,?,?)""",
+                    [(fit_id, *row) for row in information_rows],
+                )
             self.conn.executemany(
                 """INSERT INTO rating_superiority
                    (fit_id,agent_id,opponent_id,probability) VALUES(?,?,?,?)""",
-                [
-                    (fit_id, agent.id, opponent.id, float(superiority[i, j]))
-                    for i, agent in enumerate(agents)
-                    for j, opponent in enumerate(agents)
-                    if i != j
-                ],
+                [(fit_id, *row) for row in superiority_rows],
             )
         return {
             "id": fit_id,
@@ -859,16 +984,26 @@ class ArenaStore:
         config = config or RatingConfig()
         agents = self.agents()
         idx = {agent.id: i for i, agent in enumerate(agents)}
-        rows = list(self.conn.execute(
-            "SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes ORDER BY id"
-        ))
-        pairs = self._rating_pairs(rows, idx)
+        match_count, last_match_id = self.conn.execute(
+            "SELECT COUNT(*),COALESCE(MAX(id),0) FROM matches"
+        ).fetchone()
+        pairs = self._aggregated_rating_pairs(idx)
         parents = [idx.get(agent.parent_id) for agent in agents]
-        fit = fit_bayesian_ratings(len(agents), pairs, parents, config=config)
+        fit = fit_bayesian_ratings(
+            len(agents),
+            pairs,
+            parents,
+            config=config,
+            agent_labels=[agent.id for agent in agents],
+        )
         return self._publish_rating_fit(
-            fit, agents, match_count=len(rows),
-            last_match_id=int(rows[-1]["id"]) if rows else 0,
-            hmc_match_count=len(rows), method="hmc", config=asdict(config),
+            fit,
+            agents,
+            match_count=int(match_count),
+            last_match_id=int(last_match_id),
+            hmc_match_count=int(match_count),
+            method="hmc",
+            config=asdict(config),
         )
 
     def update_ratings(
@@ -876,45 +1011,56 @@ class ArenaStore:
         config: RatingConfig | None = None,
         *,
         min_new_matches: int = 16,
-        full_refresh_matches: int = 20_000,
-        min_importance_ess_fraction: float = 0.10,
+        laplace_samples: int = 4_096,
+        information_refresh_matches: int = 1_024,
     ) -> dict[str, Any] | None:
-        """Publish a fast exact sequential update, or refresh with HMC."""
+        """Rebuild and publish the lightweight live posterior.
+
+        Live ratings deliberately never trigger HMC.  Rebuilding the Laplace
+        approximation from aggregate counts avoids importance-weight collapse,
+        works immediately after roster changes, and leaves full HMC as an
+        explicit offline calibration rather than an arena throughput gate.
+        """
 
         config = config or RatingConfig()
         latest = self.conn.execute("SELECT * FROM rating_fits ORDER BY id DESC LIMIT 1").fetchone()
         agents = self.agents()
         current_matches = int(self.conn.execute("SELECT COUNT(*) FROM matches").fetchone()[0])
-        if latest is None or int(latest["agent_count"]) != len(agents) or latest["sample_state"] is None:
-            return self.refit_ratings(config)
-        hmc_match_count = int(latest["hmc_match_count"])
-        if hmc_match_count <= 0:
-            return self.refit_ratings(config)
-        pending = current_matches - int(latest["match_count"])
-        if pending < min_new_matches:
+        roster_changed = latest is None or int(latest["agent_count"]) != len(agents)
+        pending = (
+            current_matches if latest is None else current_matches - int(latest["match_count"])
+        )
+        if not roster_changed and pending < min_new_matches:
             return None
-        if current_matches - hmc_match_count >= full_refresh_matches:
-            return self.refit_ratings(config)
+        if information_refresh_matches <= 0:
+            raise ValueError("information refresh interval must be positive")
 
         idx = {agent.id: i for i, agent in enumerate(agents)}
-        rows = list(self.conn.execute(
-            """SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes
-               WHERE id>? ORDER BY id""",
-            (int(latest["last_match_id"]),),
-        ))
-        fit = sequential_update(
-            PosteriorSamples.decode(latest["sample_state"]),
-            self._rating_pairs(rows, idx),
-            base_diagnostics=json.loads(latest["diagnostics"]),
+        last_match_id = int(
+            self.conn.execute("SELECT COALESCE(MAX(id),0) FROM matches").fetchone()[0]
         )
-        if float(fit.diagnostics["importance_ess_fraction"]) < min_importance_ess_fraction:
-            return self.refit_ratings(config)
-        fitted_match_count = int(latest["match_count"]) + len(rows)
+        parents = [idx.get(agent.parent_id) for agent in agents]
+        fit = fit_laplace_ratings(
+            len(agents),
+            self._aggregated_rating_pairs(idx),
+            parents,
+            config=config,
+            samples=laplace_samples,
+        )
+        refresh_information = roster_changed or (
+            current_matches // information_refresh_matches
+            != int(latest["match_count"]) // information_refresh_matches
+        )
         return self._publish_rating_fit(
-            fit, agents, match_count=fitted_match_count,
-            last_match_id=int(rows[-1]["id"]) if rows else int(latest["last_match_id"]),
-            hmc_match_count=hmc_match_count, method="sequential",
-            config=json.loads(latest["config"]), replace_fit_id=int(latest["id"]),
+            fit,
+            agents,
+            match_count=current_matches,
+            last_match_id=last_match_id,
+            hmc_match_count=(0 if latest is None else int(latest["hmc_match_count"])),
+            method="laplace",
+            config={**asdict(config), "laplace_samples": laplace_samples},
+            replace_fit_id=(None if roster_changed else int(latest["id"])),
+            refresh_information=refresh_information,
         )
 
     def _latest_ratings(self) -> tuple[dict[str, sqlite3.Row], dict[str, Any]]:
@@ -1030,7 +1176,9 @@ class ArenaStore:
                FROM matches INDEXED BY matches_outcomes GROUP BY lo,hi"""
         ):
             pair[(row["lo"], row["hi"])] = [
-                int(row["wins_lo"]), int(row["draws"]), int(row["wins_hi"])
+                int(row["wins_lo"]),
+                int(row["draws"]),
+                int(row["wins_hi"]),
             ]
         ratings, rating_metadata = self._latest_ratings()
         records = {
@@ -1062,84 +1210,103 @@ class ArenaStore:
             )
         }
         board = []
-        empty_record = {"games": 0, "wins": 0, "losses": 0, "draws": 0,
-                        "clears": 0, "topouts": 0}
+        empty_record = {"games": 0, "wins": 0, "losses": 0, "draws": 0, "clears": 0, "topouts": 0}
         for agent in agents:
             estimate = ratings.get(agent.id)
             mean = None if estimate is None else float(estimate["mean"])
-            board.append({
-                **agent.__dict__,
-                "rating": None if mean is None else round(mean, 1),
-                "rating_sd": None if estimate is None else round(float(estimate["sd"]), 1),
-                "rating_low": None if estimate is None else round(float(estimate["low"]), 1),
-                "rating_high": None if estimate is None else round(float(estimate["high"]), 1),
-                "rating95": None if estimate is None else round(max(
-                    mean - float(estimate["low"]), float(estimate["high"]) - mean,
-                ), 1),
-                "probability_best": None if estimate is None else round(
-                    float(estimate["probability_best"]), 4
-                ),
-                "rank_median": None if estimate is None else float(estimate["rank_median"]),
-                "rank_low": None if estimate is None else float(estimate["rank_low"]),
-                "rank_high": None if estimate is None else float(estimate["rank_high"]),
-                "draw_propensity": None if estimate is None else round(
-                    float(estimate["draw_propensity"]), 3
-                ),
-                "lineage_los": (
-                    None
-                    if estimate is None or estimate["probability_better_parent"] is None
-                    else round(float(estimate["probability_better_parent"]), 4)
-                ),
-                **records.get(agent.id, empty_record),
-            })
-        board.sort(key=lambda item: (
-            item["rating"] is None,
-            -(item["rating"] if item["rating"] is not None else 0),
-            item["name"],
-        ))
-        events = [dict(row) for row in self.conn.execute(
-            "SELECT * FROM events ORDER BY id DESC LIMIT 30"
-        )]
+            board.append(
+                {
+                    **agent.__dict__,
+                    "rating": None if mean is None else round(mean, 1),
+                    "rating_sd": None if estimate is None else round(float(estimate["sd"]), 1),
+                    "rating_low": None if estimate is None else round(float(estimate["low"]), 1),
+                    "rating_high": None if estimate is None else round(float(estimate["high"]), 1),
+                    "rating95": None
+                    if estimate is None
+                    else round(
+                        max(
+                            mean - float(estimate["low"]),
+                            float(estimate["high"]) - mean,
+                        ),
+                        1,
+                    ),
+                    "probability_best": None
+                    if estimate is None
+                    else round(float(estimate["probability_best"]), 4),
+                    "rank_median": None if estimate is None else float(estimate["rank_median"]),
+                    "rank_low": None if estimate is None else float(estimate["rank_low"]),
+                    "rank_high": None if estimate is None else float(estimate["rank_high"]),
+                    "draw_propensity": None
+                    if estimate is None
+                    else round(float(estimate["draw_propensity"]), 3),
+                    "lineage_los": (
+                        None
+                        if estimate is None or estimate["probability_better_parent"] is None
+                        else round(float(estimate["probability_better_parent"]), 4)
+                    ),
+                    **records.get(agent.id, empty_record),
+                }
+            )
+        board.sort(
+            key=lambda item: (
+                item["rating"] is None,
+                -(item["rating"] if item["rating"] is not None else 0),
+                item["name"],
+            )
+        )
+        events = [
+            dict(row) for row in self.conn.execute("SELECT * FROM events ORDER BY id DESC LIMIT 30")
+        ]
         for event in events:
             event["detail"] = json.loads(event["detail"])
-        recent = [dict(row) for row in self.conn.execute(
-            "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,"
-            "(replay IS NOT NULL OR replay_ref IS NOT NULL) AS has_replay "
-            "FROM matches ORDER BY id DESC LIMIT 50"
-        )]
+        recent = [
+            dict(row)
+            for row in self.conn.execute(
+                "SELECT id,agent_a,agent_b,winner,match_len_sec,decisions,terminal_reason,created,"
+                "(replay IS NOT NULL OR replay_ref IS NOT NULL) AS has_replay "
+                "FROM matches ORDER BY id DESC LIMIT 50"
+            )
+        ]
         training = self._training_snapshot()
         game_count = sum(sum(record) for record in pair.values())
         self.conn.commit()
         return {
-            "generated": utc_now(), "agents": board, "games": game_count,
+            "generated": utc_now(),
+            "agents": board,
+            "games": game_count,
             "ratings": rating_metadata,
             "superiority": self._latest_superiority(),
-            "pairs": [{"a": k[0], "b": k[1], "wins_a": v[0], "draws": v[1], "wins_b": v[2]}
-                      for k, v in pair.items()],
-            "events": events, "recent": recent, "training": training,
+            "pairs": [
+                {"a": k[0], "b": k[1], "wins_a": v[0], "draws": v[1], "wins_b": v[2]}
+                for k, v in pair.items()
+            ],
+            "events": events,
+            "recent": recent,
+            "training": training,
             "workers": self._worker_snapshot(),
         }
 
     def _worker_snapshot(self, *, window_seconds: float = 120.0) -> list[dict[str, Any]]:
         cutoff = datetime.now(timezone.utc).timestamp() - float(window_seconds)
         grouped: dict[str, dict[str, Any]] = {}
-        for row in self.conn.execute(
-            "SELECT * FROM worker_samples ORDER BY id DESC LIMIT 1000"
-        ):
+        for row in self.conn.execute("SELECT * FROM worker_samples ORDER BY id DESC LIMIT 1000"):
             created = datetime.fromisoformat(row["created"])
             if created.timestamp() < cutoff:
                 continue
-            sample = grouped.setdefault(row["worker_id"], {
-                "worker_id": row["worker_id"],
-                "device": row["device"],
-                "threads": int(row["threads"]),
-                "batch_size": int(row["batch_size"]),
-                "games": 0,
-                "simulated_frames": 0,
-                "decisions": 0,
-                "wall_seconds": 0.0,
-                "latest": row["created"],
-            })
+            sample = grouped.setdefault(
+                row["worker_id"],
+                {
+                    "worker_id": row["worker_id"],
+                    "device": row["device"],
+                    "threads": int(row["threads"]),
+                    "batch_size": int(row["batch_size"]),
+                    "games": 0,
+                    "simulated_frames": 0,
+                    "decisions": 0,
+                    "wall_seconds": 0.0,
+                    "latest": row["created"],
+                },
+            )
             sample["games"] += int(row["games"])
             sample["simulated_frames"] += int(row["simulated_frames"])
             sample["decisions"] += int(row["decisions"])
@@ -1149,13 +1316,15 @@ class ArenaStore:
             wall = sample["wall_seconds"]
             games = sample["games"]
             frames = sample["simulated_frames"]
-            sample.update({
-                "games_per_min": 60.0 * games / wall if wall else 0.0,
-                "frames_per_sec": frames / wall if wall else 0.0,
-                "frames_per_min": 60.0 * frames / wall if wall else 0.0,
-                "decisions_per_sec": sample["decisions"] / wall if wall else 0.0,
-                "frames_per_game": frames / games if games else 0.0,
-            })
+            sample.update(
+                {
+                    "games_per_min": 60.0 * games / wall if wall else 0.0,
+                    "frames_per_sec": frames / wall if wall else 0.0,
+                    "frames_per_min": 60.0 * frames / wall if wall else 0.0,
+                    "decisions_per_sec": sample["decisions"] / wall if wall else 0.0,
+                    "frames_per_game": frames / games if games else 0.0,
+                }
+            )
             output.append(sample)
         return sorted(output, key=lambda item: (item["device"], item["worker_id"]))
 
@@ -1188,11 +1357,14 @@ class ArenaStore:
         if telemetry.is_file():
             try:
                 return json.loads(telemetry.read_text())
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError, OSError:
                 pass
         runs_root = self.path.parent.parent
-        streams = sorted(runs_root.glob("*/**/metrics.jsonl.gz"),
-                         key=lambda path: path.stat().st_mtime, reverse=True)
+        streams = sorted(
+            runs_root.glob("*/**/metrics.jsonl.gz"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
         if not streams:
             return {}
         path = streams[0]
@@ -1209,10 +1381,14 @@ class ArenaStore:
                         continue
                     name = str(row["name"])
                     latest[name] = row["value"]
-                    if name in {"perf/sps", "perf/dps", "train/return_mean",
-                                "search_distill/searched_fraction_actual"}:
+                    if name in {
+                        "perf/sps",
+                        "perf/dps",
+                        "train/return_mean",
+                        "search_distill/searched_fraction_actual",
+                    }:
                         history.setdefault(name, []).append([row["step"], row["value"]])
-        except (EOFError, OSError):
+        except EOFError, OSError:
             pass
         return {
             "run": str(path.parent.relative_to(runs_root)),

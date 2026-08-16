@@ -33,6 +33,12 @@ The displayed Elo scale is derived from the hierarchical Davidson W/D/L model,
 including separate draw tendency and lineage priors. Side advantage remains a
 protocol diagnostic rather than a parameter that conceals bias.
 
+Match production never waits for rating inference. The lightweight live
+posterior refreshes rating, LOS, and rank summaries after 128 new games; the
+more expensive scheduler information matrix refreshes every 1,024 games. Full
+multi-chain HMC remains an explicit offline calibration, not a lease gate, and
+the live backlog remains visible in scheduler telemetry.
+
 The full pairwise payoff matrix is equally authoritative. Cycles and exploiters
 must remain visible even when scalar ratings look ordered.
 
