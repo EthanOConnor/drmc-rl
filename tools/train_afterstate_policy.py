@@ -624,8 +624,11 @@ def train(args) -> dict[str, Any]:
         model.load_state_dict(initial["state_dict"])
         timing.load_state_dict(initial["timing_state_dict"])
     if args.compile:
-        model.compile(mode="reduce-overhead", dynamic=True)
-        timing.compile(mode="reduce-overhead", dynamic=True)
+        # Dynamic candidate/delta shapes trigger allocator failures in CUDA
+        # graph capture on long multi-shard runs. Default Inductor compilation
+        # retains kernel fusion without reduce-overhead's CUDA graphs.
+        model.compile(mode="default", dynamic=True)
+        timing.compile(mode="default", dynamic=True)
     parameters = list(model.parameters()) + list(timing.parameters())
     optimizer_args: dict[str, Any] = {"lr": args.lr, "weight_decay": 1e-4}
     if str(args.device).startswith("cuda"):
@@ -794,7 +797,7 @@ def main() -> None:
     parser.add_argument(
         "--compile",
         action="store_true",
-        help="compile model forwards with dynamic-shape CUDA graphs",
+        help="compile model forwards with dynamic-shape Inductor kernels",
     )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=512)
