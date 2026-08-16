@@ -199,7 +199,6 @@ class EarliestLockExperiment:
         for probe in probes:
             baseline_frame = probe.lock_frames[0]
             baseline_snapshot, baseline_value = self.backend.evaluate(probe, baseline_frame)
-            baseline_full_hash = _state_hash(baseline_snapshot, include_clocks=True)
             baseline_structural_hash = _state_hash(baseline_snapshot, include_clocks=False)
             baseline_clocks = tuple(int(item) for item in baseline_snapshot.get("side_frames", (0, 0)))
             probe_changed = False
