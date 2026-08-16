@@ -264,3 +264,28 @@ def test_afterstate_statistics_balance_players_across_shards(tmp_path) -> None:
         rating_counts=statistics.rating_counts,
     )
     assert weights[0] < weights[1] < weights[2]
+
+
+def test_afterstate_precision_requires_native_bf16() -> None:
+    from types import SimpleNamespace
+
+    from tools.train_afterstate_policy import _use_bf16
+
+    pascal = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_bf16_supported=lambda: True,
+            get_device_capability=lambda _device: (6, 1),
+        )
+    )
+    ampere = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_bf16_supported=lambda: True,
+            get_device_capability=lambda _device: (8, 6),
+        )
+    )
+
+    assert not _use_bf16(pascal, device="cuda", precision="auto")
+    assert _use_bf16(ampere, device="cuda", precision="auto")
+    assert not _use_bf16(ampere, device="cuda", precision="fp32")
+    with pytest.raises(ValueError, match="native bf16"):
+        _use_bf16(pascal, device="cuda", precision="bf16")

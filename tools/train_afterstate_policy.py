@@ -56,6 +56,18 @@ class TrainingStatistics:
     rating_counts: np.ndarray
 
 
+def _use_bf16(torch_module, *, device: str, precision: str) -> bool:
+    cuda_device = str(device).startswith("cuda")
+    native_bf16 = (
+        cuda_device
+        and torch_module.cuda.is_bf16_supported()
+        and torch_module.cuda.get_device_capability(device)[0] >= 8
+    )
+    if precision == "bf16" and not native_bf16:
+        raise ValueError(f"native bf16 is unavailable on {device}")
+    return precision == "bf16" or (precision == "auto" and native_bf16)
+
+
 def _load_shard(source: Path, afterstates: Path) -> Shard:
     with np.load(source, allow_pickle=False) as data:
         arrays = {key: data[key] for key in data.files}
@@ -526,7 +538,7 @@ def train(args) -> dict[str, Any]:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=max(int(args.epochs), 1), eta_min=float(args.lr) * 0.05
     )
-    use_bf16 = str(args.device).startswith("cuda") and torch.cuda.is_bf16_supported()
+    use_bf16 = _use_bf16(torch, device=args.device, precision=args.precision)
 
     def autocast():
         if use_bf16:
@@ -536,7 +548,7 @@ def train(args) -> dict[str, Any]:
     parameter_count = sum(parameter.numel() for parameter in model.parameters())
     print(
         f"schema={HUMAN_AFTERSTATE_SCHEMA} parameters={parameter_count:,} "
-        f"shards={len(paths)} bf16={use_bf16}",
+        f"shards={len(paths)} precision={'bf16' if use_bf16 else 'fp32'}",
         flush=True,
     )
     step = 0
@@ -661,6 +673,12 @@ def main() -> None:
     parser.add_argument("--init-checkpoint", type=Path)
     parser.add_argument("--lineage-dir", type=Path)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--precision",
+        choices=("auto", "bf16", "fp32"),
+        default="auto",
+        help="auto uses bf16 only on GPUs with native bf16 tensor cores",
+    )
     parser.add_argument("--capacity", choices=("small", "base", "large"), default="base")
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=512)
