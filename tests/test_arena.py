@@ -511,6 +511,32 @@ def test_snapshot_uses_cached_posterior_and_reports_staleness(tmp_path: Path) ->
     assert current["ratings"]["method"] == "laplace"
 
 
+def test_compact_rating_counts_match_full_match_scan(tmp_path: Path) -> None:
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    for agent in ("alpha", "beta", "gamma"):
+        add(store, agent, "lineage")
+    outcomes = (
+        ("alpha", "beta", "a"),
+        ("beta", "alpha", "a"),
+        ("alpha", "beta", "draw"),
+        ("gamma", "alpha", "b"),
+    )
+    for seed, (a, b, winner) in enumerate(outcomes):
+        store.record(
+            a,
+            b,
+            seed=seed,
+            side=seed % 2,
+            winner=winner,
+            match_len_sec=1,
+            decisions=1,
+        )
+    agents = store.agents()
+    idx = {agent.id: i for i, agent in enumerate(agents)}
+    rows = list(store.conn.execute("SELECT agent_a,agent_b,winner FROM matches"))
+    assert store._aggregated_rating_pairs(idx) == store._rating_pairs(rows, idx)
+
+
 def test_rating_matrices_are_built_before_publish_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

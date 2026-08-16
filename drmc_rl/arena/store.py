@@ -839,6 +839,27 @@ class ArenaStore:
                 counts[0 if winner == i else 2] += 1
         return [PairCounts(i, j, *counts) for (i, j), counts in sorted(aggregate.items())]
 
+    def _aggregated_rating_pairs(self, idx: dict[str, int]) -> list[PairCounts]:
+        """Load compact W/D/L counts instead of every individual match row."""
+
+        aggregate: dict[tuple[int, int], list[int]] = {}
+        rows = self.conn.execute(
+            """SELECT agent_a,agent_b,winner,COUNT(*) AS games
+               FROM matches INDEXED BY matches_outcomes
+               GROUP BY agent_a,agent_b,winner"""
+        )
+        for row in rows:
+            a, b = idx[row["agent_a"]], idx[row["agent_b"]]
+            i, j = sorted((a, b))
+            counts = aggregate.setdefault((i, j), [0, 0, 0])
+            games = int(row["games"])
+            if row["winner"] == "draw":
+                counts[1] += games
+            else:
+                winner = a if row["winner"] == "a" else b
+                counts[0 if winner == i else 2] += games
+        return [PairCounts(i, j, *counts) for (i, j), counts in sorted(aggregate.items())]
+
     def _publish_rating_fit(
         self,
         fit: RatingFit,
@@ -958,12 +979,10 @@ class ArenaStore:
         config = config or RatingConfig()
         agents = self.agents()
         idx = {agent.id: i for i, agent in enumerate(agents)}
-        rows = list(
-            self.conn.execute(
-                "SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes ORDER BY id"
-            )
-        )
-        pairs = self._rating_pairs(rows, idx)
+        match_count, last_match_id = self.conn.execute(
+            "SELECT COUNT(*),COALESCE(MAX(id),0) FROM matches"
+        ).fetchone()
+        pairs = self._aggregated_rating_pairs(idx)
         parents = [idx.get(agent.parent_id) for agent in agents]
         fit = fit_bayesian_ratings(
             len(agents),
@@ -975,9 +994,9 @@ class ArenaStore:
         return self._publish_rating_fit(
             fit,
             agents,
-            match_count=len(rows),
-            last_match_id=int(rows[-1]["id"]) if rows else 0,
-            hmc_match_count=len(rows),
+            match_count=int(match_count),
+            last_match_id=int(last_match_id),
+            hmc_match_count=int(match_count),
             method="hmc",
             config=asdict(config),
         )
@@ -1009,15 +1028,13 @@ class ArenaStore:
             return None
 
         idx = {agent.id: i for i, agent in enumerate(agents)}
-        rows = list(
-            self.conn.execute(
-                "SELECT id,agent_a,agent_b,winner FROM matches INDEXED BY matches_outcomes ORDER BY id"
-            )
+        last_match_id = int(
+            self.conn.execute("SELECT COALESCE(MAX(id),0) FROM matches").fetchone()[0]
         )
         parents = [idx.get(agent.parent_id) for agent in agents]
         fit = fit_laplace_ratings(
             len(agents),
-            self._rating_pairs(rows, idx),
+            self._aggregated_rating_pairs(idx),
             parents,
             config=config,
             samples=laplace_samples,
@@ -1025,8 +1042,8 @@ class ArenaStore:
         return self._publish_rating_fit(
             fit,
             agents,
-            match_count=len(rows),
-            last_match_id=int(rows[-1]["id"]) if rows else 0,
+            match_count=current_matches,
+            last_match_id=last_match_id,
             hmc_match_count=(0 if latest is None else int(latest["hmc_match_count"])),
             method="laplace",
             config={**asdict(config), "laplace_samples": laplace_samples},
