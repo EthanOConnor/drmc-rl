@@ -4,6 +4,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +20,7 @@ from tools.arena import (
     pair_priority,
     parse_telemetry,
     paired_specs,
+    rating_config,
     scheduler_snapshot,
     eligible_agents,
 )
@@ -32,6 +34,15 @@ def add(store: ArenaStore, agent_id: str, status: str, generation: int = 0) -> N
 FAST_RATING = RatingConfig(
     chains=2, warmup=80, samples=120, require_convergence=False, seed=7
 )
+
+
+def test_rating_config_accepts_fresh_retry_seed() -> None:
+    args = SimpleNamespace(
+        rating_chains=8, rating_warmup=4000, rating_samples=12000,
+        rating_seed=17,
+    )
+    assert rating_config(args).seed == 17
+    assert rating_config(args, seed=18).seed == 18
 
 
 def test_arena_match_horizon_defaults_to_one_thousand_per_side() -> None:

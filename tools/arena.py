@@ -850,12 +850,12 @@ def run_remote_worker(args: argparse.Namespace) -> None:
         runner.close()
 
 
-def rating_config(args: argparse.Namespace) -> RatingConfig:
+def rating_config(args: argparse.Namespace, *, seed: int | None = None) -> RatingConfig:
     return RatingConfig(
         chains=args.rating_chains,
         warmup=args.rating_warmup,
         samples=args.rating_samples,
-        seed=args.rating_seed,
+        seed=args.rating_seed if seed is None else seed,
     )
 
 
@@ -863,18 +863,20 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
     """Keep a converged posterior cache current without blocking match play."""
 
     stopped = stopped or threading.Event()
+    retry_seed = args.rating_seed
     while not stopped.is_set():
         store = ArenaStore(args.db)
         try:
             if store.ratings_need_refresh(min_new_matches=args.rating_refresh_games):
                 started = time.monotonic()
                 result = store.update_ratings(
-                    rating_config(args),
+                    rating_config(args, seed=retry_seed),
                     min_new_matches=args.rating_refresh_games,
                     full_refresh_matches=args.rating_full_refresh_games,
                     min_importance_ess_fraction=args.rating_min_ess_fraction,
                 )
                 if result is not None:
+                    retry_seed = args.rating_seed
                     diagnostics = result["diagnostics"]
                     quality = (
                         f"importance ESS {diagnostics['importance_ess']:.0f}"
@@ -890,8 +892,13 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
                     )
         except RatingConvergenceError as error:
             # Never publish a suspect posterior. The last converged fit remains
-            # visible and the next polling interval retries from fresh chains.
-            print(f"ratings: fit rejected: {error}", flush=True)
+            # visible and the next polling interval retries from genuinely
+            # fresh chains rather than deterministically repeating a bad draw.
+            retry_seed += 1
+            print(
+                f"ratings: fit rejected: {error}; retry seed {retry_seed}",
+                flush=True,
+            )
         except Exception as error:
             print(f"ratings: update failed: {type(error).__name__}: {error}", flush=True)
         finally:
