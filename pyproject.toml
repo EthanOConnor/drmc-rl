@@ -1,7 +1,7 @@
 [project]
 name = "drmc-rl"
 version = "0.1.0"
-description = "Dr. Mario RL environment, training, and evaluation"
+description = "Dr. Mario training, search, evaluation, and human-player systems"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 dependencies = [
@@ -10,6 +10,12 @@ dependencies = [
     "pyyaml>=6.0.3,<7",
     "rich>=15,<16",
 ]
+
+[project.scripts]
+drmc-program = "tools.program:main"
+drmc-execution-profile = "tools.execution_profile:main"
+drmc-meta-strategy = "tools.meta_strategy:main"
+drmc-release-gate = "tools.release_gate:main"
 
 [tool.ruff]
 line-length = 100
@@ -35,6 +41,7 @@ drmc_rl = [
     "game/specs/*.json",
     "envs/libretro/seeds/*.json",
     "planning/cuda/*.cu",
+    "program/*.yaml",
     "training/configs/*.yaml",
 ]
 
