@@ -921,6 +921,16 @@ scanned=20,422 sampled=20,422 kept=20,337 rate=3,880/s
     assert latest["perf/dps"] == 3_880
 
 
+def test_telemetry_parses_compiled_afterstate_window_rate() -> None:
+    tasks = parse_telemetry(
+        "@@AFTERSTATE runs/human_policy/full_train.log\n"
+        "epoch=1 step=20 decisions/s=2400 window_decisions/s=3500 "
+        "loss=4.2 style=2.1\n"
+    )
+    assert tasks[0]["latest"]["perf/dps"] == 2400
+    assert tasks[0]["latest"]["train/loss"] == pytest.approx(4.2)
+
+
 def test_telemetry_preserves_latest_scalar_training_step() -> None:
     tasks = parse_telemetry(
         """@@JSON runs/campaign/run/metrics.jsonl.gz

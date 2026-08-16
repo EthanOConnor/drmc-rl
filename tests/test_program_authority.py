@@ -11,7 +11,8 @@ def test_program_manifest_loads_and_references_known_gates() -> None:
     spec = ProgramSpec.load(path)
     assert spec.products["human-trainer"].competitive_core == "unified-g5"
     assert spec.recipes["g4-strong-league"].status == "complete"
-    assert spec.recipes["g4-strong-league-rewarm"].status == "active"
+    assert spec.recipes["g4-strong-league-rewarm"].status == "complete"
+    assert spec.recipes["g4-strong-league-rewarm-900m"].status == "active"
     spec.validate()
 
 

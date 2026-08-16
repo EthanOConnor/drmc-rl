@@ -114,7 +114,7 @@ recipes:
     notes:
       - This is a completed teacher and robustness baseline, not the terminal architecture.
   g4-strong-league-rewarm:
-    status: active
+    status: complete
     stage: 1
     purpose: Test whether a bounded aggressive exploration rewarm can improve the mature Strong League policy before outcome-only consolidation.
     config: drmc_rl/training/configs/vs_strong_league_rewarm_tf3090.yaml
@@ -137,6 +137,31 @@ recipes:
     notes:
       - Preserve the resumed optimizer moments while applying the recipe learning rate override.
       - Compare against the permanent Strong League +1.0B parent before choosing an outcome-only consolidation parent.
+  g4-strong-league-rewarm-900m:
+    status: active
+    stage: 1
+    purpose: Rewarm the stronger +900M checkpoint on Green until arena evidence plateaus.
+    config: drmc_rl/training/configs/vs_strong_league_rewarm_900m_green.yaml
+    requires_paths:
+      - drmc_rl/training/configs/vs_strong_league_rewarm_900m_green.yaml
+      - vendor/drmario_native
+      - runs/strong_league/parents/strong-league-g5-plus900m-step2700891929.pt.gz
+    command:
+      - python
+      - -m
+      - drmc_rl.training.run
+      - --cfg
+      - '{repo}/drmc_rl/training/configs/vs_strong_league_rewarm_900m_green.yaml'
+      - --ui
+      - headless
+    produces:
+      - Aggressive +900M rewarm checkpoints for sequential arena evaluation
+    resources:
+      preferred_host: green
+      accelerator: cuda
+    notes:
+      - Preserve the exact Strong League reward and opponent mixture.
+      - Stop only after sequential arena checkpoints show a sustained strength plateau.
   timing-action-gate:
     status: active
     stage: 1

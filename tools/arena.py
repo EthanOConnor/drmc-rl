@@ -242,7 +242,7 @@ def run_registrar(args: argparse.Namespace) -> None:
 
 
 def run_telemetry(args: argparse.Namespace) -> None:
-    """Mirror the remote trainer's scalar stream without moving run artifacts."""
+    """Mirror local and remote trainer scalar streams without moving artifacts."""
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     stopped = False
@@ -253,8 +253,9 @@ def run_telemetry(args: argparse.Namespace) -> None:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    remote = (
-        f"cd {args.remote_repo} && "
+    def command(repo: str, *, include_corpus: bool) -> str:
+        value = (
+        f"cd {repo} && "
         # PPO emits every few seconds.  A short freshness window prevents a
         # completed smoke run (or a stopped service) from being summed into
         # the dashboard's live throughput for another quarter hour.
@@ -264,20 +265,39 @@ def run_telemetry(args: argparse.Namespace) -> None:
         "find runs/human_policy -name '*_train.log' -mmin -15 -print 2>/dev/null | "
         "while read -r path; do printf '@@AFTERSTATE %s\\n' \"$path\"; "
         'tail -400 "$path"; done; '
-        "find /home/ethan/.cache/drmc-rl/training-store/human-v5/full-corpus "
-        "-maxdepth 1 -name 'extract*.log' -mmin -15 -print 2>/dev/null | "
-        "while read -r path; do printf '@@CORPUS %s\n' \"$path\"; "
-        'tail -200 "$path"; done'
-    )
+        )
+        if include_corpus:
+            value += (
+                "find /home/ethan/.cache/drmc-rl/training-store/human-v5/full-corpus "
+                "-maxdepth 1 -name 'extract*.log' -mmin -15 -print 2>/dev/null | "
+                "while read -r path; do printf '@@CORPUS %s\n' \"$path\"; "
+                'tail -200 "$path"; done'
+            )
+        return value
+
     while not stopped:
-        result = subprocess.run(
-            ["ssh", args.ssh, remote],
+        remote = subprocess.run(
+            ["ssh", args.ssh, command(args.remote_repo, include_corpus=True)],
             capture_output=True,
             text=True,
             timeout=args.timeout,
             check=False,
         )
-        tasks = parse_telemetry(result.stdout)
+        sources: list[tuple[str, subprocess.CompletedProcess[str]]] = [(args.ssh, remote)]
+        if args.local_repo:
+            local = subprocess.run(
+                ["bash", "-lc", command(args.local_repo, include_corpus=False)],
+                capture_output=True,
+                text=True,
+                timeout=args.timeout,
+                check=False,
+            )
+            sources.append(("green", local))
+        tasks: list[dict[str, Any]] = []
+        for host, result in sources:
+            for item in parse_telemetry(result.stdout):
+                item["host"] = host
+                tasks.append(item)
         # A live gzip stream legitimately exits nonzero because its writer has
         # not emitted the final trailer yet; every complete JSONL row is valid.
         if tasks:
@@ -298,7 +318,7 @@ def run_telemetry(args: argparse.Namespace) -> None:
                 "latest": latest,
                 "history": {},
                 "tasks": tasks,
-                "source": args.ssh,
+                "source": [host for host, _result in sources],
             }
             temporary = output.with_suffix(output.suffix + ".tmp")
             temporary.write_text(json.dumps(payload, separators=(",", ":")))
@@ -328,6 +348,7 @@ def run_externalize_replays(args: argparse.Namespace) -> None:
 
 _AFTERSTATE_PROGRESS = re.compile(
     r"epoch=(?P<epoch>\d+) step=(?P<step>\d+) decisions/s=(?P<dps>[\d,]+) "
+    r"(?:window_decisions/s=(?P<window_dps>[\d,]+) )?"
     r"loss=(?P<loss>[\d.eE+-]+)(?P<parts>.*)"
 )
 _SCALAR_PART = re.compile(r"(?P<name>[a-z_]+)=(?P<value>[\d.eE+-]+)")
@@ -1389,6 +1410,7 @@ def main() -> None:
     telemetry = sub.add_parser("telemetry")
     telemetry.add_argument("--ssh", default="tf3090")
     telemetry.add_argument("--remote-repo", default="/home/ethan/drmario/drmc-rl")
+    telemetry.add_argument("--local-repo", help="also collect a trainer in this local checkout")
     telemetry.add_argument("--output", default=str(DEFAULT_DB.parent / "training.json"))
     telemetry.add_argument("--poll", type=float, default=10)
     telemetry.add_argument("--timeout", type=float, default=20)
