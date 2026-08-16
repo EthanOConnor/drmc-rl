@@ -649,6 +649,8 @@ def train(args) -> dict[str, Any]:
     best_metrics: dict[str, float] = {}
     best_calibration: RegretCalibration | None = None
     started = time.perf_counter()
+    last_log_time = started
+    last_log_step = 0
     for epoch in range(int(args.epochs)):
         model.train()
         timing.train()
@@ -692,14 +694,22 @@ def train(args) -> dict[str, Any]:
                 optimizer.step()
                 step += 1
                 if step % int(args.log_every) == 0:
-                    elapsed = max(time.perf_counter() - started, 1e-9)
+                    now = time.perf_counter()
+                    elapsed = max(now - started, 1e-9)
+                    window_elapsed = max(now - last_log_time, 1e-9)
+                    window_rate = (
+                        (step - last_log_step) * int(args.batch_size) / window_elapsed
+                    )
                     values = " ".join(f"{key}={float(value):.4f}" for key, value in parts.items())
                     print(
                         f"epoch={epoch + 1} step={step} decisions/s="
                         f"{step * int(args.batch_size) / elapsed:,.0f} "
+                        f"window_decisions/s={window_rate:,.0f} "
                         f"loss={float(loss.detach()):.4f} {values}",
                         flush=True,
                     )
+                    last_log_time = now
+                    last_log_step = step
         scheduler.step()
         metrics, calibration = _evaluate(
             model,
