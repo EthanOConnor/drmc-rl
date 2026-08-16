@@ -327,8 +327,8 @@ def test_afterstate_precision_requires_native_bf16() -> None:
         _use_bf16(pascal, device="cuda", precision="bf16")
 
 
-def test_afterstate_shard_cache_keeps_sources_and_rotates_targets(tmp_path) -> None:
-    from tools.train_afterstate_policy import _cache_afterstate_shard, _cache_source_shards
+def test_afterstate_shard_cache_rotates_sources_and_targets(tmp_path) -> None:
+    from tools.train_afterstate_policy import _cache_afterstate_shard, _cache_source_shard
 
     dataset = tmp_path / "remote-dataset"
     afterstates = tmp_path / "remote-afterstates"
@@ -348,12 +348,15 @@ def test_afterstate_shard_cache_keeps_sources_and_rotates_targets(tmp_path) -> N
         ):
             (afterstates / f"{stem}{suffix}").write_bytes(f"{stem}{suffix}".encode())
 
-    cached_sources = _cache_source_shards(sources, cache)
-    assert [path.read_bytes() for path in cached_sources] == [b"source-a", b"source-b"]
-    first = _cache_afterstate_shard(cached_sources[0], afterstates, cache)
+    cached_source = _cache_source_shard(sources[0], cache)
+    assert cached_source.read_bytes() == b"source-a"
+    first = _cache_afterstate_shard(sources[0], afterstates, cache)
     assert first.name == "a"
     assert (first / "a.targets.npz").is_file()
-    second = _cache_afterstate_shard(cached_sources[1], afterstates, cache)
+    cached_source = _cache_source_shard(sources[1], cache)
+    assert cached_source.read_bytes() == b"source-b"
+    assert not (cache / "dataset" / "a.npz").exists()
+    second = _cache_afterstate_shard(sources[1], afterstates, cache)
     assert second.name == "b"
     assert not first.exists()
     assert (second / "b.targets.npz").is_file()

@@ -111,11 +111,15 @@ def _copy_if_needed(source: Path, target: Path) -> Path:
     return target
 
 
-def _cache_source_shards(paths: list[Path], cache_dir: Path | None) -> list[Path]:
+def _cache_source_shard(path: Path, cache_dir: Path | None) -> Path:
     if cache_dir is None:
-        return paths
+        return path
     dataset_cache = cache_dir / "dataset"
-    return [_copy_if_needed(path, dataset_cache / path.name) for path in paths]
+    if dataset_cache.is_dir():
+        for existing in dataset_cache.iterdir():
+            if existing.name != path.name:
+                existing.unlink()
+    return _copy_if_needed(path, dataset_cache / path.name)
 
 
 def _cache_afterstate_shard(
@@ -488,8 +492,9 @@ def _evaluate(
         for path in paths:
             if total_rows >= max_rows:
                 break
+            local_source = _cache_source_shard(path, shard_cache_dir)
             shard = _load_shard(
-                path,
+                local_source,
                 _cache_afterstate_shard(path, afterstates, shard_cache_dir),
             )
             arrays = shard.arrays
@@ -605,7 +610,6 @@ def train(args) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     rng = np.random.default_rng(int(args.seed))
     paths = _source_paths(args.dataset, args.afterstates, args.max_shards)
-    paths = _cache_source_shards(paths, args.shard_cache_dir)
     statistics = _fit_training_statistics(paths)
     condition = statistics.condition
     cfg = afterstate_policy_config(capacity=args.capacity)
@@ -657,8 +661,9 @@ def train(args) -> dict[str, Any]:
         order = rng.permutation(len(paths))
         for shard_number in order:
             path = paths[int(shard_number)]
+            local_source = _cache_source_shard(path, args.shard_cache_dir)
             shard = _load_shard(
-                path,
+                local_source,
                 _cache_afterstate_shard(path, args.afterstates, args.shard_cache_dir),
             )
             train_rows = np.flatnonzero(
