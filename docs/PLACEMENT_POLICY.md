@@ -1,396 +1,73 @@
-# Placement Policy & SMDP-PPO Training
-
-This document describes the single-inference placement policy system and SMDP-PPO training implementation.
-
-## Overview
-
-The placement policy system replaces per-frame REINFORCE training with:
-- **One forward pass per spawn**: Policy inference occurs once per pill spawn, not every frame
-- **Macro-action learning**: Each decision spans τ frames until pill locks
-- **SMDP-PPO**: Credit assignment uses γ^τ discounting for temporally extended actions
-- **Masked actions**: Invalid placements are masked at inference time
-
-## Components
-
-### 1. Policy Heads
-
-Three interchangeable architectures are provided in `drmc_rl/models/policy/placement_heads.py`:
-
-#### A. Dense Conv Heatmaps (baseline)
-```python
-head_type = "dense"
-```
-- Simplest strong baseline
-- Direct 4×16×8 heatmap generation
-- FiLM conditioning on current + preview pill colors
-- Fast parallel inference
-- Useful as a controlled baseline, not the current default
-
-#### B. Shift-and-Score
-```python
-head_type = "shift_score"
-```
-- Local feature scorer
-- Pairs anchor features with partner-shifted features
-- Color-order symmetric by design
-- Compact representation
-
-#### C. Factorized (anchor → orientation)
-```python
-head_type = "factorized"
-```
-- Hierarchical selection: pick cell (i,j) then orientation o
-- Smallest parameter count
-- Slightly more complex credit assignment
-
-#### D. Candidate-Scoring (packed feasible actions, default)
-
-This variant avoids a fixed 512-way output head by scoring only a packed list of
-planner-feasible macro actions and using the planner’s frames-to-lock as an
-explicit per-candidate feature.
-
-Config:
-```yaml
-smdp_ppo:
-  policy_type: candidate
-  candidate_board_encoder: cnn  # or col_transformer
-  # Typical feasible counts are far smaller than 512; keep Kmax modest for speed.
-  candidate_max_candidates: 128
-```
-
-Implementation:
-- `drmc_rl/models/policy/candidate_packing.py` packs `placements/feasible_mask` +
-  `placements/cost_to_lock`/`placements/costs` into fixed-size candidate arrays.
-- `drmc_rl/models/policy/candidate_policy.py` scores candidates and outputs `[B, K]` logits.
-
-Heatmap heads (dense / shift_score / factorized):
-- Accept `[B, C, 16, 8]` board state
-- Embed current + preview pill colors via Deep-Sets (order-invariant per pill)
-- Apply CoordConv for spatial awareness
-- Output `[B, 4, 16, 8]` logit maps + value estimates
-
-Candidate-scoring head:
-- Accept `[B, C, 16, 8]` board state + packed candidates
-- Uses per-candidate cost-to-lock as an explicit feature
-- Combines raw local patches with learned trunk features gathered at candidate landing cells/columns
-- Output `[B, Kmax]` logits + value estimates
-
-### 2. Masked Distribution
-
-`drmc_rl/models/policy/placement_dist.py` provides:
-- `MaskedPlacementDist`: Categorical distribution over 512 placement actions
-- Invalid action masking (sets logits to -∞)
-- Safe softmax with numerical guards
-- Gumbel-Top-k sampling for exploration
-
-### 3. Decision-Level Rollout Buffer
-
-`drmc_rl/training/rollout/decision_buffer.py` stores:
-- One transition per **decision** (not frame)
-- Each decision includes:
-  - `obs`: Board state at decision time
-  - `mask`: Feasibility mask [4, 16, 8]
-  - `pill_colors`: Current pill [2]
-  - `preview_pill_colors`: Preview pill [2]
-  - `action`: Selected placement
-  - `log_prob`, `value`: Policy outputs
-  - `tau`: Frame duration
-  - `reward`: Cumulative reward over τ frames
-  - `obs_next`: State after placement
-
-### 4. SMDP-PPO Trainer
-
-`drmc_rl/training/algo/ppo_smdp.py` implements:
-- PPO with SMDP discounting
-- GAE with Γ_t = γ^τ_t
-- Entropy annealing
-- Scripted curriculum support (optional; configured via `curriculum.*` in the runner config)
-
-## Mathematical Formulation
-
-### SMDP Discounting
-For a decision at time t spanning τ_t frames:
-```
-Γ_t = γ^{τ_t}
-```
-
-### GAE Backward Pass
-```python
-δ_t = R_t + Γ_t * V(s_{t+1}) * (1 - done_t) - V(s_t)
-A_t = δ_t + Γ_t * λ * (1 - done_t) * A_{t+1}
-ret_t = R_t + Γ_t * ret_{t+1} * (1 - done_t)
-```
-
-### PPO Loss
-```python
-ratio = exp(log_π(a_t|s_t) - log_π_old(a_t|s_t))
-L_policy = -min(ratio * A_t, clip(ratio, 1-ε, 1+ε) * A_t)
-L_value = MSE(V(s_t), ret_t)
-L_total = L_policy + β_v * L_value - β_h * H[π(·|s_t)]
-```
-
-## Usage
-
-### Quick Start
-
-```python
-from drmc_rl.models.policy.placement_heads import PlacementPolicyNet
-from drmc_rl.models.policy.placement_dist import MaskedPlacementDist
-
-# Create policy
-net = PlacementPolicyNet(
-    in_channels=12,  # `bitplane_bottle_conn_mask`; see `env.state_repr`
-    head_type="dense",
-    pill_embed_dim=32,
-)
-
-# Forward pass
-board = ...  # [B, C, 16, 8]
-pill_colors = ...  # [B, 2] current pill color indices
-preview_pill_colors = ...  # [B, 2] preview pill color indices
-mask = ...  # [B, 4, 16, 8] boolean
-
-logits_map, value = net(board, pill_colors, preview_pill_colors, mask)
-
-# Sample action
-dist = MaskedPlacementDist(logits_map, mask)
-action_idx, log_prob = dist.sample()
-```
-
-### Training
-
-```bash
-# Fast training (recommended; default `drmc_rl/training/configs/smdp_ppo.yaml` uses
-# `cpp-pool` + candidate scoring)
-python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui tui \
-  --backend cpp-pool --num_envs 16
-
-# Emulator parity/debugging (requires a libretro core + ROM)
-python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui headless \
-  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes
-```
-
-Interactive board visualization + speed control:
-
-```bash
-python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --ui debug \
-  --backend libretro --core quicknes --rom-path legal_ROMs/DrMario.nes \
-  --env-id DrMarioPlacementEnv-v0 --num_envs 1
-```
-
-### Curriculum + Time Budgets (Placement)
-
-- **Synthetic negative levels**:
-  - `-15..-4`: “0 viruses, clear N matches” (N=1..12).
-  - `-3..0`: “clear remaining viruses” with 1..4 viruses (`-3`=1, `-2`=2, `-1`=3, `0`=4).
-- **`ln_hop_back` schedule**: each newly introduced level is probed at a low threshold (default 16%), then earlier levels are revisited with thresholds `1-exp(-m*k)` where `m=pass_ramp_exponent_multiplier` (default `1/3`) and `k` grows as you hop back (capped by `ln_hop_back_max_k`).
-- **Advancement confidence**: stage advancement uses a one-sided Wilson-style lower bound (`curriculum.confidence_sigmas`, default 1σ) computed from an EMA pseudo-count estimate (stable under non-stationary learning). Stages also enforce a minimum sample budget via `curriculum.min_stage_decisions` (keeps PPO batches stage-pure).
-- **Time goals after mastery**: once a level is mastered (perfect streak long enough for `time_budget_mastery_sigmas/time_budget_mastery_target`), the curriculum enables `task_max_frames` / `task_max_spawns` budgets and tightens them gradually. Budgets are “soft”: over-budget clears terminate normally but don’t count as `goal_achieved` and get a negative shaped terminal bonus.
-- **Best-known times DB**: clears are recorded (best per `(level, rng_seed)`) in `data/best_times.sqlite3` (override via `DRMARIO_BEST_TIMES_DB`). Use `python tools/report_best_times.py` to inspect per-level distributions.
-
-### Configuration
-
-Default candidate-scoring config in `drmc_rl/training/configs/smdp_ppo.yaml`:
-
-```yaml
-smdp_ppo:
-  lr: 3.0e-4
-  gamma: 0.998
-  gae_lambda: 0.95
-  clip_epsilon: 0.2
-
-  policy_type: "candidate"
-  candidate_board_encoder: "cnn"
-  candidate_max_candidates: 128
-  candidate_patch_kernel: 9
-  pill_embed_dim: 128
-  pill_embed_type: "ordered_pair"
-
-  # Rollout
-  decisions_per_update: 512
-  num_epochs: 4
-  minibatch_size: 128
-  
-  # Exploration
-  entropy_coef: 0.01
-  entropy_schedule_end: 0.003
-  entropy_schedule_steps: 1000000
-```
-
-## Testing
-
-Run the unit tests:
-
-```bash
-# Core placement policy tests
-pytest tests/test_placement_policy.py -v
-
-# Smoke tests
-pytest tests/test_placement_smoke.py -v
-```
-
-Tests cover:
-1. **Mask & numerics**: Softmax normalization, invalid action handling
-2. **Color invariance**: Deep-Sets embedding symmetry
-3. **Geometry alignment**: Sensible placement targeting
-4. **SMDP math**: GAE-SMDP correctness, τ=1 recovery
-5. **Distribution API**: Log-prob and entropy consistency
-
-## Performance Metrics
-
-Track these during training:
-
-### Decision-Level
-- `decisions/sec`: Decisions made per second
-- `policy/entropy`: Policy exploration level
-- `policy/kl`: KL divergence from old policy
-- `policy/clip_frac`: Fraction of updates clipped
-
-### Episode-Level
-- `drm/viruses_per_ep`: Viruses cleared
-- `drm/lines_per_ep`: Lines cleared
-- `train/return_mean`: Average episode return
-
-### Placement-Specific
-- `placements/options`: Mean feasible actions per spawn
-- `placements/tau_mean`: Mean frames per placement
-- `placements/mask_sparsity`: Fraction of invalid actions
-
-## Integration Points
-
-### Placement Wrapper
-
-The current `cpp-pool` vector env (`drmc_rl/training/envs/drmario_pool_vec.py`) provides
-the same placement contract directly from the native pool. The emulator wrapper
-(`drmc_rl/envs/libretro/placement_env.py`) provides the same contract for parity/debug runs:
-- `info["placements/feasible_mask"]`: Boolean mask [4, 16, 8]
-- `info["placements/legal_mask"]`: Boolean mask [4, 16, 8] (in-bounds-only)
-- `info["placements/cost_to_lock"]`: UInt16 costs [4, 16, 8] for `cpp-pool` (`0xFFFF` sentinel)
-- `info["placements/costs"]`: Float costs [4, 16, 8] for emulator wrapper paths (`inf` if unreachable)
-- `info["next_pill_colors"]`: Current pill color indices [2]
-- `info["preview_pill"]`: HUD preview pill metadata (colors/rotation; raw NES encoding)
-- `info["placements/spawn_id"]`: Pill spawn counter for cache invalidation
-- `info["placements/tau"]`: Frames consumed by the macro step (SMDP duration)
-
-### Single Inference per Spawn
-
-The runner/agent must:
-1. Cache logits keyed by `spawn_id`
-2. Reuse cached logits if execution diverges
-3. Apply updated feasibility mask on replanning
-
-Example pattern:
-```python
-# Decision time
-spawn_id = info.get("placements/spawn_id")
-if spawn_id != last_spawn_id:
-    # New spawn: run inference
-    logits, value = policy(obs, colors, preview_colors, mask)
-    cache[spawn_id] = logits
-    last_spawn_id = spawn_id
-else:
-    # Replan: reuse cached logits
-    logits = cache[spawn_id]
-    # Apply updated mask
-    dist = MaskedPlacementDist(logits, updated_mask)
-```
-
-## Hyperparameter Tuning
-
-### Learning Rate
-- Start: `3e-4`
-- Reduce if policy KL > 0.05 consistently
-- Increase if learning stalls
-
-### Entropy Coefficient
-- Initial: `0.01`
-- Anneal to: `0.003`
-- Lower values → more deterministic policy
-
-### Gamma (Discount)
-- Standard: `0.995`
-- Higher for longer episodes
-- Lower if credit assignment is noisy
-
-### GAE Lambda
-- Standard: `0.95`
-- Higher → more Monte Carlo (high variance)
-- Lower → more TD (low variance, high bias)
-
-### Minibatch Size
-- Smaller → more updates, noisier gradients
-- Larger → fewer updates, more stable
-- Balance with GPU memory
-
-## Curriculum Learning
-
-The unified runner supports a simple scripted curriculum (enabled in
-`drmc_rl/training/configs/smdp_ppo.yaml` by default):
-
-- **Synthetic levels**: `-15..0` are represented by setting `env.level` negative.
-- **Match-count staging** (0 viruses; applied by patching the bottle RAM at reset time):
-  - `-15`: 1 match
-  - `-14`: 2 matches
-  - …
-  - `-4`: 12 matches
-- **Virus-count staging** (applied by patching the bottle RAM at reset time):
-  - `-3`: 1 virus
-  - `-2`: 2 viruses
-  - `-1`: 3 viruses
-  - `0`: 4 viruses (vanilla level 0)
-- **Advancement**: stay on the current curriculum level until the rolling clear
-  rate over `window_episodes` reaches `success_threshold`, then advance by +1.
-- **Rehearsal**: after advancing, sample a lower level with probability
-  `rehearsal_prob` to maintain performance.
-
-Disable the curriculum with:
-
-```bash
-python -m drmc_rl.training.run --cfg drmc_rl/training/configs/smdp_ppo.yaml --override curriculum.enabled=false
-```
-
-## Troubleshooting
-
-### Policy Collapse
-**Symptom**: Entropy → 0 too quickly
-**Fix**: Increase `entropy_coef`, reduce `entropy_schedule_steps`
-
-### Value Drift
-**Symptom**: Value loss explodes
-**Fix**: Clip value loss, reduce `gamma`, normalize rewards
-
-### Mask Errors
-**Symptom**: Sampled invalid actions
-**Fix**: Check wrapper mask generation, verify masking logic
-
-### Pose Mismatches (Macro Environment)
-**Symptom**: Debug UI shows `placements/pose_ok=no` or `placements/pose_mismatch_count` increases.
-
-**What it means**: The macro planner predicted a lock pose for the chosen placement action, but the
-observed lock pose disagreed (usually indicates a contract mismatch between reachability/planner,
-controller script timing, or the backend).
-
-**Diagnostics**:
-- By default, mismatches are logged (JSONL) to `data/pose_mismatches.jsonl.gz` (git-ignored).
-- Control via env vars:
-  - `DRMARIO_POSE_MISMATCH_LOG=0` to disable (or set a custom path).
-  - `DRMARIO_POSE_MISMATCH_TRACE=1` to include a per-step lock trace payload (larger logs).
-  - `DRMARIO_POSE_MISMATCH_LOG_MAX=25` to cap the number of logged mismatches per run.
-
-### Slow Training
-**Symptom**: Low decisions/sec
-**Fix**:
-- Ensure the native reachability helper is built: `python -m tools.build_reach_native` (required for practical speed)
-- Increase `num_envs`, reduce `decisions_per_update`
-
-## References
-
-- **SMDP-PPO**: Extends PPO to Semi-Markov Decision Processes
-- **Deep Sets**: Zaheer et al., "Deep Sets", NeurIPS 2017
-- **FiLM**: Perez et al., "FiLM: Visual Reasoning with Feature-wise Linear Modulation", AAAI 2018
-- **CoordConv**: Liu et al., "An Intriguing Failing of Convolutional Neural Networks", NeurIPS 2018
-- **GAE**: Schulman et al., "High-Dimensional Continuous Control Using GAE", ICLR 2016
-
-## License
-
-Same as parent project.
+# Placement policy and training
+
+## Fixed SMDP contract
+
+One inference occurs at each pill spawn. The action is an exact reachable final
+pose; the transition lasts `tau` frames and returns the resolved next decision
+state. PPO uses `gamma ** tau` in deltas, GAE, and returns.
+
+The timing-action gate may add a small hierarchical execution/timing choice. It
+will not replace the planner with frame-level policy exploration.
+
+## Candidate policy
+
+The production path scores packed feasible candidates. Candidate order is
+stable and deterministic; cost-to-lock is an explicit feature. G5 adds:
+
+- shared own/opponent bottle encoder;
+- pill/context-conditioned residual processing;
+- cross-bottle column interaction;
+- candidate-set attention;
+- distributional value.
+
+Exact effect tokens are available for the matched representation bakeoff. They
+summarize deterministic resolved candidate changes and tactical consequences.
+
+## Candidate completeness
+
+The 128-slot implementation cap is an optimization, not a semantic limit.
+Training and evaluation must log the actual legal count and fail/expand when it
+exceeds the configured width. Silently keeping the cheapest candidates is not
+acceptable for promoted artifacts.
+
+## Teacher hierarchy
+
+- V3 exact-afterstate teacher: human style, timing, immediate tactics, initial
+  quality prior.
+- Frozen G4: long-horizon bootstrap and robustness baseline.
+- Full-pair counterfactual teacher: W/D/L and win-logit regret for every action.
+- Joint-event search: improved policy/value targets after its gate opens.
+
+Human requested rating never enters rating-independent quality or tactical
+heads.
+
+## Training sequence
+
+1. offline V3/G4 structural initialization;
+2. matched G5 representation bakeoff;
+3. outcome PPO against the population mixture;
+4. counterfactual/search distillation on disagreement and high-opportunity
+   states;
+5. exploiter hardening;
+6. constrained-policy fine-tuning for named execution profiles.
+
+Search remains an auxiliary target until same-weight evaluation validates it.
+
+## Objective
+
+Final competitive value is W/D/L. Clear, topout, virus, attack, and timing are
+auxiliary heads/curriculum signals. Shaping is annealed or potential-based and
+cannot compensate for a loss.
+
+## Metrics
+
+Report:
+
+- decisions/s and candidates/s;
+- candidate count and dropped count;
+- policy KL/entropy/clip fraction;
+- W/D/L calibration and Brier score;
+- clean-start arena payoff matrix;
+- effect-token and event-state ablations;
+- teacher disagreement;
+- strength gained per millisecond.

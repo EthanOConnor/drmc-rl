@@ -1,59 +1,44 @@
-# League Roles for VS Self-Play
+# Population and PSRO roles
 
-League training extends the frozen-opponent pool with explicit roles:
-exploiter agents vs the champion, not just PFSP over the run's own history.
-Config-gated under `env.opponent_pool.league`; default off — the stock PFSP
-pool (`drmc_rl/training/envs/vs_opponents.py`) is unchanged.
+PFSP over frozen self-history remains useful but is not the final population
+algorithm. The program trains explicit approximate best responses to a
+regularized empirical meta-strategy.
 
-## Config
+## Roles
 
-```yaml
-env:
-  opponent_pool:
-    enabled: true
-    league:
-      mode: exploiter          # pfsp (default) | exploiter | mixed
-      main_agents:             # fixed target checkpoints
-        - runs/best_agents/vs_champion_smdp_ppo_step530046434.pt.gz
-      exploiter_fraction: 0.3  # mixed only
-```
+- **Main:** maximizes value against the active population mixture.
+- **Main exploiter:** searches for weaknesses in the current main.
+- **League exploiter:** best-responds to the historical/meta mixture.
+- **Human/execution exploiter:** targets human styles, cadence profiles, and
+  mechanically constrained agents absent from ordinary self-play.
 
-## Modes
+Each role has its own immutable lineage. Exploiters do not silently replace the
+main objective or poison the main's opponent pool with collapsed snapshots.
 
-- `pfsp` — today's behavior: PFSP over frozen snapshots of the learner's own
-  history (EMA snapshot every `snapshot_every_matches`).
-- `exploiter` — the learner trains exclusively against `main_agents` and never
-  snapshots itself into the pool. With multiple targets, PFSP weighting
-  (`(p(1-p))² + 0.05` over per-target win rates) hammers the targets the
-  learner is closest to cracking. Trains an exploiter that finds a fixed
-  champion's weaknesses.
-- `mixed` — league depth for a main-agent run: `exploiter_fraction` of pair
-  assignments sample from `main_agents`, the rest from the normal PFSP
-  self-history pool (snapshots continue as usual).
+## Mixture
 
-## Mechanics
+`drmc_rl.arena.meta_strategy` solves the finite payoff game by averaged
+entropy-regularized multiplicative weights. It reports:
 
-- Targets are copied into the pool dir, flagged `league_target` in
-  `manifest.json`, and protected from eviction. Per-target win/game counts
-  live in the manifest, so they persist across restarts; re-seeding on
-  restart is idempotent (matched by checkpoint filename).
-- Mixed-arch targets (8-channel vs2, 12-channel, 16-channel vs3) work
-  unchanged: each entry rebuilds its net from the checkpoint's embedded cfg
-  with its own `aux_spec`/`candidate_max` (`OpponentPool.ensure_loaded`).
+- row, column, and symmetric population mixtures;
+- game value;
+- row and column best responses;
+- unregularized saddle gap;
+- per-opponent regression values.
 
-## Metrics
+The arena adapter should antisymmetrize side-balanced pairwise estimates,
+maintain a small exploration floor, and persist the exact payoff version and
+solver parameters used for a training campaign.
 
-League modes add to `get_vs_metrics()` (dashboard: `tools/vs_dashboard.py`
-shows a "league wr (targets)" row; existing keys unchanged):
+## Promotion
 
-- `vs/league_targets` — number of fixed targets in the pool.
-- `vs/league_win_rate` — cumulative learner win rate pooled over all targets.
-- `vs/league_win_rate_min` / `vs/league_win_rate_max` — per-target extremes.
-- `vs/league_wr_<target_id>` — per-target win rate.
+A candidate is promoted only when it improves mixture value and stays above
+predeclared floors against all permanent anchors and active exploiters. Latest-
+self win rate or scalar Elo alone is insufficient.
 
-## Tests
+## Existing opponent pool
 
-`tests/test_vs_league.py`: config validation, exploiter never samples self
-snapshots, mixed fraction statistics, PFSP weighting over targets, manifest
-round-trip, and an exploiter smoke vs the real champion checkpoint on the
-native vspool.
+The current frozen-policy/human-afterstate opponent pool remains the execution
+mechanism while the arena-to-mixture adapter is completed. New code should add
+explicit mixture weights and roles rather than another independent sampling
+heuristic.

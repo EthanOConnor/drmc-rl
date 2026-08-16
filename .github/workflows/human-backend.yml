@@ -4,6 +4,15 @@ on:
   push:
     tags: ['human-backend-v*']
   workflow_dispatch:
+    inputs:
+      model_release:
+        description: Release tag containing the calibrated V3 human policy
+        required: true
+        default: human-policy-v3
+      model_asset:
+        description: Checkpoint asset name in the model release
+        required: true
+        default: human_afterstate_v3.pt.gz
 
 permissions:
   contents: write
@@ -36,13 +45,32 @@ jobs:
         if: runner.os != 'Linux'
         run: uv sync --group package --extra rl
 
-      - name: Fetch published human policy
+      - name: Resolve model identity
+        id: model
+        shell: bash
+        env:
+          INPUT_RELEASE: ${{ inputs.model_release }}
+          INPUT_ASSET: ${{ inputs.model_asset }}
+          DEFAULT_RELEASE: ${{ vars.DRMC_HUMAN_POLICY_RELEASE }}
+          DEFAULT_ASSET: ${{ vars.DRMC_HUMAN_POLICY_ASSET }}
+        run: |
+          release="${INPUT_RELEASE:-${DEFAULT_RELEASE:-human-policy-v3}}"
+          asset="${INPUT_ASSET:-${DEFAULT_ASSET:-human_afterstate_v3.pt.gz}}"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch published calibrated policy
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download human-policy-v2 --pattern human_policy_v2.pt.gz --dir model
+        run: >-
+          gh release download '${{ steps.model.outputs.release }}'
+          --pattern '${{ steps.model.outputs.asset }}' --dir model
 
       - name: Build standalone backend
-        run: uv run --no-sync python -m tools.package_human_backend --checkpoint model/human_policy_v2.pt.gz
+        shell: bash
+        run: >-
+          uv run --no-sync python -m tools.package_human_backend
+          --checkpoint 'model/${{ steps.model.outputs.asset }}'
 
       - name: Archive backend
         if: runner.os != 'Windows'

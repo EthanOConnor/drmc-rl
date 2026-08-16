@@ -1,0 +1,338 @@
+version: 1
+name: Unified Dr. Mario player program
+authority:
+  agent_guidance: AGENTS.md
+  design: docs/DESIGN.md
+  roadmap: docs/ROADMAP.md
+  operations: docs/OPERATIONS.md
+  evaluation: docs/EVALUATION.md
+principles:
+  - One rating-independent competitive core serves all three products.
+  - Public actor state and privileged teacher state are separate contracts.
+  - The placement SMDP remains primary until the timing-action gate proves timing material.
+  - Search models the asynchronous full pair game and teaches the policy before it controls rollouts.
+  - Match outcome is authoritative; tactical quantities are auxiliary, curricular, or lexicographic.
+  - Human strength is calibrated competitive regret, not temperature, beam width, or random play.
+  - Human-rate claims are tied to published execution profiles and hard script validation.
+  - Every promoted artifact carries immutable provenance and gate evidence.
+
+gates:
+  timing-action-gate:
+    status: active
+    description: Determine whether any valid delayed lock changes transition state or competitive value enough to require timing as an explicit sub-action.
+    evidence_path: runs/program/gates/timing-action-gate.json
+    criteria:
+      - Stratified full-pair probes compare earliest and delayed valid locks under strict causal advancement.
+      - Transition-state divergence, value delta, and uncertainty are reported separately.
+      - A documented threshold selects placement-only or hierarchical placement-plus-timing.
+  pair-state-v2:
+    status: active
+    description: Freeze public actor, privileged teacher, and recurrent public-belief contracts with a hidden-information audit.
+    evidence_path: runs/program/gates/pair-state-v2.json
+    criteria:
+      - PublicPairState contains only visible or deterministically inferable information.
+      - PrivilegedPairState excludes future RNG and is accepted only by critic/search/teacher APIs.
+      - Golden serialization and no-leak tests pass.
+  v3-counterfactual-quality:
+    status: staged
+    description: Replace human-choice-defined competitive rankings with full-pair counterfactual W/D/L labels for every candidate.
+    evidence_path: runs/program/gates/v3-counterfactual-quality.json
+    depends_on: [pair-state-v2]
+    criteria:
+      - Held-out candidate W/D/L calibration improves over the observed-action bootstrap.
+      - Human-choice supervision affects only human/style heads in the mature checkpoint.
+      - Candidate regret is reported in calibrated win-logit units.
+  g5-bakeoff:
+    status: staged
+    description: Compare root-only, V3-distilled, exact-effect-token, and recurrent/event-state G5 variants under matched compute and opponents.
+    evidence_path: runs/program/gates/g5-bakeoff.json
+    depends_on: [pair-state-v2]
+    criteria:
+      - Common parent, seeds, arena mixture, and compute budget are recorded.
+      - Candidate truncation is zero in training and evaluation.
+      - Promotion uses paired full-game evidence, not training return.
+  joint-event-search:
+    status: staged
+    description: Validate strict asynchronous pair-event search as an offline policy-improvement teacher.
+    evidence_path: runs/program/gates/joint-event-search.json
+    depends_on: [pair-state-v2, timing-action-gate]
+    criteria:
+      - Search advances single-side, simultaneous, deterministic, and chance events causally.
+      - Same-weight paired evaluation beats the unsearched policy with confidence.
+      - Public-information search does not consume privileged-only fields at deployment.
+  psro-population:
+    status: staged
+    description: Promote through a regularized meta-strategy and explicit best-response roles rather than latest-self Elo alone.
+    evidence_path: runs/program/gates/psro-population.json
+    depends_on: [g5-bakeoff]
+    criteria:
+      - Arena payoff graph remains connected and the reported meta-strategy is reproducible.
+      - Main, main-exploiter, league-exploiter, and human/execution-exploiter roles are active.
+      - Promotion improves mixture value without a catastrophic active-opponent regression.
+  human-execution-profile:
+    status: blocked
+    description: Publish corpus-derived elite operation envelopes and constrained reachability.
+    evidence_path: runs/program/gates/human-execution-profile.json
+    depends_on: [timing-action-gate]
+    criteria:
+      - Profiles include reaction, edge interval, burst, overlap, correction, and soft-drop distributions.
+      - Every emitted script is replay-valid and satisfies all hard limits.
+      - Human-rate evaluation reports profile identity and zero violations.
+  trainer-calibration:
+    status: blocked
+    description: Validate monotone rating, independent style, realistic cadence/form, and pedagogical utility.
+    evidence_path: runs/program/gates/trainer-calibration.json
+    depends_on: [v3-counterfactual-quality, human-execution-profile]
+    criteria:
+      - Requested rating and achieved arena strength are monotone across states and styles.
+      - Matched-rating outcomes are approximately even on held-out humans.
+      - Style remains identifiable after controlling for strength.
+      - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
+
+recipes:
+  g4-strong-league:
+    status: active
+    stage: 1
+    purpose: Continue the current robust G4 lineage while successor architecture and teachers mature.
+    config: drmc_rl/training/configs/vs_strong_league_hardening_tf3090.yaml
+    requires_paths:
+      - drmc_rl/training/configs/vs_strong_league_hardening_tf3090.yaml
+      - vendor/drmario_native
+    command:
+      - python
+      - -m
+      - drmc_rl.training.run
+      - --cfg
+      - '{repo}/drmc_rl/training/configs/vs_strong_league_hardening_tf3090.yaml'
+      - --ui
+      - headless
+    produces:
+      - G4 strong-league checkpoints and immutable arena landmarks
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - This is a teacher and robustness baseline, not the terminal architecture.
+  timing-action-gate:
+    status: active
+    stage: 1
+    purpose: Run strict earliest-lock versus delayed-lock probes over a prepared JSONL state bank.
+    requires_paths:
+      - tools/earliest_lock_dominance.py
+      - drmc_rl/experiments/earliest_lock.py
+      - drmc_rl/envs/backends/vs_forced.py
+      - '{timing_probes}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.earliest_lock_dominance
+      - --input
+      - '{timing_probes}'
+      - --output
+      - '{timing_report}'
+    produces:
+      - Strict transition-sensitivity report and per-probe outcomes
+    resources:
+      accelerator: cpu
+  human-afterstate-bootstrap:
+    status: active
+    stage: 2
+    purpose: Train the exact-afterstate human/style/timing teacher with embedded regret calibration from immutable corpus releases.
+    requires_paths:
+      - tools/train_afterstate_policy.py
+      - '{human_dataset}'
+      - '{afterstates}'
+    command:
+      - python
+      - -m
+      - tools.train_afterstate_policy
+      - --dataset
+      - '{human_dataset}'
+      - --afterstates
+      - '{afterstates}'
+      - --output
+      - '{v3_output}'
+      - --device
+      - cuda
+    produces:
+      - V3 exact-afterstate human/style/timing checkpoint
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  g5-v3-bootstrap:
+    status: staged
+    stage: 3
+    purpose: Distill exact candidate quality and long-horizon structure into the rollout-fast G5 policy before outcome PPO.
+    config: drmc_rl/training/configs/vs_g5_maximal_tf3090.yaml
+    requires_paths:
+      - drmc_rl/training/configs/vs_g5_maximal_tf3090.yaml
+      - tools/distill_v5_from_afterstate.py
+      - '{v3_checkpoint}'
+      - '{human_dataset}'
+      - '{afterstates}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.distill_v5_from_afterstate
+      - --teacher
+      - '{v3_checkpoint}'
+      - --dataset
+      - '{human_dataset}'
+      - --afterstates
+      - '{afterstates}'
+      - --student-config
+      - '{repo}/drmc_rl/training/configs/vs_g5_maximal_tf3090.yaml'
+      - --output
+      - '{g5_bootstrap}'
+      - --device
+      - cuda
+    produces:
+      - G5/V5 offline bootstrap checkpoint
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  counterfactual-labels:
+    status: staged
+    stage: 4
+    purpose: Label every legal candidate from full pair states with W/D/L, uncertainty, and calibrated regret.
+    requires_paths:
+      - drmc_rl/teachers/counterfactual.py
+      - drmc_rl/search/joint_event.py
+      - '{pair_state_bank}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.counterfactual_teacher
+      - --input
+      - '{pair_state_bank}'
+      - --output
+      - '{counterfactual_release}'
+      - --adapter
+      - '{counterfactual_adapter}'
+    produces:
+      - Versioned counterfactual candidate-target release
+    resources:
+      accelerator: cuda
+  joint-search-teacher:
+    status: staged
+    stage: 6
+    purpose: Generate policy-improvement targets with strict full-pair event search; search remains a teacher until its gate passes.
+    requires_paths:
+      - drmc_rl/search/joint_event.py
+      - '{competitive_checkpoint}'
+      - '{pair_state_bank}'
+    requires_gates: [pair-state-v2, timing-action-gate]
+    command:
+      - python
+      - -m
+      - tools.joint_search_teacher
+      - --checkpoint
+      - '{competitive_checkpoint}'
+      - --states
+      - '{pair_state_bank}'
+      - --output
+      - '{search_targets}'
+      - --adapter
+      - '{joint_search_adapter}'
+    produces:
+      - Search-improved policy and value targets
+    resources:
+      accelerator: cuda
+  psro-mixture:
+    status: staged
+    stage: 7
+    purpose: Compute a regularized population mixture and exploitability report from the arena payoff matrix.
+    requires_paths:
+      - drmc_rl/arena/meta_strategy.py
+      - '{payoff_matrix}'
+    requires_gates: [g5-bakeoff]
+    command:
+      - python
+      - -m
+      - tools.meta_strategy
+      - --payoff
+      - '{payoff_matrix}'
+      - --output
+      - '{meta_strategy}'
+    produces:
+      - Population mixture, best-response gaps, and exploitability evidence
+    resources:
+      accelerator: cpu
+
+  human-execution-profile:
+    status: staged
+    stage: 8
+    purpose: Fit a signed named human operation envelope from replay-verified controller scripts.
+    requires_paths:
+      - tools/execution_profile.py
+      - '{execution_scripts}'
+    requires_gates: [timing-action-gate]
+    command:
+      - python
+      - -m
+      - tools.execution_profile
+      - fit
+      - --input
+      - '{execution_scripts}'
+      - --output
+      - '{execution_profile}'
+      - --id
+      - '{execution_profile_id}'
+      - --description
+      - '{execution_profile_description}'
+    produces:
+      - Corpus-derived execution profile with hard burst and edge limits
+    resources:
+      accelerator: cpu
+  trainer-style-space:
+    status: staged
+    stage: 8
+    purpose: Fit a rating-residualized player style latent from held-out human decision features.
+    requires_paths:
+      - tools/style_space.py
+      - '{style_dataset}'
+    requires_gates: [v3-counterfactual-quality]
+    command:
+      - python
+      - -m
+      - tools.style_space
+      - --input
+      - '{style_dataset}'
+      - --output
+      - '{style_space}'
+    produces:
+      - Rating-residualized style-space artifact
+    resources:
+      accelerator: cpu
+
+products:
+  unrestricted-superhuman:
+    description: Strongest public-information policy with unrestricted exact execution and validated joint search.
+    competitive_core: unified-g5
+    decoder: quality-argmax
+    execution_profile: unrestricted
+    requires_gates: [g5-bakeoff, joint-event-search, psro-population]
+    release_criteria:
+      - Lower 95 percent credible match-win bound exceeds 50 percent against a predeclared top-human cohort.
+      - Side alternation, broad seeds, clean starts, no hidden information, and active exploiters are included.
+  human-rate-superhuman:
+    description: The same competitive core optimized inside a published elite human operation envelope without intentional mistakes.
+    competitive_core: unified-g5
+    decoder: constrained-quality-argmax
+    execution_profile: elite-p99
+    requires_gates: [joint-event-search, psro-population, human-execution-profile]
+    release_criteria:
+      - Zero profile violations and replay-divergent scripts.
+      - Superhuman result is demonstrated under the named execution profile.
+  human-trainer:
+    description: The common quality oracle decoded through calibrated regret, explicit style, cadence, form, and plausible motor execution.
+    competitive_core: unified-g5
+    decoder: regret-style-cadence
+    execution_profile: rating-conditioned-human
+    requires_gates: [trainer-calibration, psro-population]
+    release_criteria:
+      - Strength is monotone and style is independently controllable.
+      - Held-out humans judge behavior plausible and targeted practice improves a held-out measure.
