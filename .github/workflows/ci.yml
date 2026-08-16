@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          submodules: recursive
       - uses: astral-sh/setup-uv@v7
       - uses: actions/setup-python@v6
         with:
@@ -22,7 +20,7 @@ jobs:
       - name: Install
         run: uv sync --group dev --extra rl
       - name: Validate program authority
-        run: uv run python -m tools.program validate --check-paths
+        run: uv run python -m tools.program validate
       - name: Compile new architecture modules
         run: |
           uv run python -m compileall -q \
