@@ -74,10 +74,7 @@ class TileBottleEncoder(nn.Module):
         embedded = self.tiles(flat.long().clamp(0, 255)).permute(0, 3, 1, 2)
         n = int(embedded.shape[0])
         coords = torch.cat((self.rows, self.cols), dim=1).expand(n, -1, -1, -1)
-        inputs = torch.cat((embedded, coords.to(embedded.dtype)), dim=1)
-        if self.stem.weight.is_contiguous(memory_format=torch.channels_last):
-            inputs = inputs.contiguous(memory_format=torch.channels_last)
-        x = self.blocks(self.stem(inputs))
+        x = self.blocks(self.stem(torch.cat((embedded, coords.to(embedded.dtype)), dim=1)))
         outer = shape[:-1] if shape[-1] == 128 else shape[:-2]
         return x, tuple(outer)
 

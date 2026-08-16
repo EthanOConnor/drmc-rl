@@ -611,8 +611,6 @@ def train(args) -> dict[str, Any]:
     cfg = afterstate_policy_config(capacity=args.capacity)
     model = build_afterstate_policy(cfg, condition_dim=POLICY_CONDITION_DIM, device=args.device)
     timing = build_timing_model(device=args.device)
-    if args.channels_last:
-        model.to(memory_format=torch.channels_last)
     if args.init_checkpoint is not None:
         from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
@@ -792,11 +790,6 @@ def main() -> None:
         "--compile",
         action="store_true",
         help="compile model forwards with dynamic-shape CUDA graphs",
-    )
-    parser.add_argument(
-        "--channels-last",
-        action="store_true",
-        help="use tensor-core-friendly channels-last storage for bottle convolutions",
     )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=512)
