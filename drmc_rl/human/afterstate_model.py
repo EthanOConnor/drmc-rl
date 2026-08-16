@@ -197,8 +197,10 @@ class AfterstatePolicyNet(nn.Module):
         row = torch.div(cell, GRID_W, rounding_mode="floor")
         column = cell.remainder(GRID_W)
 
-        root_map, root_outer = self.bottle.encode_map(root_fields)
-        root_global = self.bottle.pool_map(root_map, root_outer)
+        bottle_map, _ = self.bottle.encode_map(torch.cat((root_fields, opponent_fields), dim=0))
+        root_map, opponent_map = bottle_map.split(batch, dim=0)
+        root_global = self.bottle.pool_map(root_map, (batch,))
+        opponent_global = self.bottle.pool_map(opponent_map, (batch,))
         if afterstate_fields is not None:
             changed = valid.unsqueeze(-1) & (afterstate_fields != root_fields.unsqueeze(1))
             changed_index = changed.nonzero(as_tuple=False)
@@ -255,7 +257,7 @@ class AfterstatePolicyNet(nn.Module):
         delta_context = delta_sum / delta_n.clamp_min(1.0)
         delta_context = delta_context + self.delta_count(torch.log1p(delta_n))
         own = root_global.unsqueeze(1) + delta_context.reshape(batch, candidates, self.d_model)
-        opponent = self.bottle(opponent_fields).unsqueeze(1)
+        opponent = opponent_global.unsqueeze(1)
         pill_context = self._pill_embedding(pill, preview).unsqueeze(1)
         pose = self.orientation(orientation) + self.row(row) + self.column(column)
         cost = self.cost((candidate_costs.to(own.dtype) / 120.0).clamp(0.0, 4.0).unsqueeze(-1))
