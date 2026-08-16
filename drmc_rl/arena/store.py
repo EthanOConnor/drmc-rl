@@ -871,6 +871,7 @@ class ArenaStore:
         method: str,
         config: dict[str, Any],
         replace_fit_id: int | None = None,
+        refresh_information: bool = True,
     ) -> dict[str, Any]:
         created = utc_now()
         values = (
@@ -905,12 +906,14 @@ class ArenaStore:
         # These posterior reductions dominate sequential update time. Build
         # them before opening the atomic publish transaction so arena workers
         # can continue committing completed leases while ratings are reduced.
-        information = matchup_information_matrix(fit.samples)
-        information_rows = [
-            (agents[i].id, agents[j].id, float(information[i, j]))
-            for i in range(len(agents))
-            for j in range(i + 1, len(agents))
-        ]
+        information_rows = None
+        if refresh_information:
+            information = matchup_information_matrix(fit.samples)
+            information_rows = [
+                (agents[i].id, agents[j].id, float(information[i, j]))
+                for i in range(len(agents))
+                for j in range(i + 1, len(agents))
+            ]
         superiority = superiority_matrix(fit.samples)
         superiority_rows = [
             (agent.id, opponent.id, float(superiority[i, j]))
@@ -943,9 +946,10 @@ class ArenaStore:
                 )
                 self.conn.execute("DELETE FROM rating_estimates WHERE fit_id=?", (fit_id,))
                 self.conn.execute("DELETE FROM rating_superiority WHERE fit_id=?", (fit_id,))
-                self.conn.execute(
-                    "DELETE FROM rating_matchup_information WHERE fit_id=?", (fit_id,)
-                )
+                if refresh_information:
+                    self.conn.execute(
+                        "DELETE FROM rating_matchup_information WHERE fit_id=?", (fit_id,)
+                    )
             self.conn.executemany(
                 """INSERT INTO rating_estimates
                    (fit_id,agent_id,mean,sd,low,high,probability_best,
@@ -953,11 +957,12 @@ class ArenaStore:
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(fit_id, *row) for row in estimate_rows],
             )
-            self.conn.executemany(
-                """INSERT INTO rating_matchup_information
-                   (fit_id,agent_a,agent_b,information_gain) VALUES(?,?,?,?)""",
-                [(fit_id, *row) for row in information_rows],
-            )
+            if information_rows is not None:
+                self.conn.executemany(
+                    """INSERT INTO rating_matchup_information
+                       (fit_id,agent_a,agent_b,information_gain) VALUES(?,?,?,?)""",
+                    [(fit_id, *row) for row in information_rows],
+                )
             self.conn.executemany(
                 """INSERT INTO rating_superiority
                    (fit_id,agent_id,opponent_id,probability) VALUES(?,?,?,?)""",
@@ -1007,6 +1012,7 @@ class ArenaStore:
         *,
         min_new_matches: int = 16,
         laplace_samples: int = 4_096,
+        information_refresh_matches: int = 1_024,
     ) -> dict[str, Any] | None:
         """Rebuild and publish the lightweight live posterior.
 
@@ -1026,6 +1032,8 @@ class ArenaStore:
         )
         if not roster_changed and pending < min_new_matches:
             return None
+        if information_refresh_matches <= 0:
+            raise ValueError("information refresh interval must be positive")
 
         idx = {agent.id: i for i, agent in enumerate(agents)}
         last_match_id = int(
@@ -1039,6 +1047,10 @@ class ArenaStore:
             config=config,
             samples=laplace_samples,
         )
+        refresh_information = roster_changed or (
+            current_matches // information_refresh_matches
+            != int(latest["match_count"]) // information_refresh_matches
+        )
         return self._publish_rating_fit(
             fit,
             agents,
@@ -1048,6 +1060,7 @@ class ArenaStore:
             method="laplace",
             config={**asdict(config), "laplace_samples": laplace_samples},
             replace_fit_id=(None if roster_changed else int(latest["id"])),
+            refresh_information=refresh_information,
         )
 
     def _latest_ratings(self) -> tuple[dict[str, sqlite3.Row], dict[str, Any]]:

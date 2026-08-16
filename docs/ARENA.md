@@ -4,8 +4,10 @@
 
 Match production never waits for rating inference. The live table rebuilds the
 hierarchical Davidson W/D/L posterior with a fast Laplace approximation after
-128 new games. Full multi-chain HMC is an explicit offline calibration, not a
-lease gate. The live backlog remains visible as `scheduler.rating_pending_games`.
+128 new games. Rating/LOS/rank summaries update on that cadence; the more
+expensive scheduler information matrix refreshes every 1,024 games. Full
+multi-chain HMC is an explicit offline calibration, not a lease gate. The live
+backlog remains visible as `scheduler.rating_pending_games`.
 
 The browser also never computes a dashboard view in an HTTP request thread.
 One background producer materializes an immutable snapshot every five seconds;

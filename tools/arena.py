@@ -970,6 +970,7 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
                         config,
                         min_new_matches=args.rating_refresh_games,
                         laplace_samples=args.rating_laplace_samples,
+                        information_refresh_matches=args.rating_information_games,
                     )
                 )
                 if result is not None:
@@ -1371,6 +1372,7 @@ def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rating-seed", type=int, default=0xD0C70A11)
     parser.add_argument("--rating-refresh-games", type=int, default=128)
     parser.add_argument("--rating-laplace-samples", type=int, default=4_096)
+    parser.add_argument("--rating-information-games", type=int, default=1_024)
     parser.add_argument("--rating-poll", type=float, default=5.0)
 
 

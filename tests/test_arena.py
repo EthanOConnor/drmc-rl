@@ -537,6 +537,51 @@ def test_compact_rating_counts_match_full_match_scan(tmp_path: Path) -> None:
     assert store._aggregated_rating_pairs(idx) == store._rating_pairs(rows, idx)
 
 
+def test_live_table_reuses_scheduler_information_between_cadences(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drmc_rl.arena.store as store_module
+
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    for seed in range(12):
+        store.record(
+            "alpha",
+            "beta",
+            seed=seed,
+            side=seed % 2,
+            winner="a" if seed < 8 else "b",
+            match_len_sec=1,
+            decisions=1,
+        )
+    store.refit_ratings(FAST_RATING)
+    information_before = store.matchup_information()
+    store.record(
+        "alpha",
+        "beta",
+        seed=99,
+        side=1,
+        winner="a",
+        match_len_sec=1,
+        decisions=1,
+    )
+
+    def unexpected_information(_samples: object) -> object:
+        raise AssertionError("scheduler information refreshed before its cadence")
+
+    monkeypatch.setattr(store_module, "matchup_information_matrix", unexpected_information)
+    result = store.update_ratings(
+        FAST_RATING,
+        min_new_matches=1,
+        laplace_samples=512,
+        information_refresh_matches=1_024,
+    )
+    assert result is not None
+    assert store.matchup_information() == information_before
+
+
 def test_rating_matrices_are_built_before_publish_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
