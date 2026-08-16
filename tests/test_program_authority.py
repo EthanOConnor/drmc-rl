@@ -43,3 +43,14 @@ def test_gate_cycle_is_rejected(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump(payload))
     with pytest.raises(ValueError, match="cycle"):
         ProgramSpec.load(path)
+
+
+def test_launch_options_work_after_recipe_name() -> None:
+    from tools.program import build_parser
+
+    args = build_parser().parse_args(
+        ["launch", "human-afterstate-bootstrap", "--dry-run", "--set", "dataset=/data"]
+    )
+    assert args.recipe == "human-afterstate-bootstrap"
+    assert args.dry_run
+    assert args.set == ["dataset=/data"]

@@ -241,7 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--allow-staged", action="store_true")
     launch.add_argument("--ignore-gates", action="store_true")
     launch.add_argument("--dry-run", action="store_true")
-    launch.add_argument("extra", nargs=argparse.REMAINDER)
+    launch.add_argument(
+        "extra",
+        nargs="*",
+        help="child-command arguments; prefix option-like arguments with --",
+    )
     launch.set_defaults(func=cmd_launch)
 
     gate = sub.add_parser("gate", help="record or check gate evidence")
