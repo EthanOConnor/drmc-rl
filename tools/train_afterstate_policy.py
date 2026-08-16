@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -95,6 +96,55 @@ def _load_shard(source: Path, afterstates: Path) -> Shard:
             for key, value in arrays.items()
         }
     return Shard(arrays, delta_offsets, delta_cells, delta_values, targets)
+
+
+def _copy_if_needed(source: Path, target: Path) -> Path:
+    if target.is_file() and target.stat().st_size == source.stat().st_size:
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    shutil.copy2(source, temporary)
+    if temporary.stat().st_size != source.stat().st_size:
+        temporary.unlink(missing_ok=True)
+        raise OSError(f"incomplete shard cache copy: {source}")
+    temporary.replace(target)
+    return target
+
+
+def _cache_source_shards(paths: list[Path], cache_dir: Path | None) -> list[Path]:
+    if cache_dir is None:
+        return paths
+    dataset_cache = cache_dir / "dataset"
+    return [_copy_if_needed(path, dataset_cache / path.name) for path in paths]
+
+
+def _cache_afterstate_shard(
+    source: Path,
+    afterstates: Path,
+    cache_dir: Path | None,
+) -> Path:
+    if cache_dir is None:
+        return afterstates
+    afterstate_cache = cache_dir / "afterstates"
+    shard_cache = afterstate_cache / source.stem
+    expected = tuple(
+        afterstates / f"{source.stem}{suffix}"
+        for suffix in (
+            ".delta_offsets.npy",
+            ".delta_cells.bin",
+            ".delta_values.bin",
+            ".targets.npz",
+        )
+    )
+    if not all(path.is_file() for path in expected):
+        raise FileNotFoundError(f"incomplete afterstate shard: {source.stem}")
+    for existing in afterstate_cache.iterdir() if afterstate_cache.is_dir() else ():
+        if existing != shard_cache:
+            shutil.rmtree(existing) if existing.is_dir() else existing.unlink()
+    shard_cache.mkdir(parents=True, exist_ok=True)
+    for path in expected:
+        _copy_if_needed(path, shard_cache / path.name)
+    return shard_cache
 
 
 def _canonical_colors(raw: np.ndarray) -> np.ndarray:
@@ -383,6 +433,7 @@ def _evaluate(
     paths: list[Path],
     *,
     afterstates: Path,
+    shard_cache_dir: Path | None,
     condition: HumanSkillCondition,
     device: str,
     batch_size: int,
@@ -403,7 +454,10 @@ def _evaluate(
         for path in paths:
             if total_rows >= max_rows:
                 break
-            shard = _load_shard(path, afterstates)
+            shard = _load_shard(
+                path,
+                _cache_afterstate_shard(path, afterstates, shard_cache_dir),
+            )
             arrays = shard.arrays
             validation = (
                 (arrays["split"] != 0) | (arrays["player_fold"] == 0) | (arrays["time_split"] != 0)
@@ -517,6 +571,7 @@ def train(args) -> dict[str, Any]:
     torch.manual_seed(int(args.seed))
     rng = np.random.default_rng(int(args.seed))
     paths = _source_paths(args.dataset, args.afterstates, args.max_shards)
+    paths = _cache_source_shards(paths, args.shard_cache_dir)
     statistics = _fit_training_statistics(paths)
     condition = statistics.condition
     cfg = afterstate_policy_config(capacity=args.capacity)
@@ -563,7 +618,10 @@ def train(args) -> dict[str, Any]:
         order = rng.permutation(len(paths))
         for shard_number in order:
             path = paths[int(shard_number)]
-            shard = _load_shard(path, args.afterstates)
+            shard = _load_shard(
+                path,
+                _cache_afterstate_shard(path, args.afterstates, args.shard_cache_dir),
+            )
             train_rows = np.flatnonzero(
                 (shard.arrays["split"] == 0)
                 & (shard.arrays["player_fold"] != 0)
@@ -611,6 +669,7 @@ def train(args) -> dict[str, Any]:
             timing,
             paths,
             afterstates=args.afterstates,
+            shard_cache_dir=args.shard_cache_dir,
             condition=condition,
             device=args.device,
             batch_size=int(args.batch_size),
@@ -688,6 +747,11 @@ def main() -> None:
     parser.add_argument("--calibration-rows", type=int, default=100_000)
     parser.add_argument("--max-shards", type=int)
     parser.add_argument("--max-rows-per-shard", type=int)
+    parser.add_argument(
+        "--shard-cache-dir",
+        type=Path,
+        help="local cache for remote source shards and one rolling afterstate shard",
+    )
     train(parser.parse_args())
 
 

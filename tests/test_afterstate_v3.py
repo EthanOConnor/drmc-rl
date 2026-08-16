@@ -289,3 +289,35 @@ def test_afterstate_precision_requires_native_bf16() -> None:
     assert not _use_bf16(ampere, device="cuda", precision="fp32")
     with pytest.raises(ValueError, match="native bf16"):
         _use_bf16(pascal, device="cuda", precision="bf16")
+
+
+def test_afterstate_shard_cache_keeps_sources_and_rotates_targets(tmp_path) -> None:
+    from tools.train_afterstate_policy import _cache_afterstate_shard, _cache_source_shards
+
+    dataset = tmp_path / "remote-dataset"
+    afterstates = tmp_path / "remote-afterstates"
+    cache = tmp_path / "cache"
+    dataset.mkdir()
+    afterstates.mkdir()
+    sources = []
+    for stem in ("a", "b"):
+        source = dataset / f"{stem}.npz"
+        source.write_bytes(f"source-{stem}".encode())
+        sources.append(source)
+        for suffix in (
+            ".delta_offsets.npy",
+            ".delta_cells.bin",
+            ".delta_values.bin",
+            ".targets.npz",
+        ):
+            (afterstates / f"{stem}{suffix}").write_bytes(f"{stem}{suffix}".encode())
+
+    cached_sources = _cache_source_shards(sources, cache)
+    assert [path.read_bytes() for path in cached_sources] == [b"source-a", b"source-b"]
+    first = _cache_afterstate_shard(cached_sources[0], afterstates, cache)
+    assert first.name == "a"
+    assert (first / "a.targets.npz").is_file()
+    second = _cache_afterstate_shard(cached_sources[1], afterstates, cache)
+    assert second.name == "b"
+    assert not first.exists()
+    assert (second / "b.targets.npz").is_file()
