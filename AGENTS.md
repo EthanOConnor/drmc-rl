@@ -43,15 +43,16 @@ gate that must be completed first.
 
 ## Current work
 
-- Primary live campaign: `g4-strong-league-rewarm`, a bounded exploration
-  rewarm from the permanent Strong League +1.0B checkpoint. The base
-  `g4-strong-league` campaign is complete and remains a frozen teacher lineage.
-- Parallel architecture work: `timing-action-gate`, `pair-state-v2`, and
-  `human-afterstate-bootstrap`.
-- First staged competitive successor: `g5-v3-bootstrap`; it remains staged
-  until its declared artifacts and bakeoff gate exist.
-- Joint-event search, constrained human execution, and final trainer release
-  remain gated by the program registry.
+- G4 Strong League and its bounded +900M-parent rewarm are complete frozen
+  lineages; +900M is the evidenced local maximum and +1.0B is retained.
+- Full-corpus V3 afterstate training is complete. Epoch 5 is the balanced
+  teacher; Epoch 6 is the sharper imitation reference.
+- `pair-state-v2` is open with canonical native full-pair restore parity.
+- Current architecture work is the stratified counterfactual pilot and
+  `timing-action-gate`. Promotion-quality counterfactual labels still require
+  a frozen continuation mixture and explicit reveal-time chance integration.
+- `g5-v3-bootstrap` and joint-event search remain staged by the program
+  registry; constrained human execution and trainer release remain gated.
 
 ## Engineering rules
 

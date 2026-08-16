@@ -15,6 +15,7 @@ from enum import Enum
 from typing import Any, Mapping, Sequence
 
 PAIR_STATE_SCHEMA = "drmc-pair-state-v2"
+PRIVILEGED_PAIR_STATE_SCHEMA = "drmc-privileged-pair-state-v2"
 BOARD_CELLS = 128
 FORBIDDEN_PUBLIC_KEYS = frozenset(
     {
@@ -147,9 +148,10 @@ class PublicPairState:
             raise ValueError("viewer_side must be 0 or 1")
         if len(self.sides) != 2:
             raise ValueError("public pair state requires exactly two sides")
-        if self.observable_clock_delta_frames is not None and not -100000 <= int(
-            self.observable_clock_delta_frames
-        ) <= 100000:
+        if (
+            self.observable_clock_delta_frames is not None
+            and not -100000 <= int(self.observable_clock_delta_frames) <= 100000
+        ):
             raise ValueError("observable clock delta is implausible")
         audit_public_mapping(self.own_controller_state)
         if len(self.recent_events) > 128:
@@ -232,9 +234,11 @@ class PrivilegedPairState:
     committed_actions: tuple[int | None, int | None]
     engine_checkpoint: bytes
     terminal_outcome: tuple[int, int] = (0, 0)
-    schema: str = "drmc-privileged-pair-state-v2"
+    schema: str = PRIVILEGED_PAIR_STATE_SCHEMA
 
     def __post_init__(self) -> None:
+        if self.schema != PRIVILEGED_PAIR_STATE_SCHEMA:
+            raise ValueError(f"unsupported privileged pair-state schema {self.schema!r}")
         if len(self.pair_clocks) != 2 or min(self.pair_clocks) < 0:
             raise ValueError("pair_clocks must be two non-negative values")
         if len(self.need_action) != 2:
@@ -262,6 +266,51 @@ class PrivilegedPairState:
 
     def public_view(self) -> PublicPairState:
         return self.public
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize a training-only state without weakening the public audit."""
+
+        return {
+            "schema": self.schema,
+            "public": self.public.to_dict(),
+            "pair_clocks": list(self.pair_clocks),
+            "need_action": list(self.need_action),
+            "pending_attacks": list(self.pending_attacks),
+            "native_phases": list(self.native_phases),
+            "committed_actions": list(self.committed_actions),
+            "engine_checkpoint_b64": base64.b64encode(self.engine_checkpoint).decode("ascii"),
+            "terminal_outcome": list(self.terminal_outcome),
+        }
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "PrivilegedPairState":
+        def _pair(name: str, cast: Any) -> tuple[Any, Any]:
+            raw = value.get(name)
+            if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+                raise ValueError(f"{name} must be a two-entry sequence")
+            items = tuple(cast(item) for item in raw)
+            if len(items) != 2:
+                raise ValueError(f"{name} must be a two-entry sequence")
+            return items  # type: ignore[return-value]
+
+        checkpoint = base64.b64decode(str(value["engine_checkpoint_b64"]), validate=True)
+        return cls(
+            schema=str(value.get("schema", PRIVILEGED_PAIR_STATE_SCHEMA)),
+            public=PublicPairState.from_dict(dict(value["public"])),
+            pair_clocks=_pair("pair_clocks", int),
+            need_action=_pair("need_action", bool),
+            pending_attacks=_pair("pending_attacks", int),
+            native_phases=_pair("native_phases", str),
+            committed_actions=_pair(
+                "committed_actions", lambda item: None if item is None else int(item)
+            ),
+            engine_checkpoint=checkpoint,
+            terminal_outcome=_pair("terminal_outcome", int),
+        )
+
+    def stable_hash(self) -> str:
+        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _visible_side_to_dict(side: VisibleSideState) -> dict[str, Any]:
@@ -323,6 +372,7 @@ __all__ = [
     "FORBIDDEN_PUBLIC_KEYS",
     "FallingPillView",
     "PAIR_STATE_SCHEMA",
+    "PRIVILEGED_PAIR_STATE_SCHEMA",
     "PairEvent",
     "PairEventKind",
     "PrivilegedPairState",

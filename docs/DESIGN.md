@@ -73,8 +73,12 @@ and strict search:
 - a restorable engine checkpoint;
 - terminal state.
 
-It explicitly excludes future RNG. Deployment code must request a
-`PublicPairState`, not downcast a privileged object implicitly.
+Future RNG is never exposed as a structured field or model feature. Exact
+native restore bytes are an opaque teacher capability and may contain private
+engine continuation state; policies, public-state hashes, and leaf evaluators
+must not inspect or condition on that encoding. Reveal-time chance integration
+belongs in the search adapter. Deployment code must request a `PublicPairState`,
+not downcast a privileged object implicitly.
 
 ### Public belief/history
 

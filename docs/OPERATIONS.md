@@ -183,12 +183,30 @@ Both tools require an explicit `module:function` adapter. The adapter returns a
 `PairSearchModel` (or ensemble) and a state decoder. This prevents accidental
 fallback to the old own-board simulator.
 
+Build a bounded strict-native bank before the first diagnostic pilot:
+
+```bash
+uv run python -m tools.build_pair_state_pilot \
+  --output runs/counterfactual/pair-state-pilot-v1.jsonl.gz \
+  --states 512 --states-per-game 8 --seed 20260816
+```
+
+`drmc_rl.search.native_pair:diagnostic_factory` exists only to validate exact
+restore, causal branching, full candidate coverage, and release mechanics. Its
+public-state heuristic is not a calibrated continuation mixture and its output
+must not open `v3-counterfactual-quality`.
+
 ```bash
 uv run python -m tools.counterfactual_teacher \
   --input pair-states.jsonl.gz \
-  --output targets.jsonl.gz \
+  --output runs/counterfactual/pilot-v1 \
   --adapter drmc_project.native_adapter:factory \
-  --root-side 0 --depth-events 6 --own-beam 512
+  --root-side 0 --depth-events 6 --own-beam 512 \
+  --stratum candidate_count_bin --stratum tactical_stratum \
+  --per-stratum 32 --max-states 1024 --chunk-size 64 --resume \
+  --corpus-release pair-state-bank-v1-sha256:... \
+  --continuation-mixture strong-league-frozen-mixture-v1 \
+  --native-revision <native-commit> --planner-revision <planner-commit>
 
 uv run python -m tools.joint_search_teacher \
   --states pair-states.jsonl.gz \
@@ -199,6 +217,12 @@ uv run python -m tools.joint_search_teacher \
 
 Full-candidate counterfactual releases must use `own_beam >= legal candidate
 count`; omitted candidates raise an error.
+
+The counterfactual writer produces deterministic, content-addressed gzip
+chunks plus verified completion records and an aggregate manifest. Resume only
+accepts chunks whose settings and content hashes match. Production releases
+reject search-budget exhaustion; `--allow-budget-exhausted` is diagnostic-only.
+Single-teacher pilots report uncertainty as unavailable rather than zero.
 
 ## Execution profiles and style
 

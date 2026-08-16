@@ -63,3 +63,13 @@ def test_counterfactual_teacher_labels_all_actions() -> None:
     assert len(label.candidates) == 2
     assert min(candidate.regret_win_logit for candidate in label.candidates) == 0
     assert label.best_action == 1
+    assert label.uncertainty_available is False
+    assert label.budget_exhausted is False
+    assert all(candidate.uncertainty is None for candidate in label.candidates)
+
+
+def test_counterfactual_teacher_surfaces_search_budget_exhaustion() -> None:
+    teacher = CounterfactualTeacher(
+        Model(), config=SearchConfig(depth_events=3, own_beam=2, max_nodes=1)
+    )
+    assert teacher.label(State("both"), root_side=0).budget_exhausted is True

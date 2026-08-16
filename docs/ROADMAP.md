@@ -245,11 +245,14 @@ Open work:
    permanent +1.0B parent, the strongest rewarm checkpoint, or both for a
    separately authorized outcome-only consolidation comparison.
 2. Build a stratified strict timing-probe bank and complete the timing gate.
-3. Bind native/emulator evidence to PairState v2 and open its gate.
-4. Complete exact afterstate annotation/training and freeze V3 teachers.
+3. PairState v2 is open with golden/no-leak checks and canonical native
+   full-pair snapshot/restore parity.
+4. V3 full-corpus training is complete; Epoch 5 is the frozen balanced teacher
+   and Epoch 6 the sharper imitation reference.
 5. Run the matched G5 bakeoff, including effect tokens and event state.
-6. Add native full-pair checkpoint/restore and bind joint-event search.
-7. Generate counterfactual labels and remove observed-action supervision from
+6. Replace the diagnostic native leaf heuristic with a frozen continuation
+   mixture and explicit reveal-time chance integration.
+7. Scale stratified counterfactual labels and remove observed-action supervision from
    mature competitive quality.
 8. Distill search/counterfactual teachers into G5 and outcome-train the
    population.

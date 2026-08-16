@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Generic, Iterable, Sequence, TypeVar
+from typing import Generic, Iterable, Mapping, Sequence, TypeVar
 
 import numpy as np
 
@@ -37,9 +37,10 @@ class CandidateCounterfactual:
     utility: float
     expected_score: float
     regret_win_logit: float
-    uncertainty: float
+    uncertainty: float | None
     policy_target: float
     rank: int
+    consequences: dict[str, float | int | bool]
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +56,8 @@ class CounterfactualLabel:
     nodes: int
     cache_hits: int
     teacher_count: int
+    uncertainty_available: bool
+    budget_exhausted: bool
     metadata: dict[str, object]
 
     def to_dict(self) -> dict[str, object]:
@@ -91,7 +94,10 @@ class CounterfactualTeacher(Generic[StateT]):
         legal = tuple(int(action) for action in self.models[0].legal_actions(state, root_side))
         if not legal:
             raise ValueError("cannot label a state without legal root actions")
-        results = [JointEventSearch(model, self.config).search(state, root_side=root_side) for model in self.models]
+        results = [
+            JointEventSearch(model, self.config).search(state, root_side=root_side)
+            for model in self.models
+        ]
         for result in results:
             if set(result.actions) != set(legal):
                 missing = sorted(set(legal) - set(result.actions))
@@ -108,12 +114,16 @@ class CounterfactualTeacher(Generic[StateT]):
                 by_action[int(action)].append(value)
                 policies[int(action)].append(float(target))
         mean_values: list[WDL] = []
-        uncertainty: list[float] = []
+        uncertainty: list[float | None] = []
         policy: list[float] = []
         for action in legal:
             values = by_action[action]
             mean_values.append(WDL.mixture(np.ones(len(values)), values))
-            uncertainty.append(float(np.std([value.utility for value in values], ddof=0)))
+            uncertainty.append(
+                float(np.std([value.utility for value in values], ddof=0))
+                if len(values) > 1
+                else None
+            )
             policy.append(float(np.mean(policies[action])))
         regrets = win_logit_regret(mean_values)
         utilities = np.asarray([value.utility for value in mean_values], dtype=np.float64)
@@ -129,9 +139,10 @@ class CounterfactualTeacher(Generic[StateT]):
                 utility=float(value.utility),
                 expected_score=float(value.expected_score),
                 regret_win_logit=float(regret),
-                uncertainty=float(sigma),
+                uncertainty=None if sigma is None else float(sigma),
                 policy_target=float(target),
                 rank=int(rank),
+                consequences=self._consequences(state, root_side, int(action)),
             )
             for action, value, regret, sigma, target, rank in zip(
                 legal,
@@ -146,7 +157,7 @@ class CounterfactualTeacher(Generic[StateT]):
         best_index = int(np.argmax(utilities))
         root = WDL.mixture(np.asarray(policy), mean_values)
         return CounterfactualLabel(
-            schema="drmc-counterfactual-pair-label-v1",
+            schema="drmc-counterfactual-pair-label-v2",
             state_key=str(self.models[0].key(state)),
             root_side=int(root_side),
             best_action=int(legal[best_index]),
@@ -157,8 +168,27 @@ class CounterfactualTeacher(Generic[StateT]):
             nodes=int(sum(result.nodes for result in results)),
             cache_hits=int(sum(result.cache_hits for result in results)),
             teacher_count=len(results),
+            uncertainty_available=len(results) > 1,
+            budget_exhausted=any(result.budget_exhausted for result in results),
             metadata=dict(metadata or {}),
         )
+
+    def _consequences(
+        self, state: StateT, root_side: int, action: int
+    ) -> dict[str, float | int | bool]:
+        provider = getattr(self.models[0], "candidate_consequences", None)
+        if provider is None:
+            return {}
+        value = provider(state, root_side, action)
+        if not isinstance(value, Mapping):
+            raise TypeError("candidate_consequences must return a mapping")
+        allowed = (bool, int, float)
+        result: dict[str, float | int | bool] = {}
+        for key, item in value.items():
+            if not isinstance(item, allowed) or not np.isfinite(float(item)):
+                raise ValueError(f"invalid candidate consequence {key!r}={item!r}")
+            result[str(key)] = item
+        return result
 
     def label_many(
         self,

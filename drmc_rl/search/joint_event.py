@@ -159,6 +159,7 @@ class SearchResult:
     nodes: int
     cache_hits: int
     depth_events: int
+    budget_exhausted: bool
 
 
 class JointEventSearch(Generic[StateT]):
@@ -168,6 +169,7 @@ class JointEventSearch(Generic[StateT]):
         self._cache: dict[tuple[Hashable, int, int], WDL] = {}
         self._nodes = 0
         self._cache_hits = 0
+        self._budget_exhausted = False
 
     def search(self, state: StateT, *, root_side: int) -> SearchResult:
         if root_side not in (0, 1):
@@ -175,19 +177,16 @@ class JointEventSearch(Generic[StateT]):
         self._cache.clear()
         self._nodes = 0
         self._cache_hits = 0
+        self._budget_exhausted = False
         terminal = self.model.terminal_value(state, root_side)
         if terminal is not None:
             raise ValueError("cannot search from a terminal state")
         boundary = self.model.boundary(state)
         expected = DecisionBoundary.P1 if root_side == 0 else DecisionBoundary.P2
         if boundary not in {expected, DecisionBoundary.BOTH}:
-            raise ValueError(
-                f"root side {root_side} is not acting at boundary {boundary.value!r}"
-            )
+            raise ValueError(f"root side {root_side} is not acting at boundary {boundary.value!r}")
 
-        own_actions = self._ranked_actions(
-            state, root_side, self.config.own_beam, maximize=True
-        )
+        own_actions = self._ranked_actions(state, root_side, self.config.own_beam, maximize=True)
         if not own_actions:
             raise ValueError("root side has no legal actions")
         values: list[WDL] = []
@@ -216,11 +215,13 @@ class JointEventSearch(Generic[StateT]):
             nodes=self._nodes,
             cache_hits=self._cache_hits,
             depth_events=self.config.depth_events,
+            budget_exhausted=self._budget_exhausted,
         )
 
     def _value(self, state: StateT, depth: int, root_side: int) -> WDL:
         self._nodes += 1
         if self._nodes > self.config.max_nodes:
+            self._budget_exhausted = True
             return self.model.evaluate(state, root_side)
         terminal = self.model.terminal_value(state, root_side)
         if terminal is not None:
@@ -273,12 +274,12 @@ class JointEventSearch(Generic[StateT]):
         return self._opponent_backup(state, acting_side, actions, children)
 
     def _simultaneous_value(self, state: StateT, depth: int, root_side: int) -> WDL:
-        own_actions = self._ranked_actions(
-            state, root_side, self.config.own_beam, maximize=True
-        )
+        own_actions = self._ranked_actions(state, root_side, self.config.own_beam, maximize=True)
         if not own_actions:
             return self.model.evaluate(state, root_side)
-        values = [self._simultaneous_given_own(state, root_side, action, depth) for action in own_actions]
+        values = [
+            self._simultaneous_given_own(state, root_side, action, depth) for action in own_actions
+        ]
         return values[int(np.argmax([value.utility for value in values]))]
 
     def _simultaneous_given_own(
@@ -325,9 +326,7 @@ class JointEventSearch(Generic[StateT]):
         values = [self._value(item.state, depth - 1, root_side) for item in ordered]
         return WDL.mixture(weights, values)
 
-    def _ranked_actions(
-        self, state: StateT, side: int, beam: int, *, maximize: bool
-    ) -> list[int]:
+    def _ranked_actions(self, state: StateT, side: int, beam: int, *, maximize: bool) -> list[int]:
         actions = [int(action) for action in self.model.legal_actions(state, side)]
         if not actions:
             return []
@@ -337,9 +336,7 @@ class JointEventSearch(Generic[StateT]):
         order = np.argsort(-weights, kind="stable")
         return [actions[int(index)] for index in order[: min(int(beam), len(actions))]]
 
-    def _prior_weights(
-        self, state: StateT, side: int, actions: Sequence[int]
-    ) -> np.ndarray:
+    def _prior_weights(self, state: StateT, side: int, actions: Sequence[int]) -> np.ndarray:
         raw = np.asarray(self.model.prior(state, side, actions), dtype=np.float64).reshape(-1)
         if raw.shape != (len(actions),):
             raise ValueError("model prior must match legal action count")
@@ -358,9 +355,7 @@ class JointEventSearch(Generic[StateT]):
             target[int(np.argmax(utilities))] = 1.0
             return target
         centered = utilities - utilities.max()
-        weights = np.exp(
-            np.clip(centered / max(self.config.policy_temperature, 1e-8), -60.0, 0.0)
-        )
+        weights = np.exp(np.clip(centered / max(self.config.policy_temperature, 1e-8), -60.0, 0.0))
         return weights / weights.sum()
 
 

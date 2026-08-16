@@ -52,6 +52,12 @@ competitive head is fine-tuned from counterfactual pair labels rather than the
 observed human action. Rating changes the regret distribution and cadence, not
 competitive quality.
 
+The full-corpus V3 selection is frozen by immutable lineage identity. Epoch 5
+is the balanced teacher (best held-out objective/calibration/regret tradeoff);
+Epoch 6 is retained separately as a sharper human-imitation reference. Mature
+competitive-quality work consumes the balanced teacher and never reinterprets
+the mutable final-output alias as selection authority.
+
 Consented live evidence is private, revocable, and analyzed separately from
 public visibility. Coaching reports human typicality and competitive quality as
 distinct axes.

@@ -189,6 +189,9 @@ class DrMarioVsPoolRunner:
         destroy = getattr(self._lib, "drm_vspool_destroy", None)
         reset = getattr(self._lib, "drm_vspool_reset", None)
         step = getattr(self._lib, "drm_vspool_step", None)
+        step_strict = getattr(self._lib, "drm_vspool_step_strict", None)
+        snapshot = getattr(self._lib, "drm_vspool_snapshot", None)
+        restore = getattr(self._lib, "drm_vspool_restore", None)
         inject = getattr(self._lib, "drm_vspool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
             raise DrMarioPoolError(f"{path} does not export the required drm_vspool_* symbols")
@@ -217,6 +220,26 @@ class DrMarioVsPoolRunner:
             C.POINTER(_DrmVsPoolOutputs),
         ]
         step.restype = C.c_int
+        if step_strict is not None:
+            step_strict.argtypes = step.argtypes
+            step_strict.restype = C.c_int
+        if snapshot is not None:
+            snapshot.argtypes = [
+                C.c_void_p,
+                C.c_uint32,
+                C.POINTER(C.c_uint8),
+                C.c_size_t,
+                C.POINTER(C.c_size_t),
+            ]
+            snapshot.restype = C.c_int
+        if restore is not None:
+            restore.argtypes = [
+                C.c_void_p,
+                C.c_uint32,
+                C.POINTER(C.c_uint8),
+                C.c_size_t,
+            ]
+            restore.restype = C.c_int
         if inject is not None:
             inject.argtypes = [
                 C.c_void_p,
@@ -229,6 +252,9 @@ class DrMarioVsPoolRunner:
         self._destroy_fn = destroy
         self._reset_fn = reset
         self._step_fn = step
+        self._step_strict_fn = step_strict
+        self._snapshot_fn = snapshot
+        self._restore_fn = restore
         self._inject_fn = inject
 
         cfg = _DrmVsPoolConfig()
@@ -385,6 +411,73 @@ class DrMarioVsPoolRunner:
             raise DrMarioPoolError(f"drm_vspool_step failed with rc={rc}")
         _ = specs_arr, mask_u8, acts  # keep alive until after call
         self._solve_deferred()
+
+    def step_strict(self, actions: np.ndarray) -> None:
+        """Advance exactly to the next causal pair event.
+
+        A parked opponent is never bypassed. This API is for parity and
+        offline teachers; rollout environments continue to use :meth:`step`.
+        """
+
+        if self._step_strict_fn is None:
+            raise DrMarioPoolError(
+                "native library predates strict VS stepping; rebuild vendor/drmario_native"
+            )
+        acts = np.asarray(actions, dtype=np.int32).reshape(self.num_sides)
+        rc = int(
+            self._step_strict_fn(
+                self._handle,
+                acts.ctypes.data_as(C.POINTER(C.c_int32)),
+                None,
+                None,
+                C.byref(self._out),
+            )
+        )
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_step_strict failed with rc={rc}")
+        self._solve_deferred()
+
+    def snapshot(self, pair_index: int) -> bytes:
+        """Return the canonical, pointer-free native snapshot for one pair."""
+
+        if self._snapshot_fn is None:
+            raise DrMarioPoolError(
+                "native library predates VS snapshot support; rebuild vendor/drmario_native"
+            )
+        pair = int(pair_index)
+        if not 0 <= pair < self.num_pairs:
+            raise IndexError(pair)
+        size = C.c_size_t(0)
+        rc = int(self._snapshot_fn(self._handle, pair, None, 0, C.byref(size)))
+        if rc not in (0, -2) or size.value <= 0:
+            raise DrMarioPoolError(f"drm_vspool_snapshot size query failed with rc={rc}")
+        buffer = (C.c_uint8 * int(size.value))()
+        rc = int(
+            self._snapshot_fn(
+                self._handle, pair, buffer, len(buffer), C.byref(size)
+            )
+        )
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_snapshot failed with rc={rc}")
+        return bytes(buffer[: int(size.value)])
+
+    def restore(self, pair_index: int, checkpoint: bytes) -> None:
+        """Restore one pair from a canonical native snapshot."""
+
+        if self._restore_fn is None:
+            raise DrMarioPoolError(
+                "native library predates VS restore support; rebuild vendor/drmario_native"
+            )
+        pair = int(pair_index)
+        if not 0 <= pair < self.num_pairs:
+            raise IndexError(pair)
+        payload = bytes(checkpoint)
+        if not payload:
+            raise ValueError("checkpoint cannot be empty")
+        buffer = (C.c_uint8 * len(payload)).from_buffer_copy(payload)
+        rc = int(self._restore_fn(self._handle, pair, buffer, len(payload)))
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_restore failed with rc={rc}")
 
     def _solve_deferred(self) -> None:
         """Solve plan_needed sides via the external planner and inject costs.

@@ -298,6 +298,8 @@ class ProgramSpec:
 
     def recipe_blockers(self, recipe_id: str) -> list[str]:
         recipe = self.recipes[recipe_id]
+        if recipe.status in {"complete", "retired"}:
+            return []
         blockers = [gate for gate in recipe.requires_gates if not self.gate_is_open(gate)]
         for path in recipe.requires_paths:
             # Runtime placeholders are satisfied by ``tools.program launch --set``

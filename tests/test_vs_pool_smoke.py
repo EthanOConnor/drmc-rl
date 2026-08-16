@@ -168,6 +168,45 @@ def test_vs_pool_runner_need_action_noop() -> None:
         runner.close()
 
 
+def test_vs_pool_snapshot_restore_strict_branch_parity() -> None:
+    """A restored pair must reproduce the same exact strict continuation."""
+
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+
+    runner = DrMarioVsPoolRunner(num_pairs=1)
+    try:
+        if runner._snapshot_fn is None:  # pragma: no cover - stale local build
+            pytest.skip("native VS pool predates snapshot/restore ABI")
+        spec = build_vs_reset_spec(
+            level=(5, 5),
+            speed_setting=(2, 2),
+            rng_state=(0x37, 0x91),
+            rng_override=True,
+        )
+        runner.reset(None, [spec])
+        root = runner.snapshot(0)
+        actions = np.asarray(
+            [int(np.flatnonzero(runner.buffers.feasible_mask[i])[0]) for i in range(2)],
+            dtype=np.int32,
+        )
+        runner.step_strict(actions)
+        first = runner.snapshot(0)
+        first_boards = runner.buffers.board_bytes.copy()
+        first_clocks = runner.buffers.side_frames.copy()
+
+        runner.restore(0, root)
+        runner.step_strict(actions)
+        assert runner.snapshot(0) == first
+        np.testing.assert_array_equal(runner.buffers.board_bytes, first_boards)
+        np.testing.assert_array_equal(runner.buffers.side_frames, first_clocks)
+
+        malformed = bytes([root[0] ^ 0xFF]) + root[1:]
+        with pytest.raises(Exception, match="restore failed"):
+            runner.restore(0, malformed)
+    finally:
+        runner.close()
+
+
 def test_vs_training_horizon_and_decisive_metrics() -> None:
     from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 

@@ -12,7 +12,9 @@ def test_program_manifest_loads_and_references_known_gates() -> None:
     assert spec.products["human-trainer"].competitive_core == "unified-g5"
     assert spec.recipes["g4-strong-league"].status == "complete"
     assert spec.recipes["g4-strong-league-rewarm"].status == "complete"
-    assert spec.recipes["g4-strong-league-rewarm-900m"].status == "active"
+    assert spec.recipes["g4-strong-league-rewarm-900m"].status == "complete"
+    assert spec.recipes["human-afterstate-bootstrap"].status == "complete"
+    assert spec.gates["pair-state-v2"].status == "complete"
     spec.validate()
 
 

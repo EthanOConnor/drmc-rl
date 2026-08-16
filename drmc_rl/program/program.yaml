@@ -26,12 +26,12 @@ gates:
       - Transition-state divergence, value delta, and uncertainty are reported separately.
       - A documented threshold selects placement-only or hierarchical placement-plus-timing.
   pair-state-v2:
-    status: active
+    status: complete
     description: Freeze public actor, privileged teacher, and recurrent public-belief contracts with a hidden-information audit.
     evidence_path: runs/program/gates/pair-state-v2.json
     criteria:
       - PublicPairState contains only visible or deterministically inferable information.
-      - PrivilegedPairState excludes future RNG and is accepted only by critic/search/teacher APIs.
+      - Future RNG is never a structured model input; exact restore bytes remain opaque and teacher-only.
       - Golden serialization and no-leak tests pass.
   v3-counterfactual-quality:
     status: staged
@@ -138,7 +138,7 @@ recipes:
       - Preserve the resumed optimizer moments while applying the recipe learning rate override.
       - Compare against the permanent Strong League +1.0B parent before choosing an outcome-only consolidation parent.
   g4-strong-league-rewarm-900m:
-    status: active
+    status: complete
     stage: 1
     purpose: Rewarm the stronger +900M checkpoint on Green until arena evidence plateaus.
     config: drmc_rl/training/configs/vs_strong_league_rewarm_900m_green.yaml
@@ -162,6 +162,7 @@ recipes:
     notes:
       - Preserve the exact Strong League reward and opponent mixture.
       - Stop only after sequential arena checkpoints show a sustained strength plateau.
+      - Completed at actual step 3700668511; +900M remained the evidenced local maximum and +1.0B is retained lineage.
   timing-action-gate:
     status: active
     stage: 1
@@ -185,7 +186,7 @@ recipes:
     resources:
       accelerator: cpu
   human-afterstate-bootstrap:
-    status: active
+    status: complete
     stage: 2
     purpose: Train the exact-afterstate human/style/timing teacher with embedded regret calibration from immutable corpus releases.
     requires_paths:
@@ -209,6 +210,9 @@ recipes:
     resources:
       preferred_host: tf3090
       accelerator: cuda
+    notes:
+      - Epoch 5 is the frozen balanced teacher by held-out objective, calibration, and regret.
+      - Epoch 6 is retained as the sharper imitation reference and does not replace the balanced teacher.
   g5-v3-bootstrap:
     status: staged
     stage: 3
@@ -248,7 +252,9 @@ recipes:
     purpose: Label every legal candidate from full pair states with W/D/L, uncertainty, and calibrated regret.
     requires_paths:
       - drmc_rl/teachers/counterfactual.py
+      - drmc_rl/teachers/counterfactual_release.py
       - drmc_rl/search/joint_event.py
+      - drmc_rl/search/native_pair.py
       - '{pair_state_bank}'
     requires_gates: [pair-state-v2]
     command:
@@ -261,6 +267,14 @@ recipes:
       - '{counterfactual_release}'
       - --adapter
       - '{counterfactual_adapter}'
+      - --corpus-release
+      - '{counterfactual_corpus_release}'
+      - --continuation-mixture
+      - '{counterfactual_continuation_mixture}'
+      - --native-revision
+      - '{counterfactual_native_revision}'
+      - --planner-revision
+      - '{counterfactual_planner_revision}'
     produces:
       - Versioned counterfactual candidate-target release
     resources:
