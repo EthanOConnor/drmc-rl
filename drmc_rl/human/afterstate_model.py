@@ -71,7 +71,7 @@ class TileBottleEncoder(nn.Module):
             flat = fields.reshape(-1, GRID_H, GRID_W)
         else:
             raise ValueError(f"expected fields ending in (128,) or (16,8), got {tuple(shape)}")
-        embedded = self.tiles(flat.long().clamp_(0, 255)).permute(0, 3, 1, 2)
+        embedded = self.tiles(flat.long().clamp(0, 255)).permute(0, 3, 1, 2)
         n = int(embedded.shape[0])
         coords = torch.cat((self.rows, self.cols), dim=1).expand(n, -1, -1, -1)
         x = self.blocks(self.stem(torch.cat((embedded, coords.to(embedded.dtype)), dim=1)))
@@ -160,7 +160,7 @@ class AfterstatePolicyNet(nn.Module):
         )
 
     def _pill_embedding(self, pill: torch.Tensor, preview: torch.Tensor) -> torch.Tensor:
-        colors = torch.cat((pill, preview), dim=-1).long().clamp_(0, 2)
+        colors = torch.cat((pill, preview), dim=-1).long().clamp(0, 2)
         return self.pill(self.color(colors).flatten(1))
 
     def forward(
@@ -191,8 +191,8 @@ class AfterstatePolicyNet(nn.Module):
                 f"condition must have shape {(batch, self.condition_dim)}, got {tuple(condition.shape)}"
             )
         valid = candidate_mask.bool()
-        actions = candidate_actions.long().clamp_min_(0)
-        orientation = torch.div(actions, 128, rounding_mode="floor").clamp_(0, 3)
+        actions = candidate_actions.long().clamp_min(0)
+        orientation = torch.div(actions, 128, rounding_mode="floor").clamp(0, 3)
         cell = actions.remainder(128)
         row = torch.div(cell, GRID_W, rounding_mode="floor")
         column = cell.remainder(GRID_W)
