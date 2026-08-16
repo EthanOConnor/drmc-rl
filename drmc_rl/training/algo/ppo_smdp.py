@@ -691,12 +691,18 @@ class SMDPPPOAdapter(AlgoAdapter):
         train_cfg = getattr(cfg, "train", None)
         init_ckpt = getattr(train_cfg, "init_checkpoint", None) if train_cfg is not None else None
         resume_opt = bool(getattr(train_cfg, "resume_optimizer", True)) if train_cfg is not None else True
+        override_opt_lr = (
+            bool(getattr(train_cfg, "override_resumed_optimizer_lr", False))
+            if train_cfg is not None
+            else False
+        )
         resume_step = bool(getattr(train_cfg, "resume_step", True)) if train_cfg is not None else True
         strict_ckpt = bool(getattr(train_cfg, "strict_checkpoint", True)) if train_cfg is not None else True
         if init_ckpt:
             self._load_checkpoint(
                 Path(str(init_ckpt)).expanduser(),
                 resume_optimizer=resume_opt,
+                override_optimizer_lr=override_opt_lr,
                 resume_step=resume_step,
                 strict=strict_ckpt,
             )
@@ -2455,6 +2461,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         path: Path,
         *,
         resume_optimizer: bool,
+        override_optimizer_lr: bool,
         resume_step: bool,
         strict: bool,
     ) -> None:
@@ -2480,6 +2487,9 @@ class SMDPPPOAdapter(AlgoAdapter):
             opt_state = payload.get("optimizer")
             if opt_state is not None:
                 self.optimizer.load_state_dict(opt_state)
+                if override_optimizer_lr:
+                    for param_group in self.optimizer.param_groups:
+                        param_group["lr"] = float(self.hparams.lr)
         if resume_step:
             step = int(payload.get("step", self.global_step) or 0)
             decision_step = int(payload.get("decision_step", self.decision_step) or 0)

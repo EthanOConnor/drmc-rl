@@ -11,6 +11,9 @@ train:
   strict_checkpoint: true
   resume_step: true
   resume_optimizer: true
+  # Keep mature Adam moments, but make this experiment's LR authoritative over
+  # the value serialized inside the optimizer state.
+  override_resumed_optimizer_lr: true
 
 smdp_ppo:
   # Two times the mature run's learning rate and sixteen times its terminal
