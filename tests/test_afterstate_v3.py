@@ -66,6 +66,42 @@ def test_afterstate_policy_masks_padding_and_has_tactical_heads() -> None:
     assert out["virus_delta"][0, 2] == 0
 
 
+def test_packed_afterstates_match_dense_afterstates() -> None:
+    from drmc_rl.human.afterstate_model import AfterstatePolicyNet
+
+    torch.manual_seed(8)
+    net = AfterstatePolicyNet(
+        condition_dim=3, d_model=32, bottle_blocks=1, candidate_layers=1, heads=4
+    ).eval()
+    root = torch.full((2, 128), 0xFF, dtype=torch.uint8)
+    dense = root[:, None].expand(-1, 3, -1).clone()
+    dense[0, 0, 127] = 0xD0
+    dense[0, 1, 100] = 0xD1
+    dense[1, 0, 80] = 0xD2
+    dense[1, 2, 70] = 0xD0
+    common = (
+        root,
+        torch.full((2, 128), 0xFF, dtype=torch.uint8),
+        torch.tensor([[0, 1], [1, 2]]),
+        torch.tensor([[2, 0], [0, 1]]),
+        torch.arange(3).repeat(2, 1),
+        torch.full((2, 3), 30.0),
+        torch.ones((2, 3), dtype=torch.bool),
+        torch.zeros((2, 3)),
+    )
+    with torch.inference_mode():
+        dense_output = net(dense, *common)
+        packed_output = net(
+            None,
+            *common,
+            delta_candidate=torch.tensor([0, 1, 3, 5]),
+            delta_cell=torch.tensor([127, 100, 80, 70]),
+            delta_value=torch.tensor([0xD0, 0xD1, 0xD2, 0xD0], dtype=torch.uint8),
+        )
+    for key in dense_output:
+        torch.testing.assert_close(dense_output[key], packed_output[key])
+
+
 def test_regret_calibration_is_monotone_and_controls_choices() -> None:
     from drmc_rl.human.strength import RegretCalibration, RegretStrengthController
 

@@ -153,7 +153,11 @@ def _canonical_colors(raw: np.ndarray) -> np.ndarray:
 
 
 def make_batch(
-    shard: Shard, index: np.ndarray, condition: HumanSkillCondition
+    shard: Shard,
+    index: np.ndarray,
+    condition: HumanSkillCondition,
+    *,
+    packed_afterstates: bool = False,
 ) -> dict[str, np.ndarray]:
     arrays, targets = shard.arrays, shard.targets
     rows = np.asarray(index, dtype=np.int64)
@@ -161,7 +165,12 @@ def make_batch(
     counts = arrays["candidate_count"][rows].astype(np.int64)
     width = int(counts.max(initial=1))
     mask = np.arange(width)[None] < counts[:, None]
-    afterstate = np.full((batch, width, 128), 0xFF, dtype=np.uint8)
+    afterstate = (
+        None if packed_afterstates else np.full((batch, width, 128), 0xFF, dtype=np.uint8)
+    )
+    packed_candidates: list[np.ndarray] = []
+    packed_cells: list[np.ndarray] = []
+    packed_values: list[np.ndarray] = []
     terminal = np.zeros((batch, width), dtype=np.uint8)
     viruses = np.zeros((batch, width), dtype=np.float32)
     nonviruses = np.zeros((batch, width), dtype=np.float32)
@@ -170,14 +179,27 @@ def make_batch(
     for out_row, source_row in enumerate(rows):
         start, stop = int(offsets[source_row]), int(offsets[source_row + 1])
         count = stop - start
-        afterstate[out_row, :count] = decode_sparse_deltas(
-            arrays["field"][source_row],
-            start,
-            stop,
-            shard.delta_offsets,
-            shard.delta_cells,
-            shard.delta_values,
-        )
+        if packed_afterstates:
+            delta_start = int(shard.delta_offsets[start])
+            delta_stop = int(shard.delta_offsets[stop])
+            change_counts = np.diff(shard.delta_offsets[start : stop + 1]).astype(
+                np.int64, copy=False
+            )
+            packed_candidates.append(
+                out_row * width + np.repeat(np.arange(count, dtype=np.int64), change_counts)
+            )
+            packed_cells.append(np.asarray(shard.delta_cells[delta_start:delta_stop]))
+            packed_values.append(np.asarray(shard.delta_values[delta_start:delta_stop]))
+        else:
+            assert afterstate is not None
+            afterstate[out_row, :count] = decode_sparse_deltas(
+                arrays["field"][source_row],
+                start,
+                stop,
+                shard.delta_offsets,
+                shard.delta_cells,
+                shard.delta_values,
+            )
         terminal[out_row, :count] = targets["terminal_reason"][start:stop]
         viruses[out_row, :count] = targets["viruses_cleared"][start:stop]
         nonviruses[out_row, :count] = targets["nonviruses_cleared"][start:stop]
@@ -185,8 +207,7 @@ def make_batch(
         if targets["invalid"][start:stop].any():
             mask[out_row, :count] &= ~targets["invalid"][start:stop]
     timing_x, timing_y = timing_features(arrays, rows, condition)
-    return {
-        "afterstate": afterstate,
+    result = {
         "root": arrays["field"][rows].astype(np.uint8),
         "opponent": arrays["opponent_field"][rows].astype(np.uint8),
         "pill": _canonical_colors(arrays["pill"][rows]),
@@ -205,6 +226,16 @@ def make_batch(
         "timing_x": timing_x,
         "timing_y": timing_y,
     }
+    if packed_afterstates:
+        result.update(
+            delta_candidate=np.concatenate(packed_candidates),
+            delta_cell=np.concatenate(packed_cells),
+            delta_value=np.concatenate(packed_values),
+        )
+    else:
+        assert afterstate is not None
+        result["afterstate"] = afterstate
+    return result
 
 
 def _tensor_batch(batch: dict[str, np.ndarray], device: str) -> dict[str, Any]:
@@ -233,7 +264,7 @@ def _losses(model, timing, batch, *, autocast):
 
     with autocast():
         output = model(
-            batch["afterstate"],
+            batch.get("afterstate"),
             batch["root"],
             batch["opponent"],
             batch["pill"],
@@ -242,6 +273,9 @@ def _losses(model, timing, batch, *, autocast):
             batch["costs"],
             batch["mask"],
             batch["condition"],
+            delta_candidate=batch.get("delta_candidate"),
+            delta_cell=batch.get("delta_cell"),
+            delta_value=batch.get("delta_value"),
         )
         row = torch.arange(len(batch["chosen"]), device=batch["chosen"].device)
         chosen = batch["chosen"]
@@ -471,7 +505,7 @@ def _evaluate(
                 rows = available
             for start in range(0, len(rows), batch_size):
                 index = rows[start : start + batch_size]
-                numpy_batch = make_batch(shard, index, condition)
+                numpy_batch = make_batch(shard, index, condition, packed_afterstates=True)
                 batch = _tensor_batch(numpy_batch, device)
                 loss, _parts, output = _losses(model, timing, batch, autocast=autocast)
                 row = torch.arange(len(index), device=batch["chosen"].device)
@@ -645,7 +679,7 @@ def train(args) -> dict[str, Any]:
                 index = train_rows[start : start + int(args.batch_size)]
                 if len(index) < 2:
                     continue
-                numpy_batch = make_batch(shard, index, condition)
+                numpy_batch = make_batch(shard, index, condition, packed_afterstates=True)
                 numpy_batch["row_weight"] = weights[start : start + len(index)]
                 batch = _tensor_batch(numpy_batch, args.device)
                 optimizer.zero_grad(set_to_none=True)

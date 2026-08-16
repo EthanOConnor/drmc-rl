@@ -165,7 +165,7 @@ class AfterstatePolicyNet(nn.Module):
 
     def forward(
         self,
-        afterstate_fields: torch.Tensor,
+        afterstate_fields: torch.Tensor | None,
         root_fields: torch.Tensor,
         opponent_fields: torch.Tensor,
         pill: torch.Tensor,
@@ -174,10 +174,16 @@ class AfterstatePolicyNet(nn.Module):
         candidate_costs: torch.Tensor,
         candidate_mask: torch.Tensor,
         condition: torch.Tensor,
+        *,
+        delta_candidate: torch.Tensor | None = None,
+        delta_cell: torch.Tensor | None = None,
+        delta_value: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
-        if afterstate_fields.ndim != 3 or afterstate_fields.shape[-1] != 128:
+        batch, candidates = candidate_mask.shape
+        if afterstate_fields is not None and (
+            afterstate_fields.shape != (batch, candidates, GRID_H * GRID_W)
+        ):
             raise ValueError("afterstate_fields must have shape [B,K,128]")
-        batch, candidates, _ = afterstate_fields.shape
         if root_fields.shape != (batch, 128):
             raise ValueError(f"root_fields must have shape {(batch, 128)}")
         if condition.shape != (batch, self.condition_dim):
@@ -193,14 +199,29 @@ class AfterstatePolicyNet(nn.Module):
 
         root_map, root_outer = self.bottle.encode_map(root_fields)
         root_global = self.bottle.pool_map(root_map, root_outer)
-        changed = valid.unsqueeze(-1) & (afterstate_fields != root_fields.unsqueeze(1))
-        changed_index = changed.nonzero(as_tuple=False)
-        flat_candidate = changed_index[:, 0] * candidates + changed_index[:, 1]
-        changed_cell = changed_index[:, 2]
-        root_tile = root_fields[changed_index[:, 0], changed_cell]
-        after_tile = afterstate_fields[changed_index[:, 0], changed_index[:, 1], changed_cell]
+        if afterstate_fields is not None:
+            changed = valid.unsqueeze(-1) & (afterstate_fields != root_fields.unsqueeze(1))
+            changed_index = changed.nonzero(as_tuple=False)
+            flat_candidate = changed_index[:, 0] * candidates + changed_index[:, 1]
+            changed_cell = changed_index[:, 2]
+            changed_batch = changed_index[:, 0]
+            after_tile = afterstate_fields[
+                changed_index[:, 0], changed_index[:, 1], changed_cell
+            ]
+        else:
+            if delta_candidate is None or delta_cell is None or delta_value is None:
+                raise ValueError("packed afterstates require candidate, cell, and value deltas")
+            flat_candidate = delta_candidate.long()
+            changed_cell = delta_cell.long()
+            after_tile = delta_value
+            packed_valid = valid.reshape(-1)[flat_candidate]
+            flat_candidate = flat_candidate[packed_valid]
+            changed_cell = changed_cell[packed_valid]
+            after_tile = after_tile[packed_valid]
+            changed_batch = torch.div(flat_candidate, candidates, rounding_mode="floor")
+        root_tile = root_fields[changed_batch, changed_cell]
         context_map = root_map.permute(0, 2, 3, 1).reshape(batch, 128, self.d_model)
-        local = context_map[changed_index[:, 0], changed_cell]
+        local = context_map[changed_batch, changed_cell]
         position = torch.stack(
             (
                 torch.div(changed_cell, GRID_W, rounding_mode="floor").to(local.dtype)
