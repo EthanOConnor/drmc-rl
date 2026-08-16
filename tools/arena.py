@@ -53,8 +53,15 @@ SEARCH_COMPUTE_FACTOR = 0.15
 
 
 def paired_specs(
-    *, schedule_seed: int, agent_a: str, agent_b: str, start: int, count: int,
-    level: int, speed_setting: int, state_repr: str,
+    *,
+    schedule_seed: int,
+    agent_a: str,
+    agent_b: str,
+    start: int,
+    count: int,
+    level: int,
+    speed_setting: int,
+    state_repr: str,
     max_decisions_per_side: int,
     policy_run_seed: int,
     used: set[tuple[int, int]] | None = None,
@@ -99,8 +106,14 @@ def paired_specs(
 
 def game_spec_from_wire(spec: dict[str, Any]) -> GameSpec:
     required = {
-        "game_idx", "seed", "a_side", "frame_counter_base", "level",
-        "speed_setting", "state_repr", "max_decisions_per_side",
+        "game_idx",
+        "seed",
+        "a_side",
+        "frame_counter_base",
+        "level",
+        "speed_setting",
+        "state_repr",
+        "max_decisions_per_side",
         "policy_run_seed",
     }
     missing = required - spec.keys()
@@ -152,9 +165,12 @@ def register_manifest(store: ArenaStore, path: Path) -> None:
             name=name,
             family=item.get("family", "central"),
             generation=int(item.get("generation", 0)),
-            parent_id=item.get("parent_id"), checkpoint=checkpoint,
-            mode=item.get("mode", "plain"), params=item.get("params", {}),
-            status=item.get("status", "candidate"), metadata=item.get("metadata", {}),
+            parent_id=item.get("parent_id"),
+            checkpoint=checkpoint,
+            mode=item.get("mode", "plain"),
+            params=item.get("params", {}),
+            status=item.get("status", "candidate"),
+            metadata=item.get("metadata", {}),
         )
 
 
@@ -186,10 +202,16 @@ def discover_once(store: ArenaStore, config_path: Path) -> int:
             step = checkpoint_step(path)
             name = campaign["name"].format(generation=generation, step=step)
             store.register(
-                agent_id=stable_id(name, str(resolved)), name=name, family=family,
-                generation=generation, parent_id=parent, checkpoint=str(resolved),
-                mode=campaign.get("mode", "plain"), params=campaign.get("params", {}),
-                status="candidate", metadata={"training_step": step, "campaign": campaign.get("id")},
+                agent_id=stable_id(name, str(resolved)),
+                name=name,
+                family=family,
+                generation=generation,
+                parent_id=parent,
+                checkpoint=str(resolved),
+                mode=campaign.get("mode", "plain"),
+                params=campaign.get("params", {}),
+                status="candidate",
+                metadata={"training_step": step, "campaign": campaign.get("id")},
             )
             known.add(resolved)
             generation += 1
@@ -238,18 +260,21 @@ def run_telemetry(args: argparse.Namespace) -> None:
         # the dashboard's live throughput for another quarter hour.
         "find runs -name metrics.jsonl.gz -mmin -3 -printf '%T@ %p\\n' | sort -n | "
         "while read -r stamp path; do printf '@@JSON %s\\n' \"$path\"; "
-        "gzip -cd \"$path\" 2>/dev/null; done; "
+        'gzip -cd "$path" 2>/dev/null; done; '
         "find runs/human_policy -name '*_train.log' -mmin -15 -print 2>/dev/null | "
         "while read -r path; do printf '@@AFTERSTATE %s\\n' \"$path\"; "
-        "tail -400 \"$path\"; done; "
+        'tail -400 "$path"; done; '
         "find /home/ethan/.cache/drmc-rl/training-store/human-v5/full-corpus "
         "-maxdepth 1 -name 'extract*.log' -mmin -15 -print 2>/dev/null | "
         "while read -r path; do printf '@@CORPUS %s\n' \"$path\"; "
-        "tail -200 \"$path\"; done"
+        'tail -200 "$path"; done'
     )
     while not stopped:
         result = subprocess.run(
-            ["ssh", args.ssh, remote], capture_output=True, text=True, timeout=args.timeout,
+            ["ssh", args.ssh, remote],
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
             check=False,
         )
         tasks = parse_telemetry(result.stdout)
@@ -257,9 +282,7 @@ def run_telemetry(args: argparse.Namespace) -> None:
         # not emitted the final trailer yet; every complete JSONL row is valid.
         if tasks:
             for item in tasks:
-                item["history"] = {
-                    name: points[-60:] for name, points in item["history"].items()
-                }
+                item["history"] = {name: points[-60:] for name, points in item["history"].items()}
             # Preserve the original top-level shape for existing dashboard
             # consumers while exposing every recently active campaign.
             latest: dict[str, Any] = {}
@@ -334,9 +357,7 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             _parse_afterstate_lines(task, afterstate_lines)
         elif kind == "corpus":
             _parse_corpus_lines(task, afterstate_lines)
-        task["history"] = {
-            name: points[-60:] for name, points in task["history"].items()
-        }
+        task["history"] = {name: points[-60:] for name, points in task["history"].items()}
         if task["latest"]:
             tasks.append(task)
         task = None
@@ -347,7 +368,7 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             finish()
             prefix = "@@JSON " if line.startswith("@@JSON ") else "@@RUN "
             kind = "json"
-            task = {"run": line[len(prefix):].removeprefix("runs/"), "latest": {}, "history": {}}
+            task = {"run": line[len(prefix) :].removeprefix("runs/"), "latest": {}, "history": {}}
             continue
         if line.startswith("@@AFTERSTATE "):
             finish()
@@ -376,8 +397,12 @@ def parse_telemetry(text: str) -> list[dict[str, Any]]:
             )
         name = str(row["name"])
         task["latest"][name] = row["value"]
-        if name in {"perf/sps", "perf/dps", "train/return_mean",
-                    "search_distill/searched_fraction_actual"}:
+        if name in {
+            "perf/sps",
+            "perf/dps",
+            "train/return_mean",
+            "search_distill/searched_fraction_actual",
+        }:
             task["history"].setdefault(name, []).append([row["step"], row["value"]])
     finish()
     return tasks
@@ -393,12 +418,14 @@ def _parse_afterstate_lines(task: dict[str, Any], lines: list[str]) -> None:
         epoch = int(match["epoch"])
         step = int(match["step"])
         dps = float(match["dps"].replace(",", ""))
-        latest.update({
-            "train/epoch": epoch,
-            "train/step": step,
-            "perf/dps": dps,
-            "train/loss": float(match["loss"]),
-        })
+        latest.update(
+            {
+                "train/epoch": epoch,
+                "train/step": step,
+                "perf/dps": dps,
+                "train/loss": float(match["loss"]),
+            }
+        )
         history.setdefault("perf/dps", []).append([step, dps])
         history.setdefault("train/loss", []).append([step, float(match["loss"])])
         for part in _SCALAR_PART.finditer(match["parts"]):
@@ -453,14 +480,9 @@ def _new_entry_boosts(
         target = float(config.get("los_target", DEFAULT_SCHEDULER_BOOST["los_target"]))
         games = agent_games.get(agent.id, 0)
         parent_los = (
-            None
-            if agent.parent_id is None
-            else superiority.get(agent.id, {}).get(agent.parent_id)
+            None if agent.parent_id is None else superiority.get(agent.id, {}).get(agent.parent_id)
         )
-        los_resolved = (
-            parent_los is not None
-            and max(parent_los, 1.0 - parent_los) >= target
-        )
+        los_resolved = parent_los is not None and max(parent_los, 1.0 - parent_los) >= target
         if games >= cap or los_resolved:
             continue
         boost = float(config.get("multiplier", DEFAULT_SCHEDULER_BOOST["multiplier"]))
@@ -495,7 +517,7 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
         maximum_information = max(information.values(), default=1e-6)
         scheduled: list[dict[str, Any]] = []
         for i, a in enumerate(agents):
-            for b in agents[i + 1:]:
+            for b in agents[i + 1 :]:
                 key = tuple(sorted((a.id, b.id)))
                 games = counts.get(key, 0)
                 # A missing posterior edge means a newly registered entrant;
@@ -504,52 +526,55 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
                 gain = information.get(key, maximum_information * 2.0 / (1.0 + games))
                 normalized_gain = max(gain / maximum_information, 1e-4)
                 weight = normalized_gain ** (1.0 / SCHEDULER_TEMPERATURE)
-                factors: list[dict[str, Any]] = [{
-                    "label": "temperature",
-                    "factor": SCHEDULER_TEMPERATURE,
-                    "display_only": True,
-                }]
+                factors: list[dict[str, Any]] = [
+                    {
+                        "label": "temperature",
+                        "factor": SCHEDULER_TEMPERATURE,
+                        "display_only": True,
+                    }
+                ]
                 # Search games are useful but materially more expensive; use
                 # information per approximate compute cost rather than count.
                 if a.mode != "plain" or b.mode != "plain":
                     weight *= SEARCH_COMPUTE_FACTOR
                     factors.append({"label": "search cost", "factor": SEARCH_COMPUTE_FACTOR})
-                boost, boost_factors = _new_entry_boosts(
-                    (a, b), agent_games, superiority
-                )
+                boost, boost_factors = _new_entry_boosts((a, b), agent_games, superiority)
                 weight *= boost
                 factors.extend(boost_factors)
-                scheduled.append({
-                    "a": a,
-                    "b": b,
-                    "games": games,
-                    "information_gain": gain,
-                    "weight": weight,
-                    "factors": factors,
-                    "posterior": key in information,
-                })
+                scheduled.append(
+                    {
+                        "a": a,
+                        "b": b,
+                        "games": games,
+                        "information_gain": gain,
+                        "weight": weight,
+                        "factors": factors,
+                        "posterior": key in information,
+                    }
+                )
         if not scheduled:
             raise RuntimeError("arena needs at least two active agents")
         total = sum(item["weight"] for item in scheduled)
         for item in scheduled:
             information_share = item["weight"] / total
             item["selection_probability"] = (
-                (1.0 - SCHEDULER_COVERAGE_MIX) * information_share
-                + SCHEDULER_COVERAGE_MIX / len(scheduled)
-            )
+                1.0 - SCHEDULER_COVERAGE_MIX
+            ) * information_share + SCHEDULER_COVERAGE_MIX / len(scheduled)
             item["weight"] = item["selection_probability"]
-            item["factors"].append({
-                "label": "coverage floor",
-                "factor": SCHEDULER_COVERAGE_MIX,
-                "display_only": True,
-            })
+            item["factors"].append(
+                {
+                    "label": "coverage floor",
+                    "factor": SCHEDULER_COVERAGE_MIX,
+                    "display_only": True,
+                }
+            )
         scheduled.sort(key=lambda item: item["weight"], reverse=True)
         return scheduled
 
     # Bootstrap fallback before the first posterior exists.
     scheduled = []
     for i, a in enumerate(agents):
-        for b in agents[i + 1:]:
+        for b in agents[i + 1 :]:
             n = counts.get(tuple(sorted((a.id, b.id))), 0)
             priority = 1.0 / (1.0 + n)
             # Establish a connected comparison graph before spending heavily on
@@ -558,28 +583,27 @@ def matchup_schedule(store: ArenaStore, agents: list[Agent]) -> list[dict[str, A
                 priority += 1_000.0
             if n and (a.mode != "plain" or b.mode != "plain"):
                 priority *= SEARCH_COMPUTE_FACTOR
-            boost, boost_factors = _new_entry_boosts(
-                (a, b), agent_games, superiority
-            )
+            boost, boost_factors = _new_entry_boosts((a, b), agent_games, superiority)
             priority *= boost
-            scheduled.append({
-                "a": a,
-                "b": b,
-                "games": n,
-                "information_gain": None,
-                "weight": priority,
-                "factors": [{"label": "posterior pending", "factor": None}, *boost_factors],
-                "posterior": False,
-            })
+            scheduled.append(
+                {
+                    "a": a,
+                    "b": b,
+                    "games": n,
+                    "information_gain": None,
+                    "weight": priority,
+                    "factors": [{"label": "posterior pending", "factor": None}, *boost_factors],
+                    "posterior": False,
+                }
+            )
     if not scheduled:
         raise RuntimeError("arena needs at least two active agents")
     total = sum(item["weight"] for item in scheduled)
     for item in scheduled:
         information_share = item["weight"] / total
         item["selection_probability"] = (
-            (1.0 - SCHEDULER_COVERAGE_MIX) * information_share
-            + SCHEDULER_COVERAGE_MIX / len(scheduled)
-        )
+            1.0 - SCHEDULER_COVERAGE_MIX
+        ) * information_share + SCHEDULER_COVERAGE_MIX / len(scheduled)
         item["weight"] = item["selection_probability"]
     scheduled.sort(key=lambda item: item["weight"], reverse=True)
     return scheduled
@@ -591,9 +615,7 @@ def pair_priority(store: ArenaStore, agents: list[Agent]) -> tuple[Agent, Agent]
     schedule = matchup_schedule(store, agents)
     if schedule[0]["information_gain"] is None:
         return schedule[0]["a"], schedule[0]["b"]
-    selected = random.choices(
-        schedule, weights=[item["weight"] for item in schedule], k=1
-    )[0]
+    selected = random.choices(schedule, weights=[item["weight"] for item in schedule], k=1)[0]
     return selected["a"], selected["b"]
 
 
@@ -619,31 +641,51 @@ def scheduler_snapshot(store: ArenaStore) -> dict[str, Any]:
         "new_entry_boost": dict(DEFAULT_SCHEDULER_BOOST),
         "eligible_agents": len(agents),
         "eligible_pairs": len(schedule),
-        "matchups": [{
-            "a": item["a"].id,
-            "b": item["b"].id,
-            "games": item["games"],
-            "information_bits": (
-                None if item["information_gain"] is None
-                else item["information_gain"] / math.log(2.0)
-            ),
-            "selection_probability": item["selection_probability"],
-            "factors": item["factors"],
-        } for item in schedule[:12]],
+        "matchups": [
+            {
+                "a": item["a"].id,
+                "b": item["b"].id,
+                "games": item["games"],
+                "information_bits": (
+                    None
+                    if item["information_gain"] is None
+                    else item["information_gain"] / math.log(2.0)
+                ),
+                "selection_probability": item["selection_probability"],
+                "factors": item["factors"],
+            }
+            for item in schedule[:12]
+        ],
     }
 
 
-def maybe_promote(store: ArenaStore, candidate: Agent, champion: Agent, *, elo0: float,
-                  elo1: float, alpha: float, beta: float, max_games: int) -> str | None:
+def maybe_promote(
+    store: ArenaStore,
+    candidate: Agent,
+    champion: Agent,
+    *,
+    elo0: float,
+    elo1: float,
+    alpha: float,
+    beta: float,
+    max_games: int,
+) -> str | None:
     scores = store.matchup_games(candidate.id, champion.id)
     wins = sum(score == 1 for score in scores)
     draws = sum(score == 0.5 for score in scores)
     losses = sum(score == 0 for score in scores)
     llr = sprt_llr(wins, draws, losses, elo0, elo1)
     lower, upper = sprt_bounds(alpha, beta)
-    detail = {"champion": champion.id, "games": len(scores), "wins": wins,
-              "draws": draws, "losses": losses, "llr": llr,
-              "bounds": [lower, upper], "elo": [elo0, elo1]}
+    detail = {
+        "champion": champion.id,
+        "games": len(scores),
+        "wins": wins,
+        "draws": draws,
+        "losses": losses,
+        "llr": llr,
+        "bounds": [lower, upper],
+        "elo": [elo0, elo1],
+    }
     if llr >= upper:
         store.promote(candidate.id, detail=detail)
         return "promoted"
@@ -662,11 +704,17 @@ def run_worker(args: argparse.Namespace) -> None:
 
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
-    runner = VsMatchRunner(level=args.level, speed_setting=args.speed_setting,
-                           num_pairs=args.batch, device=args.device, threads=args.threads,
-                           run_seed=args.seed, state_repr=args.state_repr,
-                           replay_sample_rate=args.replay_sample_rate,
-                           max_decisions_per_side=args.max_decisions_per_side)
+    runner = VsMatchRunner(
+        level=args.level,
+        speed_setting=args.speed_setting,
+        num_pairs=args.batch,
+        device=args.device,
+        threads=args.threads,
+        run_seed=args.seed,
+        state_repr=args.state_repr,
+        replay_sample_rate=args.replay_sample_rate,
+        max_decisions_per_side=args.max_decisions_per_side,
+    )
     worker_id = f"{runner.device}-{os.getpid()}"
     try:
         while not stopped:
@@ -677,9 +725,14 @@ def run_worker(args: argparse.Namespace) -> None:
             a, b = pair_priority(store, agents)
             serial = store.reserve_serials(args.batch)
             wire_specs = paired_specs(
-                schedule_seed=args.seed, agent_a=a.id, agent_b=b.id,
-                start=serial, count=args.batch, level=args.level,
-                speed_setting=args.speed_setting, state_repr=args.state_repr,
+                schedule_seed=args.seed,
+                agent_a=a.id,
+                agent_b=b.id,
+                start=serial,
+                count=args.batch,
+                level=args.level,
+                speed_setting=args.speed_setting,
+                state_repr=args.state_repr,
                 max_decisions_per_side=args.max_decisions_per_side,
                 policy_run_seed=args.seed,
                 used=store.pair_seed_assignments(a.id, b.id),
@@ -692,18 +745,29 @@ def run_worker(args: argparse.Namespace) -> None:
             batch_decisions = 0
             results = runner.play(a.entry(), b.entry(), specs)
             for match_id, result in zip(match_ids, results, strict=True):
-                inserted = store.record(a.id, b.id, seed=result.spec.seed, side=result.spec.a_side,
-                             winner=result.winner, match_len_sec=result.match_len_sec,
-                             decisions=result.decisions,
-                             terminal_reason=result.terminal_reason, replay=result.replay,
-                             match_key=match_id, game_index=result.spec.game_idx,
-                             frame_counter_base=result.spec.frame_counter_base,
-                             level=result.spec.level,
-                             speed_setting=result.spec.speed_setting,
-                             state_repr=result.spec.state_repr,
-                             max_decisions_per_side=result.spec.max_decisions_per_side,
-                             provenance={"protocol_version": PROTOCOL_VERSION,
-                                         "worker_id": worker_id, "device": runner.device})
+                inserted = store.record(
+                    a.id,
+                    b.id,
+                    seed=result.spec.seed,
+                    side=result.spec.a_side,
+                    winner=result.winner,
+                    match_len_sec=result.match_len_sec,
+                    decisions=result.decisions,
+                    terminal_reason=result.terminal_reason,
+                    replay=result.replay,
+                    match_key=match_id,
+                    game_index=result.spec.game_idx,
+                    frame_counter_base=result.spec.frame_counter_base,
+                    level=result.spec.level,
+                    speed_setting=result.spec.speed_setting,
+                    state_repr=result.spec.state_repr,
+                    max_decisions_per_side=result.spec.max_decisions_per_side,
+                    provenance={
+                        "protocol_version": PROTOCOL_VERSION,
+                        "worker_id": worker_id,
+                        "device": runner.device,
+                    },
+                )
                 if not inserted:
                     raise RuntimeError(f"arena match was not committed: {match_id}")
                 batch_games += 1
@@ -724,9 +788,21 @@ def run_worker(args: argparse.Namespace) -> None:
             )
             champion = next((x for x in store.agents(("champion",)) if x.family == a.family), None)
             for candidate in (a, b):
-                if candidate.status == "candidate" and champion and candidate.family == champion.family:
-                    maybe_promote(store, candidate, champion, elo0=args.elo0, elo1=args.elo1,
-                                  alpha=args.alpha, beta=args.beta, max_games=args.max_gate_games)
+                if (
+                    candidate.status == "candidate"
+                    and champion
+                    and candidate.family == champion.family
+                ):
+                    maybe_promote(
+                        store,
+                        candidate,
+                        champion,
+                        elo0=args.elo0,
+                        elo1=args.elo1,
+                        alpha=args.alpha,
+                        beta=args.beta,
+                        max_games=args.max_gate_games,
+                    )
     finally:
         runner.close()
         store.close()
@@ -735,14 +811,21 @@ def run_worker(args: argparse.Namespace) -> None:
 def run_remote_worker(args: argparse.Namespace) -> None:
     token = Path(args.token_file).expanduser().read_text().strip()
     client = ArenaRemoteClient(
-        args.coordinator, token, checkpoint_cache=args.checkpoint_cache,
+        args.coordinator,
+        token,
+        checkpoint_cache=args.checkpoint_cache,
         timeout=args.request_timeout,
     )
     client.capabilities()
     runner = VsMatchRunner(
-        level=args.level, speed_setting=args.speed_setting, num_pairs=args.batch,
-        device=args.device, threads=args.threads, run_seed=args.seed,
-        state_repr=args.state_repr, replay_sample_rate=args.replay_sample_rate,
+        level=args.level,
+        speed_setting=args.speed_setting,
+        num_pairs=args.batch,
+        device=args.device,
+        threads=args.threads,
+        run_seed=args.seed,
+        state_repr=args.state_repr,
+        replay_sample_rate=args.replay_sample_rate,
         max_decisions_per_side=args.max_decisions_per_side,
     )
     worker_id = args.worker_id or f"{socket.gethostname()}-{runner.device}-{os.getpid()}"
@@ -756,19 +839,22 @@ def run_remote_worker(args: argparse.Namespace) -> None:
     signal.signal(signal.SIGTERM, stop)
     try:
         while not stopped:
-            lease = client.lease({
-                "protocol_version": PROTOCOL_VERSION,
-                "worker_id": worker_id,
-                "device": runner.device,
-                "threads": args.threads,
-                "batch_size": args.batch,
-                "arena_config": {
-                    "level": args.level, "speed_setting": args.speed_setting,
-                    "state_repr": args.state_repr,
-                    "max_decisions_per_side": args.max_decisions_per_side,
-                    "policy_run_seed": args.seed,
-                },
-            })
+            lease = client.lease(
+                {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "worker_id": worker_id,
+                    "device": runner.device,
+                    "threads": args.threads,
+                    "batch_size": args.batch,
+                    "arena_config": {
+                        "level": args.level,
+                        "speed_setting": args.speed_setting,
+                        "state_repr": args.state_repr,
+                        "max_decisions_per_side": args.max_decisions_per_side,
+                        "policy_run_seed": args.seed,
+                    },
+                }
+            )
             if lease is None:
                 time.sleep(args.poll)
                 continue
@@ -784,33 +870,38 @@ def run_remote_worker(args: argparse.Namespace) -> None:
                         renewal_errors.append(error)
                         return
 
-            renewal_thread = threading.Thread(
-                target=renew, name="arena-lease-renewal", daemon=True
-            )
+            renewal_thread = threading.Thread(target=renew, name="arena-lease-renewal", daemon=True)
             renewal_thread.start()
             try:
                 entries = []
                 for key in ("agent_a", "agent_b"):
                     wire = lease[key]
                     checkpoint = client.materialize_checkpoint(wire)
-                    entries.append({
-                        "name": wire["name"], "checkpoint": str(checkpoint),
-                        "mode": wire["mode"], "params": wire["params"],
-                    })
+                    entries.append(
+                        {
+                            "name": wire["name"],
+                            "checkpoint": str(checkpoint),
+                            "mode": wire["mode"],
+                            "params": wire["params"],
+                        }
+                    )
                 specs = [game_spec_from_wire(spec) for spec in lease["specs"]]
                 match_ids = [str(spec["match_id"]) for spec in lease["specs"]]
                 started = time.perf_counter()
                 played = runner.play(entries[0], entries[1], specs)
                 try:
-                    results = [{
-                        "match_id": match_id,
-                        "winner": result.winner,
-                        "match_len_sec": result.match_len_sec,
-                        "decisions": result.decisions,
-                        "terminal_reason": result.terminal_reason,
-                        "frames": int(result.frames or round(result.match_len_sec * NES_FPS)),
-                        "replay": result.replay,
-                    } for match_id, result in zip(match_ids, played, strict=True)]
+                    results = [
+                        {
+                            "match_id": match_id,
+                            "winner": result.winner,
+                            "match_len_sec": result.match_len_sec,
+                            "decisions": result.decisions,
+                            "terminal_reason": result.terminal_reason,
+                            "frames": int(result.frames or round(result.match_len_sec * NES_FPS)),
+                            "replay": result.replay,
+                        }
+                        for match_id, result in zip(match_ids, played, strict=True)
+                    ]
                 finally:
                     played.close()
             finally:
@@ -845,7 +936,7 @@ def run_remote_worker(args: argparse.Namespace) -> None:
                 except Exception:
                     if attempt == 4:
                         raise
-                    time.sleep(min(2 ** attempt, 8))
+                    time.sleep(min(2**attempt, 8))
     finally:
         runner.close()
 
@@ -867,20 +958,26 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
     while not stopped.is_set():
         store = ArenaStore(args.db)
         try:
-            if store.ratings_need_refresh(min_new_matches=args.rating_refresh_games):
+            needs_refresh = store.ratings_need_refresh(min_new_matches=args.rating_refresh_games)
+            full_hmc = bool(getattr(args, "rating_full_hmc", False))
+            if needs_refresh or (full_hmc and getattr(args, "once", False)):
                 started = time.monotonic()
-                result = store.update_ratings(
-                    rating_config(args, seed=retry_seed),
-                    min_new_matches=args.rating_refresh_games,
-                    full_refresh_matches=args.rating_full_refresh_games,
-                    min_importance_ess_fraction=args.rating_min_ess_fraction,
+                config = rating_config(args, seed=retry_seed)
+                result = (
+                    store.refit_ratings(config)
+                    if full_hmc
+                    else store.update_ratings(
+                        config,
+                        min_new_matches=args.rating_refresh_games,
+                        laplace_samples=args.rating_laplace_samples,
+                    )
                 )
                 if result is not None:
                     retry_seed = args.rating_seed
                     diagnostics = result["diagnostics"]
                     quality = (
-                        f"importance ESS {diagnostics['importance_ess']:.0f}"
-                        if result["method"] == "sequential"
+                        f"mode gradient {diagnostics['mode_gradient_max']:.2g}"
+                        if result["method"] == "laplace"
                         else f"R-hat {diagnostics['max_rhat']:.3f}, "
                         f"ESS {diagnostics['min_ess']:.0f}"
                     )
@@ -916,9 +1013,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     lease_seed: int = 0xA8E4
     arena_config: dict[str, Any] = {}
     lease_lock = threading.Lock()
-    rating_backpressure_high: int = 0
-    rating_backpressure_low: int = 0
-    rating_backpressure_paused: bool = False
+    snapshot_lock = threading.Lock()
+    snapshot_payload: bytes | None = None
+    snapshot_created_monotonic: float = 0.0
 
     def _authorized(self) -> bool:
         expected = self.worker_token
@@ -948,21 +1045,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
         if path == "/api/v1/capabilities":
-            self._send_json(200, {
-                "protocol_version": PROTOCOL_VERSION,
-                "leases": True,
-                "checkpoint_delivery": True,
-                "idempotent_submission": True,
-                "external_replays": True,
-                "complete_reset_specs": True,
-                "paired_side_swaps": True,
-                "committed_insert_accounting": True,
-                "rating_backpressure": {
-                    "high": self.rating_backpressure_high,
-                    "low": self.rating_backpressure_low,
-                    "paused": self.rating_backpressure_paused,
+            self._send_json(
+                200,
+                {
+                    "protocol_version": PROTOCOL_VERSION,
+                    "leases": True,
+                    "checkpoint_delivery": True,
+                    "idempotent_submission": True,
+                    "external_replays": True,
+                    "complete_reset_specs": True,
+                    "paired_side_swaps": True,
+                    "committed_insert_accounting": True,
                 },
-            })
+            )
             return
         if path.startswith("/api/v1/checkpoints/"):
             if not self._authorized():
@@ -987,16 +1082,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(payload)
             return
         if path == "/api/snapshot":
-            store = ArenaStore(self.db, replay_dir=self.replay_dir)
-            try:
-                snapshot = store.snapshot()
-                snapshot["scheduler"] = scheduler_snapshot(store)
-                payload = json.dumps(snapshot, separators=(",", ":")).encode()
-            finally:
-                store.close()
+            handler = type(self)
+            with handler.snapshot_lock:
+                payload = handler.snapshot_payload
+                created = handler.snapshot_created_monotonic
+            if payload is None:
+                self._send_json(503, {"error": "dashboard snapshot is warming up"})
+                return
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Snapshot-Age", f"{max(0.0, time.monotonic() - created):.3f}")
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
@@ -1029,7 +1125,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         payload = target.read_bytes()
         self.send_response(200)
-        self.send_header("Content-Type", mimetypes.guess_type(target)[0] or "application/octet-stream")
+        self.send_header(
+            "Content-Type", mimetypes.guess_type(target)[0] or "application/octet-stream"
+        )
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -1049,12 +1147,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
             renew_suffix = "/renew"
             if path.startswith("/api/v1/leases/") and path.endswith(renew_suffix):
-                lease_id = unquote(path[len("/api/v1/leases/"):-len(renew_suffix)])
+                lease_id = unquote(path[len("/api/v1/leases/") : -len(renew_suffix)])
                 self._renew(lease_id, request)
                 return
             prefix, suffix = "/api/v1/leases/", "/results"
             if path.startswith(prefix) and path.endswith(suffix):
-                lease_id = unquote(path[len(prefix):-len(suffix)])
+                lease_id = unquote(path[len(prefix) : -len(suffix)])
                 self._submit(lease_id, request)
                 return
             self.send_error(404)
@@ -1085,31 +1183,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         store = ArenaStore(self.db, replay_dir=self.replay_dir)
         try:
             reclaimed = store.claim_expired_lease(
-                worker_id=worker_id, now=now, ttl_seconds=self.lease_ttl,
+                worker_id=worker_id,
+                now=now,
+                ttl_seconds=self.lease_ttl,
                 required_protocol_version=PROTOCOL_VERSION,
             )
             if reclaimed is not None:
                 payload, _token = reclaimed
                 self._send_json(200, payload)
-                return
-            pending = store.rating_backlog()
-            handler = type(self)
-            was_paused = handler.rating_backpressure_paused
-            if handler.rating_backpressure_high > 0:
-                if was_paused and pending <= handler.rating_backpressure_low:
-                    handler.rating_backpressure_paused = False
-                elif not was_paused and pending >= handler.rating_backpressure_high:
-                    handler.rating_backpressure_paused = True
-            if handler.rating_backpressure_paused != was_paused:
-                state = "paused" if handler.rating_backpressure_paused else "resumed"
-                print(
-                    f"coordinator: rating backpressure {state} at {pending} pending games",
-                    flush=True,
-                )
-            if handler.rating_backpressure_paused:
-                self.send_response(204)
-                self.send_header("Retry-After", "10")
-                self.end_headers()
                 return
             agents = eligible_agents(store)
             if len(agents) < 2:
@@ -1120,8 +1201,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             serial = store.reserve_serials(batch_size)
             used = store.pair_seed_assignments(a.id, b.id)
             specs = paired_specs(
-                schedule_seed=self.lease_seed, agent_a=a.id, agent_b=b.id,
-                start=serial, count=batch_size, used=used, **self.arena_config,
+                schedule_seed=self.lease_seed,
+                agent_a=a.id,
+                agent_b=b.id,
+                start=serial,
+                count=batch_size,
+                used=used,
+                **self.arena_config,
             )
             provenance = {
                 "protocol_version": PROTOCOL_VERSION,
@@ -1134,12 +1220,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 spec["provenance"] = provenance
             payload = {
                 "protocol_version": PROTOCOL_VERSION,
-                "agent_a": agent_wire(a), "agent_b": agent_wire(b), "specs": specs,
+                "agent_a": agent_wire(a),
+                "agent_b": agent_wire(b),
+                "specs": specs,
                 "ttl_seconds": self.lease_ttl,
             }
             lease = store.create_lease(
-                lease_id=secrets.token_hex(16), worker_id=worker_id,
-                agent_a=a.id, agent_b=b.id, payload=payload, now=now,
+                lease_id=secrets.token_hex(16),
+                worker_id=worker_id,
+                agent_a=a.id,
+                agent_b=b.id,
+                payload=payload,
+                now=now,
                 ttl_seconds=self.lease_ttl,
             )
             self._send_json(200, lease)
@@ -1155,8 +1247,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         store = ArenaStore(self.db, replay_dir=self.replay_dir)
         try:
             accepted = store.submit_lease(
-                lease_id=lease_id, claim_token=str(request["claim_token"]),
-                submission_sha256=digest, results=results, worker_sample=sample,
+                lease_id=lease_id,
+                claim_token=str(request["claim_token"]),
+                submission_sha256=digest,
+                results=results,
+                worker_sample=sample,
                 now=time.time(),
             )
         finally:
@@ -1167,8 +1262,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         store = ArenaStore(self.db, replay_dir=self.replay_dir)
         try:
             expires = store.renew_lease(
-                lease_id=lease_id, claim_token=str(request["claim_token"]),
-                now=time.time(), ttl_seconds=self.lease_ttl,
+                lease_id=lease_id,
+                claim_token=str(request["claim_token"]),
+                now=time.time(),
+                ttl_seconds=self.lease_ttl,
             )
         finally:
             store.close()
@@ -1178,19 +1275,47 @@ class DashboardHandler(BaseHTTPRequestHandler):
         print(f"dashboard: {fmt % args}", flush=True)
 
 
+def refresh_dashboard_snapshot(db: Path, replay_dir: Path | None) -> bytes:
+    """Build one immutable dashboard response outside HTTP request threads."""
+
+    store = ArenaStore(db, replay_dir=replay_dir)
+    try:
+        snapshot = store.snapshot()
+        snapshot["scheduler"] = scheduler_snapshot(store)
+        return json.dumps(snapshot, separators=(",", ":")).encode()
+    finally:
+        store.close()
+
+
+def dashboard_snapshot_loop(
+    db: Path,
+    replay_dir: Path | None,
+    *,
+    interval: float,
+    stopped: threading.Event,
+) -> None:
+    """Refresh the materialized dashboard response without blocking serving."""
+
+    handler = DashboardHandler
+    while not stopped.is_set():
+        started = time.monotonic()
+        try:
+            payload = refresh_dashboard_snapshot(db, replay_dir)
+            with handler.snapshot_lock:
+                handler.snapshot_payload = payload
+                handler.snapshot_created_monotonic = time.monotonic()
+        except Exception as error:
+            # Keep serving the last complete snapshot.  A transient SQLite
+            # read failure must not create request storms or affect workers.
+            print(f"dashboard snapshot: {type(error).__name__}: {error}", flush=True)
+        stopped.wait(max(0.0, interval - (time.monotonic() - started)))
+
+
 def serve(args: argparse.Namespace) -> None:
     DashboardHandler.db = Path(args.db)
     DashboardHandler.replay_dir = None if args.replay_dir is None else Path(args.replay_dir)
     DashboardHandler.lease_ttl = float(args.lease_ttl)
     DashboardHandler.lease_seed = int(args.lease_seed)
-    if args.rating_backpressure_high < 0 or args.rating_backpressure_low < 0:
-        raise ValueError("rating backpressure thresholds cannot be negative")
-    if (args.rating_backpressure_high > 0
-            and args.rating_backpressure_low >= args.rating_backpressure_high):
-        raise ValueError("rating backpressure low must be below high")
-    DashboardHandler.rating_backpressure_high = int(args.rating_backpressure_high)
-    DashboardHandler.rating_backpressure_low = int(args.rating_backpressure_low)
-    DashboardHandler.rating_backpressure_paused = False
     DashboardHandler.arena_config = {
         "level": int(args.level),
         "speed_setting": int(args.speed_setting),
@@ -1199,13 +1324,29 @@ def serve(args: argparse.Namespace) -> None:
         "policy_run_seed": int(args.policy_run_seed),
     }
     DashboardHandler.worker_token = (
-        None if args.worker_token_file is None
+        None
+        if args.worker_token_file is None
         else Path(args.worker_token_file).expanduser().read_text().strip()
     )
     if args.host not in {"127.0.0.1", "localhost", "::1"} and not DashboardHandler.worker_token:
         raise ValueError("a worker token file is required when serving beyond loopback")
+    if args.snapshot_refresh <= 0:
+        raise ValueError("snapshot refresh interval must be positive")
+    DashboardHandler.snapshot_payload = refresh_dashboard_snapshot(
+        DashboardHandler.db, DashboardHandler.replay_dir
+    )
+    DashboardHandler.snapshot_created_monotonic = time.monotonic()
     server = ThreadingHTTPServer((args.host, args.port), DashboardHandler)
     rating_stop = threading.Event()
+    snapshot_stop = threading.Event()
+    snapshot_thread = threading.Thread(
+        target=dashboard_snapshot_loop,
+        args=(DashboardHandler.db, DashboardHandler.replay_dir),
+        kwargs={"interval": float(args.snapshot_refresh), "stopped": snapshot_stop},
+        name="arena-dashboard-snapshot",
+        daemon=True,
+    )
+    snapshot_thread.start()
     rating_thread = None
     if args.ratings:
         rating_thread = threading.Thread(
@@ -1217,8 +1358,10 @@ def serve(args: argparse.Namespace) -> None:
         server.serve_forever()
     finally:
         rating_stop.set()
+        snapshot_stop.set()
         if rating_thread is not None:
             rating_thread.join(timeout=5)
+        snapshot_thread.join(timeout=5)
 
 
 def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1226,9 +1369,8 @@ def add_rating_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--rating-warmup", type=int, default=800)
     parser.add_argument("--rating-samples", type=int, default=1_200)
     parser.add_argument("--rating-seed", type=int, default=0xD0C70A11)
-    parser.add_argument("--rating-refresh-games", type=int, default=16)
-    parser.add_argument("--rating-full-refresh-games", type=int, default=20_000)
-    parser.add_argument("--rating-min-ess-fraction", type=float, default=0.10)
+    parser.add_argument("--rating-refresh-games", type=int, default=128)
+    parser.add_argument("--rating-laplace-samples", type=int, default=4_096)
     parser.add_argument("--rating-poll", type=float, default=5.0)
 
 
@@ -1257,23 +1399,29 @@ def main() -> None:
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8097)
     web.add_argument("--worker-token-file")
+    web.add_argument(
+        "--snapshot-refresh",
+        type=float,
+        default=5.0,
+        help="seconds between materialized dashboard snapshots",
+    )
     web.add_argument("--lease-ttl", type=float, default=600)
     web.add_argument("--lease-seed", type=int, default=0xA8E4)
     web.add_argument("--replay-dir")
     web.add_argument("--level", type=int, default=14)
     web.add_argument("--speed-setting", type=int, default=2)
     web.add_argument("--state-repr", default="bitplane_bottle_conn_mask_vs")
-    web.add_argument("--max-decisions-per-side", type=int,
-                     default=ARENA_MAX_DECISIONS_PER_SIDE)
+    web.add_argument("--max-decisions-per-side", type=int, default=ARENA_MAX_DECISIONS_PER_SIDE)
     web.add_argument("--policy-run-seed", type=int, default=27182)
-    web.add_argument("--rating-backpressure-high", type=int, default=0,
-                     help="pause new leases at this accepted-fit backlog (0 disables)")
-    web.add_argument("--rating-backpressure-low", type=int, default=0,
-                     help="resume new leases at or below this backlog")
     web.add_argument("--ratings", action=argparse.BooleanOptionalAction, default=True)
     add_rating_arguments(web)
     rate = sub.add_parser("rate")
     rate.add_argument("--once", action="store_true")
+    rate.add_argument(
+        "--rating-full-hmc",
+        action="store_true",
+        help="run an explicit offline multi-chain HMC audit",
+    )
     add_rating_arguments(rate)
     focus = sub.add_parser("focus")
     focus.add_argument("agents", nargs="*", help="agent IDs; omit to clear focus")
@@ -1296,13 +1444,17 @@ def main() -> None:
     worker.add_argument("--beta", type=float, default=0.05)
     worker.add_argument("--max-gate-games", type=int, default=400)
     worker.add_argument("--replay-sample-rate", type=float, default=0.2)
-    worker.add_argument("--max-decisions-per-side", type=int,
-                        default=ARENA_MAX_DECISIONS_PER_SIDE,
-                        help="adjudicate unresolved games as draws at this placement horizon (0 disables)")
+    worker.add_argument(
+        "--max-decisions-per-side",
+        type=int,
+        default=ARENA_MAX_DECISIONS_PER_SIDE,
+        help="adjudicate unresolved games as draws at this placement horizon (0 disables)",
+    )
     worker.add_argument("--coordinator", help="remote arena coordinator base URL")
     worker.add_argument("--token-file", help="shared worker token file for remote mode")
     worker.add_argument(
-        "--checkpoint-cache", default="~/.cache/drmc-rl/arena-checkpoints",
+        "--checkpoint-cache",
+        default="~/.cache/drmc-rl/arena-checkpoints",
         help="content-addressed checkpoint cache used by remote workers",
     )
     worker.add_argument("--request-timeout", type=float, default=60)

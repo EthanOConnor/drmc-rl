@@ -1,14 +1,16 @@
 # Continuous arena
 
-## Rating backpressure
+## Live ratings and snapshots
 
-The coordinator can bound accepted-rating latency without dropping completed
-work. `serve --rating-backpressure-high 500 --rating-backpressure-low 200`
-stops issuing new leases once 500 committed games are newer than the latest
-accepted posterior and resumes at 200. Existing leases may renew and submit
-normally, so throttling is lossless. The live backlog is exposed as
-`scheduler.rating_pending_games` in `/api/snapshot` and the hysteresis state is
-reported by `/api/v1/capabilities`.
+Match production never waits for rating inference. The live table rebuilds the
+hierarchical Davidson W/D/L posterior with a fast Laplace approximation after
+128 new games. Full multi-chain HMC is an explicit offline calibration, not a
+lease gate. The live backlog remains visible as `scheduler.rating_pending_games`.
+
+The browser also never computes a dashboard view in an HTTP request thread.
+One background producer materializes an immutable snapshot every five seconds;
+polling clients only receive the last complete byte buffer. This keeps browser
+traffic, rating work, leases, and result submissions isolated from each other.
 
 Multiple unsettled entrants share one bounded new-entry multiplier; their
 pairing no longer compounds two 6x boosts into a 36x new-vs-new preference.
@@ -62,13 +64,11 @@ uv run python -m tools.arena worker --device cuda --batch 8
 uv run python -m tools.arena serve --host 0.0.0.0 --port 8097
 ```
 
-`serve` owns a non-blocking rating thread by default. It checks every five
-seconds and publishes an exact sequential importance update after 16 new
-games. It forces a fresh HMC fit after 20,000 games or sooner when the
-importance posterior falls below 10% effective samples; with the default
-posterior this is still at least 480 effective draws. Run a
-one-off fit with `uv run python -m tools.arena rate --once`; use `--no-ratings`
-on `serve` only when another supervised `rate` process owns that work.
+`serve` owns the lightweight rating thread by default. It checks every five
+seconds and publishes a fresh Laplace posterior after 128 new games. Run an
+offline HMC audit with
+`uv run python -m tools.arena rate --once --rating-full-hmc`; use `--no-ratings`
+on `serve` only when another supervised `rate` process owns live updates.
 
 ## Distributed coordinator and workers
 

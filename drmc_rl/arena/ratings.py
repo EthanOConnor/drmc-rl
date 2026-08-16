@@ -6,9 +6,10 @@ Davidson W/D/L likelihood and a checkpoint-lineage hierarchy.  It deliberately
 contains no P1/P2 term: physical sides are balanced by the scheduler and any
 measured side asymmetry is an arena diagnostic, not skill.
 
-Posterior inference uses adaptive Hamiltonian Monte Carlo with multiple chains.
-The implementation is NumPy-only so rating remains a lightweight arena service
-and does not inherit the training stack.
+The live arena uses a Laplace approximation around the posterior mode.  This
+keeps table ratings and scheduling uncertainty cheap enough to refresh without
+interrupting match play.  Adaptive multi-chain Hamiltonian Monte Carlo remains
+available as an explicit offline calibration of that approximation.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from typing import Sequence
 import numpy as np
 
 
-MODEL_VERSION = "hierarchical-davidson-hmc-v1"
+MODEL_VERSION = "hierarchical-davidson-v2"
 ELO_SCALE = 400.0 / math.log(10.0)
 
 
@@ -125,8 +126,12 @@ class PosteriorSamples:
     def decode(cls, payload: bytes) -> "PosteriorSamples":
         with np.load(BytesIO(payload), allow_pickle=False) as arrays:
             names = (
-                "skills", "draw_tendencies", "draw_intercepts",
-                "lineage_scales", "draw_scales", "log_weights",
+                "skills",
+                "draw_tendencies",
+                "draw_intercepts",
+                "lineage_scales",
+                "draw_scales",
+                "log_weights",
             )
             values = [np.asarray(arrays[name]) for name in names]
             parents = (
@@ -166,9 +171,7 @@ class DavidsonPosterior:
         self.draw_scale = float(draw_scale)
         self.pairs = tuple(pairs)
         for pair in self.pairs:
-            if not (0 <= pair.i < pair.j < self.n) or min(
-                pair.wins_i, pair.draws, pair.wins_j
-            ) < 0:
+            if not (0 <= pair.i < pair.j < self.n) or min(pair.wins_i, pair.draws, pair.wins_j) < 0:
                 raise ValueError(f"invalid pair counts: {pair}")
         self.pair_i = np.asarray([pair.i for pair in self.pairs], dtype=np.intp)
         self.pair_j = np.asarray([pair.j for pair in self.pairs], dtype=np.intp)
@@ -235,9 +238,7 @@ class DavidsonPosterior:
         for i in self.topological:
             parent = self.parents[i]
             skills[i] = (
-                skills[parent] + tau * x[i]
-                if parent is not None and self.noncentered[i]
-                else x[i]
+                skills[parent] + tau * x[i] if parent is not None and self.noncentered[i] else x[i]
             )
         draw_tendency = sigma_draw * (draw_z - draw_z.mean())
         return skills, draw_tendency, delta, tau, sigma_draw
@@ -262,9 +263,7 @@ class DavidsonPosterior:
         grad_delta = 0.0
         if len(self.pairs):
             skill_gap = skills[self.pair_i] - skills[self.pair_j]
-            draw_logit = delta + 0.5 * (
-                draw_tendency[self.pair_i] + draw_tendency[self.pair_j]
-            )
+            draw_logit = delta + 0.5 * (draw_tendency[self.pair_i] + draw_tendency[self.pair_j])
             logits = np.column_stack((0.5 * skill_gap, draw_logit, -0.5 * skill_gap))
             maximum = logits.max(axis=1)
             exp_logits = np.exp(logits - maximum[:, None])
@@ -475,14 +474,21 @@ def _hmc_transition(
 ) -> tuple[np.ndarray, float, np.ndarray, float, bool]:
     momentum = metric.momentum(rng)
     proposal, proposal_momentum, proposal_logp, proposal_grad = _leapfrog(
-        model, position, momentum, gradient,
-        step_size=step_size, steps=steps, metric=metric,
+        model,
+        position,
+        momentum,
+        gradient,
+        step_size=step_size,
+        steps=steps,
+        metric=metric,
     )
     initial_energy = -logp + metric.kinetic_energy(momentum)
     proposal_energy = -proposal_logp + metric.kinetic_energy(proposal_momentum)
     energy_error = initial_energy - proposal_energy
     divergent = not math.isfinite(energy_error) or abs(energy_error) > 100.0
-    acceptance = 0.0 if not math.isfinite(energy_error) else min(1.0, math.exp(min(0.0, energy_error)))
+    acceptance = (
+        0.0 if not math.isfinite(energy_error) else min(1.0, math.exp(min(0.0, energy_error)))
+    )
     if not divergent and rng.random() < acceptance:
         return proposal, proposal_logp, proposal_grad, acceptance, False
     return position, logp, gradient, acceptance, divergent
@@ -498,8 +504,7 @@ def _find_step_size(
     step_size = 0.1
     for _ in range(24):
         _, _, _, acceptance, divergent = _hmc_transition(
-            model, position, logp, gradient,
-            step_size=step_size, steps=1, metric=metric, rng=rng
+            model, position, logp, gradient, step_size=step_size, steps=1, metric=metric, rng=rng
         )
         if divergent or acceptance < 0.5:
             step_size *= 0.5
@@ -533,17 +538,22 @@ def _sample_chain(
         adaptation_iteration += 1
         steps = int(rng.integers(config.leapfrog_min, config.leapfrog_max + 1))
         position, logp, gradient, acceptance, divergent = _hmc_transition(
-            model, position, logp, gradient,
+            model,
+            position,
+            logp,
+            gradient,
             step_size=math.exp(float(np.clip(log_step, -12.0, 1.0))),
-            steps=steps, metric=metric, rng=rng,
+            steps=steps,
+            metric=metric,
+            rng=rng,
         )
         warmup_divergences += int(divergent)
         eta = 1.0 / (adaptation_iteration + 10.0)
         error_sum = (1.0 - eta) * error_sum + eta * (config.target_accept - acceptance)
-        log_step = float(np.clip(
-            mu - math.sqrt(adaptation_iteration) / 0.05 * error_sum, -12.0, 1.0
-        ))
-        weight = adaptation_iteration ** -0.75
+        log_step = float(
+            np.clip(mu - math.sqrt(adaptation_iteration) / 0.05 * error_sum, -12.0, 1.0)
+        )
+        weight = adaptation_iteration**-0.75
         log_step_bar = weight * log_step + (1.0 - weight) * log_step_bar
     step_size = math.exp(float(np.clip(log_step_bar, -12.0, 1.0)))
     draws = np.empty((config.samples, model.dimension), dtype=np.float64)
@@ -551,8 +561,14 @@ def _sample_chain(
     for sample in range(config.samples):
         steps = int(rng.integers(config.leapfrog_min, config.leapfrog_max + 1))
         position, logp, gradient, acceptance, divergent = _hmc_transition(
-            model, position, logp, gradient,
-            step_size=step_size, steps=steps, metric=metric, rng=rng,
+            model,
+            position,
+            logp,
+            gradient,
+            step_size=step_size,
+            steps=steps,
+            metric=metric,
+            rng=rng,
         )
         accepts.append(acceptance)
         sampling_divergences += int(divergent)
@@ -636,7 +652,9 @@ def _effective_sample_size(chains: np.ndarray) -> np.ndarray:
         positive = pair > 0
         totals += np.where(positive, 2.0 * pair, 0.0)
         rho[:, ~positive] = 0.0
-    return np.minimum(chain_count * sample_count / np.maximum(totals, 1.0), chain_count * sample_count)
+    return np.minimum(
+        chain_count * sample_count / np.maximum(totals, 1.0), chain_count * sample_count
+    )
 
 
 def _normalized_weights(log_weights: np.ndarray) -> np.ndarray:
@@ -645,7 +663,9 @@ def _normalized_weights(log_weights: np.ndarray) -> np.ndarray:
     return weights / weights.sum()
 
 
-def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantiles: Sequence[float]) -> np.ndarray:
+def _weighted_quantile(
+    values: np.ndarray, weights: np.ndarray, quantiles: Sequence[float]
+) -> np.ndarray:
     order = np.argsort(values)
     ordered_values = values[order]
     cumulative = np.cumsum(weights[order])
@@ -668,72 +688,100 @@ def _summarize_samples(
         rank_low, rank_median, rank_high = _weighted_quantile(
             ranks[:, i].astype(np.float64), weights, (0.025, 0.5, 0.975)
         )
-        summaries.append(AgentRating(
-            mean=mean,
-            sd=math.sqrt(max(variance, 0.0)),
-            low=float(low),
-            high=float(high),
-            probability_best=float(weights[best == i].sum()),
-            rank_median=float(rank_median),
-            rank_low=float(rank_low),
-            rank_high=float(rank_high),
-            draw_propensity=float(weights @ samples.draw_tendencies[:, i]),
-            probability_better_parent=(
-                None
-                if int(samples.parents[i]) < 0
-                else float(weights[elo[:, i] > elo[:, int(samples.parents[i])]].sum())
-            ),
-        ))
+        summaries.append(
+            AgentRating(
+                mean=mean,
+                sd=math.sqrt(max(variance, 0.0)),
+                low=float(low),
+                high=float(high),
+                probability_best=float(weights[best == i].sum()),
+                rank_median=float(rank_median),
+                rank_low=float(rank_low),
+                rank_high=float(rank_high),
+                draw_propensity=float(weights @ samples.draw_tendencies[:, i]),
+                probability_better_parent=(
+                    None
+                    if int(samples.parents[i]) < 0
+                    else float(weights[elo[:, i] > elo[:, int(samples.parents[i])]].sum())
+                ),
+            )
+        )
     hyperparameters = {
         "lineage_sd_elo": float(weights @ samples.lineage_scales) * ELO_SCALE,
-        "lineage_sd_elo_p95": float(_weighted_quantile(
-            samples.lineage_scales, weights, (0.95,)
-        )[0] * ELO_SCALE),
+        "lineage_sd_elo_p95": float(
+            _weighted_quantile(samples.lineage_scales, weights, (0.95,))[0] * ELO_SCALE
+        ),
         "draw_intercept": float(weights @ samples.draw_intercepts),
         "draw_tendency_sd": float(weights @ samples.draw_scales),
     }
     return tuple(summaries), hyperparameters
 
 
-def sequential_update(
-    samples: PosteriorSamples,
+def fit_laplace_ratings(
+    num_agents: int,
     pairs: Sequence[PairCounts],
+    parents: Sequence[int | None],
     *,
-    base_diagnostics: dict[str, float | int | str],
+    config: RatingConfig | None = None,
+    samples: int = 4_096,
 ) -> RatingFit:
-    """Exactly reweight posterior draws by a new independent match batch."""
+    """Fit the live fixed-skill posterior with a local Gaussian approximation.
 
-    log_weights = samples.log_weights.copy()
-    for pair in pairs:
-        gap = samples.skills[:, pair.i] - samples.skills[:, pair.j]
-        draw_logit = samples.draw_intercepts + 0.5 * (
-            samples.draw_tendencies[:, pair.i] + samples.draw_tendencies[:, pair.j]
-        )
-        logits = np.column_stack((0.5 * gap, draw_logit, -0.5 * gap))
-        maximum = logits.max(axis=1)
-        log_norm = maximum + np.log(np.exp(logits - maximum[:, None]).sum(axis=1))
-        log_weights += (
-            pair.wins_i * logits[:, 0]
-            + pair.draws * logits[:, 1]
-            + pair.wins_j * logits[:, 2]
-            - pair.games * log_norm
-        )
-    log_weights -= float(np.max(log_weights))
-    updated = PosteriorSamples(
-        samples.skills, samples.draw_tendencies, samples.draw_intercepts,
-        samples.lineage_scales, samples.draw_scales, log_weights, samples.parents,
+    The likelihood and hierarchical priors are identical to the HMC model.  We
+    optimize its unconstrained parameterization, invert the local negative
+    Hessian, and draw deterministic Gaussian samples for ranks, LOS, and
+    information gain.  At arena roster sizes this is fast enough to rebuild
+    from aggregate W/D/L counts rather than accumulating fragile importance
+    weights between expensive full fits.
+    """
+
+    config = config or RatingConfig()
+    if samples < 128:
+        raise ValueError("Laplace approximation requires at least 128 samples")
+    model = DavidsonPosterior(
+        num_agents,
+        pairs,
+        parents,
+        root_skill_sd=config.root_skill_sd,
+        lineage_scale=config.lineage_scale,
+        draw_scale=config.draw_scale,
     )
-    weights = _normalized_weights(log_weights)
-    importance_ess = float(1.0 / np.sum(weights * weights))
-    summaries, hyperparameters = _summarize_samples(updated)
-    diagnostics = {
-        **base_diagnostics,
-        "method": "sequential_importance",
-        "importance_ess": importance_ess,
-        "importance_ess_fraction": importance_ess / len(weights),
+    mode = _posterior_mode(model)
+    metric = _curvature_metric(model, mode)
+    rng = np.random.default_rng(config.seed)
+    positions = mode + rng.normal(size=(samples, model.dimension)) @ metric.covariance_cholesky.T
+
+    skill_draws = np.empty((samples, num_agents), dtype=np.float64)
+    draw_tendencies = np.empty_like(skill_draws)
+    deltas = np.empty(samples, dtype=np.float64)
+    taus = np.empty(samples, dtype=np.float64)
+    draw_sigmas = np.empty(samples, dtype=np.float64)
+    for sample, position in enumerate(positions):
+        skill, draw_tendency, delta, tau, draw_sigma = model.unpack(position)
+        skill_draws[sample] = skill - skill.mean()
+        draw_tendencies[sample] = draw_tendency
+        deltas[sample] = delta
+        taus[sample] = tau
+        draw_sigmas[sample] = draw_sigma
+    posterior = PosteriorSamples(
+        skill_draws,
+        draw_tendencies,
+        deltas,
+        taus,
+        draw_sigmas,
+        np.zeros(samples, dtype=np.float64),
+        np.asarray([-1 if parent is None else parent for parent in parents], dtype=np.int32),
+    )
+    summaries, hyperparameters = _summarize_samples(posterior)
+    _logp, mode_gradient = model.log_density_and_grad(mode)
+    diagnostics: dict[str, float | int | str] = {
+        "model": MODEL_VERSION,
+        "method": "laplace",
+        "samples": samples,
+        "mode_gradient_max": float(np.max(np.abs(mode_gradient))),
         "side_effect": "fixed_zero",
     }
-    return RatingFit(summaries, diagnostics, hyperparameters, updated)
+    return RatingFit(summaries, diagnostics, hyperparameters, posterior)
 
 
 def superiority_matrix(samples: PosteriorSamples) -> np.ndarray:
@@ -767,13 +815,9 @@ def matchup_information_matrix(samples: PosteriorSamples) -> np.ndarray:
             probabilities = np.exp(logits - maximum[:, None])
             probabilities /= probabilities.sum(axis=1, keepdims=True)
             predictive = weights @ probabilities
-            predictive_entropy = -float(
-                np.sum(predictive * np.log(np.maximum(predictive, 1e-300)))
-            )
+            predictive_entropy = -float(np.sum(predictive * np.log(np.maximum(predictive, 1e-300))))
             conditional_entropy = -float(
-                weights @ np.sum(
-                    probabilities * np.log(np.maximum(probabilities, 1e-300)), axis=1
-                )
+                weights @ np.sum(probabilities * np.log(np.maximum(probabilities, 1e-300)), axis=1)
             )
             information[i, j] = information[j, i] = max(
                 predictive_entropy - conditional_entropy, 0.0
@@ -793,7 +837,9 @@ def fit_bayesian_ratings(
 
     config = config or RatingConfig()
     model = DavidsonPosterior(
-        num_agents, pairs, parents,
+        num_agents,
+        pairs,
+        parents,
         root_skill_sd=config.root_skill_sd,
         lineage_scale=config.lineage_scale,
         draw_scale=config.draw_scale,
@@ -818,7 +864,7 @@ def fit_bayesian_ratings(
         try:
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 results = list(executor.map(_sample_chain_process, chain_args))
-        except (NotImplementedError, OSError, PermissionError):
+        except NotImplementedError, OSError, PermissionError:
             # Restricted containers may deny POSIX semaphore/process queries.
             # Preserve correctness there; production macOS/Linux hosts take
             # the parallel path.
@@ -862,9 +908,7 @@ def fit_bayesian_ratings(
                 return f"skill:{labels[index]}"
             if index < 2 * num_agents:
                 return f"draw:{labels[index - num_agents]}"
-            return ("draw_intercept", "lineage_scale", "draw_scale")[
-                index - 2 * num_agents
-            ]
+            return ("draw_intercept", "lineage_scale", "draw_scale")[index - 2 * num_agents]
 
         chain_detail = ", ".join(
             f"a={float(stats['acceptance']):.2f}/eps={float(stats['step_size']):.4g}"

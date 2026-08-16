@@ -6,16 +6,15 @@ from drmc_rl.arena.ratings import (
     PosteriorSamples,
     RatingConfig,
     fit_bayesian_ratings,
+    fit_laplace_ratings,
     matchup_information_matrix,
-    sequential_update,
 )
 
 
 def test_posterior_analytic_gradient_matches_finite_difference() -> None:
     model = DavidsonPosterior(
         4,
-        [PairCounts(0, 1, 7, 2, 4), PairCounts(1, 2, 3, 5, 9),
-         PairCounts(2, 3, 8, 1, 6)],
+        [PairCounts(0, 1, 7, 2, 4), PairCounts(1, 2, 3, 5, 9), PairCounts(2, 3, 8, 1, 6)],
         [None, 0, None, 2],
     )
     rng = np.random.default_rng(2)
@@ -42,10 +41,10 @@ def test_bayesian_fit_recovers_order_and_keeps_draw_tendency_out_of_skill() -> N
         PairCounts(0, 2, 85, 5, 10),
     ]
     fit = fit_bayesian_ratings(
-        3, pairs, [None, 0, 1],
-        config=RatingConfig(
-            chains=2, warmup=160, samples=300, require_convergence=False, seed=11
-        ),
+        3,
+        pairs,
+        [None, 0, 1],
+        config=RatingConfig(chains=2, warmup=160, samples=300, require_convergence=False, seed=11),
     )
     means = [rating.mean for rating in fit.agents]
     assert means[0] > means[1] > means[2]
@@ -59,41 +58,41 @@ def test_lineage_prior_centers_an_unplayed_child_on_parent() -> None:
         3,
         [PairCounts(0, 1, 70, 5, 30)],
         [None, None, 0],
-        config=RatingConfig(
-            chains=2, warmup=160, samples=300, require_convergence=False, seed=19
-        ),
+        config=RatingConfig(chains=2, warmup=160, samples=300, require_convergence=False, seed=19),
     )
     parent, child = fit.agents[0], fit.agents[2]
     assert abs(parent.mean - child.mean) < 30
     assert child.sd > parent.sd
 
 
-def test_sequential_update_reweights_persisted_full_posterior() -> None:
-    base = fit_bayesian_ratings(
-        2,
-        [PairCounts(0, 1, 50, 10, 50)],
-        [None, None],
-        config=RatingConfig(
-            chains=2, warmup=120, samples=240, require_convergence=False, seed=29
-        ),
+def test_laplace_fit_preserves_order_uncertainty_and_draw_model() -> None:
+    fit = fit_laplace_ratings(
+        3,
+        [PairCounts(0, 1, 70, 30, 20), PairCounts(1, 2, 65, 90, 25), PairCounts(0, 2, 85, 5, 10)],
+        [None, 0, 1],
+        config=RatingConfig(seed=11),
+        samples=1_024,
     )
-    restored = PosteriorSamples.decode(base.samples.encode())
-    updated = sequential_update(
-        restored, [PairCounts(0, 1, 12, 1, 2)], base_diagnostics=base.diagnostics
-    )
-    assert updated.agents[0].mean > base.agents[0].mean
-    assert updated.agents[1].mean < base.agents[1].mean
-    assert updated.diagnostics["method"] == "sequential_importance"
-    assert 0 < updated.diagnostics["importance_ess"] <= len(restored.log_weights)
+    means = [rating.mean for rating in fit.agents]
+    assert means[0] > means[1] > means[2]
+    assert all(rating.sd > 0 for rating in fit.agents)
+    assert fit.agents[1].draw_propensity > fit.agents[0].draw_propensity
+    assert fit.agents[1].draw_propensity > fit.agents[2].draw_propensity
+    assert fit.diagnostics["method"] == "laplace"
+    assert fit.diagnostics["mode_gradient_max"] < 1e-3
 
 
 def test_information_gain_prefers_an_uncertain_matchup() -> None:
     draws = 1_000
     rng = np.random.default_rng(41)
     samples = PosteriorSamples(
-        skills=np.column_stack((
-            np.zeros(draws), rng.normal(0.0, 1.0, draws), np.full(draws, -5.0),
-        )),
+        skills=np.column_stack(
+            (
+                np.zeros(draws),
+                rng.normal(0.0, 1.0, draws),
+                np.full(draws, -5.0),
+            )
+        ),
         draw_tendencies=np.zeros((draws, 3)),
         draw_intercepts=np.full(draws, -2.0),
         lineage_scales=np.ones(draws),
