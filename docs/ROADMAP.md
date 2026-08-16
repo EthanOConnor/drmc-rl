@@ -126,8 +126,9 @@ Required measurements:
 - candidate truncation count, required to be zero;
 - teacher/student disagreement by decision opportunity.
 
-The current G4 Strong League remains active as a robustness baseline and
-teacher while G5 matures.
+The completed G4 Strong League remains a frozen robustness baseline and teacher
+while a bounded exploration rewarm tests whether its mature policy can still
+improve before G5 matures.
 
 ## Phase 4 — tactical state curriculum
 
@@ -240,7 +241,9 @@ Open work:
 
 ## Immediate order of work
 
-1. Continue and landmark the active G4 Strong League run.
+1. Finish and evaluate the bounded G4 Strong League rewarm; then choose the
+   permanent +1.0B parent, the strongest rewarm checkpoint, or both for a
+   separately authorized outcome-only consolidation comparison.
 2. Build a stratified strict timing-probe bank and complete the timing gate.
 3. Bind native/emulator evidence to PairState v2 and open its gate.
 4. Complete exact afterstate annotation/training and freeze V3 teachers.

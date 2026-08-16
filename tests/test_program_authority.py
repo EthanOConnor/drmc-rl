@@ -10,7 +10,8 @@ def test_program_manifest_loads_and_references_known_gates() -> None:
     path = Path(__file__).parents[1] / "drmc_rl" / "program" / "program.yaml"
     spec = ProgramSpec.load(path)
     assert spec.products["human-trainer"].competitive_core == "unified-g5"
-    assert spec.recipes["g4-strong-league"].status == "active"
+    assert spec.recipes["g4-strong-league"].status == "complete"
+    assert spec.recipes["g4-strong-league-rewarm"].status == "active"
     spec.validate()
 
 

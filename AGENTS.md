@@ -43,7 +43,9 @@ gate that must be completed first.
 
 ## Current work
 
-- Primary live campaign: `g4-strong-league`.
+- Primary live campaign: `g4-strong-league-rewarm`, a bounded exploration
+  rewarm from the permanent Strong League +1.0B checkpoint. The base
+  `g4-strong-league` campaign is complete and remains a frozen teacher lineage.
 - Parallel architecture work: `timing-action-gate`, `pair-state-v2`, and
   `human-afterstate-bootstrap`.
 - First staged competitive successor: `g5-v3-bootstrap`; it remains staged

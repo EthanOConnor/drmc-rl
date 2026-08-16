@@ -91,9 +91,9 @@ gates:
 
 recipes:
   g4-strong-league:
-    status: active
+    status: complete
     stage: 1
-    purpose: Continue the current robust G4 lineage while successor architecture and teachers mature.
+    purpose: Retain the completed robust G4 lineage as a frozen baseline and teacher.
     config: drmc_rl/training/configs/vs_strong_league_hardening_tf3090.yaml
     requires_paths:
       - drmc_rl/training/configs/vs_strong_league_hardening_tf3090.yaml
@@ -112,7 +112,31 @@ recipes:
       preferred_host: tf3090
       accelerator: cuda
     notes:
-      - This is a teacher and robustness baseline, not the terminal architecture.
+      - This is a completed teacher and robustness baseline, not the terminal architecture.
+  g4-strong-league-rewarm:
+    status: active
+    stage: 1
+    purpose: Test whether a bounded aggressive exploration rewarm can improve the mature Strong League policy before outcome-only consolidation.
+    config: drmc_rl/training/configs/vs_strong_league_rewarm_tf3090.yaml
+    requires_paths:
+      - drmc_rl/training/configs/vs_strong_league_rewarm_tf3090.yaml
+      - vendor/drmario_native
+    command:
+      - python
+      - -m
+      - drmc_rl.training.run
+      - --cfg
+      - '{repo}/drmc_rl/training/configs/vs_strong_league_rewarm_tf3090.yaml'
+      - --ui
+      - headless
+    produces:
+      - Bounded G4 rewarm checkpoints for paired arena evaluation
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Preserve the resumed optimizer moments while applying the recipe learning rate override.
+      - Compare against the permanent Strong League +1.0B parent before choosing an outcome-only consolidation parent.
   timing-action-gate:
     status: active
     stage: 1
