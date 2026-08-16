@@ -217,7 +217,6 @@ def script_metrics(script: Sequence[int] | np.ndarray, *, fps: float = 60.1) -> 
     rising_counts = np.fromiter((_bit_count(int(value)) for value in rising), dtype=np.int16)
     falling_counts = np.fromiter((_bit_count(int(value)) for value in falling), dtype=np.int16)
     edge_counts = rising_counts + falling_counts
-    edge_frames = np.flatnonzero(edge_counts)
     reaction_candidates = np.flatnonzero(masks & GAMEPLAY_MASK)
     reaction = int(reaction_candidates[0]) if reaction_candidates.size else frames
 
