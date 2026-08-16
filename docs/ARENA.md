@@ -1,175 +1,67 @@
 # Continuous arena
 
-The arena is the durable evaluation loop around VS training. It records every
-game in `runs/arena/arena.sqlite`, computes one connected Bayesian rating
-posterior, promotes candidates through an SPRT against the current champion,
-and keeps every prior champion active as a `lineage` entrant. The browser UI
-refreshes from that same database; it has no separate state.
+The arena is the durable evidence system around competitive training. It owns:
 
-Agent identity is immutable and distinct from a filename. Give experiments
-short recognizable names such as `Capsule Prime G3`, `Searchlight G1`, and
-`Human 2000`; use `family` for the comparable lineage and `generation` for its
-position. The supported statuses are:
+- immutable agent identities and lineage;
+- every full-game result and replay reference;
+- the connected W/D/L payoff graph;
+- Bayesian rating/posterior summaries;
+- information-gain scheduling;
+- candidate promotion tests;
+- PSRO/meta-strategy inputs;
+- live training and worker telemetry.
 
-- `candidate`: receives concentrated games against its family's champion.
-- `champion`: current promoted model for a family.
-- `lineage`: a former champion, retained in tournament scheduling forever.
-- `anchor`: a frozen human-rating or search configuration.
+SQLite belongs to exactly one coordinator on local storage. Remote workers lease
+deterministic match batches over authenticated HTTP and never open the database.
 
-Register a JSON manifest:
+## Agent identity
 
-```json
-{
-  "agents": [
-    {
-      "id": "capsule-prime-g0",
-      "name": "Capsule Prime G0",
-      "family": "central",
-      "generation": 0,
-      "checkpoint": "runs/arena/checkpoints/capsule-prime-g0.pt.gz",
-      "status": "champion"
-    },
-    {
-      "id": "human-2000-v2",
-      "name": "Human 2000 · V2",
-      "family": "human",
-      "generation": 2,
-      "checkpoint": "runs/arena/checkpoints/human-policy-v2.pt.gz",
-      "status": "anchor"
-    }
-  ]
-}
-```
+Autosaves are recovery artifacts. Arena entrants are scientific identities with:
 
-Then run the worker and dashboard as separate supervised processes:
+- stable `id`, family, generation, role, and parent;
+- immutable checkpoint and artifact manifest;
+- mode/decoder, execution profile, and search parameters;
+- status: candidate, champion, lineage, or anchor.
 
-```bash
-uv run python -m tools.arena register runs/arena/roster.json
-uv run python -m tools.arena worker --device cuda --batch 8
-uv run python -m tools.arena serve --host 0.0.0.0 --port 8097
-```
+A promoted champion becomes permanent lineage when replaced. Human, style,
+execution, and search configurations are anchors; requested-rating clones are
+not accepted as distinct strength evidence unless independently calibrated.
 
-`serve` owns a non-blocking rating thread by default. It checks every five
-seconds and publishes an exact sequential importance update after 16 new
-games. It forces a fresh HMC fit after 20,000 games or sooner when the
-importance posterior falls below 10% effective samples; with the default
-posterior this is still at least 480 effective draws. Run a
-one-off fit with `uv run python -m tools.arena rate --once`; use `--no-ratings`
-on `serve` only when another supervised `rate` process owns that work.
+## Ratings and payoff matrix
 
-## Distributed coordinator and workers
+The displayed Elo scale is derived from the hierarchical Davidson W/D/L model,
+including separate draw tendency and lineage priors. Side advantage remains a
+protocol diagnostic rather than a parameter that conceals bias.
 
-SQLite always belongs to exactly one host and stays on that host's local
-filesystem. Never put `arena.sqlite` on SSHFS, SMB, NFS, OneDrive, or another
-network-synchronized directory. Remote machines lease deterministic match
-batches over HTTP and submit immutable results; they never open the database.
+The full pairwise payoff matrix is equally authoritative. Cycles and exploiters
+must remain visible even when scalar ratings look ordered.
 
-Create a private worker token outside the repository on the coordinator, then
-start the dashboard/coordinator on a trusted encrypted network such as
-Tailscale:
+## Scheduling
 
-```bash
-umask 077
-openssl rand -hex 32 > ~/.config/drmc-rl/arena-worker.token
-uv run python -m tools.arena serve \
-  --host 0.0.0.0 --port 8097 \
-  --worker-token-file ~/.config/drmc-rl/arena-worker.token \
-  --replay-dir /data/drmc-arena/replays
-```
+Before a posterior exists, count-based scheduling connects the graph. Afterwards,
+expected Bayesian information gain prioritizes uncertain and decision-relevant
+matchups, with compute-cost adjustment for expensive search agents.
 
-Copy the token through an authenticated channel to each worker and launch it
-without any `--db` access:
+The PSRO layer consumes a square payoff export and returns a regularized
+population mixture, best responses, and saddle gap. The intended role set is:
 
-```bash
-uv run python -m tools.arena worker \
-  --coordinator http://green:8097 \
-  --token-file ~/.config/drmc-rl/arena-worker.token \
-  --worker-id macbook-mps \
-  --device mps --threads 2 --batch 12
-```
+- main;
+- main exploiter;
+- league exploiter;
+- human/execution exploiter.
 
-The coordinator reserves globally unique game serials, issues expiring leases,
-and reassigns abandoned work. Workers renew long-running leases in the
-background. Each claim has a fresh secret, each match has a deterministic
-SHA-256 ID, and an identical retried submission is acknowledged without
-creating duplicate games or telemetry. Checkpoints are delivered by the
-authenticated coordinator and cached by content hash on each worker.
+## Promotion
 
-New replay samples are gzip-compressed into content-addressed files and the
-database stores only their relative hashes. Before migrating an existing
-database, operate on a local copy while the old arena remains authoritative:
+Promotion requires more than head-to-head Elo:
 
-```bash
-uv run python -m tools.arena --db /data/staging/arena.sqlite \
-  externalize-replays --replay-dir /data/drmc-arena/replays --vacuum
-```
+- sequential evidence versus the current main;
+- improved expected value against the active meta-strategy;
+- no catastrophic regression against permanent anchors or active exploiters;
+- clean-start, tactical-suite, side, seed, horizon, and objective health gates;
+- complete artifact provenance.
 
-Verify the copied database, replay hashes, checkpoint paths, API integration,
-and remote worker throughput before cutover. The final cutover is a brief
-worker pause, WAL checkpoint, checksummed copy, and single-writer ownership
-switch; never run Mac and Green coordinators against the same history.
+## Operations
 
-## Rating model
-
-Every checkpoint is treated as an immutable player with one fixed latent
-skill. The complete W/D/L history is fit with a hierarchical Davidson model:
-
-- decisive win odds are logistic in the two checkpoints' skill difference;
-- every agent has a separate draw tendency, so horizon survival is not scored
-  as half a win or confused with strength;
-- a child checkpoint's skill prior is centered on its parent, while the common
-  lineage transition width is learned from the arena;
-- independent roots receive broad weakly informative priors;
-- P1/P2 advantage is fixed at exactly zero. Sides are alternated by the arena,
-  and a measured side split is a protocol diagnostic rather than a parameter
-  the rating model is allowed to conceal.
-
-Fresh fits use four adaptive HMC chains. Nothing is published unless there are
-zero sampling divergences, rank-normalized split R-hat is at most 1.01, and
-both bulk and tail effective sample sizes pass a 400 minimum. The SQLite cache retains the posterior
-draws as well as summaries. Between full fits, new matches update those draws
-by their exact incremental likelihood (sequential importance sampling), which
-takes milliseconds. A roster change, 512 new games, or importance ESS below
-50% forces a new HMC fit; a failed fit leaves the last accepted posterior
-visible.
-
-The dashboard reports posterior mean Elo, asymmetric 95% credible intervals,
-probability of being best, and a 95% rank interval. `LOS ↓ next` is the joint
-posterior probability that a row is stronger than the next visible row;
-`LOS ↳ parent` compares it with its registered lineage parent. Elo is only the
-familiar display scale (`400 / ln(10)` times latent log-odds); inference is
-performed on the full W/D/L posterior. Fit method, staleness, R-hat, sampling
-ESS, online importance ESS, and the observed side split are exposed in
-`/api/snapshot`.
-
-Each posterior update also computes the expected Bayesian information gain of
-one more W/D/L result for every possible pair. The scheduler samples matchups
-in proportion to that expected uncertainty reduction, with explicit weights
-for candidates/provisional entrants and an approximate compute-cost discount
-for search. Low-game and uncertain comparisons therefore rise naturally;
-already-certain mismatches fall away. Before the first posterior, a count-based
-bootstrap policy establishes a connected graph. Promotion remains a separate
-0-vs-10 Elo SPRT with 5% errors and at most 400 games. A promoted model changes
-the old champion to `lineage`; no checkpoint is moved or deleted.
-
-Training remains the existing placement-SMDP PPO stack. Point each campaign's
-checkpoint directory at the registrar or explicitly register selected
-milestones. Do not register every autosave: candidates are scientific
-identities, while autosaves are recovery artifacts. A discovery config is:
-
-```json
-{
-  "campaigns": [{
-    "id": "central-az",
-    "family": "central",
-    "name": "Capsule Prime G{generation} · {step}",
-    "root": "/home/ethan/drmario/drmc-rl",
-    "glob": "runs/central_az/checkpoints/*.pt.gz",
-    "settle_seconds": 60
-  }]
-}
-```
-
-Run `uv run python -m tools.arena discover campaigns.json`; it watches by
-default, registers each settled checkpoint once, links it to the current
-family champion, and assigns a human-readable generation.
+Coordinator and worker commands are maintained in [Operations](OPERATIONS.md).
+The database, replay store, and checkpoints are migrated only with workers
+paused, WAL checkpointed, checksums verified, and one authoritative writer.

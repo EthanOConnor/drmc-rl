@@ -1,14 +1,46 @@
-# Training & Evaluation Metrics
+# Metrics
 
-- E[T]: mean frames to clear (per seed and aggregate)
-- Var[T]: variance of frames to clear
-- CVaR_α(T): tail risk at α ∈ {5%, 25%}
-- Success rate: clears per N episodes
-- Shaping metrics: mean r_env, r_shape, r_total; ratio |r_shape|/|r_env|
-- Throughput:
-  - Frames/sec: `sum(placements/tau)` per second (macro env “true FPS”)
-  - Decisions/sec: macro decisions per second (one per spawn/placement)
-- Risk profiles: compare τ ∈ {0.25, 0.5, 0.75}
-- Curriculum diagnostics:
-  - `curriculum/confidence_lower_bound` vs `curriculum/success_threshold`
-  - Time-goal tightening: `curriculum/time_budget_frames`, `curriculum/time_budget_spawns`, `curriculum/time_k`
+## Correctness
+
+- planner oracle mismatches and script replay mismatches;
+- candidate legal count, packed width, and dropped count;
+- pair-engine/emulator divergence;
+- public-state hidden-field audit failures;
+- invalid actions, desyncs, deadline misses, and profile violations.
+
+## Competitive
+
+- W/D/L and credible intervals;
+- pairwise payoff matrix and active-opponent minima;
+- clear/topout/horizon terminal causes;
+- PSRO mixture value, best responses, and saddle gap;
+- clean-start versus curriculum-start results;
+- side and seed split.
+
+## Model
+
+- policy target KL/top-k agreement;
+- W/D/L Brier/reliability;
+- tactical-head calibration;
+- teacher disagreement and student error by opportunity;
+- recurrent/effect-token ablations;
+- value uncertainty.
+
+## Human trainer
+
+- achieved strength versus requested rating;
+- regret quantiles/tails by context;
+- style identifiability and strength leakage;
+- decision latency and motor metrics separately;
+- burst, edge, chord, correction, soft-drop, and complexity distributions;
+- temporal form/error autocorrelation;
+- matched-human outcomes and pedagogy measures.
+
+## Performance
+
+- simulated frames/s and decisions/s;
+- candidates/s and planner states/s;
+- update wall time and accelerator utilization;
+- inference/search latency p50/p95/p99;
+- search nodes, depth, cache hits, and coverage;
+- strength gain per wall-clock hour and per inference millisecond.

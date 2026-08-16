@@ -1,154 +1,109 @@
-# Human player and coach backend
+# Human player and coach backend protocol
 
-`python -m tools.human_backend` is the supported intelligence boundary for
-Professor Pills. It is a supervised JSONL subprocess: one request per stdin
-line, one response per stdout line. Model loading, inference, reachability,
-and coaching remain outside the host process and therefore cannot stall or
-crash emulation, rendering, input, or audio.
+The supported host boundary is a supervised nonblocking JSONL subprocess or an
+isomorphic local service. Model loading, reachability, quality, human decoding,
+search, timing, and script validation remain outside gameplay threads.
 
-Protocol schema: `drmc-human-backend-v1`.
+Protocol schema: `drmc-human-backend-v2`.
 
-## Host behavior
+## Host rules
 
-- Start the backend off all real-time threads and send `hello` while showing a
-  warming-up state.
-- Keep at most one pending request and one latest result. Never wait for a
-  response on a gameplay thread.
-- Use monotonically increasing `request_id` and emulator `frame_id` values.
-  Discard results for frames older than the current decision.
-- Send `cancel` when a pending result is no longer useful. Cancellation is
-  cooperative; stale-result rejection is still mandatory.
-- Treat EOF, timeout, or an error response as loss of optional AI service.
-  Gameplay continues and the host may restart the subprocess.
-- Send semantic state produced from the shared Dr. Mario specification. Do not
-  reproduce WRAM addresses in the host/backend protocol.
+- Start and warm the backend off real-time threads.
+- Keep at most one pending request and one latest result.
+- Use monotone `request_id` and emulator `frame_id`; discard stale results.
+- Send `cancel` when work is obsolete, but still reject stale responses.
+- Treat EOF, timeout, or error as loss of optional AI service; gameplay
+  continues and the host may restart it.
+- Send semantic `PublicPairState`; never send duplicated WRAM offsets or a
+  privileged engine checkpoint to a deployed actor request.
 
-## Discovery and health
+## Hello and health
 
 ```json
-{"schema":"drmc-human-backend-v1","type":"hello","request_id":0,"frame_id":0}
+{"schema":"drmc-human-backend-v2","type":"hello","request_id":0,"frame_id":0}
 ```
 
-The `capabilities` response reports request types, state conventions, model
-schema, checkpoint identity, corpus release, supported WHR-C range, and held-out
-model metrics. `health` additionally reports readiness, uptime, model-load time,
-request/error counters, and inference latency percentiles.
+Capabilities report:
 
-The backend selects a real-time search profile for the detected device
-(`fast` on CPU, `balanced` on CUDA) and reports its beam, simulation width,
-and adaptive budget utilization. Professor Pills supplies the outer
-`deadline_ms`; when `search_deadline_ms` is omitted, the backend spends a
-measured fraction of the remaining time, preserves headroom for serialization
-and scheduling, and backs off after a miss. `--realtime-profile` can force a
-fixed `fast`, `balanced`, or `deep` breadth for diagnosis. Offline drmc-rl
-benchmarks use explicit search knobs instead of this real-time adaptation.
+- model/artifact identity;
+- public-state and execution-profile schemas;
+- supported products;
+- rating/style ranges;
+- search profile and deadline behavior;
+- corpus releases and held-out calibration;
+- health and latency percentiles.
 
-## Semantic decision state
-
-`decide` and `coach` share this envelope:
+## Decide request
 
 ```json
 {
-  "schema": "drmc-human-backend-v1",
-  "type": "decide",
-  "request_id": 42,
-  "frame_id": 9182,
-  "deadline_ms": 90,
-  "target_rating": 1750,
-  "timing_scale": 1.0,
-  "target_rating_sd": 70,
-  "temperature": 1.0,
-  "state": {
-    "board_planes": "8 x 16 x 8 nested 0/1 values",
-    "opponent_board_planes": "8 x 16 x 8 nested 0/1 values",
-    "opponent_state_age_frames": 12,
-    "opponent_rating": 1680,
-    "opponent_rating_sd": 75,
-    "game_phase": 0.34,
-    "recent_decisions": [
-      {"action": 119, "tau_frames": 63},
-      {"action": 246, "tau_frames": 81}
-    ],
-    "pill": [0, 1],
-    "preview": [2, 0],
-    "speed": 2,
-    "speed_ups": 0,
-    "falling": {
-      "x": 3,
-      "y": 0,
-      "rotation": 0,
-      "speed_counter": 0,
-      "horizontal_velocity": 0,
-      "hold_dir": 0,
-      "rotation_hold": 0,
-      "frame_parity": 0
-    }
-  }
+  "schema":"drmc-human-backend-v2",
+  "type":"decide",
+  "request_id":42,
+  "frame_id":9182,
+  "deadline_ms":90,
+  "product":"trainer",
+  "controls":{
+    "target_rating":1750,
+    "style":[0.6,-0.2,0.0,0.3],
+    "cadence_scale":1.0,
+    "execution_profile":"rating-conditioned-human"
+  },
+  "state":{"schema":"drmc-pair-state-v2","...":"PublicPairState payload"}
 }
 ```
 
-Colors are canonical `0=red, 1=yellow, 2=blue`; row zero is the bottle top.
-Rating uncertainty, opponent rating, game phase, and recent decisions are
-optional. Missing history means an empty history. This is an inspectable
-semantic temporal contract rather than a host-maintained recurrent tensor.
-Each set of eight board planes is color `[3]`, virus `[1]`, and pill connectivity
-`[up, down, left, right]`. The backend computes every reachable placement and
-its exact controller script. The response declares the chosen placement,
-frame-indexed NES button masks, resolved/clamped rating, timing distribution,
-candidate actions, human-policy logits, and state win probability. The opponent board is the corpus-
-compatible latest known spawn state; its explicit age prevents it from being
-misrepresented as frame-synchronized. Professor Pills decides how to
-schedule or present those declarations; the backend never issues UI commands.
+Products:
 
-The timing model predicts human slack beyond the planner-minimal controller
-script. `timing_scale: 0` requests the fastest planner path; `1` samples the
-corpus-calibrated cadence for the requested rating, and larger values request
-more deliberation. The backend prepends only reaction time that replay-validates
-against the exact frame model, so gravity clamps delay before it can change the
-chosen placement. The response reports requested and realized slack.
+- `unrestricted`: quality argmax, unrestricted exact scripts;
+- `human_rate`: quality argmax after the named profile filter;
+- `trainer`: calibrated regret, style, cadence, form, and profile-valid
+  execution.
 
-## Consented Professor Pills evidence
+Rating is ignored for competitive quality. Search breadth and temperature are
+not strength controls.
 
-drmariostats exports only replay-verified runs with explicit, revocable research
-consent. Public visibility is unrelated. Analyze the private operator export with:
+## Decide response
 
-```sh
-uv run python -m tools.analyze_professor_corpus professor-corpus.jsonl
-```
+The response includes:
 
-The report groups raw cartridge-latched APM by authenticated player and emits
-human-versus-model outcomes keyed by requested rating and cadence. Raw APM is a
-useful style diagnostic; semantic per-pill `tau_frames` remains the training
-target because it excludes menus and resolution intervals.
+- selected action and exact frame-indexed button script;
+- best and chosen calibrated win probabilities;
+- win-logit regret and requested target regret;
+- candidate W/D/L/uncertainty summaries;
+- style score and form state;
+- requested/realized cadence;
+- execution-profile identity, script metrics, and zero/explicit violations;
+- search depth/nodes/deadline status;
+- artifact manifest identity;
+- planner replay verification and desync key.
 
-## Coaching
+The host schedules the script and checks predicted versus observed pose. It does
+not reinterpret the backend's strength or style semantics.
 
-A `coach` request may include `chosen_action` and `alternative_limit`. Its
-response reports how typical the choice is for comparable humans, its rank,
-surprisal, common alternatives, and a separate competitive rank from bounded
-native depth-2 value search. Human frequency is explicitly not called move
-quality.
+## Coach request
 
-Search is on by default for `coach`. Pure human play remains
-`search_weight: 0`; a positive weight blends bounded value advantage into the
-human logits. The outer `deadline_ms` is the host's freshness constraint;
-normally omit `search_deadline_ms` so the backend adapts it to local hardware.
-An explicit search deadline is an offline/debug override. Interactive hosts
-should allow search failure and retain imitation output; `require_search` is
-for offline evaluation.
+A coach request adds the observed `chosen_action`. The response reports:
 
-## Training
+- feasibility and exact consequences;
+- human probability/rank and surprisal;
+- competitive W/D/L/rank/regret;
+- common strength-consistent alternatives;
+- deterministic explanation facts from exact afterstates/events.
 
-```sh
-uv run python -m tools.train_human_policy extract --planner cuda --sample-modulus 32
-uv run python -m tools.train_human_policy train --device cuda --epochs 12
-uv run python -m tools.human_backend --checkpoint runs/human_policy/human_policy_v2.pt.gz
-```
+Human frequency is never labeled move quality. Language presentation may
+summarize deterministic facts but may not invent causal explanations.
 
-Extraction reads only immutable `HumanCorpus` releases, emits bounded-memory
-month shards, joins both players' continuously interpolated WHR-C trajectories,
-recomputes exact feasible candidates, and builds four prior decisions of
-semantic history. Training shuffles and prefetches shards, jointly learns
-behavior, outcome value, and timing, and restores the best validation epoch.
-Rating-density weights prevent the middle of the population from drowning out
-the tails.
+## Timing and execution
+
+Decision latency and motor execution are distinct outputs. The backend chooses
+only scripts that replay to the selected pose and satisfy the active profile.
+For trainer motor mistakes, future implementations must preserve recognizable
+intent through late correction/failure models; random placement substitution is
+not permitted.
+
+## Compatibility
+
+V1 hosts can be supported by an explicit adapter that constructs
+`PublicPairState` and maps the old request to one product. V1 raw logit-gap
+strength is retired and must not be silently mapped to a claimed human rating.

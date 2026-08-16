@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  pure-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Install
+        run: uv sync --group dev --extra rl
+      - name: Validate program authority
+        run: uv run python -m tools.program validate --check-paths
+      - name: Compile new architecture modules
+        run: |
+          uv run python -m compileall -q \
+            drmc_rl/program \
+            drmc_rl/game/pair_state.py \
+            drmc_rl/execution \
+            drmc_rl/search/joint_event.py \
+            drmc_rl/teachers \
+            drmc_rl/experiments \
+            drmc_rl/arena/meta_strategy.py \
+            drmc_rl/human/decoder.py \
+            drmc_rl/human/style.py \
+            drmc_rl/human/sparring.py \
+            drmc_rl/human/protocol_v2.py \
+            drmc_rl/models/policy/effect_tokens.py \
+            drmc_rl/models/policy/event_belief.py \
+            drmc_rl/models/policy/candidate_coverage.py \
+            drmc_rl/eval/release_gates.py \
+            tools/program.py \
+            tools/earliest_lock_dominance.py \
+            tools/counterfactual_teacher.py \
+            tools/joint_search_teacher.py \
+            tools/execution_profile.py \
+            tools/style_space.py \
+            tools/meta_strategy.py \
+            tools/release_gate.py
+      - name: Focused architecture tests
+        run: |
+          uv run pytest -q \
+            tests/test_program_authority.py \
+            tests/test_pair_state_v2.py \
+            tests/test_execution_profile.py \
+            tests/test_joint_event_search.py \
+            tests/test_counterfactual_teacher.py \
+            tests/test_effect_tokens.py \
+            tests/test_event_belief.py \
+            tests/test_candidate_coverage.py \
+            tests/test_meta_strategy.py \
+            tests/test_unified_decoder.py \
+            tests/test_style_space.py \
+            tests/test_sparring.py \
+            tests/test_release_gates.py \
+            tests/test_human_protocol_v2.py \
+            tests/test_forced_lock.py \
+            tests/test_earliest_lock.py
+      - name: Lint
+        run: uv run ruff check drmc_rl tools tests
