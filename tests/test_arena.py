@@ -435,6 +435,38 @@ def test_snapshot_uses_cached_posterior_and_reports_staleness(tmp_path: Path) ->
     assert current["ratings"]["method"] == "sequential"
 
 
+def test_rating_matrices_are_built_before_publish_transaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import drmc_rl.arena.store as store_module
+
+    store = ArenaStore(tmp_path / "arena.sqlite")
+    add(store, "alpha", "lineage")
+    add(store, "beta", "lineage")
+    for seed in range(12):
+        store.record(
+            "alpha", "beta", seed=seed, side=seed % 2,
+            winner="a" if seed < 8 else "b", match_len_sec=60, decisions=20,
+        )
+
+    transaction_states: list[bool] = []
+    original_information = store_module.matchup_information_matrix
+    original_superiority = store_module.superiority_matrix
+
+    def information(samples):
+        transaction_states.append(store.conn.in_transaction)
+        return original_information(samples)
+
+    def superiority(samples):
+        transaction_states.append(store.conn.in_transaction)
+        return original_superiority(samples)
+
+    monkeypatch.setattr(store_module, "matchup_information_matrix", information)
+    monkeypatch.setattr(store_module, "superiority_matrix", superiority)
+    store.refit_ratings(FAST_RATING)
+    assert transaction_states == [False, False]
+
+
 def test_snapshot_exposes_record_and_terminal_causes(tmp_path: Path) -> None:
     store = ArenaStore(tmp_path / "arena.sqlite")
     add(store, "alpha", "lineage")

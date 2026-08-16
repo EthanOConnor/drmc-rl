@@ -781,14 +781,39 @@ class ArenaStore:
         replace_fit_id: int | None = None,
     ) -> dict[str, Any]:
         created = utc_now()
-        with self.conn:
-            values = (
-                MODEL_VERSION, match_count, len(agents),
-                json.dumps(config, sort_keys=True),
-                json.dumps(fit.diagnostics, sort_keys=True),
-                json.dumps(fit.hyperparameters, sort_keys=True),
-                method, last_match_id, hmc_match_count, fit.samples.encode(), created,
+        values = (
+            MODEL_VERSION, match_count, len(agents),
+            json.dumps(config, sort_keys=True),
+            json.dumps(fit.diagnostics, sort_keys=True),
+            json.dumps(fit.hyperparameters, sort_keys=True),
+            method, last_match_id, hmc_match_count, fit.samples.encode(), created,
+        )
+        estimate_rows = [
+            (
+                agent.id, rating.mean, rating.sd, rating.low, rating.high,
+                rating.probability_best, rating.rank_median, rating.rank_low,
+                rating.rank_high, rating.draw_propensity,
+                rating.probability_better_parent,
             )
+            for agent, rating in zip(agents, fit.agents, strict=True)
+        ]
+        # These posterior reductions dominate sequential update time. Build
+        # them before opening the atomic publish transaction so arena workers
+        # can continue committing completed leases while ratings are reduced.
+        information = matchup_information_matrix(fit.samples)
+        information_rows = [
+            (agents[i].id, agents[j].id, float(information[i, j]))
+            for i in range(len(agents))
+            for j in range(i + 1, len(agents))
+        ]
+        superiority = superiority_matrix(fit.samples)
+        superiority_rows = [
+            (agent.id, opponent.id, float(superiority[i, j]))
+            for i, agent in enumerate(agents)
+            for j, opponent in enumerate(agents)
+            if i != j
+        ]
+        with self.conn:
             if replace_fit_id is None:
                 # Posterior arrays are useful only for the current sequential
                 # updater. Keep historical summaries, not duplicate megabyte
@@ -822,34 +847,24 @@ class ArenaStore:
                     rank_median,rank_low,rank_high,draw_propensity,probability_better_parent)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
-                    (
-                        fit_id, agent.id, rating.mean, rating.sd, rating.low, rating.high,
-                        rating.probability_best, rating.rank_median, rating.rank_low,
-                        rating.rank_high, rating.draw_propensity,
-                        rating.probability_better_parent,
-                    )
-                    for agent, rating in zip(agents, fit.agents, strict=True)
+                    (fit_id, *row)
+                    for row in estimate_rows
                 ],
             )
-            information = matchup_information_matrix(fit.samples)
             self.conn.executemany(
                 """INSERT INTO rating_matchup_information
                    (fit_id,agent_a,agent_b,information_gain) VALUES(?,?,?,?)""",
                 [
-                    (fit_id, agents[i].id, agents[j].id, float(information[i, j]))
-                    for i in range(len(agents))
-                    for j in range(i + 1, len(agents))
+                    (fit_id, *row)
+                    for row in information_rows
                 ],
             )
-            superiority = superiority_matrix(fit.samples)
             self.conn.executemany(
                 """INSERT INTO rating_superiority
                    (fit_id,agent_id,opponent_id,probability) VALUES(?,?,?,?)""",
                 [
-                    (fit_id, agent.id, opponent.id, float(superiority[i, j]))
-                    for i, agent in enumerate(agents)
-                    for j, opponent in enumerate(agents)
-                    if i != j
+                    (fit_id, *row)
+                    for row in superiority_rows
                 ],
             )
         return {
