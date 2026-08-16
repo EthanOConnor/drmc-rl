@@ -31,7 +31,7 @@ smdp_ppo:
   num_epochs: 2
   minibatch_size: 1600
   # Triton requires compute capability >=7.0; Green's 1080 Ti is Pascal 6.1.
-  compile_mode: off
+  compile_mode: "off"
   rollout_compute_dtype: fp32
   update_compute_dtype: fp32
   policy_type: candidate
