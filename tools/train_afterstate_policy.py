@@ -619,6 +619,9 @@ def train(args) -> dict[str, Any]:
             raise ValueError(f"not a {HUMAN_AFTERSTATE_SCHEMA} checkpoint: {args.init_checkpoint}")
         model.load_state_dict(initial["state_dict"])
         timing.load_state_dict(initial["timing_state_dict"])
+    if args.compile:
+        model.compile(mode="reduce-overhead", dynamic=True)
+        timing.compile(mode="reduce-overhead", dynamic=True)
     parameters = list(model.parameters()) + list(timing.parameters())
     optimizer_args: dict[str, Any] = {"lr": args.lr, "weight_decay": 1e-4}
     if str(args.device).startswith("cuda"):
@@ -773,6 +776,11 @@ def main() -> None:
         help="auto uses bf16 only on GPUs with native bf16 tensor cores",
     )
     parser.add_argument("--capacity", choices=("small", "base", "large"), default="base")
+    parser.add_argument(
+        "--compile",
+        action="store_true",
+        help="compile model forwards with dynamic-shape CUDA graphs",
+    )
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=2e-4)
