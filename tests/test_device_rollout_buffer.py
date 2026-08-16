@@ -96,3 +96,18 @@ def test_entropy_schedule_can_be_pinned_to_collected_rollout_step():
 
     assert adapter._get_entropy_coef() == pytest.approx(0.002)
     assert adapter._get_entropy_coef(step=400) == pytest.approx(0.012)
+
+
+def test_entropy_schedule_can_restart_from_resumed_absolute_step():
+    adapter = object.__new__(SMDPPPOAdapter)
+    adapter.global_step = 2_850_000_000
+    adapter._entropy_coef_initial = 0.008
+    adapter.hparams = SimpleNamespace(
+        entropy_schedule_start_step=2_800_000_000,
+        entropy_schedule_steps=200_000_000,
+        entropy_schedule_end=0.0005,
+    )
+
+    assert adapter._get_entropy_coef(step=2_750_000_000) == pytest.approx(0.008)
+    assert adapter._get_entropy_coef(step=2_900_000_000) == pytest.approx(0.00425)
+    assert adapter._get_entropy_coef(step=3_100_000_000) == pytest.approx(0.0005)

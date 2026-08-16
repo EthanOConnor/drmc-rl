@@ -259,6 +259,7 @@ class SMDPPPOConfig:
     # Exploration
     entropy_schedule_end: float = 0.003
     entropy_schedule_steps: int = 1000000
+    entropy_schedule_start_step: int = 0
     use_gumbel_topk: bool = False
     gumbel_k: int = 2
 
@@ -436,6 +437,9 @@ class SMDPPPOAdapter(AlgoAdapter):
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
             entropy_schedule_steps=int(ppo_cfg_dict.get("entropy_schedule_steps", 1000000)),
+            entropy_schedule_start_step=int(
+                ppo_cfg_dict.get("entropy_schedule_start_step", 0)
+            ),
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
@@ -2429,7 +2433,12 @@ class SMDPPPOAdapter(AlgoAdapter):
     def _get_entropy_coef(self, *, step: Optional[int] = None) -> float:
         """Get current entropy coefficient (annealed over training)."""
         schedule_step = self.global_step if step is None else int(step)
-        progress = min(1.0, schedule_step / self.hparams.entropy_schedule_steps)
+        schedule_start = int(getattr(self.hparams, "entropy_schedule_start_step", 0))
+        schedule_length = max(1, int(self.hparams.entropy_schedule_steps))
+        progress = min(
+            1.0,
+            max(0.0, (schedule_step - schedule_start) / schedule_length),
+        )
         return (
             self._entropy_coef_initial
             + (self.hparams.entropy_schedule_end - self._entropy_coef_initial) * progress
