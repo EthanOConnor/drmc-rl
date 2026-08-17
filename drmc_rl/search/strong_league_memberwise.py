@@ -57,11 +57,20 @@ def read_mixture_members(manifest_path: Path) -> tuple[MixtureMember, ...]:
     return tuple(members)
 
 
-def read_davidson_calibration(path: Path) -> DavidsonCalibration:
+def read_davidson_calibration(
+    path: Path, *, member_id: str | None = None
+) -> DavidsonCalibration:
     payload = json.loads(path.read_text())
     if payload.get("schema") not in _CALIBRATION_SCHEMAS:
         raise ValueError(f"unsupported W/D/L calibration schema in {path}")
     parameters = payload.get("parameters") or {}
+    if member_id is not None:
+        member_parameters = payload.get("member_parameters") or {}
+        if member_id not in member_parameters:
+            raise ValueError(
+                f"calibration lacks member-specific parameters for {member_id!r}"
+            )
+        parameters = member_parameters[member_id]
     return DavidsonCalibration(
         slope=float(parameters["slope"]),
         bias=float(parameters["bias"]),
@@ -123,9 +132,13 @@ def frozen_strong_league_belief_factory(args: Any):
 def frozen_strong_league_memberwise_factory(args: Any):
     """Run one complete search per frozen member and export weighted disagreement."""
 
-    members, calibration = _load_aggregate(args)
+    if not args.mixture_manifest or not args.wdl_calibration:
+        raise ValueError("Strong League adapter requires mixture and calibration paths")
+    members = read_mixture_members(Path(args.mixture_manifest))
+    calibration_path = Path(args.wdl_calibration)
     models: list[BeliefNativePairSearchModel] = []
     for member in members:
+        calibration = read_davidson_calibration(calibration_path, member_id=member.id)
         continuation = FrozenStrongLeagueMixture(
             (MixtureMember(member.id, member.checkpoint, member.sha256, 1.0),),
             calibration,
