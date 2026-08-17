@@ -12,6 +12,7 @@ import numpy as np
 
 from drmc_rl.eval.wdl_calibration import paired_game_bootstrap, weighted_metrics
 from drmc_rl.teachers.release_analysis import ReleaseDataset
+from drmc_rl.teachers.v3_baseline import verify_v3_baseline_manifest
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,12 +90,21 @@ def load_bootstrap_rows(path: str | Path) -> list[BootstrapRow]:
         return parse_bootstrap_rows(json.loads(line) for line in handle if line.strip())
 
 
+def load_bootstrap_bundle(
+    path: str | Path, manifest_path: str | Path
+) -> tuple[list[BootstrapRow], dict[str, Any]]:
+    rows_path = Path(path)
+    manifest = verify_v3_baseline_manifest(rows_path, Path(manifest_path))
+    return load_bootstrap_rows(rows_path), manifest
+
+
 def compare_bootstrap(
     release: ReleaseDataset,
     bootstrap: list[BootstrapRow],
     *,
     seed: int = 20260816,
     bootstrap_samples: int = 4000,
+    baseline_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     cf_probability: list[tuple[float, float, float]] = []
     baseline_probability: list[tuple[float, float, float]] = []
@@ -136,9 +146,7 @@ def compare_bootstrap(
             "rows": int(len(indices)),
             "games": int(len(np.unique(group[indices]))),
             "counterfactual": weighted_metrics(cf[indices], target[indices], group[indices]),
-            "v3_bootstrap": weighted_metrics(
-                baseline[indices], target[indices], group[indices]
-            ),
+            "v3_bootstrap": weighted_metrics(baseline[indices], target[indices], group[indices]),
             "paired_game_bootstrap": paired_game_bootstrap(
                 cf[indices],
                 baseline[indices],
@@ -156,8 +164,13 @@ def compare_bootstrap(
         if len(indices) and len(np.unique(group[indices])) >= 2:
             by_stratum["/".join(value) or "unspecified"] = metrics_for(indices)
     aggregate = metrics_for(all_indices)
+    game_outcome: dict[str, int] = {}
+    for row in bootstrap:
+        previous = game_outcome.get(row.game_id)
+        if previous is None or row.outcome == 1:
+            game_outcome[row.game_id] = row.outcome
     return {
-        "schema": "drmc-counterfactual-v3-bootstrap-comparison-v1",
+        "schema": "drmc-counterfactual-v3-bootstrap-comparison-v2",
         "release_sha256": list(release.release_sha256),
         "chance_model": release.chance_model,
         "information_scope": release.information_scope,
@@ -167,10 +180,12 @@ def compare_bootstrap(
         "v3_bootstrap": aggregate["v3_bootstrap"],
         "paired_game_bootstrap": aggregate["paired_game_bootstrap"],
         "outcomes": {
-            "win": int((target == 0).sum()),
-            "draw": int((target == 1).sum()),
-            "loss": int((target == 2).sum()),
+            "win": sum(value == 0 for value in game_outcome.values()),
+            "draw": sum(value == 1 for value in game_outcome.values()),
+            "loss": sum(value == 2 for value in game_outcome.values()),
         },
+        "outcome_unit": "independent-game",
+        "baseline_provenance": dict(baseline_provenance or {}),
         "by_stratum": by_stratum,
     }
 
@@ -178,6 +193,7 @@ def compare_bootstrap(
 __all__ = [
     "BootstrapRow",
     "compare_bootstrap",
+    "load_bootstrap_bundle",
     "load_bootstrap_rows",
     "parse_bootstrap_rows",
 ]

@@ -111,11 +111,7 @@ class _FrozenMember:
                 torch.from_numpy(actions[None]).to(self.device),
                 torch.from_numpy(costs[None]).to(self.device),
                 torch.from_numpy(mask[None]).to(self.device),
-                aux=(
-                    None
-                    if self.aux_dim == 0
-                    else torch.from_numpy(aux[None]).to(self.device)
-                ),
+                aux=(None if self.aux_dim == 0 else torch.from_numpy(aux[None]).to(self.device)),
             )
         return logits[0].float().cpu().numpy(), float(value.reshape(-1)[0].cpu())
 
@@ -216,7 +212,9 @@ class FrozenStrongLeagueMixture:
         return result
 
 
-def _board_planes(board_bytes: bytes) -> np.ndarray:
+def board_bytes_to_semantic_planes(board_bytes: bytes) -> np.ndarray:
+    """Decode canonical native bottle bytes into the shared eight-plane schema."""
+
     board = np.frombuffer(board_bytes, dtype=np.uint8).reshape(16, 8)
     type_hi = board & _MASK_TYPE
     color_lo = board & _MASK_COLOR
@@ -241,8 +239,8 @@ def _policy_inputs(state: NativePairSearchState, side: int):
     public = state.privileged.public
     own = public.sides[side]
     opponent = public.sides[1 - side]
-    own_planes = _board_planes(own.board)
-    opponent_planes = _board_planes(opponent.board)
+    own_planes = board_bytes_to_semantic_planes(own.board)
+    opponent_planes = board_bytes_to_semantic_planes(opponent.board)
     legal = state.legal_actions_by_side[side]
     costs_legal = state.action_costs_by_side[side]
     feasible = np.zeros(512, dtype=bool)
@@ -358,6 +356,7 @@ def frozen_strong_league_factory(args: Any):
 
 
 __all__ = [
+    "board_bytes_to_semantic_planes",
     "DavidsonCalibration",
     "FrozenStrongLeagueMixture",
     "MixtureMember",

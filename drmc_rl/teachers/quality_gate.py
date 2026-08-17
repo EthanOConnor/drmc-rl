@@ -141,7 +141,7 @@ def _nested(payload: Mapping[str, Any], path: str, default: Any = None) -> Any:
 def _finite(value: object) -> bool:
     try:
         return math.isfinite(float(value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
 
 
@@ -228,7 +228,8 @@ def evaluate_quality_gate(
         teacher_ids = tuple(str(item) for item in audit.get("teacher_ids", ()))
         check(
             "audit-schema",
-            str(audit.get("schema", "")) in {
+            str(audit.get("schema", ""))
+            in {
                 "drmc-counterfactual-pilot-audit-v2",
                 "drmc-counterfactual-pilot-audit-v3",
             },
@@ -253,8 +254,7 @@ def evaluate_quality_gate(
         chance_model = str(audit.get("chance_model", ""))
         check(
             "reserve-chance-model",
-            chance_model == CHANCE_MODEL_ID
-            and bool(audit.get("chance_model_gate_eligible")),
+            chance_model == CHANCE_MODEL_ID and bool(audit.get("chance_model_gate_eligible")),
             chance_model,
             CHANCE_MODEL_ID,
             "independent one-ninth branching is mechanics-only",
@@ -277,11 +277,9 @@ def evaluate_quality_gate(
         check(
             "member-wise-uncertainty",
             int(audit.get("memberwise_complete_states", 0)) == audit_states
-            and int(audit.get("memberwise_complete_candidates", 0))
-            == audit_candidates
+            and int(audit.get("memberwise_complete_candidates", 0)) == audit_candidates
             and int(audit.get("teacher_count_min", 0)) >= 2
-            and int(audit.get("teacher_count_min", 0))
-            == int(audit.get("teacher_count_max", -1)),
+            and int(audit.get("teacher_count_min", 0)) == int(audit.get("teacher_count_max", -1)),
             {
                 "states": audit.get("memberwise_complete_states"),
                 "candidates": audit.get("memberwise_complete_candidates"),
@@ -391,7 +389,7 @@ def evaluate_quality_gate(
             try:
                 cell = (int(item["level"]), int(item["speed"]))
                 games_in_cell = int(item["games"])
-            except (KeyError, TypeError, ValueError):
+            except KeyError, TypeError, ValueError:
                 malformed_cells += 1
                 continue
             if cell in calibration_cells:
@@ -399,9 +397,7 @@ def evaluate_quality_gate(
                 continue
             calibration_cells[cell] = games_in_cell
         expected_calibration_cells = {
-            (level, speed)
-            for level in (5, 10, 15, 20)
-            for speed in (0, 1, 2)
+            (level, speed) for level in (5, 10, 15, 20) for speed in (0, 1, 2)
         }
         per_stratum = list(calibration_cells.values())
         check(
@@ -409,8 +405,7 @@ def evaluate_quality_gate(
             malformed_cells == 0
             and set(calibration_cells) == expected_calibration_cells
             and len(per_stratum) >= limit.min_calibration_strata
-            and min(per_stratum, default=0)
-            >= limit.min_calibration_games_per_stratum
+            and min(per_stratum, default=0) >= limit.min_calibration_games_per_stratum
             and sum(per_stratum) == games,
             {
                 "cells": sorted(calibration_cells),
@@ -443,8 +438,7 @@ def evaluate_quality_gate(
         )
         check(
             "draw-identifiability",
-            bool(heldout.get("draw_identifiable"))
-            and draws >= limit.min_natural_draw_games,
+            bool(heldout.get("draw_identifiable")) and draws >= limit.min_natural_draw_games,
             {"draw_games": draws, "identifiable": heldout.get("draw_identifiable")},
             f">={limit.min_natural_draw_games} natural draw games",
             "the Davidson draw parameter is not identified by win/loss-only evidence",
@@ -460,9 +454,7 @@ def evaluate_quality_gate(
             )
         member_calibrations_raw = calibration.get("member_calibrations")
         member_calibrations = (
-            member_calibrations_raw
-            if isinstance(member_calibrations_raw, Mapping)
-            else {}
+            member_calibrations_raw if isinstance(member_calibrations_raw, Mapping) else {}
         )
         expected_members = set(teacher_ids)
         observed_members = {str(key) for key in member_calibrations}
@@ -472,9 +464,7 @@ def evaluate_quality_gate(
             and observed_members == expected_members
             and all(
                 isinstance(value, Mapping)
-                and _member_calibration_valid(
-                    value, min_folds=limit.min_calibration_folds
-                )
+                and _member_calibration_valid(value, min_folds=limit.min_calibration_folds)
                 for value in member_calibrations.values()
             ),
             sorted(observed_members),
@@ -649,14 +639,10 @@ def evaluate_quality_gate(
         shortfall = int(bank_manifest.get("quota_shortfall", -1))
         policy = str(bank_manifest.get("rollout_policy", ""))
         bank_strata_raw = bank_manifest.get("strata")
-        bank_strata = (
-            bank_strata_raw if isinstance(bank_strata_raw, Mapping) else {}
-        )
+        bank_strata = bank_strata_raw if isinstance(bank_strata_raw, Mapping) else {}
         quota_raw = bank_manifest.get("quota")
         quota = quota_raw if isinstance(quota_raw, Mapping) else {}
-        bank_cell_counts = {
-            str(key): int(value) for key, value in bank_strata.items()
-        }
+        bank_cell_counts = {str(key): int(value) for key, value in bank_strata.items()}
         quota_counts = {str(key): int(value) for key, value in quota.items()}
         check(
             "balanced-bank-size",
@@ -677,8 +663,7 @@ def evaluate_quality_gate(
             shortfall == 0
             and len(bank_cell_counts) >= limit.min_balanced_cells
             and set(bank_cell_counts) == set(quota_counts)
-            and min(bank_cell_counts.values(), default=0)
-            >= limit.min_states_per_balanced_cell
+            and min(bank_cell_counts.values(), default=0) >= limit.min_states_per_balanced_cell
             and bank_cell_counts == quota_counts
             and sum(bank_cell_counts.values()) == states,
             {
@@ -715,9 +700,7 @@ def evaluate_quality_gate(
             and bool(bank_manifest.get("reserve_initial_board_conditioned")),
             {
                 "chance_model": bank_manifest.get("chance_model"),
-                "initial_board_conditioned": bank_manifest.get(
-                    "reserve_initial_board_conditioned"
-                ),
+                "initial_board_conditioned": bank_manifest.get("reserve_initial_board_conditioned"),
             },
             {
                 "chance_model": CHANCE_MODEL_ID,
@@ -742,8 +725,7 @@ def evaluate_quality_gate(
         )
         check(
             "balanced-bank-release-input-match",
-            str(bank_manifest.get("sha256", ""))
-            == str(audit_settings.get("input_sha256", "")),
+            str(bank_manifest.get("sha256", "")) == str(audit_settings.get("input_sha256", "")),
             bank_manifest.get("sha256"),
             audit_settings.get("input_sha256"),
             "the audited release must consume the supplied balanced bank bytes",
@@ -752,8 +734,7 @@ def evaluate_quality_gate(
         check(
             "balanced-bank-mixture-match",
             _is_sha256(rollout_hash)
-            and str(rollout_hash)
-            == str(audit_settings.get("mixture_manifest_sha256", "")),
+            and str(rollout_hash) == str(audit_settings.get("mixture_manifest_sha256", "")),
             rollout_hash,
             audit_settings.get("mixture_manifest_sha256"),
             "bank rollout and search continuation must use the same frozen mixture",
@@ -771,6 +752,96 @@ def evaluate_quality_gate(
         games = int(bootstrap.get("games", 0))
         outcomes_raw = bootstrap.get("outcomes")
         outcomes = outcomes_raw if isinstance(outcomes_raw, Mapping) else {}
+        provenance_raw = bootstrap.get("baseline_provenance")
+        provenance = provenance_raw if isinstance(provenance_raw, Mapping) else {}
+        check(
+            "bootstrap-provenance-schema",
+            str(provenance.get("schema", "")) == "drmc-v3-wdl-bootstrap-manifest-v1",
+            provenance.get("schema"),
+            "drmc-v3-wdl-bootstrap-manifest-v1",
+            "V3 baseline rows must come from the content-addressed producer",
+        )
+        check(
+            "bootstrap-calibration-evaluation-disjoint",
+            bool(provenance.get("game_sets_disjoint"))
+            and str(provenance.get("calibration_game_set_sha256", ""))
+            != str(provenance.get("evaluation_game_set_sha256", "")),
+            {
+                "disjoint": provenance.get("game_sets_disjoint"),
+                "calibration": provenance.get("calibration_game_set_sha256"),
+                "evaluation": provenance.get("evaluation_game_set_sha256"),
+            },
+            "disjoint content-addressed game sets",
+            "Davidson fitting games must never enter the evaluation comparison",
+        )
+        check(
+            "bootstrap-baseline-artifact-hashes",
+            all(
+                _is_sha256(provenance.get(field))
+                for field in (
+                    "rows_sha256",
+                    "calibration_sha256",
+                    "checkpoint_sha256",
+                    "calibration_bank_sha256",
+                    "evaluation_bank_sha256",
+                )
+            ),
+            {
+                field: provenance.get(field)
+                for field in (
+                    "rows_sha256",
+                    "calibration_sha256",
+                    "checkpoint_sha256",
+                    "calibration_bank_sha256",
+                    "evaluation_bank_sha256",
+                )
+            },
+            "SHA-256 for every frozen baseline input and output",
+            "the baseline must be reproducible from immutable artifacts",
+        )
+        check(
+            "bootstrap-baseline-calibration-evidence",
+            int(provenance.get("calibration_games", 0)) >= limit.min_calibration_games
+            and int(provenance.get("calibration_draw_games", 0)) >= limit.min_natural_draw_games,
+            {
+                "games": provenance.get("calibration_games"),
+                "draw_games": provenance.get("calibration_draw_games"),
+            },
+            {
+                "games": f">={limit.min_calibration_games}",
+                "draw_games": f">={limit.min_natural_draw_games}",
+            },
+            "the V3 Davidson link needs its own adequate natural-game calibration",
+        )
+        check(
+            "bootstrap-baseline-evaluation-evidence",
+            int(provenance.get("evaluation_games", 0)) == games
+            and int(provenance.get("evaluation_games", 0))
+            >= limit.min_bootstrap_games
+            and int(provenance.get("evaluation_draw_games", 0))
+            == int(outcomes.get("draw", 0))
+            and int(provenance.get("evaluation_draw_games", 0))
+            >= limit.min_bootstrap_draw_games,
+            {
+                "manifest_games": provenance.get("evaluation_games"),
+                "comparison_games": games,
+                "manifest_draw_games": provenance.get("evaluation_draw_games"),
+                "comparison_draw_games": outcomes.get("draw", 0),
+            },
+            "matching held-out game and draw counts",
+            "comparison statistics must cover exactly the manifested evaluation split",
+        )
+        check(
+            "bootstrap-baseline-production-clean",
+            not bool(provenance.get("diagnostic_only", True))
+            and not bool(provenance.get("repository_dirty", True)),
+            {
+                "diagnostic_only": provenance.get("diagnostic_only"),
+                "repository_dirty": provenance.get("repository_dirty"),
+            },
+            {"diagnostic_only": False, "repository_dirty": False},
+            "promotion evidence must be emitted by committed production code",
+        )
         check(
             "bootstrap-independent-games",
             games >= limit.min_bootstrap_games,
@@ -785,13 +856,10 @@ def evaluate_quality_gate(
             f">={limit.min_bootstrap_draw_games}",
             "W/D/L comparison should include natural held-out draws",
         )
-        bootstrap_release_hashes = tuple(
-            str(item) for item in bootstrap.get("release_sha256", ())
-        )
+        bootstrap_release_hashes = tuple(str(item) for item in bootstrap.get("release_sha256", ()))
         check(
             "bootstrap-release-match",
-            bool(audit_release_hashes)
-            and bootstrap_release_hashes == audit_release_hashes,
+            bool(audit_release_hashes) and bootstrap_release_hashes == audit_release_hashes,
             bootstrap_release_hashes,
             audit_release_hashes,
             "bootstrap comparison must evaluate the audited beam-8 release",
@@ -850,12 +918,9 @@ def load_and_evaluate(
         "bootstrap": bootstrap_path,
     }
     payloads = {
-        key: None if path is None else json.loads(path.read_text())
-        for key, path in paths.items()
+        key: None if path is None else json.loads(path.read_text()) for key, path in paths.items()
     }
-    hashes = {
-        key: _sha256(path) for key, path in paths.items() if path is not None
-    }
+    hashes = {key: _sha256(path) for key, path in paths.items() if path is not None}
     return evaluate_quality_gate(
         audit=payloads["audit"],
         calibration=payloads["calibration"],

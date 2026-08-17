@@ -300,7 +300,28 @@ beam; do not loosen the evidence threshold for runtime convenience.
 
 ### 7. Compare directly with frozen V3
 
-Each bootstrap row is held-out and keyed to a release `source_id`:
+Do not hand-author `baseline_wdl`. Build it from two separately generated,
+natural-terminal PairState banks. The calibration bank fits the positive-slope
+Davidson link; the evaluation bank supplies the exact release `source_id`
+rows. Their opaque initial-snapshot `game_id` sets must be disjoint.
+
+```bash
+uv run python -m tools.build_v3_bootstrap \
+  --checkpoint "$V3_CHECKPOINT" \
+  --calibration-bank "$V3_CALIBRATION_BANK" \
+  --evaluation-bank "$V3_EVALUATION_BANK" \
+  --rows-output "$V3_BOOTSTRAP_ROWS" \
+  --calibration-output "$ROOT/v3-bootstrap-calibration.json" \
+  --manifest-output "$ROOT/v3-bootstrap-manifest.json" \
+  --bootstrap-samples 4000 --device cuda
+```
+
+The producer hashes the checkpoint, both source banks, calibration artifact,
+output rows, code revision, and both game-ID sets. It rejects split overlap,
+incomplete games, illegal recorded actions, fewer than 192 calibration games,
+fewer than eight calibration draw games, fewer than 48 evaluation games, or
+evaluation without a natural draw. Each emitted row is keyed to a release
+`source_id`:
 
 ```json
 {
@@ -313,13 +334,14 @@ Each bootstrap row is held-out and keyed to a release `source_id`:
 }
 ```
 
-`baseline_wdl` comes from the frozen observed-action/V3 bootstrap without
-consuming counterfactual labels.
+`baseline_wdl` is the separately calibrated frozen-V3 observed-action score;
+it never consumes counterfactual labels.
 
 ```bash
 uv run python -m tools.compare_counterfactual_bootstrap \
   "$ROOT/release-b8"/manifest.json \
   --bootstrap "$V3_BOOTSTRAP_ROWS" \
+  --bootstrap-manifest "$ROOT/v3-bootstrap-manifest.json" \
   --bootstrap-samples 4000 \
   --output "$ROOT/v3-bootstrap-comparison.json"
 ```

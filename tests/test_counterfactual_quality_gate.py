@@ -10,6 +10,13 @@ CALIBRATION_HASH = "b" * 64
 BANK_HASH = "c" * 64
 SOURCE_MANIFEST_HASH = "d" * 64
 RELEASE_HASH = "e" * 64
+V3_ROWS_HASH = "1" * 64
+V3_CALIBRATION_HASH = "2" * 64
+V3_CHECKPOINT_HASH = "3" * 64
+V3_CALIBRATION_BANK_HASH = "4" * 64
+V3_EVALUATION_BANK_HASH = "5" * 64
+V3_CALIBRATION_GAMES_HASH = "6" * 64
+V3_EVALUATION_GAMES_HASH = "7" * 64
 TEACHERS = ("rewarm-900m", "plus-1b", "plus-750m", "plus-500m")
 STRATA = tuple(
     f"{level}/{speed}/{tactical}"
@@ -106,9 +113,7 @@ def _passing_inputs():
                 for speed in (0, 1, 2)
             ]
         },
-        "member_calibrations": {
-            teacher: _member_calibration() for teacher in TEACHERS
-        },
+        "member_calibrations": {teacher: _member_calibration() for teacher in TEACHERS},
     }
     by_stratum = {
         key: {
@@ -166,6 +171,23 @@ def _passing_inputs():
         "chance_model": CHANCE_MODEL_ID,
         "information_scope": "privileged-pending-attack-continuation-v1",
         "paired_game_bootstrap": _paired(),
+        "baseline_provenance": {
+            "schema": "drmc-v3-wdl-bootstrap-manifest-v1",
+            "rows_sha256": V3_ROWS_HASH,
+            "calibration_sha256": V3_CALIBRATION_HASH,
+            "checkpoint_sha256": V3_CHECKPOINT_HASH,
+            "calibration_bank_sha256": V3_CALIBRATION_BANK_HASH,
+            "evaluation_bank_sha256": V3_EVALUATION_BANK_HASH,
+            "calibration_game_set_sha256": V3_CALIBRATION_GAMES_HASH,
+            "evaluation_game_set_sha256": V3_EVALUATION_GAMES_HASH,
+            "game_sets_disjoint": True,
+            "calibration_games": 192,
+            "calibration_draw_games": 8,
+            "evaluation_games": 48,
+            "evaluation_draw_games": 2,
+            "diagnostic_only": False,
+            "repository_dirty": False,
+        },
     }
     return audit, calibration, beam_sweep, bank, bootstrap
 
@@ -209,9 +231,7 @@ def test_quality_gate_rejects_cross_artifact_provenance_drift() -> None:
     audit, calibration, beam_sweep, bank, bootstrap = _passing_inputs()
     drifted = deepcopy(calibration)
     drifted["mixture_manifest_sha256"] = "f" * 64
-    beam_sweep["comparisons"]["4"]["reference"]["release_sha256"] = [
-        "0" * 64
-    ]
+    beam_sweep["comparisons"]["4"]["reference"]["release_sha256"] = ["0" * 64]
     bootstrap["release_sha256"] = ["1" * 64]
     bank["sha256"] = "2" * 64
     report = evaluate_quality_gate(
@@ -231,9 +251,7 @@ def test_quality_gate_rejects_cross_artifact_provenance_drift() -> None:
 def test_quality_gate_rejects_pruned_chance_and_bad_tactical_cell() -> None:
     audit, calibration, beam_sweep, bank, bootstrap = _passing_inputs()
     audit["settings"]["search"]["chance_beam"] = 4
-    beam_sweep["comparisons"]["4"]["by_stratum"][STRATA[0]][
-        "top1_agreement"
-    ] = 0.5
+    beam_sweep["comparisons"]["4"]["by_stratum"][STRATA[0]]["top1_agreement"] = 0.5
     report = evaluate_quality_gate(
         audit=audit,
         calibration=calibration,
@@ -248,9 +266,7 @@ def test_quality_gate_rejects_pruned_chance_and_bad_tactical_cell() -> None:
 
 def test_quality_gate_rejects_duplicate_calibration_cell_and_missing_bank_cell() -> None:
     audit, calibration, beam_sweep, bank, bootstrap = _passing_inputs()
-    calibration["collection"]["strata"][-1] = dict(
-        calibration["collection"]["strata"][0]
-    )
+    calibration["collection"]["strata"][-1] = dict(calibration["collection"]["strata"][0])
     removed = STRATA[-1]
     bank["states"] -= bank["strata"].pop(removed)
     bank["quota"].pop(removed)

@@ -256,8 +256,9 @@ practice improves a held-out measure.
    the corrected seed-posterior chance model.
 5. Audit coverage, chance support, uncertainty, hashes, and search budgets.
 6. Compare beam 4 against beam 8 and retain beam 1 as sensitivity evidence.
-7. Export held-out observed-action V3 bootstrap W/D/L and run the paired
-   whole-game comparison.
+7. Fit the frozen V3 observed-action Davidson link on a content-addressed
+   natural-game calibration split, apply it to disjoint held-out games, and run
+   the paired whole-game comparison.
 8. Run the executable `v3-counterfactual-quality` gate; do not start mature
    quality distillation until it passes.
 9. Complete the timing-action gate in parallel.

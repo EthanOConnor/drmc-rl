@@ -18,7 +18,13 @@ from pathlib import Path
 
 import numpy as np
 
-from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+from drmc_rl.envs.backends.drmario_vs_pool import (
+    VS_OUTCOME_DRAW,
+    VS_OUTCOME_LOSS,
+    VS_OUTCOME_WIN,
+    DrMarioVsPoolRunner,
+    build_vs_reset_spec,
+)
 from drmc_rl.search.native_pair import capture_native_state, state_to_payload
 from drmc_rl.search.pill_belief import CHANCE_MODEL_ID, PillReserveBelief
 from drmc_rl.search.strong_league import FrozenStrongLeagueMixture
@@ -30,6 +36,11 @@ from drmc_rl.teachers.counterfactual_release import canonical_json, sha256_file
 from drmc_rl.teachers.state_bank import select_game_rows
 
 PILL_TYPES = frozenset((0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0))
+_OUTCOME_NAME = {
+    VS_OUTCOME_WIN: "win",
+    VS_OUTCOME_DRAW: "draw",
+    VS_OUTCOME_LOSS: "loss",
+}
 
 
 def _candidate_bin(count: int) -> str:
@@ -69,12 +80,8 @@ def _condition_visible_reserve(
     for side in range(2):
         result = result.condition_visible(
             reserve_counter=int(runner.buffers.spawn_id[side]),
-            falling_colors=tuple(
-                int(value) for value in runner.buffers.pill_colors[side]
-            ),
-            preview_colors=tuple(
-                int(value) for value in runner.buffers.preview_colors[side]
-            ),
+            falling_colors=tuple(int(value) for value in runner.buffers.pill_colors[side]),
+            preview_colors=tuple(int(value) for value in runner.buffers.preview_colors[side]),
         )
     return result
 
@@ -175,6 +182,8 @@ def main() -> None:
     posterior_seed_counts: list[int] = []
     tactical_counts: dict[str, int] = {}
     candidate_states_considered = 0
+    natural_terminal_games = 0
+    horizon_incomplete_games = 0
     try:
         while len(rows) < args.states:
             if game_index >= args.max_games:
@@ -192,6 +201,7 @@ def main() -> None:
                 frame_counter_base=int(rng.integers(0, 256)),
             )
             runner.reset(None, [spec])
+            game_id = hashlib.sha256(runner.snapshot(0)).hexdigest()
             initial_board = np.asarray(
                 runner.buffers.board_bytes.reshape(2, 128)[0],
                 dtype=np.uint8,
@@ -212,9 +222,8 @@ def main() -> None:
                 )
                 if state.privileged.decision_boundary.value == "terminal":
                     break
-                acting = [
-                    side for side, flag in enumerate(state.privileged.need_action) if flag
-                ]
+                acting = [side for side, flag in enumerate(state.privileged.need_action) if flag]
+                decision_rows: dict[int, dict[str, object]] = {}
                 for root_side in acting:
                     legal = state.legal_actions_by_side[root_side]
                     if not legal:
@@ -229,11 +238,10 @@ def main() -> None:
                     }
                     payload.update(
                         {
-                            "id": hashlib.sha256(
-                                canonical_json(identity_payload)
-                            ).hexdigest(),
+                            "id": hashlib.sha256(canonical_json(identity_payload)).hexdigest(),
                             "root_side": root_side,
                             "game_index": game_index,
+                            "game_id": game_id,
                             "decision_index": decision,
                             "level": level,
                             "speed": speed,
@@ -251,9 +259,14 @@ def main() -> None:
                             "reserve_belief": reserve_belief.to_dict(),
                             "reserve_seed_count": reserve_belief.seed_count,
                             "rollout_policy": rollout_policy,
+                            "speed_ups": min(
+                                int(runner.buffers.spawn_id[root_side]) // 10,
+                                0x31,
+                            ),
                         }
                     )
                     game_candidates.append(payload)
+                    decision_rows[root_side] = payload
                     candidate_states_considered += 1
                 actions = np.full(2, -2, dtype=np.int32)
                 for side in acting:
@@ -264,9 +277,24 @@ def main() -> None:
                         state.legal_actions_by_side[side],
                         rng,
                     )
+                    if side in decision_rows:
+                        decision_rows[side]["observed_action"] = int(actions[side])
                 runner.step_strict(actions)
                 if int(runner.buffers.terminated[0]) or int(runner.buffers.truncated[0]):
                     break
+
+            terminal_outcomes = tuple(int(item) for item in runner.buffers.outcome[:2])
+            natural_terminal = all(item in _OUTCOME_NAME for item in terminal_outcomes)
+            if natural_terminal:
+                natural_terminal_games += 1
+            else:
+                horizon_incomplete_games += 1
+            for row in game_candidates:
+                side = int(row["root_side"])
+                row["natural_outcome_available"] = natural_terminal
+                row["outcome"] = (
+                    _OUTCOME_NAME[terminal_outcomes[side]] if natural_terminal else None
+                )
 
             remaining = args.states - len(rows)
             selected = select_game_rows(
@@ -276,9 +304,7 @@ def main() -> None:
                 seed=args.seed + game_index,
             )
             rows.extend(selected)
-            posterior_seed_counts.extend(
-                int(row["reserve_seed_count"]) for row in selected
-            )
+            posterior_seed_counts.extend(int(row["reserve_seed_count"]) for row in selected)
             game_index += 1
     finally:
         runner.close()
@@ -292,6 +318,11 @@ def main() -> None:
         "states": len(rows),
         "candidate_states_considered": candidate_states_considered,
         "games_rolled": game_index,
+        "natural_terminal_games": natural_terminal_games,
+        "horizon_incomplete_games": horizon_incomplete_games,
+        "game_identity": "sha256-initial-native-pair-snapshot",
+        "observed_action_provenance": "frozen-rollout-action-at-captured-boundary",
+        "natural_outcome_provenance": "authoritative-native-terminal-vs-outcome",
         "seed": args.seed,
         "levels": list(levels),
         "speeds": list(speeds),

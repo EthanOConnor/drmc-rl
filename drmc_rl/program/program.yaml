@@ -438,6 +438,37 @@ recipes:
       - Aligned opponent-beam sensitivity and convergence report
     resources:
       accelerator: cpu
+  v3-bootstrap-baseline:
+    status: staged
+    stage: 4
+    purpose: Fit a frozen Davidson W/D/L link for V3 on independent natural games and score disjoint observed-action evaluation rows.
+    requires_paths:
+      - tools/build_v3_bootstrap.py
+      - drmc_rl/teachers/v3_baseline.py
+      - '{v3_checkpoint}'
+      - '{v3_calibration_bank}'
+      - '{v3_evaluation_bank}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.build_v3_bootstrap
+      - --checkpoint
+      - '{v3_checkpoint}'
+      - --calibration-bank
+      - '{v3_calibration_bank}'
+      - --evaluation-bank
+      - '{v3_evaluation_bank}'
+      - --rows-output
+      - '{v3_bootstrap_rows}'
+      - --calibration-output
+      - '{v3_bootstrap_calibration}'
+      - --manifest-output
+      - '{v3_bootstrap_manifest}'
+    produces:
+      - Content-addressed V3 W/D/L calibration, held-out rows, and disjoint-split manifest
+    resources:
+      accelerator: gpu
   counterfactual-bootstrap-comparison:
     status: staged
     stage: 4
@@ -447,6 +478,7 @@ recipes:
       - drmc_rl/teachers/bootstrap_comparison.py
       - '{counterfactual_release_b8_manifest}'
       - '{v3_bootstrap_rows}'
+      - '{v3_bootstrap_manifest}'
     requires_gates: [pair-state-v2]
     command:
       - python
@@ -455,6 +487,8 @@ recipes:
       - '{counterfactual_release_b8_manifest}'
       - --bootstrap
       - '{v3_bootstrap_rows}'
+      - --bootstrap-manifest
+      - '{v3_bootstrap_manifest}'
       - --bootstrap-samples
       - '4000'
       - --output
