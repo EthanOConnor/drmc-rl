@@ -14,6 +14,7 @@ import numpy as np
 
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
 from drmc_rl.search.native_pair import capture_native_state, state_to_payload
+from drmc_rl.search.pill_belief import CHANCE_MODEL_ID, PillReserveBelief
 from drmc_rl.teachers.counterfactual_release import canonical_json, sha256_file
 
 
@@ -39,6 +40,23 @@ def _tactical_stratum(state, root_side: int) -> str:
     if any(tile != 0xFF for tile in own.board[3 * 8 : 7 * 8]):
         return "high-pressure"
     return "midgame"
+
+
+def _condition_visible_reserve(
+    belief: PillReserveBelief, runner: DrMarioVsPoolRunner
+) -> PillReserveBelief:
+    result = belief
+    for side in range(2):
+        result = result.condition_visible(
+            reserve_counter=int(runner.buffers.spawn_id[side]),
+            falling_colors=tuple(
+                int(value) for value in runner.buffers.pill_colors[side]
+            ),
+            preview_colors=tuple(
+                int(value) for value in runner.buffers.preview_colors[side]
+            ),
+        )
+    return result
 
 
 def _atomic_gzip_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
@@ -88,6 +106,7 @@ def main() -> None:
     runner = DrMarioVsPoolRunner(num_pairs=1)
     rows: list[dict[str, object]] = []
     game_index = 0
+    posterior_seed_counts: list[int] = []
     try:
         while len(rows) < args.states:
             game_start_rows = len(rows)
@@ -102,7 +121,9 @@ def main() -> None:
                 frame_counter_base=int(rng.integers(0, 256)),
             )
             runner.reset(None, [spec])
+            reserve_belief = PillReserveBelief()
             for decision in range(args.max_decisions_per_game):
+                reserve_belief = _condition_visible_reserve(reserve_belief, runner)
                 initial_viruses = min(84, 4 * (level + 1))
                 state = capture_native_state(
                     runner,
@@ -143,8 +164,10 @@ def main() -> None:
                                 // 30,
                                 4,
                             ),
+                            "reserve_belief": reserve_belief.to_dict(),
                         }
                     )
+                    posterior_seed_counts.append(reserve_belief.seed_count)
                     rows.append(payload)
                     if len(rows) >= args.states:
                         break
@@ -162,8 +185,9 @@ def main() -> None:
         runner.close()
 
     _atomic_gzip_jsonl(args.output, rows)
+    seed_counts = np.asarray(posterior_seed_counts, dtype=np.int64)
     manifest = {
-        "schema": "drmc-pair-state-pilot-bank-v1",
+        "schema": "drmc-pair-state-pilot-bank-v2",
         "artifact": str(args.output.resolve()),
         "sha256": sha256_file(args.output),
         "states": len(rows),
@@ -172,6 +196,13 @@ def main() -> None:
         "speeds": list(speeds),
         "pair_state_schema": "drmc-pair-state-v2",
         "native_checkpoint_schema": "drm-vspool-snapshot-v1",
+        "chance_model": CHANCE_MODEL_ID,
+        "reserve_belief_history": "all visible falling/preview entries at captured boundaries",
+        "posterior_seed_count": {
+            "min": int(seed_counts.min(initial=0)),
+            "median": float(np.median(seed_counts)) if seed_counts.size else 0.0,
+            "max": int(seed_counts.max(initial=0)),
+        },
         "diagnostic_only": True,
     }
     manifest_path = Path(str(args.output) + ".manifest.json")
