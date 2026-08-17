@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import pytest
 
 from drmc_rl.game.pair_state import DecisionBoundary
@@ -69,7 +70,9 @@ def test_weighted_teacher_exports_member_values_and_disagreement() -> None:
     assert candidate.win == pytest.approx(0.65)
     assert candidate.draw == pytest.approx(0.125)
     assert candidate.loss == pytest.approx(0.225)
-    assert candidate.member_wdl == pytest.approx(((0.8, 0.1, 0.1), (0.2, 0.2, 0.6)))
+    assert np.asarray(candidate.member_wdl) == pytest.approx(
+        np.asarray(((0.8, 0.1, 0.1), (0.2, 0.2, 0.6)))
+    )
     assert candidate.uncertainty is not None and candidate.uncertainty > 0
     assert candidate.uncertainty_js is not None and candidate.uncertainty_js > 0
     assert label.uncertainty_available is True
