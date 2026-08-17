@@ -197,16 +197,25 @@ public-state heuristic is not a calibrated continuation mixture and its output
 must not open `v3-counterfactual-quality`.
 
 ```bash
-uv run python -m tools.counterfactual_teacher \
-  --input pair-states.jsonl.gz \
-  --output runs/counterfactual/pilot-v1 \
-  --adapter drmc_project.native_adapter:factory \
-  --root-side 0 --depth-events 6 --own-beam 512 \
-  --stratum candidate_count_bin --stratum tactical_stratum \
-  --per-stratum 32 --max-states 1024 --chunk-size 64 --resume \
-  --corpus-release pair-state-bank-v1-sha256:... \
-  --continuation-mixture strong-league-frozen-mixture-v1 \
-  --native-revision <native-commit> --planner-revision <planner-commit>
+uv run python -m tools.program launch counterfactual-labels --allow-staged \
+  --set pair_state_bank=pair-states.jsonl.gz \
+  --set counterfactual_release=runs/counterfactual/pilot-v1 \
+  --set counterfactual_adapter=drmc_rl.search.strong_league:frozen_strong_league_factory \
+  --set counterfactual_root_side=0 \
+  --set counterfactual_depth_events=2 \
+  --set counterfactual_own_beam=512 \
+  --set counterfactual_opponent_beam=1 \
+  --set counterfactual_chance_beam=9 \
+  --set counterfactual_max_nodes=10000 \
+  --set counterfactual_chunk_size=16 \
+  --set counterfactual_max_states=512 \
+  --set counterfactual_corpus_release=pair-state-bank-v1-sha256:... \
+  --set counterfactual_continuation_mixture=strong-league-frozen-mixture-v1 \
+  --set counterfactual_mixture_manifest=mixture-manifest.json \
+  --set counterfactual_wdl_calibration=wdl-calibration.json \
+  --set counterfactual_device=cpu \
+  --set counterfactual_native_revision=<native-commit> \
+  --set counterfactual_planner_revision=<planner-commit>
 
 uv run python -m tools.joint_search_teacher \
   --states pair-states.jsonl.gz \
@@ -217,6 +226,11 @@ uv run python -m tools.joint_search_teacher \
 
 Full-candidate counterfactual releases must use `own_beam >= legal candidate
 count`; omitted candidates raise an error.
+
+Reveal-aware pilots must use `depth-events >= 2` and `chance-beam >= 9` so all
+ordered pill colors are integrated. The release rows report `chance_nodes` and
+`chance_outcomes`; a state with 32 root candidates should ordinarily report 32
+and 288 respectively when each root branch reaches one reveal boundary.
 
 The counterfactual writer produces deterministic, content-addressed gzip
 chunks plus verified completion records and an aggregate manifest. Resume only

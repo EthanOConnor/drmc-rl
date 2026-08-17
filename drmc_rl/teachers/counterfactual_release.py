@@ -188,6 +188,8 @@ class ReleaseSettings:
     continuation_mixture: str
     native_revision: str
     planner_revision: str
+    mixture_manifest_sha256: str | None = None
+    wdl_calibration_sha256: str | None = None
 
     def digest(self) -> str:
         return hashlib.sha256(canonical_json(asdict(self))).hexdigest()

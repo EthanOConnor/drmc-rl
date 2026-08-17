@@ -255,7 +255,10 @@ recipes:
       - drmc_rl/teachers/counterfactual_release.py
       - drmc_rl/search/joint_event.py
       - drmc_rl/search/native_pair.py
+      - drmc_rl/search/strong_league.py
       - '{pair_state_bank}'
+      - '{counterfactual_mixture_manifest}'
+      - '{counterfactual_wdl_calibration}'
     requires_gates: [pair-state-v2]
     command:
       - python
@@ -267,10 +270,33 @@ recipes:
       - '{counterfactual_release}'
       - --adapter
       - '{counterfactual_adapter}'
+      - --root-side
+      - '{counterfactual_root_side}'
+      - --depth-events
+      - '{counterfactual_depth_events}'
+      - --own-beam
+      - '{counterfactual_own_beam}'
+      - --opponent-beam
+      - '{counterfactual_opponent_beam}'
+      - --chance-beam
+      - '{counterfactual_chance_beam}'
+      - --max-nodes
+      - '{counterfactual_max_nodes}'
+      - --chunk-size
+      - '{counterfactual_chunk_size}'
+      - --max-states
+      - '{counterfactual_max_states}'
+      - --resume
       - --corpus-release
       - '{counterfactual_corpus_release}'
       - --continuation-mixture
       - '{counterfactual_continuation_mixture}'
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --wdl-calibration
+      - '{counterfactual_wdl_calibration}'
+      - --device
+      - '{counterfactual_device}'
       - --native-revision
       - '{counterfactual_native_revision}'
       - --planner-revision

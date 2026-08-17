@@ -190,8 +190,11 @@ class DrMarioVsPoolRunner:
         reset = getattr(self._lib, "drm_vspool_reset", None)
         step = getattr(self._lib, "drm_vspool_step", None)
         step_strict = getattr(self._lib, "drm_vspool_step_strict", None)
+        step_search = getattr(self._lib, "drm_vspool_step_search", None)
         snapshot = getattr(self._lib, "drm_vspool_snapshot", None)
         restore = getattr(self._lib, "drm_vspool_restore", None)
+        reveal_info = getattr(self._lib, "drm_vspool_search_reveal_info", None)
+        search_reveal = getattr(self._lib, "drm_vspool_search_reveal", None)
         inject = getattr(self._lib, "drm_vspool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
             raise DrMarioPoolError(f"{path} does not export the required drm_vspool_* symbols")
@@ -223,6 +226,13 @@ class DrMarioVsPoolRunner:
         if step_strict is not None:
             step_strict.argtypes = step.argtypes
             step_strict.restype = C.c_int
+        if step_search is not None:
+            step_search.argtypes = [
+                C.c_void_p,
+                C.POINTER(C.c_int32),
+                C.POINTER(_DrmVsPoolOutputs),
+            ]
+            step_search.restype = C.c_int
         if snapshot is not None:
             snapshot.argtypes = [
                 C.c_void_p,
@@ -240,6 +250,24 @@ class DrMarioVsPoolRunner:
                 C.c_size_t,
             ]
             restore.restype = C.c_int
+        if reveal_info is not None:
+            reveal_info.argtypes = [
+                C.c_void_p,
+                C.c_uint32,
+                C.POINTER(C.c_uint8),
+                C.POINTER(C.c_uint8),
+            ]
+            reveal_info.restype = C.c_int
+        if search_reveal is not None:
+            search_reveal.argtypes = [
+                C.c_void_p,
+                C.c_uint32,
+                C.c_uint8,
+                C.c_uint8,
+                C.c_uint8,
+                C.POINTER(_DrmVsPoolOutputs),
+            ]
+            search_reveal.restype = C.c_int
         if inject is not None:
             inject.argtypes = [
                 C.c_void_p,
@@ -253,8 +281,11 @@ class DrMarioVsPoolRunner:
         self._reset_fn = reset
         self._step_fn = step
         self._step_strict_fn = step_strict
+        self._step_search_fn = step_search
         self._snapshot_fn = snapshot
         self._restore_fn = restore
+        self._reveal_info_fn = reveal_info
+        self._search_reveal_fn = search_reveal
         self._inject_fn = inject
 
         cfg = _DrmVsPoolConfig()
@@ -435,6 +466,72 @@ class DrMarioVsPoolRunner:
         )
         if rc != 0:
             raise DrMarioPoolError(f"drm_vspool_step_strict failed with rc={rc}")
+        self._solve_deferred()
+
+    def step_search(self, actions: np.ndarray) -> None:
+        """Advance to the next decision, terminal, or pre-reveal chance node."""
+
+        if self._step_search_fn is None:
+            raise DrMarioPoolError(
+                "native library predates reveal-aware search stepping; rebuild vendor/drmario_native"
+            )
+        acts = np.asarray(actions, dtype=np.int32).reshape(self.num_sides)
+        rc = int(
+            self._step_search_fn(
+                self._handle,
+                acts.ctypes.data_as(C.POINTER(C.c_int32)),
+                C.byref(self._out),
+            )
+        )
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_step_search failed with rc={rc}")
+        self._solve_deferred()
+
+    def search_reveal_info(self, pair_index: int) -> tuple[int, int] | None:
+        """Return ``(side, reserve_index)`` for the next causal reveal, if any."""
+
+        if self._reveal_info_fn is None:
+            raise DrMarioPoolError(
+                "native library predates reveal-aware search stepping; rebuild vendor/drmario_native"
+            )
+        side = C.c_uint8(0)
+        reserve_index = C.c_uint8(0)
+        rc = int(
+            self._reveal_info_fn(
+                self._handle,
+                int(pair_index),
+                C.byref(side),
+                C.byref(reserve_index),
+            )
+        )
+        if rc < 0:
+            raise DrMarioPoolError(f"drm_vspool_search_reveal_info failed with rc={rc}")
+        return None if rc == 0 else (int(side.value), int(reserve_index.value))
+
+    def search_reveal(
+        self, pair_index: int, side: int, colors_raw: tuple[int, int]
+    ) -> None:
+        """Choose one ordered raw-NES preview pill at a pending chance node."""
+
+        if self._search_reveal_fn is None:
+            raise DrMarioPoolError(
+                "native library predates reveal-aware search stepping; rebuild vendor/drmario_native"
+            )
+        left, right = (int(colors_raw[0]), int(colors_raw[1]))
+        if side not in (0, 1) or left not in (0, 1, 2) or right not in (0, 1, 2):
+            raise ValueError("side and reveal colors are out of range")
+        rc = int(
+            self._search_reveal_fn(
+                self._handle,
+                int(pair_index),
+                int(side),
+                left,
+                right,
+                C.byref(self._out),
+            )
+        )
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_search_reveal failed with rc={rc}")
         self._solve_deferred()
 
     def snapshot(self, pair_index: int) -> bytes:

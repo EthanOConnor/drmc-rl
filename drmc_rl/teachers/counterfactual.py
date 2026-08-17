@@ -55,6 +55,8 @@ class CounterfactualLabel:
     root_loss: float
     nodes: int
     cache_hits: int
+    chance_nodes: int
+    chance_outcomes: int
     teacher_count: int
     uncertainty_available: bool
     budget_exhausted: bool
@@ -167,6 +169,8 @@ class CounterfactualTeacher(Generic[StateT]):
             root_loss=root.loss,
             nodes=int(sum(result.nodes for result in results)),
             cache_hits=int(sum(result.cache_hits for result in results)),
+            chance_nodes=int(sum(result.chance_nodes for result in results)),
+            chance_outcomes=int(sum(result.chance_outcomes for result in results)),
             teacher_count=len(results),
             uncertainty_available=len(results) > 1,
             budget_exhausted=any(result.budget_exhausted for result in results),

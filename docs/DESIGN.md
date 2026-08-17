@@ -118,6 +118,20 @@ population mixture. Labels include:
 `drmc_rl.teachers.counterfactual` enforces full legal-action coverage. A
 candidate omitted by a beam is an error, not an implicit low-value label.
 
+Production counterfactual search uses the hash-verified frozen Strong League
+continuation ensemble in `drmc_rl.search.strong_league`. The ensemble manifest
+fixes checkpoint identities and weights; human-corpus checkpoints are not
+members. The human corpus supplies source states and later consumes the labels,
+so competitive continuation values do not become circular human imitation.
+
+The native search ABI stops immediately before a private reserve pill becomes
+public. Search then integrates the nine ordered three-color preview outcomes at
+probability `1/9` each before causal advancement. The unrevealed reserve value
+is never presented to a continuation network. W/D/L is produced through a
+positive-slope Davidson link calibrated on game-group-held-out natural Strong
+League continuations; horizon-truncated games are excluded rather than labeled
+as draws.
+
 ### G5/V5 fast student
 
 G5 is the rollout and deployment policy. It uses shared bottle encoding,

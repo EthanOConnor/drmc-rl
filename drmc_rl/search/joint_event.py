@@ -160,6 +160,8 @@ class SearchResult:
     cache_hits: int
     depth_events: int
     budget_exhausted: bool
+    chance_nodes: int
+    chance_outcomes: int
 
 
 class JointEventSearch(Generic[StateT]):
@@ -170,6 +172,8 @@ class JointEventSearch(Generic[StateT]):
         self._nodes = 0
         self._cache_hits = 0
         self._budget_exhausted = False
+        self._chance_nodes = 0
+        self._chance_outcomes = 0
 
     def search(self, state: StateT, *, root_side: int) -> SearchResult:
         if root_side not in (0, 1):
@@ -178,6 +182,8 @@ class JointEventSearch(Generic[StateT]):
         self._nodes = 0
         self._cache_hits = 0
         self._budget_exhausted = False
+        self._chance_nodes = 0
+        self._chance_outcomes = 0
         terminal = self.model.terminal_value(state, root_side)
         if terminal is not None:
             raise ValueError("cannot search from a terminal state")
@@ -216,6 +222,8 @@ class JointEventSearch(Generic[StateT]):
             cache_hits=self._cache_hits,
             depth_events=self.config.depth_events,
             budget_exhausted=self._budget_exhausted,
+            chance_nodes=self._chance_nodes,
+            chance_outcomes=self._chance_outcomes,
         )
 
     def _value(self, state: StateT, depth: int, root_side: int) -> WDL:
@@ -238,6 +246,8 @@ class JointEventSearch(Generic[StateT]):
         if boundary == DecisionBoundary.ADVANCE:
             outcomes = tuple(self.model.chance_outcomes(state))
             if outcomes:
+                self._chance_nodes += 1
+                self._chance_outcomes += len(outcomes)
                 value = self._chance_value(outcomes, depth, root_side)
             else:
                 value = self._value(self.model.advance(state), depth - 1, root_side)

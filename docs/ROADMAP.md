@@ -88,12 +88,17 @@ Implemented foundations:
 - backend-independent full-candidate counterfactual teacher;
 - W/D/L and win-logit-regret target schema;
 - adapter-driven release CLI that refuses to assume a legacy simulator.
+- canonical native PairState v2 restore and reveal-boundary branching;
+- hash-verified frozen Strong League continuation mixtures;
+- game-group-held-out Davidson W/D/L calibration.
 
 Open work:
 
-- native full-pair checkpoint adapter;
-- continuation policy-mixture adapter;
-- candidate tactical-target export and V3 fine-tuning.
+- complete the stratified 512--2,048-state quality pilot and audit tactical
+  coverage, calibration, chance integration, and search-budget exhaustion;
+- candidate tactical-target export and competitive-head fine-tuning;
+- compare distilled candidate W/D/L against the observed-action bootstrap
+  before opening `v3-counterfactual-quality`.
 
 ## Phase 3 — G5 bakeoff and distillation
 

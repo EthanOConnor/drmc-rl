@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 import numpy as np
 
@@ -30,6 +30,9 @@ class NativePairSearchState:
     privileged: PrivilegedPairState
     legal_actions_by_side: tuple[tuple[int, ...], tuple[int, ...]]
     action_costs_by_side: tuple[tuple[int, ...], tuple[int, ...]]
+    level: int = 20
+    speed_setting: int = 2
+    viruses_initial: tuple[int, int] = (84, 84)
 
     def __post_init__(self) -> None:
         for actions, costs in zip(
@@ -43,15 +46,33 @@ class NativePairSearchState:
                 raise ValueError("native legal actions must be unique indices in [0,511]")
             if any(cost <= 0 or cost >= 0xFFFF for cost in costs):
                 raise ValueError("native legal action costs must be finite positive frames")
+        if not 0 <= self.level <= 20 or self.speed_setting not in (0, 1, 2):
+            raise ValueError("native search context has invalid level or speed")
+
+
+class ContinuationEvaluator(Protocol):
+    def prior(
+        self, state: NativePairSearchState, side: int, actions: Sequence[int]
+    ) -> Sequence[float]: ...
+
+    def evaluate(self, state: NativePairSearchState, root_side: int) -> WDL: ...
 
 
 class NativePairSearchModel:
     """Exact native transitions with a public-only diagnostic prior/value."""
 
-    def __init__(self, runner: DrMarioVsPoolRunner) -> None:
+    def __init__(
+        self,
+        runner: DrMarioVsPoolRunner,
+        *,
+        continuation: ContinuationEvaluator | None = None,
+        reveal_chance: bool = False,
+    ) -> None:
         if runner.num_pairs != 1:
             raise ValueError("native search adapter requires a dedicated one-pair runner")
         self.runner = runner
+        self.continuation = continuation
+        self.reveal_chance = bool(reveal_chance)
 
     def key(self, state: NativePairSearchState) -> str:
         return hashlib.sha256(state.privileged.engine_checkpoint).hexdigest()
@@ -65,6 +86,8 @@ class NativePairSearchModel:
     def prior(
         self, state: NativePairSearchState, side: int, actions: Sequence[int]
     ) -> Sequence[float]:
+        if self.continuation is not None:
+            return self.continuation.prior(state, side, actions)
         action_to_cost = dict(
             zip(
                 state.legal_actions_by_side[int(side)],
@@ -90,10 +113,18 @@ class NativePairSearchModel:
             ],
             dtype=np.int32,
         )
-        self.runner.step_strict(actions)
+        if self.reveal_chance:
+            self.runner.step_search(actions)
+        else:
+            self.runner.step_strict(actions)
         if np.any(self.runner.buffers.invalid_action >= 0):
             raise RuntimeError(f"native strict branch rejected actions {actions.tolist()}")
-        return capture_native_state(self.runner)
+        return capture_native_state(
+            self.runner,
+            level=state.level,
+            speed_setting=state.speed_setting,
+            viruses_initial=state.viruses_initial,
+        )
 
     def advance(self, state: NativePairSearchState) -> NativePairSearchState:
         return self.apply_actions(state, None, None)
@@ -101,11 +132,30 @@ class NativePairSearchModel:
     def chance_outcomes(
         self, state: NativePairSearchState
     ) -> Sequence[ChanceOutcome[NativePairSearchState]]:
-        # The engineering pilot is conditioned on its opaque engine snapshot.
-        # Promotion-quality labels must replace this with explicit reveal-time
-        # continuation-mixture branching.
-        del state
-        return ()
+        if not self.reveal_chance:
+            return ()
+        self.runner.restore(0, state.privileged.engine_checkpoint)
+        reveal = self.runner.search_reveal_info(0)
+        if reveal is None:
+            return ()
+        side, _reserve_index = reveal
+        outcomes: list[ChanceOutcome[NativePairSearchState]] = []
+        for left in range(3):
+            for right in range(3):
+                self.runner.restore(0, state.privileged.engine_checkpoint)
+                self.runner.search_reveal(0, side, (left, right))
+                outcomes.append(
+                    ChanceOutcome(
+                        1.0 / 9.0,
+                        capture_native_state(
+                            self.runner,
+                            level=state.level,
+                            speed_setting=state.speed_setting,
+                            viruses_initial=state.viruses_initial,
+                        ),
+                    )
+                )
+        return tuple(outcomes)
 
     def terminal_value(self, state: NativePairSearchState, root_side: int) -> WDL | None:
         outcome = state.privileged.terminal_outcome[int(root_side)]
@@ -118,6 +168,8 @@ class NativePairSearchModel:
         return None
 
     def evaluate(self, state: NativePairSearchState, root_side: int) -> WDL:
+        if self.continuation is not None:
+            return self.continuation.evaluate(state, root_side)
         public = state.privileged.public
         own = public.sides[int(root_side)]
         opponent = public.sides[1 - int(root_side)]
@@ -145,7 +197,12 @@ def _board_height(board: bytes) -> int:
 
 
 def capture_native_state(
-    runner: DrMarioVsPoolRunner, *, viewer_side: int = 0
+    runner: DrMarioVsPoolRunner,
+    *,
+    viewer_side: int = 0,
+    level: int = 20,
+    speed_setting: int = 2,
+    viruses_initial: tuple[int, int] | None = None,
 ) -> NativePairSearchState:
     from drmc_rl.game.pair_state import PublicPairState, VisibleSideState
 
@@ -200,6 +257,13 @@ def capture_native_state(
         privileged=privileged,
         legal_actions_by_side=(actions[0], actions[1]),
         action_costs_by_side=(costs[0], costs[1]),
+        level=int(level),
+        speed_setting=int(speed_setting),
+        viruses_initial=(
+            tuple(int(item) for item in viruses_initial)
+            if viruses_initial is not None
+            else (min(84, 4 * (int(level) + 1)),) * 2
+        ),
     )
 
 
@@ -208,6 +272,9 @@ def state_to_payload(state: NativePairSearchState) -> dict[str, Any]:
         "privileged": state.privileged.to_dict(),
         "legal_actions_by_side": [list(items) for items in state.legal_actions_by_side],
         "action_costs_by_side": [list(items) for items in state.action_costs_by_side],
+        "level": state.level,
+        "speed_setting": state.speed_setting,
+        "viruses_initial": list(state.viruses_initial),
     }
 
 
@@ -219,6 +286,15 @@ def state_from_payload(payload: Mapping[str, Any]) -> NativePairSearchState:
         ),  # type: ignore[arg-type]
         action_costs_by_side=tuple(
             tuple(int(item) for item in side) for side in payload["action_costs_by_side"]
+        ),  # type: ignore[arg-type]
+        level=int(payload.get("level", 20)),
+        speed_setting=int(payload.get("speed_setting", payload.get("speed", 2))),
+        viruses_initial=tuple(
+            int(item)
+            for item in payload.get(
+                "viruses_initial",
+                (min(84, 4 * (int(payload.get("level", 20)) + 1)),) * 2,
+            )
         ),  # type: ignore[arg-type]
     )
 

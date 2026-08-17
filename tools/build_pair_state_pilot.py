@@ -103,7 +103,13 @@ def main() -> None:
             )
             runner.reset(None, [spec])
             for decision in range(args.max_decisions_per_game):
-                state = capture_native_state(runner)
+                initial_viruses = min(84, 4 * (level + 1))
+                state = capture_native_state(
+                    runner,
+                    level=level,
+                    speed_setting=speed,
+                    viruses_initial=(initial_viruses, initial_viruses),
+                )
                 if state.privileged.decision_boundary.value == "terminal":
                     break
                 acting = [side for side, flag in enumerate(state.privileged.need_action) if flag]

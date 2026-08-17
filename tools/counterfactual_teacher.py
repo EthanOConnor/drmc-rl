@@ -57,6 +57,9 @@ def main() -> None:
     parser.add_argument("--max-states", type=int)
     parser.add_argument("--corpus-release", required=True)
     parser.add_argument("--continuation-mixture", required=True)
+    parser.add_argument("--mixture-manifest", type=Path)
+    parser.add_argument("--wdl-calibration", type=Path)
+    parser.add_argument("--device", default="cpu")
     parser.add_argument("--native-revision", required=True)
     parser.add_argument("--planner-revision", required=True)
     parser.add_argument(
@@ -100,6 +103,12 @@ def main() -> None:
         continuation_mixture=args.continuation_mixture,
         native_revision=args.native_revision,
         planner_revision=args.planner_revision,
+        mixture_manifest_sha256=(
+            sha256_file(args.mixture_manifest) if args.mixture_manifest else None
+        ),
+        wdl_calibration_sha256=(
+            sha256_file(args.wdl_calibration) if args.wdl_calibration else None
+        ),
     )
     manifest = build_release(
         input_path=args.input,
