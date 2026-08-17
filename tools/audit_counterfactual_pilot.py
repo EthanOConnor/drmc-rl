@@ -9,11 +9,11 @@ import json
 import math
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
-from drmc_rl.search.pill_belief import CHANCE_MODEL_ID
+from drmc_rl.search.pill_belief import CHANCE_MODEL_ID, PillReserveBelief
 from drmc_rl.teachers.counterfactual_release import (
     RELEASE_SCHEMA,
     canonical_json,
@@ -25,7 +25,9 @@ from drmc_rl.teachers.counterfactual_release import (
 def _summary(values: list[float]) -> dict[str, float]:
     array = np.asarray(values, dtype=np.float64)
     if array.size == 0:
-        return {key: math.nan for key in ("min", "p10", "median", "mean", "p90", "max")}
+        return {
+            key: math.nan for key in ("min", "p10", "median", "mean", "p90", "max")
+        }
     return {
         "min": float(array.min()),
         "p10": float(np.quantile(array, 0.10)),
@@ -36,21 +38,47 @@ def _summary(values: list[float]) -> dict[str, float]:
     }
 
 
-def _check_probability_triplet(win: float, draw: float, loss: float, *, where: str) -> None:
+def _check_probability_triplet(
+    win: float, draw: float, loss: float, *, where: str
+) -> None:
     values = (float(win), float(draw), float(loss))
-    if not all(math.isfinite(value) and -1e-8 <= value <= 1.0 + 1e-8 for value in values):
+    if not all(
+        math.isfinite(value) and -1e-8 <= value <= 1.0 + 1e-8
+        for value in values
+    ):
         raise ValueError(f"invalid W/D/L at {where}: {values}")
     if not math.isclose(sum(values), 1.0, rel_tol=0.0, abs_tol=2e-6):
         raise ValueError(f"unnormalized W/D/L at {where}: {values}")
 
 
-def _source_index(path: Path | None) -> dict[str, dict[str, Any]]:
+def _source_index(path: Path | None) -> tuple[dict[str, dict[str, Any]], int]:
     if path is None:
-        return {}
+        return {}, 0
     opener = gzip.open if path.suffix == ".gz" else Path.open
+    result: dict[str, dict[str, Any]] = {}
+    belief_rows = 0
     with opener(path, "rt", encoding="utf-8") as handle:
-        rows = [json.loads(line) for line in handle if line.strip()]
-    return {source_identity(row): row for row in rows}
+        for line_number, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            identity = source_identity(row)
+            if identity in result:
+                raise ValueError(
+                    f"duplicate source identity {identity!r} at {path}:{line_number}"
+                )
+            belief = row.get("reserve_belief")
+            if isinstance(belief, Mapping):
+                PillReserveBelief.from_dict(belief)
+                belief_rows += 1
+            result[identity] = row
+    return result, belief_rows
+
+
+def _same_weights(left: tuple[float, ...], right: tuple[float, ...]) -> bool:
+    return len(left) == len(right) and bool(
+        np.allclose(left, right, rtol=0.0, atol=1e-12)
+    )
 
 
 def audit(
@@ -92,10 +120,12 @@ def audit(
     chance_branched_states = 0
     memberwise_complete_states = 0
     memberwise_complete_candidates = 0
-    source_rows = _source_index(source_path)
-    source_belief_states = sum(
-        int(isinstance(row.get("reserve_belief"), dict)) for row in source_rows.values()
-    )
+    teacher_counts: list[int] = []
+    expected_teacher_ids: tuple[str, ...] | None = None
+    expected_teacher_weights: tuple[float, ...] | None = None
+    source_rows, source_belief_states = _source_index(source_path)
+    dirty_shards = 0
+    repository_commits: set[str] = set()
 
     for manifest_path, manifest in zip(manifest_paths, manifests, strict=True):
         settings = dict(manifest["settings"])
@@ -105,6 +135,11 @@ def audit(
         if shard_index in shard_indices:
             raise ValueError(f"duplicate shard index {shard_index}")
         shard_indices.add(shard_index)
+        dirty_shards += int(bool(manifest.get("repository_dirty")))
+        commit = manifest.get("repository_commit")
+        if not isinstance(commit, str) or len(commit) != 40:
+            raise ValueError(f"manifest lacks a full repository commit: {manifest_path}")
+        repository_commits.add(commit)
         base = manifest_path.parent
         manifest_rows = 0
         manifest_candidates = 0
@@ -114,27 +149,39 @@ def audit(
                 raise ValueError(f"chunk hash mismatch: {part_path}")
             with gzip.open(part_path, "rt", encoding="utf-8") as handle:
                 for line_number, line in enumerate(handle, 1):
+                    if not line.strip():
+                        continue
                     row = json.loads(line)
                     where = f"{part_path.name}:{line_number}"
-                    source_id = str(row["metadata"]["source_id"])
+                    metadata = row.get("metadata")
+                    if not isinstance(metadata, Mapping):
+                        raise ValueError(f"row metadata is missing at {where}")
+                    source_id = str(metadata["source_id"])
                     if source_id in source_ids:
                         raise ValueError(f"duplicate source identity: {source_id}")
                     source_ids.add(source_id)
-                    if str(row["metadata"].get("chance_model", chance_model)) != chance_model:
+                    if str(metadata.get("chance_model", chance_model)) != chance_model:
                         raise ValueError(f"row chance model differs from release at {where}")
-                    if str(row["metadata"].get("information_scope", information_scope)) != information_scope:
-                        raise ValueError(f"row information scope differs from release at {where}")
+                    if (
+                        str(metadata.get("information_scope", information_scope))
+                        != information_scope
+                    ):
+                        raise ValueError(
+                            f"row information scope differs from release at {where}"
+                        )
                     if source_rows:
                         source = source_rows.get(source_id)
                         if source is None:
-                            raise ValueError(f"release source is absent from source bank: {source_id}")
+                            raise ValueError(
+                                f"release source is absent from source bank: {source_id}"
+                            )
                         stratum = (
                             str(source["level"]),
                             str(source["speed"]),
                             str(source["tactical_stratum"]),
                         )
                     else:
-                        stratum = tuple(str(item) for item in row["metadata"]["stratum"])
+                        stratum = tuple(str(item) for item in metadata["stratum"])
                     strata[stratum] += 1
                     candidates = list(row["candidates"])
                     if not candidates:
@@ -143,7 +190,9 @@ def audit(
                     if len(actions) != len(set(actions)):
                         raise ValueError(f"duplicate candidate action at {where}")
                     if source_rows:
-                        source_root = int(source.get("root_side", reference["root_side"]))
+                        source_root = int(
+                            source.get("root_side", reference["root_side"])
+                        )
                         expected_actions = {
                             int(action)
                             for action in source["legal_actions_by_side"][source_root]
@@ -152,7 +201,9 @@ def audit(
                             raise ValueError(f"candidate coverage mismatch at {where}")
                     ranks = sorted(int(item["rank"]) for item in candidates)
                     if ranks != list(range(1, len(candidates) + 1)):
-                        raise ValueError(f"candidate ranks are not a permutation at {where}")
+                        raise ValueError(
+                            f"candidate ranks are not a permutation at {where}"
+                        )
                     if not math.isclose(
                         sum(float(item["policy_target"]) for item in candidates),
                         1.0,
@@ -160,40 +211,71 @@ def audit(
                         abs_tol=2e-6,
                     ):
                         raise ValueError(f"policy target is not normalized at {where}")
-                    regrets = [float(item["regret_win_logit"]) for item in candidates]
+                    regrets = [
+                        float(item["regret_win_logit"]) for item in candidates
+                    ]
                     if min(regrets) < -2e-6 or not math.isclose(
                         min(regrets), 0.0, rel_tol=0.0, abs_tol=2e-6
                     ):
                         raise ValueError(f"invalid candidate regret at {where}")
-                    best = next(item for item in candidates if int(item["rank"]) == 1)
+                    best = next(
+                        item for item in candidates if int(item["rank"]) == 1
+                    )
                     if int(best["action"]) != int(row["best_action"]):
                         raise ValueError(f"best action/rank mismatch at {where}")
 
                     teacher_count = int(row.get("teacher_count", 1))
-                    teacher_ids = tuple(str(item) for item in row.get("teacher_ids", ()))
-                    teacher_weights = tuple(float(item) for item in row.get("teacher_weights", ()))
-                    if teacher_ids and len(teacher_ids) != teacher_count:
+                    teacher_ids = tuple(
+                        str(item) for item in row.get("teacher_ids", ())
+                    )
+                    teacher_weights = tuple(
+                        float(item) for item in row.get("teacher_weights", ())
+                    )
+                    if teacher_count < 1 or len(teacher_ids) != teacher_count:
                         raise ValueError(f"teacher id count mismatch at {where}")
-                    if teacher_weights and (
+                    if (
                         len(teacher_weights) != teacher_count
-                        or not math.isclose(sum(teacher_weights), 1.0, abs_tol=2e-6)
+                        or not all(
+                            math.isfinite(item) and item >= 0
+                            for item in teacher_weights
+                        )
+                        or not math.isclose(
+                            sum(teacher_weights), 1.0, rel_tol=0.0, abs_tol=2e-6
+                        )
                     ):
                         raise ValueError(f"teacher weights are invalid at {where}")
+                    if expected_teacher_ids is None:
+                        expected_teacher_ids = teacher_ids
+                        expected_teacher_weights = teacher_weights
+                    elif teacher_ids != expected_teacher_ids or not _same_weights(
+                        teacher_weights, expected_teacher_weights or ()
+                    ):
+                        raise ValueError(
+                            f"teacher ensemble changes within release at {where}"
+                        )
+                    teacher_counts.append(teacher_count)
                     complete_candidates = 0
                     for index, item in enumerate(candidates):
                         _check_probability_triplet(
-                            item["win"], item["draw"], item["loss"], where=f"{where}#{index}"
+                            item["win"],
+                            item["draw"],
+                            item["loss"],
+                            where=f"{where}#{index}",
                         )
                         members = tuple(item.get("member_wdl", ()))
                         if members:
                             if len(members) != teacher_count:
-                                raise ValueError(f"member W/D/L count mismatch at {where}#{index}")
+                                raise ValueError(
+                                    f"member W/D/L count mismatch at {where}#{index}"
+                                )
                             for member_index, member in enumerate(members):
                                 _check_probability_triplet(
                                     member[0],
                                     member[1],
                                     member[2],
-                                    where=f"{where}#{index}/member-{member_index}",
+                                    where=(
+                                        f"{where}#{index}/member-{member_index}"
+                                    ),
                                 )
                             sigma = item.get("uncertainty")
                             js = item.get("uncertainty_js")
@@ -201,7 +283,9 @@ def audit(
                                 math.isfinite(float(value)) and float(value) >= 0
                                 for value in (sigma, js)
                             ):
-                                raise ValueError(f"member-wise uncertainty is invalid at {where}#{index}")
+                                raise ValueError(
+                                    f"member-wise uncertainty is invalid at {where}#{index}"
+                                )
                             utility_uncertainty.append(float(sigma))
                             js_uncertainty.append(float(js))
                             complete_candidates += 1
@@ -209,19 +293,30 @@ def audit(
                         memberwise_complete_states += 1
                         memberwise_complete_candidates += complete_candidates
                     _check_probability_triplet(
-                        row["root_win"], row["root_draw"], row["root_loss"], where=where
+                        row["root_win"],
+                        row["root_draw"],
+                        row["root_loss"],
+                        where=where,
                     )
                     row_chance_nodes = int(row["chance_nodes"])
                     row_chance_outcomes = int(row["chance_outcomes"])
                     if chance_model == "independent-uniform-ordered-pair-v0":
                         if row_chance_outcomes != 9 * row_chance_nodes:
-                            raise ValueError(f"incomplete uniform reveal branching at {where}")
+                            raise ValueError(
+                                f"incomplete uniform reveal branching at {where}"
+                            )
                     elif row_chance_nodes > 0 and not (
-                        row_chance_nodes <= row_chance_outcomes <= 9 * row_chance_nodes
+                        row_chance_nodes
+                        <= row_chance_outcomes
+                        <= 9 * row_chance_nodes
                     ):
-                        raise ValueError(f"invalid posterior reveal support at {where}")
+                        raise ValueError(
+                            f"invalid posterior reveal support at {where}"
+                        )
                     if row_chance_nodes:
-                        chance_support.append(row_chance_outcomes / row_chance_nodes)
+                        chance_support.append(
+                            row_chance_outcomes / row_chance_nodes
+                        )
                     chance_branched_states += int(row_chance_nodes > 0)
                     candidate_counts.append(float(len(candidates)))
                     nodes.append(float(row["nodes"]))
@@ -234,7 +329,9 @@ def audit(
                     chance_nodes += row_chance_nodes
                     chance_outcomes += row_chance_outcomes
                     budget_exhausted += int(bool(row["budget_exhausted"]))
-                    uncertainty_available += int(bool(row["uncertainty_available"]))
+                    uncertainty_available += int(
+                        bool(row["uncertainty_available"])
+                    )
                     manifest_rows += 1
                     manifest_candidates += len(candidates)
         if manifest_rows != int(manifest["selected_states"]):
@@ -245,23 +342,34 @@ def audit(
 
     expected_shards = int(reference["num_shards"])
     if shard_indices != set(range(expected_shards)):
-        raise ValueError(f"incomplete shard set: {sorted(shard_indices)} of {expected_shards}")
+        raise ValueError(
+            f"incomplete shard set: {sorted(shard_indices)} of {expected_shards}"
+        )
     if source_rows and source_ids != set(source_rows):
-        raise ValueError("release identities do not exactly cover the supplied source bank")
+        raise ValueError(
+            "release identities do not exactly cover the supplied source bank"
+        )
     digest_rows = sorted(
-        (int(manifest["settings"]["shard_index"]), str(manifest["release_sha256"]))
+        (
+            int(manifest["settings"]["shard_index"]),
+            str(manifest["release_sha256"]),
+        )
         for manifest in manifests
     )
     result: dict[str, Any] = {
-        "schema": "drmc-counterfactual-pilot-audit-v2",
-        "aggregate_sha256": hashlib.sha256(canonical_json(digest_rows)).hexdigest(),
+        "schema": "drmc-counterfactual-pilot-audit-v3",
+        "aggregate_sha256": hashlib.sha256(
+            canonical_json(digest_rows)
+        ).hexdigest(),
         "shard_release_sha256": [item[1] for item in digest_rows],
         "states": len(source_ids),
         "candidate_labels": candidate_labels,
         "full_candidate_coverage": bool(source_rows),
         "budget_exhausted": budget_exhausted,
         "unique_source_ids": len(source_ids),
-        "strata": {"/".join(key): value for key, value in sorted(strata.items())},
+        "strata": {
+            "/".join(key): value for key, value in sorted(strata.items())
+        },
         "candidate_count": _summary(candidate_counts),
         "nodes": _summary(nodes),
         "chance_model": chance_model,
@@ -269,7 +377,9 @@ def audit(
         "chance_nodes": chance_nodes,
         "chance_outcomes": chance_outcomes,
         "chance_support_per_node": _summary(chance_support),
-        "uniform_nine_way_legacy": chance_model == "independent-uniform-ordered-pair-v0",
+        "uniform_nine_way_legacy": (
+            chance_model == "independent-uniform-ordered-pair-v0"
+        ),
         "chance_model_gate_eligible": chance_model == CHANCE_MODEL_ID,
         "chance_branched_states": chance_branched_states,
         "pre_reveal_terminal_states": len(source_ids) - chance_branched_states,
@@ -281,11 +391,17 @@ def audit(
         "uncertainty_available_states": uncertainty_available,
         "memberwise_complete_states": memberwise_complete_states,
         "memberwise_complete_candidates": memberwise_complete_candidates,
+        "teacher_count_min": min(teacher_counts, default=0),
+        "teacher_count_max": max(teacher_counts, default=0),
+        "teacher_ids": list(expected_teacher_ids or ()),
+        "teacher_weights": list(expected_teacher_weights or ()),
         "utility_uncertainty": _summary(utility_uncertainty),
         "js_uncertainty": _summary(js_uncertainty),
         "source_reserve_belief_states": source_belief_states,
         "source_reserve_belief_complete": bool(source_rows)
         and source_belief_states == len(source_rows),
+        "repository_dirty_shards": dirty_shards,
+        "repository_commits": sorted(repository_commits),
         "settings": reference,
     }
     if calibration_path is not None:
