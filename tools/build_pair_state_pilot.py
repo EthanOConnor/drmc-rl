@@ -1,9 +1,9 @@
 """Build a deterministic bank of exact native pair snapshots.
 
-The preferred production-shaped path rolls both sides with the frozen Strong
-League continuation mixture, preserving public reserve-belief history. Random
-actions remain available only when no mixture is supplied and are marked as a
-diagnostic source in the manifest.
+The production-shaped path rolls both sides with the frozen Strong League
+continuation mixture, preserves public reserve-belief history, and samples
+throughout complete games. Random actions remain available only when no mixture
+is supplied and are explicitly marked diagnostic in the manifest.
 """
 
 from __future__ import annotations
@@ -27,6 +27,9 @@ from drmc_rl.search.strong_league_memberwise import (
     read_mixture_members,
 )
 from drmc_rl.teachers.counterfactual_release import canonical_json, sha256_file
+from drmc_rl.teachers.state_bank import select_game_rows
+
+PILL_TYPES = frozenset((0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xA0))
 
 
 def _candidate_bin(count: int) -> str:
@@ -39,6 +42,12 @@ def _candidate_bin(count: int) -> str:
     return "65-plus"
 
 
+def _pill_occupied(tile: int) -> bool:
+    """Treat player-created pill material, not initial viruses, as stack pressure."""
+
+    return (int(tile) & 0xF0) in PILL_TYPES
+
+
 def _tactical_stratum(state, root_side: int) -> str:
     public = state.privileged.public
     own = public.sides[root_side]
@@ -46,9 +55,9 @@ def _tactical_stratum(state, root_side: int) -> str:
         return "incoming-garbage"
     if (own.viruses_remaining or 0) <= 4:
         return "race-finish"
-    if any(tile != 0xFF for tile in own.board[: 3 * 8]):
+    if any(_pill_occupied(tile) for tile in own.board[: 3 * 8]):
         return "topout-defense"
-    if any(tile != 0xFF for tile in own.board[3 * 8 : 7 * 8]):
+    if any(_pill_occupied(tile) for tile in own.board[3 * 8 : 7 * 8]):
         return "high-pressure"
     return "midgame"
 
@@ -111,12 +120,21 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--states", type=int, default=4096)
     parser.add_argument("--seed", type=int, default=20260816)
-    parser.add_argument("--max-decisions-per-game", type=int, default=160)
+    parser.add_argument("--max-decisions-per-game", type=int, default=320)
     parser.add_argument(
         "--states-per-game",
         type=int,
         default=16,
-        help="cap captured acting-side states before rotating level/speed/seed",
+        help=(
+            "select at most this many rows after rolling the whole game; "
+            "selection favors globally underrepresented tactical strata"
+        ),
+    )
+    parser.add_argument(
+        "--max-games",
+        type=int,
+        default=100000,
+        help="fail closed rather than loop forever when a requested bank cannot be filled",
     )
     parser.add_argument("--level", type=int, action="append", default=[])
     parser.add_argument("--speed", type=int, action="append", default=[])
@@ -124,8 +142,13 @@ def main() -> None:
     parser.add_argument("--wdl-calibration", type=Path)
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
-    if args.states < 1 or args.max_decisions_per_game < 1 or args.states_per_game < 1:
-        parser.error("state and decision counts must be positive")
+    if (
+        args.states < 1
+        or args.max_decisions_per_game < 1
+        or args.states_per_game < 1
+        or args.max_games < 1
+    ):
+        parser.error("state, game, and decision counts must be positive")
     if (args.mixture_manifest is None) != (args.wdl_calibration is None):
         parser.error("--mixture-manifest and --wdl-calibration must be supplied together")
     levels = tuple(args.level or (5, 10, 15, 20))
@@ -151,9 +174,13 @@ def main() -> None:
     game_index = 0
     posterior_seed_counts: list[int] = []
     tactical_counts: dict[str, int] = {}
+    candidate_states_considered = 0
     try:
         while len(rows) < args.states:
-            game_start_rows = len(rows)
+            if game_index >= args.max_games:
+                raise RuntimeError(
+                    f"failed to collect {args.states} states within {args.max_games} games"
+                )
             level = levels[game_index % len(levels)]
             speed = speeds[(game_index // len(levels)) % len(speeds)]
             seed = int(rng.integers(0, 65536))
@@ -166,6 +193,7 @@ def main() -> None:
             )
             runner.reset(None, [spec])
             reserve_belief = PillReserveBelief()
+            game_candidates: list[dict[str, object]] = []
             for decision in range(args.max_decisions_per_game):
                 reserve_belief = _condition_visible_reserve(reserve_belief, runner)
                 initial_viruses = min(84, 4 * (level + 1))
@@ -177,7 +205,9 @@ def main() -> None:
                 )
                 if state.privileged.decision_boundary.value == "terminal":
                     break
-                acting = [side for side, flag in enumerate(state.privileged.need_action) if flag]
+                acting = [
+                    side for side, flag in enumerate(state.privileged.need_action) if flag
+                ]
                 for root_side in acting:
                     legal = state.legal_actions_by_side[root_side]
                     if not legal:
@@ -192,7 +222,9 @@ def main() -> None:
                     }
                     payload.update(
                         {
-                            "id": hashlib.sha256(canonical_json(identity_payload)).hexdigest(),
+                            "id": hashlib.sha256(
+                                canonical_json(identity_payload)
+                            ).hexdigest(),
                             "root_side": root_side,
                             "game_index": game_index,
                             "decision_index": decision,
@@ -210,16 +242,12 @@ def main() -> None:
                                 4,
                             ),
                             "reserve_belief": reserve_belief.to_dict(),
+                            "reserve_seed_count": reserve_belief.seed_count,
                             "rollout_policy": rollout_policy,
                         }
                     )
-                    tactical_counts[tactical] = tactical_counts.get(tactical, 0) + 1
-                    posterior_seed_counts.append(reserve_belief.seed_count)
-                    rows.append(payload)
-                    if len(rows) >= args.states:
-                        break
-                if len(rows) >= args.states or len(rows) - game_start_rows >= args.states_per_game:
-                    break
+                    game_candidates.append(payload)
+                    candidate_states_considered += 1
                 actions = np.full(2, -2, dtype=np.int32)
                 for side in acting:
                     actions[side] = _choose_action(
@@ -232,6 +260,18 @@ def main() -> None:
                 runner.step_strict(actions)
                 if int(runner.buffers.terminated[0]) or int(runner.buffers.truncated[0]):
                     break
+
+            remaining = args.states - len(rows)
+            selected = select_game_rows(
+                game_candidates,
+                limit=min(args.states_per_game, remaining),
+                global_tactical_counts=tactical_counts,
+                seed=args.seed + game_index,
+            )
+            rows.extend(selected)
+            posterior_seed_counts.extend(
+                int(row["reserve_seed_count"]) for row in selected
+            )
             game_index += 1
     finally:
         runner.close()
@@ -239,17 +279,22 @@ def main() -> None:
     _atomic_gzip_jsonl(args.output, rows)
     seed_counts = np.asarray(posterior_seed_counts, dtype=np.int64)
     manifest = {
-        "schema": "drmc-pair-state-candidate-bank-v3",
+        "schema": "drmc-pair-state-candidate-bank-v4",
         "artifact": str(args.output.resolve()),
         "sha256": sha256_file(args.output),
         "states": len(rows),
+        "candidate_states_considered": candidate_states_considered,
+        "games_rolled": game_index,
         "seed": args.seed,
         "levels": list(levels),
         "speeds": list(speeds),
         "pair_state_schema": "drmc-pair-state-v2",
         "native_checkpoint_schema": "drm-vspool-snapshot-v1",
         "chance_model": CHANCE_MODEL_ID,
-        "reserve_belief_history": "all visible falling/preview entries at captured boundaries",
+        "reserve_belief_history": (
+            "all visible falling/preview entries at captured boundaries"
+        ),
+        "per_game_selection": "whole-game-global-tactical-round-robin-v1",
         "posterior_seed_count": {
             "min": int(seed_counts.min()) if seed_counts.size else 0,
             "median": float(np.median(seed_counts)) if seed_counts.size else 0.0,
