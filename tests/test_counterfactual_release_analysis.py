@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+
+import pytest
 
 from drmc_rl.game.pair_state import DecisionBoundary
 from drmc_rl.search.joint_event import SearchConfig, WDL
@@ -54,7 +56,44 @@ class Model:
         return WDL(0.4, 0.2, 0.4)
 
 
-def _release(tmp_path: Path, name: str, model: Model, beam: int) -> Path:
+def _settings(bank: Path, beam: int) -> ReleaseSettings:
+    return ReleaseSettings(
+        input_sha256=sha256_file(bank),
+        adapter="test:factory",
+        root_side=0,
+        search={
+            "depth_events": 1,
+            "opponent_beam": beam,
+            "own_beam": 2,
+            "chance_beam": 9,
+            "max_nodes": 100,
+        },
+        seed=1,
+        shard_index=0,
+        num_shards=1,
+        stratum_fields=(),
+        per_stratum=None,
+        max_states=None,
+        chunk_size=2,
+        corpus_release="test",
+        continuation_mixture="test-mixture",
+        native_revision="native",
+        planner_revision="planner",
+        mixture_manifest_sha256="a" * 64,
+        wdl_calibration_sha256="b" * 64,
+        chance_model="nes-reserve-seed-belief-v1",
+        information_scope="privileged-test",
+    )
+
+
+def _release(
+    tmp_path: Path,
+    name: str,
+    model: Model,
+    beam: int,
+    *,
+    mutate_settings=None,
+) -> Path:
     bank = tmp_path / "bank.jsonl"
     if not bank.exists():
         bank.write_text(
@@ -64,25 +103,9 @@ def _release(tmp_path: Path, name: str, model: Model, beam: int) -> Path:
             )
             + "\n"
         )
-    settings = ReleaseSettings(
-        input_sha256=sha256_file(bank),
-        adapter="test:factory",
-        root_side=0,
-        search={"opponent_beam": beam, "own_beam": 2},
-        seed=1,
-        shard_index=0,
-        num_shards=1,
-        stratum_fields=(),
-        per_stratum=None,
-        max_states=None,
-        chunk_size=2,
-        corpus_release="test",
-        continuation_mixture="test",
-        native_revision="native",
-        planner_revision="planner",
-        chance_model="nes-reserve-seed-belief-v1",
-        information_scope="privileged-test",
-    )
+    settings = _settings(bank, beam)
+    if mutate_settings is not None:
+        settings = mutate_settings(settings)
     return build_release(
         input_path=bank,
         output_dir=tmp_path / name,
@@ -96,19 +119,18 @@ def _release(tmp_path: Path, name: str, model: Model, beam: int) -> Path:
     )
 
 
-def test_release_comparison_aligns_actions_and_reports_beam_sensitivity(tmp_path: Path) -> None:
-    reference_path = _release(
-        tmp_path,
-        "beam8",
-        Model(WDL(0.8, 0.1, 0.1), WDL(0.3, 0.2, 0.5)),
-        8,
+def _model(offset: float = 0.0) -> Model:
+    return Model(
+        WDL(0.8 - offset, 0.1, 0.1 + offset),
+        WDL(0.3 + offset, 0.2, 0.5 - offset),
     )
-    candidate_path = _release(
-        tmp_path,
-        "beam4",
-        Model(WDL(0.75, 0.1, 0.15), WDL(0.35, 0.2, 0.45)),
-        4,
-    )
+
+
+def test_release_comparison_aligns_actions_and_reports_beam_sensitivity(
+    tmp_path: Path,
+) -> None:
+    reference_path = _release(tmp_path, "beam8", _model(), 8)
+    candidate_path = _release(tmp_path, "beam4", _model(0.05), 4)
     reference = load_release([reference_path])
     candidate = load_release([candidate_path])
     comparison = compare_releases(reference, candidate)
@@ -116,7 +138,34 @@ def test_release_comparison_aligns_actions_and_reports_beam_sensitivity(tmp_path
     assert comparison["aggregate"]["top1_agreement"] == 1.0
     assert comparison["aggregate"]["max_win_delta"]["max"] > 0
     assert comparison["reference"]["chance_model"] == "nes-reserve-seed-belief-v1"
+    assert comparison["settings_compatible"] is True
 
     sweep = compare_beam_sweep({4: candidate, 8: reference})
     assert sweep["reference_beam"] == 8
     assert set(sweep["comparisons"]) == {"4"}
+
+
+def test_release_comparison_rejects_non_beam_provenance_drift(tmp_path: Path) -> None:
+    reference = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    candidate = load_release(
+        [
+            _release(
+                tmp_path,
+                "beam4-drift",
+                _model(0.05),
+                4,
+                mutate_settings=lambda settings: replace(
+                    settings, wdl_calibration_sha256="c" * 64
+                ),
+            )
+        ]
+    )
+    with pytest.raises(ValueError, match="other than opponent_beam"):
+        compare_releases(reference, candidate)
+
+
+def test_beam_sweep_rejects_mislabeled_release(tmp_path: Path) -> None:
+    reference = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    candidate = load_release([_release(tmp_path, "beam4", _model(0.05), 4)])
+    with pytest.raises(ValueError, match="does not match release setting"):
+        compare_beam_sweep({4: reference, 8: candidate})
