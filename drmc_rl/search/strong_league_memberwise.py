@@ -27,13 +27,16 @@ INFORMATION_SCOPE = "privileged-pending-attack-continuation-v1"
 _CALIBRATION_SCHEMAS = {
     "drmc-strong-league-wdl-calibration-v1",
     "drmc-strong-league-wdl-calibration-v2",
+    "drmc-strong-league-wdl-calibration-v3",
 }
 
 
 def read_mixture_members(manifest_path: Path) -> tuple[MixtureMember, ...]:
     payload = json.loads(manifest_path.read_text())
     if payload.get("schema") != "drmc-strong-league-continuation-mixture-v1":
-        raise ValueError(f"unsupported continuation mixture schema in {manifest_path}")
+        raise ValueError(
+            f"unsupported continuation mixture schema in {manifest_path}"
+        )
     base = manifest_path.parent
     members: list[MixtureMember] = []
     for item in payload.get("members", ()):
@@ -71,10 +74,17 @@ def read_davidson_calibration(
                 f"calibration lacks member-specific parameters for {member_id!r}"
             )
         parameters = member_parameters[member_id]
+    slope = float(parameters["slope"])
+    bias = float(parameters["bias"])
+    draw_logit = float(parameters["draw_logit"])
+    import math
+
+    if not all(math.isfinite(item) for item in (slope, bias, draw_logit)) or slope <= 0:
+        raise ValueError("W/D/L calibration parameters must be finite with positive slope")
     return DavidsonCalibration(
-        slope=float(parameters["slope"]),
-        bias=float(parameters["bias"]),
-        draw_logit=float(parameters["draw_logit"]),
+        slope=slope,
+        bias=bias,
+        draw_logit=draw_logit,
         artifact_sha256=_sha256(path),
     )
 
@@ -99,7 +109,9 @@ def _register_payload_belief(
         model.register_belief(state, PillReserveBelief.from_dict(raw))
 
 
-def _load_aggregate(args: Any) -> tuple[tuple[MixtureMember, ...], DavidsonCalibration]:
+def _load_aggregate(
+    args: Any,
+) -> tuple[tuple[MixtureMember, ...], DavidsonCalibration]:
     if not args.mixture_manifest or not args.wdl_calibration:
         raise ValueError("Strong League adapter requires mixture and calibration paths")
     members = read_mixture_members(Path(args.mixture_manifest))
@@ -138,9 +150,18 @@ def frozen_strong_league_memberwise_factory(args: Any):
     calibration_path = Path(args.wdl_calibration)
     models: list[BeliefNativePairSearchModel] = []
     for member in members:
-        calibration = read_davidson_calibration(calibration_path, member_id=member.id)
+        calibration = read_davidson_calibration(
+            calibration_path, member_id=member.id
+        )
         continuation = FrozenStrongLeagueMixture(
-            (MixtureMember(member.id, member.checkpoint, member.sha256, 1.0),),
+            (
+                MixtureMember(
+                    member.id,
+                    member.checkpoint,
+                    member.sha256,
+                    1.0,
+                ),
+            ),
             calibration,
             device=str(args.device),
         )
