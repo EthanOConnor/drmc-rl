@@ -1,20 +1,36 @@
 # Counterfactual quality handoff
 
-This document is the operational continuation brief for the
-`v3-counterfactual-quality` gate. It supplements `program.yaml`; it is not a
-second roadmap.
+This is the operational continuation brief for the `v3-counterfactual-quality`
+gate. `drmc_rl/program/program.yaml` remains the machine-readable authority.
+
+## Scientific status
+
+The first 512-state pilot established useful mechanics evidence:
+
+- native full-pair snapshot/restore works;
+- reveal stopping and explicit reveal injection work;
+- every legal root candidate can be labeled without truncation;
+- the reported depth-2 pilot completed without node-budget exhaustion;
+- a frozen Strong League continuation mixture is materially better than the
+  former diagnostic leaf heuristic.
+
+It is **not** a promotable competitive-quality release. The pilot used
+independent `1/9` reveal mass, had only nine held-out calibration games and no
+natural draws, exported no member-wise uncertainty, used a pressure-heavy
+source bank, and searched only one opponent continuation.
+
+The next run must replace those limitations rather than merely scale the same
+pilot.
 
 ## Frozen inputs
 
-The following artifacts and decisions are immutable inputs to the next run:
-
-- Native reveal/snapshot implementation: `drmario-native` commit
+- `drmario-native` reveal/snapshot implementation:
   `6cfba6bf793a28eb9e49a5f4f1fcf7c8dbfa0f47`.
-- Counterfactual pilot implementation: `drmc-rl` commit
+- Initial `drmc-rl` mechanics pilot:
   `6f1ffeb6d4d6b6e5c05745bb094fef38eae7f625`.
-- V3 balanced human/style/timing teacher: epoch 5.
-- V3 sharper imitation reference: epoch 6. It is a comparison reference, not
-  the mature competitive teacher.
+- Balanced V3 human/style/timing teacher: epoch 5.
+- Sharper V3 imitation reference: epoch 6. It is a comparison reference, not
+  the mature competitive ranking.
 - Frozen Strong League continuation mixture manifest SHA-256:
   `37d94a13be471637406953fef6f48b78a48b7f5f26b6452b2fe1f5c6820d74a6`.
 - Pilot calibration SHA-256:
@@ -22,72 +38,113 @@ The following artifacts and decisions are immutable inputs to the next run:
 - Mechanics-pilot aggregate identity:
   `a0868725a9f45629bcf2c95f1eb7307429913b6478d471bc6e662e81db5f0ba7`.
 
-The 512-state pilot remains useful evidence that native restore, exact candidate
-coverage, reveal stopping, reveal override, and bounded search execute reliably.
-It is **not** a promotable quality release.
+The last two pilot identities are historical evidence only. A mature release
+must use newly generated, content-addressed artifacts.
 
-## Critical chance-model correction
+## Non-negotiable information contracts
 
-Do not branch future pills as nine independent outcomes at probability `1/9`.
+### Reserve chance
 
-The NES generates the entire 128-entry reserve once from its two-byte RNG. In
-`GameLogic::generatePillsReserve`, each entry depends on the preceding pill id
-and the next RNG byte. Therefore:
+The NES generates the complete 128-pill reserve once from its two-byte RNG.
+Later pills are correlated with publicly visible falling and preview pills.
+Do not use independent uniform ordered-pair branching.
 
-- the unconditional distribution at a reserve index is not exactly uniform;
-- future entries are correlated with already visible falling/preview pills;
-- public observation history changes the posterior predictive distribution;
-- some posterior reveal nodes have fewer than nine possible outcomes.
-
-The native reveal ABI is still correct: it stops before reveal and overwrites
-the selected reserve entry before resuming. Probability assignment belongs in
-the search layer. Use:
+Use:
 
 - `drmc_rl.search.pill_belief.PillReserveBelief`;
 - `drmc_rl.search.belief_native_pair.BeliefNativePairSearchModel`;
 - chance model id `nes-reserve-seed-belief-v1`.
 
-A source-bank row must carry `reserve_belief`, accumulated from every visible
-falling/preview entry observed on its trajectory. A release produced from only
-the current two visible pills is useful for sensitivity analysis but does not
-pass the quality gate.
+Every bank row carries the complete public observation history accumulated on
+its trajectory. At a reveal node, branch over every posterior-supported pill;
+`chance_beam` must be at least nine so no supported outcome is pruned.
 
-## Information scope
+### Continuation information
 
-The frozen G4 continuation checkpoints consume exact pending-attack scalars in
-the `v1_vs` auxiliary vector. That is privileged native state under the public
-actor contract. Counterfactual releases using these checkpoints must declare:
+The frozen G4 checkpoints consume exact pending-attack scalars in `v1_vs`.
+Releases using them therefore declare:
 
 ```text
 privileged-pending-attack-continuation-v1
 ```
 
-This is acceptable for a teacher target. It is not acceptable as evidence that
-a deployed public-information search agent is fair. Later G5/student training
-must consume only public actor features, while the privileged teacher provides
-targets.
+That is valid for an offline teacher. It is not evidence that a deployed public
+search agent is fair. Students and deployed actors remain public-state-only.
 
-## Required evidence bundle
+## Default promotion thresholds
 
-Promotion is evaluated by:
+`tools.counterfactual_quality_gate` now fails closed on one coherent evidence
+bundle. Defaults are intentionally stronger than the mechanics pilot:
 
-```bash
-uv run python -m tools.counterfactual_quality_gate \
-  --audit "$AUDIT" \
-  --calibration "$CALIBRATION" \
-  --beam-sweep "$BEAM_SWEEP" \
-  --bank-manifest "$BANK_MANIFEST" \
-  --bootstrap "$BOOTSTRAP_COMPARISON" \
-  --output runs/program/gates/v3-counterfactual-quality.json
+- 1,024–2,048 balanced source states;
+- 12 level/speed calibration cells with at least 16 independent games each
+  (192 games minimum; the recommended collection is 32 per cell = 384);
+- at least eight naturally drawn calibration games;
+- at least five whole-game cross-fit folds, with draws represented in every
+  training fold;
+- full root candidate coverage, zero candidate truncation, zero node-budget
+  exhaustion, and `chance_beam >= 9`;
+- every candidate has every frozen member W/D/L plus finite utility standard
+  deviation and Jensen–Shannon disagreement;
+- beam 4 versus beam 8: aggregate top-1 agreement at least 95%, p95 maximum
+  candidate win delta at most 0.02, and p95 policy JS at most 0.01;
+- every tactical cell: top-1 agreement at least 85%, win-delta p95 at most
+  0.04, and policy-JS p95 at most 0.02;
+- the beam-8 release beats the frozen observed-action/V3 bootstrap on Brier and
+  log loss with paired whole-game 95% confidence intervals entirely below
+  zero;
+- at least 48 independent bootstrap-comparison games, including a natural
+  draw;
+- clean committed code and exact cross-artifact hash agreement.
+
+Do not relax thresholds after seeing results. A changed threshold is a new,
+versioned experiment with a written rationale.
+
+## Recommended artifact layout
+
+Keep all generated data outside Git:
+
+```text
+runs/counterfactual-quality-v2/
+  calibration/
+    strong-league-wdl-v3.json
+  source/
+    oversampled.jsonl.gz
+    oversampled.jsonl.gz.manifest.json
+  bank/
+    balanced-1440.jsonl.gz
+    balanced-1440.jsonl.gz.manifest.json
+  release-b1/
+  release-b4/
+  release-b8/
+  audit-b8.json
+  beam-sweep.json
+  v3-bootstrap-comparison.json
+  gate.json
 ```
 
-The command exits `0` only when every check passes; a staged result exits `2`.
-Do not edit the evidence JSON by hand.
+Copy or symlink frozen checkpoints into an operator-controlled artifact area;
+do not commit checkpoints, corpora, state banks, or run output.
 
-### 1. Grouped W/D/L calibration
+## Execution sequence
 
-Collect substantially more natural games than the pilot, including natural
-draw outcomes. Fit and evaluate by whole game:
+Set variables once:
+
+```bash
+ROOT=runs/counterfactual-quality-v2
+MIXTURE_MANIFEST=/absolute/path/to/strong-league-mixture-v1/manifest.json
+CALIBRATION="$ROOT/calibration/strong-league-wdl-v3.json"
+OVERSAMPLED_BANK="$ROOT/source/oversampled.jsonl.gz"
+OVERSAMPLED_MANIFEST="$OVERSAMPLED_BANK.manifest.json"
+BALANCED_BANK="$ROOT/bank/balanced-1440.jsonl.gz"
+BANK_MANIFEST="$BALANCED_BANK.manifest.json"
+CORPUS_RELEASE=<immutable-corpus-release-id>
+PLANNER_REVISION=<exact-reach-planner-revision>
+V3_BOOTSTRAP_ROWS=/absolute/path/to/heldout-v3-bootstrap.jsonl.gz
+mkdir -p "$ROOT"/{calibration,source,bank,release-b1,release-b4,release-b8}
+```
+
+### 1. Collect and fit draw-aware W/D/L calibration
 
 ```bash
 uv run python -m tools.calibrate_strong_league_wdl \
@@ -100,131 +157,146 @@ uv run python -m tools.calibrate_strong_league_wdl \
   --device cuda
 ```
 
-This performs equal-total-weight-per-game fitting, grouped cross-fitting, and a
-paired game bootstrap against the identity link. It also fits a separate
-Davidson link for every frozen member, so member disagreement is expressed in a
-common W/D/L space rather than raw value-head units.
+The artifact uses equal total weight per game, deterministic whole-game
+cross-fitting, paired game bootstrap, and a separate positive-slope Davidson
+link for each frozen member.
 
-Stop and expand collection if:
+Stop and collect more games when:
 
-- there are no natural draw games;
-- any cross-fit fold lacks independent games;
-- the 95% paired bootstrap upper bound is not below zero for both Brier and log
-  loss;
-- member-specific calibration is materially worse or numerically unstable.
+- fewer than eight natural draw games were observed;
+- any level/speed cell has fewer than 16 completed games;
+- any training fold lacks natural draw evidence;
+- either aggregate Brier or log-loss paired CI reaches zero;
+- any member link is non-finite, non-positive-slope, or draw-unidentified.
 
-Do not manufacture draw labels. A separate draw-focused natural suite may be
-added, but it must remain game-group separated and be identified in the
-artifact.
+Do not synthesize draw labels. A draw-focused suite may oversample conditions
+that naturally draw, but each game remains independently simulated, clearly
+identified, and held out by game.
 
-### 2. Oversampled competitive state source
-
-Generate at least several times the final bank size with the frozen mixture,
-not random actions:
+### 2. Roll complete games into an oversampled source
 
 ```bash
 uv run python -m tools.build_pair_state_pilot \
   --output "$OVERSAMPLED_BANK" \
   --states 8000 \
+  --states-per-game 16 \
+  --max-decisions-per-game 320 \
+  --max-games 4000 \
   --mixture-manifest "$MIXTURE_MANIFEST" \
   --wdl-calibration "$CALIBRATION" \
   --device cuda
 ```
 
-The tool records exact native checkpoints, legal candidates, tactical strata,
-and the accumulated public reserve belief. Its manifest must say
-`frozen-strong-league-mixture-argmax`; a random-action manifest is diagnostic
-only.
+The collector now rolls a complete bounded game before selecting rows. It
+round-robins across globally underrepresented tactical strata and classifies
+stack pressure from player-created pill material, not high initial viruses.
+The source manifest must report:
 
-### 3. Balanced 1,024–2,048-state bank
+```text
+rollout_policy = frozen-strong-league-mixture-argmax
+per_game_selection = whole-game-global-tactical-round-robin-v1
+diagnostic_only = false
+chance_model = nes-reserve-seed-belief-v1
+```
 
-Select fixed quotas across level, speed, and tactical stratum:
+Inspect `tactical_counts`. If a quota cell remains rare, increase game count or
+add a deterministic targeted natural start suite. Do not duplicate or relabel
+states to fill a quota.
+
+### 3. Select the balanced promotion bank
 
 ```bash
 uv run python -m tools.balance_pair_state_bank \
   --input "$OVERSAMPLED_BANK" \
+  --input-manifest "$OVERSAMPLED_MANIFEST" \
   --output "$BALANCED_BANK" \
-  --per-cell 24 \
-  --rollout-policy frozen-strong-league-mixture-argmax \
-  --rollout-policy-manifest-sha256 \
-    37d94a13be471637406953fef6f48b78a48b7f5f26b6452b2fe1f5c6820d74a6
+  --per-cell 24
 ```
 
 The default cross product is 4 levels × 3 speeds × 5 tactical strata × 24 =
-1,440 states. The selector is content-stable and fails on quota shortfall.
-Oversample missing cells rather than passing `--allow-shortfall` for a mature
-release.
+1,440 states. The tool verifies the source artifact hash, chance model, rollout
+mixture, diagnostic status, and whole-game sampling method. It then fails on
+quota shortfall.
 
-### 4. Member-wise beam 1/4/8 releases
+Do not use `--allow-shortfall`, `--allow-missing-reserve-belief`, or
+`--allow-unverified-source` for promotion evidence. Those switches create a
+manifest marked diagnostic.
 
-Use the same bank, source identities, chance model, member calibrations, seed,
-depth, and node budget. Only `opponent_beam` changes. Use full root coverage.
-The adapter is:
+### 4. Generate member-wise beam 1/4/8 releases
 
-```text
-drmc_rl.search.strong_league_memberwise:frozen_strong_league_memberwise_factory
-```
-
-Representative beam-8 command:
+Use exactly the same bank, seed, adapter, depth, root beam, chance beam, node
+budget, mixture manifest, calibration, native revision, and planner revision.
+Only `--opponent-beam` and output directory change.
 
 ```bash
-uv run python -m tools.counterfactual_teacher \
-  --input "$BALANCED_BANK" \
-  --output "$RELEASE_B8" \
-  --adapter \
-    drmc_rl.search.strong_league_memberwise:frozen_strong_league_memberwise_factory \
-  --depth-events 2 \
-  --own-beam 512 \
-  --opponent-beam 8 \
-  --chance-beam 9 \
-  --max-nodes 100000 \
-  --mixture-manifest "$MIXTURE_MANIFEST" \
-  --wdl-calibration "$CALIBRATION" \
-  --continuation-mixture strong-league-mixture-v1 \
-  --corpus-release "$CORPUS_RELEASE" \
-  --native-revision 6cfba6bf793a28eb9e49a5f4f1fcf7c8dbfa0f47 \
-  --planner-revision "$PLANNER_REVISION" \
-  --device cuda \
-  --resume
+make_release () {
+  beam="$1"
+  output="$2"
+  uv run python -m tools.counterfactual_teacher \
+    --input "$BALANCED_BANK" \
+    --output "$output" \
+    --adapter \
+      drmc_rl.search.strong_league_memberwise:frozen_strong_league_memberwise_factory \
+    --depth-events 2 \
+    --own-beam 512 \
+    --opponent-beam "$beam" \
+    --chance-beam 9 \
+    --max-nodes 100000 \
+    --seed 20260817 \
+    --mixture-manifest "$MIXTURE_MANIFEST" \
+    --wdl-calibration "$CALIBRATION" \
+    --continuation-mixture strong-league-mixture-v1 \
+    --corpus-release "$CORPUS_RELEASE" \
+    --native-revision 6cfba6bf793a28eb9e49a5f4f1fcf7c8dbfa0f47 \
+    --planner-revision "$PLANNER_REVISION" \
+    --device cuda \
+    --resume
+}
+
+make_release 1 "$ROOT/release-b1"
+make_release 4 "$ROOT/release-b4"
+make_release 8 "$ROOT/release-b8"
 ```
 
-Repeat with beams 1 and 4. Distributed shards are acceptable, but each beam
-must have a complete, non-overlapping shard set with identical non-shard
-settings.
+Distributed shards are acceptable. Each beam must have a complete,
+non-overlapping shard set and identical non-shard settings. Never use
+`--allow-budget-exhausted` for a release candidate.
 
-Audit each release:
+### 5. Audit beam 8
 
 ```bash
 uv run python -m tools.audit_counterfactual_pilot \
-  "$RELEASE_B8"/manifest.json \
+  "$ROOT/release-b8"/manifest.json \
   --calibration "$CALIBRATION" \
   --source "$BALANCED_BANK" \
-  --output "$AUDIT"
+  --output "$ROOT/audit-b8.json"
 ```
 
-Then compare aligned releases:
+For sharded runs pass every shard manifest. The audit validates source identity,
+exact legal-action coverage, W/D/L normalization, ranks and policy mass,
+reserve-belief integrity, constant teacher ids/weights, complete member values,
+artifact hashes, repository cleanliness, and source/release equality.
+
+### 6. Compare beams
 
 ```bash
 uv run python -m tools.compare_counterfactual_releases \
-  --release "1=$RELEASE_B1/manifest.json" \
-  --release "4=$RELEASE_B4/manifest.json" \
-  --release "8=$RELEASE_B8/manifest.json" \
+  --release "1=$ROOT/release-b1/manifest.json" \
+  --release "4=$ROOT/release-b4/manifest.json" \
+  --release "8=$ROOT/release-b8/manifest.json" \
   --reference-beam 8 \
-  --output "$BEAM_SWEEP"
+  --output "$ROOT/beam-sweep.json"
 ```
 
-Default convergence requirements for beam 4 versus beam 8 are:
+The comparison now rejects any difference besides `opponent_beam`, including
+source bytes, mixture/calibration hashes, chance model, information scope,
+seed, depth, node budget, and root/chance beams. It also reports every tactical
+cell separately. If beam 4 does not converge, increase the production teacher
+beam; do not loosen the evidence threshold for runtime convenience.
 
-- best-action agreement at least 95%;
-- p95 state-wise maximum candidate win-probability delta at most 0.02;
-- p95 root-policy Jensen–Shannon divergence at most 0.01.
+### 7. Compare directly with frozen V3
 
-Beam 1 is diagnostic. If beam 4 does not converge to beam 8, raise the mature
-teacher beam; do not relax the threshold based on runtime inconvenience.
-
-### 5. Direct observed-action/V3 comparison
-
-Export held-out rows keyed by counterfactual `source_id`:
+Each bootstrap row is held-out and keyed to a release `source_id`:
 
 ```json
 {
@@ -237,63 +309,65 @@ Export held-out rows keyed by counterfactual `source_id`:
 }
 ```
 
-`baseline_wdl` must come from the frozen observed-action/V3 bootstrap without
-using the new counterfactual labels. Compare it at the same observed action:
+`baseline_wdl` comes from the frozen observed-action/V3 bootstrap without
+consuming counterfactual labels.
 
 ```bash
 uv run python -m tools.compare_counterfactual_bootstrap \
-  "$RELEASE_B8"/manifest.json \
+  "$ROOT/release-b8"/manifest.json \
   --bootstrap "$V3_BOOTSTRAP_ROWS" \
   --bootstrap-samples 4000 \
-  --output "$BOOTSTRAP_COMPARISON"
+  --output "$ROOT/v3-bootstrap-comparison.json"
 ```
 
-Promotion requires the counterfactual-minus-V3 paired game-bootstrap 95% upper
-bound below zero for both Brier and log loss. Decision-row significance is not
-sufficient.
+Use at least 48 independent held-out games and include natural draws. Decision
+rows from one game are one bootstrap unit.
 
-## Member uncertainty
+### 8. Evaluate the gate
 
-A mature label uses schema `drmc-counterfactual-pair-label-v3`. Every candidate
-contains:
+```bash
+uv run python -m tools.counterfactual_quality_gate \
+  --audit "$ROOT/audit-b8.json" \
+  --calibration "$CALIBRATION" \
+  --beam-sweep "$ROOT/beam-sweep.json" \
+  --bank-manifest "$BANK_MANIFEST" \
+  --bootstrap "$ROOT/v3-bootstrap-comparison.json" \
+  --output "$ROOT/gate.json"
+```
 
-- weighted aggregate W/D/L;
-- `member_wdl` in manifest member order;
-- weighted utility standard deviation in `uncertainty`;
-- weighted Jensen–Shannon divergence in `uncertainty_js`.
+Exit `0` means every default check passed. Exit `2` means the gate remains
+staged. Copy the passing evidence to
+`runs/program/gates/v3-counterfactual-quality.json` only after independent
+review of the hashes and source manifests.
 
-The audit rejects missing, nonfinite, or incomplete member values. Preserve the
-mixture member ids and weights in every row; do not replace the frozen mixture
-with an unrecorded checkpoint selection.
+## Stop conditions
 
-## Stop conditions and escalation
+Stop and fix the cause when any of the following occurs:
 
-Stop a run and fix the cause when any of the following occurs:
-
+- hidden reserve bytes or future RNG reach a continuation network;
+- independent `1/9` reveal mass is used;
+- a supported posterior pill is pruned;
+- a source belief is contradictory, impossible, or fails its count/hash check;
 - candidate coverage differs from the source bank;
 - candidate packing truncates or silently drops an action;
 - any search reports budget exhaustion;
-- a reveal branch uses the hidden reserve value or independent `1/9` mass;
-- source belief observations are contradictory or impossible;
-- a member checkpoint hash or calibration hash differs from its manifest;
-- shard settings differ beyond shard index;
-- beam comparison source/action sets differ;
-- draw calibration is unidentified;
-- a privileged continuation release is presented as deployable public search.
+- a checkpoint, mixture, calibration, bank, or release hash differs;
+- release code is dirty or shard settings differ;
+- beam releases differ in anything besides opponent beam;
+- aggregate convergence hides a failing tactical cell;
+- draw calibration is unidentified in any training fold;
+- member W/D/L or uncertainty is missing or non-finite;
+- privileged teacher evidence is presented as deployable public search.
 
-Do not proceed to G5 quality distillation merely because the mechanics pilot
-was large or clean. Proceed only after the executable gate passes and the gate
-artifact is stored at the authority path in `program.yaml`.
+## After this gate passes
 
-## After the gate
-
-Once the mature release passes:
-
-1. Train the V3 competitive head only from counterfactual/search/outcome
-   targets; retain human cross-entropy on the human/style head.
-2. Distill W/D/L distribution, policy targets, tactical consequences, and
-   uncertainty into the matched G5 variants.
+1. Train the V3 competitive head from counterfactual/search/outcome targets;
+   keep human cross-entropy on the human/style head only.
+2. Distill policy targets, W/D/L distribution, tactical consequences, and
+   uncertainty into matched G5 students.
 3. Run the root-only, V3-distilled, exact-effect-token, and recurrent-event G5
-   bakeoff under common seeds, parent, compute, and opponent mixture.
-4. Keep joint search as an offline teacher until same-weight clean-start paired
-   evaluation passes its own gate.
+   bakeoff under common parent, seeds, compute, and opponent mixture.
+4. Keep joint search offline until same-weight clean-start paired evaluation
+   passes the separate `joint-event-search` gate.
+5. Preserve this release as immutable teacher evidence; do not continually
+   overwrite it with later checkpoints.
