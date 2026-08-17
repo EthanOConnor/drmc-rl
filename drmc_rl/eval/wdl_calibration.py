@@ -1,17 +1,20 @@
 """Group-balanced Davidson W/D/L calibration with paired uncertainty.
 
 Rows sampled from a long game must not outweigh rows sampled from a short game.
-This module therefore gives every game equal total fitting and metric weight,
-cross-fits by whole game, and bootstraps paired metric differences by game.
+Every game therefore has equal total fitting and metric weight. Cross-fitting
+uses whole games, distributes naturally drawn games across folds when possible,
+and paired uncertainty is bootstrapped by game rather than decision row.
 """
 
 from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 import numpy as np
+
+OUTCOME_NAMES = ("win", "draw", "loss")
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +22,11 @@ class DavidsonParameters:
     slope: float
     bias: float
     draw_logit: float
+
+    def __post_init__(self) -> None:
+        values = np.asarray((self.slope, self.bias, self.draw_logit), dtype=np.float64)
+        if not np.isfinite(values).all() or self.slope <= 0:
+            raise ValueError("Davidson parameters must be finite with positive slope")
 
     def to_dict(self) -> dict[str, float]:
         return {
@@ -30,6 +38,8 @@ class DavidsonParameters:
 
 def probabilities(scores: np.ndarray, parameters: DavidsonParameters) -> np.ndarray:
     score = np.asarray(scores, dtype=np.float64).reshape(-1)
+    if not np.isfinite(score).all():
+        raise ValueError("calibration scores must be finite")
     strength = np.clip(parameters.slope * score + parameters.bias, -30.0, 30.0)
     logits = np.stack(
         (strength, np.full_like(strength, parameters.draw_logit), -strength), axis=1
@@ -43,8 +53,7 @@ def group_balanced_weights(groups: np.ndarray) -> np.ndarray:
     value = np.asarray(groups).reshape(-1)
     if value.size == 0:
         raise ValueError("groups cannot be empty")
-    unique, inverse, counts = np.unique(value, return_inverse=True, return_counts=True)
-    del unique
+    _unique, inverse, counts = np.unique(value, return_inverse=True, return_counts=True)
     weight = 1.0 / counts[inverse].astype(np.float64)
     weight *= len(weight) / weight.sum()
     return weight
@@ -63,6 +72,18 @@ def _validate(
     if len(np.unique(group)) < 2:
         raise ValueError("calibration requires at least two independent game groups")
     return score, outcome, group
+
+
+def outcome_game_counts(outcomes: np.ndarray, groups: np.ndarray) -> dict[str, int]:
+    outcome = np.asarray(outcomes, dtype=np.int64).reshape(-1)
+    group = np.asarray(groups).reshape(-1)
+    if len(outcome) != len(group):
+        raise ValueError("outcomes and groups must have matching length")
+    unique = np.unique(group)
+    return {
+        name: int(sum(bool(np.any(outcome[group == item] == target)) for item in unique))
+        for target, name in enumerate(OUTCOME_NAMES)
+    }
 
 
 def fit_parameters(
@@ -116,6 +137,10 @@ def metric_contributions(
     prediction = np.asarray(probability, dtype=np.float64)
     if prediction.shape != (len(target), 3):
         raise ValueError("probability must have shape [rows,3]")
+    if not np.isfinite(prediction).all() or (prediction < 0).any():
+        raise ValueError("probabilities must be finite and non-negative")
+    if not np.allclose(prediction.sum(axis=1), 1.0, atol=2e-6):
+        raise ValueError("probability rows must sum to one")
     one_hot = np.eye(3, dtype=np.float64)[target]
     return {
         "brier": np.sum(np.square(prediction - one_hot), axis=1),
@@ -157,9 +182,36 @@ def weighted_metrics(
     return result
 
 
-def _fold_for_group(group: object, *, seed: int, folds: int) -> int:
-    digest = hashlib.sha256(f"{int(seed)}:{group}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") % int(folds)
+def _stable_group_order(groups: np.ndarray, *, seed: int) -> list[object]:
+    return sorted(
+        np.unique(groups).tolist(),
+        key=lambda item: hashlib.sha256(f"{int(seed)}:{item}".encode()).digest(),
+    )
+
+
+def _fold_assignment(
+    outcomes: np.ndarray,
+    groups: np.ndarray,
+    *,
+    seed: int,
+    folds: int,
+) -> dict[object, int]:
+    """Deterministically spread draw and decisive games across folds."""
+
+    outcome = np.asarray(outcomes, dtype=np.int64).reshape(-1)
+    group = np.asarray(groups).reshape(-1)
+    unique = np.unique(group)
+    fold_count = min(max(2, int(folds)), len(unique))
+    categories: dict[str, list[object]] = {"draw": [], "decisive": []}
+    for item in unique:
+        category = "draw" if bool(np.any(outcome[group == item] == 1)) else "decisive"
+        categories[category].append(item)
+    assignment: dict[object, int] = {}
+    for offset, category in enumerate(("draw", "decisive")):
+        ordered = _stable_group_order(np.asarray(categories[category]), seed=seed + offset)
+        for index, item in enumerate(ordered):
+            assignment[item] = index % fold_count
+    return assignment
 
 
 def cross_fitted_predictions(
@@ -171,15 +223,14 @@ def cross_fitted_predictions(
     folds: int = 5,
 ) -> tuple[np.ndarray, list[dict[str, Any]]]:
     score, outcome, group = _validate(scores, outcomes, groups)
-    unique = np.unique(group)
-    fold_count = min(max(2, int(folds)), len(unique))
-    assignment = {item: _fold_for_group(item, seed=seed, folds=fold_count) for item in unique}
+    assignment = _fold_assignment(outcome, group, seed=seed, folds=folds)
+    fold_count = max(assignment.values()) + 1
     prediction = np.full((len(score), 3), np.nan, dtype=np.float64)
     records: list[dict[str, Any]] = []
     for fold in range(fold_count):
         validation = np.asarray([assignment[item] == fold for item in group])
         if not validation.any():
-            continue
+            raise RuntimeError(f"cross-fitting fold {fold} contains no validation games")
         train = ~validation
         if len(np.unique(group[train])) < 2:
             raise ValueError("cross-fitting fold leaves fewer than two training games")
@@ -192,6 +243,10 @@ def cross_fitted_predictions(
                 "validation_rows": int(validation.sum()),
                 "train_games": int(len(np.unique(group[train]))),
                 "validation_games": int(len(np.unique(group[validation]))),
+                "train_outcome_games": outcome_game_counts(outcome[train], group[train]),
+                "validation_outcome_games": outcome_game_counts(
+                    outcome[validation], group[validation]
+                ),
                 "parameters": fitted.to_dict(),
             }
         )
@@ -264,17 +319,10 @@ def calibration_report(
     baseline_probability = probabilities(score, baseline)
     final = fit_parameters(score, outcome, group)
     unique_groups = np.unique(group)
-    draw_games = int(
-        sum(bool(np.any(outcome[group == item] == 1)) for item in unique_groups)
-    )
-    outcome_games = {
-        name: int(
-            sum(bool(np.any(outcome[group == item] == target)) for item in unique_groups)
-        )
-        for name, target in (("win", 0), ("draw", 1), ("loss", 2))
-    }
+    outcome_games = outcome_game_counts(outcome, group)
+    draw_games = outcome_games["draw"]
     return {
-        "schema": "drmc-grouped-davidson-calibration-v2",
+        "schema": "drmc-grouped-davidson-calibration-v3",
         "parameters": final.to_dict(),
         "baseline_parameters": baseline.to_dict(),
         "rows": int(len(score)),
@@ -285,6 +333,11 @@ def calibration_report(
         "weighting": "equal-total-weight-per-game",
         "crossfit": {
             "folds": fold_records,
+            "fold_count": len(fold_records),
+            "all_training_folds_draw_identifiable": all(
+                int(record["train_outcome_games"]["draw"]) > 0
+                for record in fold_records
+            ),
             "baseline": weighted_metrics(baseline_probability, outcome, group),
             "calibrated": weighted_metrics(crossfit, outcome, group),
             "paired_game_bootstrap": paired_game_bootstrap(
@@ -306,6 +359,7 @@ __all__ = [
     "fit_parameters",
     "group_balanced_weights",
     "metric_contributions",
+    "outcome_game_counts",
     "paired_game_bootstrap",
     "probabilities",
     "weighted_metrics",
