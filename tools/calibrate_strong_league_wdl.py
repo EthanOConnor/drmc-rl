@@ -1,4 +1,4 @@
-"""Fit a frozen Strong League value mixture to held-out native W/D/L outcomes."""
+"""Fit aggregate and member-specific Strong League links to grouped W/D/L."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from drmc_rl.eval.wdl_calibration import calibration_report
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 from drmc_rl.search.strong_league import FrozenStrongLeagueMixture
 from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
@@ -42,8 +43,10 @@ def _batch_infer(mixture: FrozenStrongLeagueMixture, env, obs):
             packed.cost,
         )
     probabilities = np.zeros((size, 128), dtype=np.float64)
-    values = np.zeros(size, dtype=np.float64)
-    for weight, member in zip(mixture.weights, mixture.members, strict=True):
+    member_values = np.zeros((size, len(mixture.members)), dtype=np.float64)
+    for member_index, (weight, member) in enumerate(
+        zip(mixture.weights, mixture.members, strict=True)
+    ):
         with torch.inference_mode():
             logits, value = member.net(
                 torch.from_numpy(obs[:, :16].astype(np.float32)).to(member.device),
@@ -66,11 +69,12 @@ def _batch_infer(mixture: FrozenStrongLeagueMixture, env, obs):
         member_probability[~masks] = 0.0
         member_probability /= np.maximum(member_probability.sum(axis=1, keepdims=True), 1e-12)
         probabilities += float(weight) * member_probability
-        values += float(weight) * value.reshape(-1).float().cpu().numpy()
+        member_values[:, member_index] = value.reshape(-1).float().cpu().numpy()
+    aggregate_values = member_values @ mixture.weights
     slots = probabilities.argmax(axis=1)
     chosen = actions[np.arange(size), slots]
     chosen[~masks.any(axis=1)] = -1
-    return chosen.astype(np.int32), values
+    return chosen.astype(np.int32), aggregate_values, member_values
 
 
 def collect(
@@ -80,8 +84,9 @@ def collect(
     pairs: int,
     seed: int,
     lib_path: str | None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, list[dict[str, int]]]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list[dict[str, int]]]:
     scores: list[float] = []
+    member_scores: list[np.ndarray] = []
     outcomes: list[int] = []
     groups: list[int] = []
     strata: list[dict[str, int]] = []
@@ -101,22 +106,24 @@ def collect(
             )
             obs, infos = env.reset(seed=seed + level * 101 + speed * 1009)
             pending: list[list[float]] = [[] for _ in range(env.num_sides)]
+            pending_members: list[list[np.ndarray]] = [
+                [] for _ in range(env.num_sides)
+            ]
             decisions = np.zeros(env.num_sides, dtype=np.int64)
             completed = 0
             attempted = 0
             truncated_games = 0
             try:
                 while completed < games_per_stratum:
-                    actions, values = _batch_infer(mixture, env, obs)
+                    actions, values, values_by_member = _batch_infer(mixture, env, obs)
                     active = env.policy_batch("none").feasible_mask.reshape(
                         env.num_sides, -1
                     ).any(axis=1)
                     for side in range(env.num_sides):
-                        # Fixed logarithmic-ish cadence avoids overweighting long endgames.
-                        if active[side] and (
-                            decisions[side] < 8 or decisions[side] % 8 == 0
-                        ):
+                        # Fixed logarithmic-ish cadence avoids excessive within-game rows.
+                        if active[side] and (decisions[side] < 8 or decisions[side] % 8 == 0):
                             pending[side].append(float(values[side]))
+                            pending_members[side].append(values_by_member[side].copy())
                         decisions[side] += int(active[side])
                     obs, _reward, terminated, truncated, infos = env.step(actions)
                     for pair in range(env.num_pairs):
@@ -125,15 +132,14 @@ def collect(
                             continue
                         attempted += 1
                         if completed >= games_per_stratum:
-                            pending[first].clear()
-                            pending[first + 1].clear()
+                            for side in (first, first + 1):
+                                pending[side].clear()
+                                pending_members[side].clear()
                             continue
                         if bool(truncated[first]) and not bool(terminated[first]):
-                            # A search-horizon cutoff is not a competitive draw.
-                            # Discard all samples from that game and wait for a
-                            # natural terminal result from the autoreset pair.
-                            pending[first].clear()
-                            pending[first + 1].clear()
+                            for side in (first, first + 1):
+                                pending[side].clear()
+                                pending_members[side].clear()
                             decisions[first : first + 2] = 0
                             truncated_games += 1
                             if attempted > max(100, 20 * games_per_stratum):
@@ -147,12 +153,15 @@ def collect(
                                 raise RuntimeError(
                                     "natural terminal game is missing an authoritative VS outcome"
                                 )
-                            target = {"win": 0, "draw": 1, "loss": 2}.get(outcome)
-                            if target is not None:
-                                scores.extend(pending[side])
-                                outcomes.extend([target] * len(pending[side]))
-                                groups.extend([next_group] * len(pending[side]))
+                            if len(pending[side]) != len(pending_members[side]):
+                                raise RuntimeError("aggregate/member calibration rows diverged")
+                            target = {"win": 0, "draw": 1, "loss": 2}[outcome]
+                            scores.extend(pending[side])
+                            member_scores.extend(pending_members[side])
+                            outcomes.extend([target] * len(pending[side]))
+                            groups.extend([next_group] * len(pending[side]))
                             pending[side].clear()
+                            pending_members[side].clear()
                             decisions[side] = 0
                         next_group += 1
                         completed += 1
@@ -169,82 +178,24 @@ def collect(
                 env.close()
     return (
         np.asarray(scores, dtype=np.float32),
+        np.asarray(member_scores, dtype=np.float32),
         np.asarray(outcomes, dtype=np.int64),
         np.asarray(groups, dtype=np.int64),
         strata,
     )
 
 
-def _probabilities(scores: np.ndarray, slope: float, bias: float, draw_logit: float):
-    strength = slope * scores.astype(np.float64) + bias
-    logits = np.stack((strength, np.full_like(strength, draw_logit), -strength), axis=1)
-    logits -= logits.max(axis=1, keepdims=True)
-    probability = np.exp(logits)
-    return probability / probability.sum(axis=1, keepdims=True)
-
-
-def _metrics(probability: np.ndarray, target: np.ndarray) -> dict[str, float]:
-    one_hot = np.eye(3, dtype=np.float64)[target]
-    brier = float(np.mean(np.sum((probability - one_hot) ** 2, axis=1)))
-    log_loss = float(-np.mean(np.log(np.maximum(probability[np.arange(len(target)), target], 1e-12))))
-    confidence = probability.max(axis=1)
-    correct = probability.argmax(axis=1) == target
-    ece = 0.0
-    for low in np.linspace(0.0, 0.9, 10):
-        mask = (confidence >= low) & (confidence < low + 0.1)
-        if mask.any():
-            ece += float(mask.mean()) * abs(float(correct[mask].mean()) - float(confidence[mask].mean()))
-    return {"brier": brier, "log_loss": log_loss, "ece_10": ece}
-
-
-def fit(scores: np.ndarray, outcomes: np.ndarray, groups: np.ndarray, split_seed: int):
-    group_digest = {
-        int(group): int.from_bytes(
-            hashlib.sha256(f"{split_seed}:{int(group)}".encode()).digest()[:8], "big"
-        )
-        for group in np.unique(groups)
-    }
-    digest = np.asarray([group_digest[int(group)] for group in groups], dtype=np.uint64)
-    validation = digest % 5 == 0
-    train = ~validation
-    x = torch.from_numpy(scores[train]).double()
-    y = torch.from_numpy(outcomes[train]).long()
-    raw_slope = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
-    bias = torch.tensor(0.0, dtype=torch.float64, requires_grad=True)
-    draw = torch.tensor(-3.0, dtype=torch.float64, requires_grad=True)
-    optimizer = torch.optim.LBFGS(
-        [raw_slope, bias, draw], max_iter=200, tolerance_grad=1e-10, line_search_fn="strong_wolfe"
-    )
-
-    def closure():
-        optimizer.zero_grad()
-        slope = torch.nn.functional.softplus(raw_slope) + 1e-6
-        strength = slope * x + bias
-        logits = torch.stack((strength, draw.expand_as(strength), -strength), dim=1)
-        loss = torch.nn.functional.cross_entropy(logits, y)
-        loss.backward()
-        return loss
-
-    optimizer.step(closure)
-    parameters = {
-        "slope": float(torch.nn.functional.softplus(raw_slope).detach() + 1e-6),
-        "bias": float(bias.detach()),
-        "draw_logit": float(draw.detach()),
-    }
-    calibrated = _probabilities(scores[validation], **parameters)
-    baseline = _probabilities(scores[validation], 1.0, 0.0, -3.0)
-    return parameters, {
-        "train_rows": int(train.sum()),
-        "validation_rows": int(validation.sum()),
-        "train_games": int(len(np.unique(groups[train]))),
-        "validation_games": int(len(np.unique(groups[validation]))),
-        "baseline": _metrics(baseline, outcomes[validation]),
-        "calibrated": _metrics(calibrated, outcomes[validation]),
-        "outcomes": {
-            "win": int((outcomes[validation] == 0).sum()),
-            "draw": int((outcomes[validation] == 1).sum()),
-            "loss": int((outcomes[validation] == 2).sum()),
-        },
+def _heldout(report: dict[str, object]) -> dict[str, object]:
+    crossfit = report["crossfit"]  # type: ignore[index]
+    return {
+        "validation_rows": report["rows"],
+        "validation_games": report["games"],
+        "baseline": crossfit["baseline"],  # type: ignore[index]
+        "calibrated": crossfit["calibrated"],  # type: ignore[index]
+        "paired_game_bootstrap": crossfit["paired_game_bootstrap"],  # type: ignore[index]
+        "outcome_games": report["outcome_games"],
+        "natural_draw_games": report["natural_draw_games"],
+        "draw_identifiable": report["draw_identifiable"],
     }
 
 
@@ -255,17 +206,20 @@ def main() -> None:
     parser.add_argument("--games-per-stratum", type=int, default=32)
     parser.add_argument("--pairs", type=int, default=16)
     parser.add_argument("--seed", type=int, default=20260816)
+    parser.add_argument("--folds", type=int, default=5)
+    parser.add_argument("--bootstrap-samples", type=int, default=2000)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--native-lib")
     args = parser.parse_args()
-    # Temporary identity link: collection uses only member policies/values;
-    # the fitted artifact replaces this object before search release.
-    from drmc_rl.search.strong_league import DavidsonCalibration
+    if args.games_per_stratum < 1 or args.folds < 2 or args.bootstrap_samples < 1:
+        parser.error("game, fold, and bootstrap counts must be positive")
+
+    # Collection uses member policies/values only; fitted links replace this
+    # temporary identity link before any counterfactual release.
+    from drmc_rl.search.strong_league import DavidsonCalibration, MixtureMember
 
     payload = json.loads(args.mixture_manifest.read_text())
     base = args.mixture_manifest.parent
-    from drmc_rl.search.strong_league import MixtureMember
-
     members = []
     for item in payload["members"]:
         path = Path(item["checkpoint"])
@@ -282,25 +236,51 @@ def main() -> None:
         DavidsonCalibration(1.0, 0.0, -3.0, "collection-only"),
         device=args.device,
     )
-    scores, outcomes, groups, strata = collect(
+    scores, member_scores, outcomes, groups, strata = collect(
         mixture,
         games_per_stratum=args.games_per_stratum,
         pairs=args.pairs,
         seed=args.seed,
         lib_path=args.native_lib,
     )
-    parameters, metrics = fit(scores, outcomes, groups, args.seed)
+    report = calibration_report(
+        scores,
+        outcomes,
+        groups,
+        seed=args.seed,
+        folds=args.folds,
+        bootstrap_samples=args.bootstrap_samples,
+    )
+    member_calibrations = {
+        member.id: calibration_report(
+            member_scores[:, index],
+            outcomes,
+            groups,
+            seed=args.seed + 1000 + index,
+            folds=args.folds,
+            bootstrap_samples=args.bootstrap_samples,
+        )
+        for index, member in enumerate(members)
+    }
     result = {
-        "schema": "drmc-strong-league-wdl-calibration-v1",
+        "schema": "drmc-strong-league-wdl-calibration-v2",
         "mixture_manifest_sha256": _sha256(args.mixture_manifest),
-        "parameters": parameters,
-        "heldout_metrics": metrics,
+        "parameters": report["parameters"],
+        "heldout_metrics": _heldout(report),
+        "grouped_calibration": report,
+        "member_calibrations": member_calibrations,
+        "member_parameters": {
+            member_id: value["parameters"]
+            for member_id, value in member_calibrations.items()
+        },
         "collection": {
             "seed": args.seed,
             "rows": int(len(scores)),
             "games": int(sum(item["games"] for item in strata)),
             "strata": strata,
             "sampling": "first-8-and-every-8th-decision-per-side",
+            "weighting": "equal-total-weight-per-game",
+            "member_ids": [member.id for member in members],
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

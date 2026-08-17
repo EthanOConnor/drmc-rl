@@ -21,13 +21,18 @@ jobs:
         run: uv sync --group dev --extra rl
       - name: Validate program authority
         run: uv run python -m tools.program validate
-      - name: Compile new architecture modules
+      - name: Compile architecture and evidence tooling
         run: |
           uv run python -m compileall -q \
             drmc_rl/program \
             drmc_rl/game/pair_state.py \
             drmc_rl/execution \
             drmc_rl/search/joint_event.py \
+            drmc_rl/search/native_pair.py \
+            drmc_rl/search/pill_belief.py \
+            drmc_rl/search/belief_native_pair.py \
+            drmc_rl/search/strong_league.py \
+            drmc_rl/search/strong_league_memberwise.py \
             drmc_rl/teachers \
             drmc_rl/experiments \
             drmc_rl/arena/meta_strategy.py \
@@ -39,15 +44,24 @@ jobs:
             drmc_rl/models/policy/event_belief.py \
             drmc_rl/models/policy/candidate_coverage.py \
             drmc_rl/eval/release_gates.py \
+            drmc_rl/eval/wdl_calibration.py \
             tools/program.py \
             tools/earliest_lock_dominance.py \
             tools/counterfactual_teacher.py \
             tools/joint_search_teacher.py \
+            tools/audit_counterfactual_pilot.py \
+            tools/build_pair_state_pilot.py \
+            tools/balance_pair_state_bank.py \
+            tools/calibrate_strong_league_wdl.py \
+            tools/compare_counterfactual_releases.py \
+            tools/compare_counterfactual_bootstrap.py \
+            tools/build_v3_bootstrap.py \
+            tools/counterfactual_quality_gate.py \
             tools/execution_profile.py \
             tools/style_space.py \
             tools/meta_strategy.py \
             tools/release_gate.py
-      - name: Focused architecture tests
+      - name: Focused architecture and quality-evidence tests
         run: |
           uv run pytest -q \
             tests/test_program_authority.py \
@@ -55,6 +69,16 @@ jobs:
             tests/test_execution_profile.py \
             tests/test_joint_event_search.py \
             tests/test_counterfactual_teacher.py \
+            tests/test_counterfactual_ensemble.py \
+            tests/test_counterfactual_release_analysis.py \
+            tests/test_counterfactual_state_bank.py \
+            tests/test_counterfactual_bootstrap_comparison.py \
+            tests/test_v3_baseline.py \
+            tests/test_counterfactual_quality_gate.py \
+            tests/test_wdl_calibration.py \
+            tests/test_pill_belief.py \
+            tests/test_strong_league_memberwise.py \
+            tests/test_pair_state_bank_builder.py \
             tests/test_effect_tokens.py \
             tests/test_event_belief.py \
             tests/test_candidate_coverage.py \

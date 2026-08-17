@@ -6,6 +6,7 @@ authority:
   roadmap: docs/ROADMAP.md
   operations: docs/OPERATIONS.md
   evaluation: docs/EVALUATION.md
+  counterfactual_quality: docs/COUNTERFACTUAL_QUALITY_HANDOFF.md
 principles:
   - One rating-independent competitive core serves all three products.
   - Public actor state and privileged teacher state are separate contracts.
@@ -15,6 +16,7 @@ principles:
   - Human strength is calibrated competitive regret, not temperature, beam width, or random play.
   - Human-rate claims are tied to published execution profiles and hard script validation.
   - Every promoted artifact carries immutable provenance and gate evidence.
+  - Reserve reveals use a public seed posterior; independent one-ninth pill branching is mechanics-only.
 
 gates:
   timing-action-gate:
@@ -39,14 +41,20 @@ gates:
     evidence_path: runs/program/gates/v3-counterfactual-quality.json
     depends_on: [pair-state-v2]
     criteria:
-      - Held-out candidate W/D/L calibration improves over the observed-action bootstrap.
-      - Human-choice supervision affects only human/style heads in the mature checkpoint.
+      - Every source state carries the public initial virus bottle plus accumulated reserve-reveal history, and reveal probabilities come from the exact posterior under the declared reset-seed prior, never independent one-ninth mass.
+      - A 1024-to-2048-state bank fills declared level, speed, and tactical quotas under a frozen competitive rollout policy.
+      - Full root coverage, zero candidate truncation, and zero search-budget exhaustion are verified against the source bank.
+      - Aggregate and member-specific Davidson links use equal game weight, grouped cross-fitting, natural draw evidence, and paired game-bootstrap improvement.
+      - Every candidate exports all frozen member W/D/L values plus finite utility and Jensen-Shannon disagreement.
+      - Opponent-beam 4 converges to beam 8 under the predeclared action, value, and policy thresholds; beam 1 is reported as sensitivity evidence.
+      - Counterfactual observed-action W/D/L beats the frozen V3 bootstrap with paired whole-game confidence for Brier and log loss.
       - Candidate regret is reported in calibrated win-logit units.
+      - Privileged continuation inputs are declared teacher-only and are not presented as deployable public search.
   g5-bakeoff:
     status: staged
     description: Compare root-only, V3-distilled, exact-effect-token, and recurrent/event-state G5 variants under matched compute and opponents.
     evidence_path: runs/program/gates/g5-bakeoff.json
-    depends_on: [pair-state-v2]
+    depends_on: [pair-state-v2, v3-counterfactual-quality]
     criteria:
       - Common parent, seeds, arena mixture, and compute budget are recorded.
       - Candidate truncation is zero in training and evaluation.
@@ -246,16 +254,102 @@ recipes:
     resources:
       preferred_host: tf3090
       accelerator: cuda
+  strong-league-wdl-calibration:
+    status: staged
+    stage: 4
+    purpose: Fit aggregate and member-specific positive-slope Davidson links with equal game weight, grouped cross-fitting, draw evidence, and paired bootstrap intervals.
+    requires_paths:
+      - tools/calibrate_strong_league_wdl.py
+      - drmc_rl/eval/wdl_calibration.py
+      - '{counterfactual_mixture_manifest}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.calibrate_strong_league_wdl
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --output
+      - '{counterfactual_wdl_calibration}'
+      - --games-per-stratum
+      - '{calibration_games_per_stratum}'
+      - --folds
+      - '5'
+      - --bootstrap-samples
+      - '4000'
+      - --device
+      - cuda
+    produces:
+      - Grouped aggregate and member-specific W/D/L calibration artifact
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  counterfactual-candidate-bank:
+    status: staged
+    stage: 4
+    purpose: Oversample exact pair states under the frozen Strong League mixture while accumulating public reserve-belief history.
+    requires_paths:
+      - tools/build_pair_state_pilot.py
+      - drmc_rl/search/pill_belief.py
+      - '{counterfactual_mixture_manifest}'
+      - '{counterfactual_wdl_calibration}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.build_pair_state_pilot
+      - --output
+      - '{oversampled_pair_state_bank}'
+      - --states
+      - '{oversampled_pair_state_count}'
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --wdl-calibration
+      - '{counterfactual_wdl_calibration}'
+      - --device
+      - cuda
+    produces:
+      - Oversampled competitive pair-state source with public reserve-belief history
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  counterfactual-balanced-bank:
+    status: staged
+    stage: 4
+    purpose: Select a deterministic 1024-to-2048-state level, speed, and tactical quota bank.
+    requires_paths:
+      - tools/balance_pair_state_bank.py
+      - drmc_rl/teachers/state_bank.py
+      - '{oversampled_pair_state_bank}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.balance_pair_state_bank
+      - --input
+      - '{oversampled_pair_state_bank}'
+      - --output
+      - '{pair_state_bank}'
+      - --per-cell
+      - '24'
+      - --rollout-policy
+      - frozen-strong-league-mixture-argmax
+      - --rollout-policy-manifest-sha256
+      - '{counterfactual_mixture_manifest_sha256}'
+    produces:
+      - Balanced full-pair counterfactual source bank and quota manifest
+    resources:
+      accelerator: cpu
   counterfactual-labels:
     status: staged
     stage: 4
-    purpose: Label every legal candidate from full pair states with W/D/L, uncertainty, and calibrated regret.
+    purpose: Label every legal candidate from full pair states with W/D/L, member uncertainty, and calibrated regret.
     requires_paths:
       - drmc_rl/teachers/counterfactual.py
       - drmc_rl/teachers/counterfactual_release.py
       - drmc_rl/search/joint_event.py
-      - drmc_rl/search/native_pair.py
-      - drmc_rl/search/strong_league.py
+      - drmc_rl/search/belief_native_pair.py
+      - drmc_rl/search/strong_league_memberwise.py
       - '{pair_state_bank}'
       - '{counterfactual_mixture_manifest}'
       - '{counterfactual_wdl_calibration}'
@@ -269,29 +363,29 @@ recipes:
       - --output
       - '{counterfactual_release}'
       - --adapter
-      - '{counterfactual_adapter}'
+      - drmc_rl.search.strong_league_memberwise:frozen_strong_league_memberwise_factory
       - --root-side
       - '{counterfactual_root_side}'
       - --depth-events
       - '{counterfactual_depth_events}'
       - --own-beam
-      - '{counterfactual_own_beam}'
+      - '512'
       - --opponent-beam
       - '{counterfactual_opponent_beam}'
       - --chance-beam
-      - '{counterfactual_chance_beam}'
+      - '9'
       - --max-nodes
       - '{counterfactual_max_nodes}'
       - --chunk-size
       - '{counterfactual_chunk_size}'
-      - --max-states
-      - '{counterfactual_max_states}'
       - --seed
       - '{counterfactual_seed}'
       - --stratum
       - level
       - --stratum
       - speed
+      - --stratum
+      - tactical_stratum
       - --resume
       - --corpus-release
       - '{counterfactual_corpus_release}'
@@ -308,9 +402,134 @@ recipes:
       - --planner-revision
       - '{counterfactual_planner_revision}'
     produces:
-      - Versioned counterfactual candidate-target release
+      - Versioned member-wise counterfactual candidate-target release
     resources:
       accelerator: cuda
+    notes:
+      - Run identical releases at opponent beams 1, 4, and 8; only the beam may differ.
+      - The frozen G4 continuation is a privileged teacher because it consumes exact pending-attack scalars.
+      - Independent one-ninth reveal mass is prohibited for quality releases.
+  counterfactual-beam-comparison:
+    status: staged
+    stage: 4
+    purpose: Align beam 1, 4, and 8 releases by source and action and quantify convergence.
+    requires_paths:
+      - tools/compare_counterfactual_releases.py
+      - drmc_rl/teachers/release_analysis.py
+      - '{counterfactual_release_b1_manifest}'
+      - '{counterfactual_release_b4_manifest}'
+      - '{counterfactual_release_b8_manifest}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.compare_counterfactual_releases
+      - --release
+      - '1={counterfactual_release_b1_manifest}'
+      - --release
+      - '4={counterfactual_release_b4_manifest}'
+      - --release
+      - '8={counterfactual_release_b8_manifest}'
+      - --reference-beam
+      - '8'
+      - --output
+      - '{counterfactual_beam_sweep}'
+    produces:
+      - Aligned opponent-beam sensitivity and convergence report
+    resources:
+      accelerator: cpu
+  v3-bootstrap-baseline:
+    status: staged
+    stage: 4
+    purpose: Fit a frozen Davidson W/D/L link for V3 on independent natural games and score disjoint observed-action evaluation rows.
+    requires_paths:
+      - tools/build_v3_bootstrap.py
+      - drmc_rl/teachers/v3_baseline.py
+      - '{v3_checkpoint}'
+      - '{v3_calibration_bank}'
+      - '{v3_evaluation_bank}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.build_v3_bootstrap
+      - --checkpoint
+      - '{v3_checkpoint}'
+      - --calibration-bank
+      - '{v3_calibration_bank}'
+      - --evaluation-bank
+      - '{v3_evaluation_bank}'
+      - --rows-output
+      - '{v3_bootstrap_rows}'
+      - --calibration-output
+      - '{v3_bootstrap_calibration}'
+      - --manifest-output
+      - '{v3_bootstrap_manifest}'
+    produces:
+      - Content-addressed V3 W/D/L calibration, held-out rows, and disjoint-split manifest
+    resources:
+      accelerator: gpu
+  counterfactual-bootstrap-comparison:
+    status: staged
+    stage: 4
+    purpose: Compare mature counterfactual W/D/L against the frozen observed-action V3 bootstrap on held-out whole games.
+    requires_paths:
+      - tools/compare_counterfactual_bootstrap.py
+      - drmc_rl/teachers/bootstrap_comparison.py
+      - '{counterfactual_release_b8_manifest}'
+      - '{v3_bootstrap_rows}'
+      - '{v3_bootstrap_manifest}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.compare_counterfactual_bootstrap
+      - '{counterfactual_release_b8_manifest}'
+      - --bootstrap
+      - '{v3_bootstrap_rows}'
+      - --bootstrap-manifest
+      - '{v3_bootstrap_manifest}'
+      - --bootstrap-samples
+      - '4000'
+      - --output
+      - '{counterfactual_bootstrap_comparison}'
+    produces:
+      - Paired whole-game Brier and log-loss comparison
+    resources:
+      accelerator: cpu
+  counterfactual-quality-gate:
+    status: staged
+    stage: 4
+    purpose: Evaluate the complete fail-closed evidence bundle for v3 counterfactual quality promotion.
+    requires_paths:
+      - tools/counterfactual_quality_gate.py
+      - drmc_rl/teachers/quality_gate.py
+      - '{counterfactual_audit}'
+      - '{counterfactual_wdl_calibration}'
+      - '{counterfactual_beam_sweep}'
+      - '{pair_state_bank_manifest}'
+      - '{counterfactual_bootstrap_comparison}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.counterfactual_quality_gate
+      - --audit
+      - '{counterfactual_audit}'
+      - --calibration
+      - '{counterfactual_wdl_calibration}'
+      - --beam-sweep
+      - '{counterfactual_beam_sweep}'
+      - --bank-manifest
+      - '{pair_state_bank_manifest}'
+      - --bootstrap
+      - '{counterfactual_bootstrap_comparison}'
+      - --output
+      - '{repo}/runs/program/gates/v3-counterfactual-quality.json'
+    produces:
+      - Program-authoritative pass or staged gate evidence
+    resources:
+      accelerator: cpu
   joint-search-teacher:
     status: staged
     stage: 6
@@ -356,7 +575,6 @@ recipes:
       - Population mixture, best-response gaps, and exploitability evidence
     resources:
       accelerator: cpu
-
   human-execution-profile:
     status: staged
     stage: 8

@@ -6,262 +6,263 @@ The program stands up three validated products from one competitive core:
 
 | Product | Strategic intelligence | Mechanical action set | Decoder |
 | --- | --- | --- | --- |
-| Unrestricted superhuman | strongest policy plus validated joint-event search | every exact reachable placement and useful timing | maximize calibrated match value |
+| Unrestricted superhuman | strongest public-information policy plus validated joint-event search | every exact reachable placement and useful timing | maximize calibrated match value |
 | Human-rate superhuman | same quality/search system | scripts inside a named elite human envelope | maximize match value; no intentional errors |
 | Human trainer | same quality oracle | rating-appropriate human-feasible scripts | calibrated regret, then style, cadence, form, and plausible execution |
 
 The machine-readable authority is `drmc_rl/program/program.yaml`. This document
-explains the stage ordering; it does not override gate status or launch recipes.
+explains stage ordering; it does not override gate status or launch recipes.
+The exact current counterfactual instructions are in
+`COUNTERFACTUAL_QUALITY_HANDOFF.md`.
 
-## Phase 0 — scientific contracts
+## Completed scientific contracts
 
-Freeze before successor campaigns become authoritative:
+The following are now foundations, not open design questions:
 
-- public versus privileged pair state;
-- whether lock timing is part of the action;
-- candidate-completeness policy;
-- human execution profiles;
-- immutable benchmark seeds and state suites;
-- superhuman and trainer release criteria;
-- artifact identity and gate evidence.
+- one competitive core serves all products;
+- placement-level SMDP control remains primary pending the timing gate;
+- public actor and privileged teacher state are separate contracts;
+- PairState v2 has canonical native full-pair snapshot/restore support;
+- native search stops immediately before a private reserve pill becomes
+  visible and resumes only after an explicit reveal override;
+- candidate completeness is measured and silent truncation is prohibited;
+- V3 human/style/timing training is frozen: epoch 5 is the balanced teacher and
+  epoch 6 the sharper imitation reference;
+- G4 Strong League lineages are frozen continuation teachers and robustness
+  anchors;
+- search teaches the policy before it is allowed to control rollout behavior;
+- product strength is competitive regret or constrained quality, never
+  temperature, beam width, or random play;
+- every promoted artifact is hash-addressed and gate-backed.
 
-Implemented foundations:
+## Current gate — counterfactual quality
 
-- `PublicPairState` and `PrivilegedPairState` v2 data contracts;
-- recursive public-state hidden-field audit;
-- execution-profile metrics and Pareto filtering;
-- program registry, gated launcher, evidence, and artifact manifests;
-- PR-level pure-Python CI.
+The first 512-state production-shaped pilot established important mechanics:
 
-Open work:
+- exact restore of unique full-pair states;
+- full legal-candidate enumeration with zero truncation;
+- strict reveal-boundary stopping and explicit reveal continuation;
+- bounded depth-2 search without node-budget exhaustion;
+- calibrated frozen Strong League continuation in place of the diagnostic leaf
+  heuristic.
 
-- bind full public/privileged state extraction to the native pair engine;
-- freeze golden serialized fixtures and emulator-derived no-leak evidence.
+It did **not** establish mature quality. The pilot treated each reveal as nine
+independent ordered color pairs at probability `1/9`. The NES instead creates
+the whole 128-entry reserve from a two-byte RNG, then generates the public
+initial virus bottle from the same stream. Reserve entries are nonuniform and
+correlated with both the initial bottle and already visible pills. The pilot is
+retained as mechanics evidence; its candidate values must not open the gate.
 
-## Phase 1 — correctness and causal fidelity
+### Corrected chance model
 
-Expand parity beyond settled boards:
+`PillReserveBelief` enumerates the uniform two-byte reset-seed prior used by the
+randomized native experiment, conditions it on the public initial virus bottle
+and every publicly observed falling/preview entry, and predicts the next reveal.
+This is exact under that declared experimental prior; it is not mislabeled as
+the boot-to-game retail console prior. `BeliefNativePairSearchModel` still
+overwrites the hidden native reserve byte before reveal, but assigns probability
+only from the public posterior. Some nodes have fewer than nine supported
+outcomes.
 
-- exact garbage frame, color, and columns;
-- simultaneous clear/topout ordering;
-- strict versus throughput advancement;
-- earliest versus delayed lock;
-- live script replay and desynchronization;
-- candidate completeness;
-- public-state observability.
+A mature source bank stores `reserve_belief` on every row. A release records
+chance model `nes-reserve-public-seed-belief-v2`. Independent one-ninth branching is
+never promotion-eligible.
 
-### Timing-action gate
+### Privileged continuation scope
 
-The strict native ABI already supports forced locks at exact pair frames.
-`vs_forced.py` exposes it and `earliest_lock_dominance.py` runs versioned JSONL
-probe banks. The report separates mere clock divergence, structural next-event
-divergence, and competitive value improvement:
+The frozen G4 policies were trained with exact pending-attack scalars in their
+`v1_vs` auxiliary vector. They are therefore privileged continuation teachers.
+That is useful for label generation but is not a fair deployed actor. Every
+release declares `privileged-pending-attack-continuation-v1`; the eventual G5
+actor is trained and evaluated on public state only.
+
+### Evidence required to open the gate
+
+1. **Grouped draw-aware calibration.** Aggregate and member-specific Davidson
+   links use equal total weight per game, grouped cross-fitting, natural draw
+   evidence, and paired game-bootstrap improvement over the identity link.
+2. **Balanced bank.** A frozen competitive rollout supplies an oversampled
+   source, then deterministic quotas select 1,024–2,048 states across level,
+   speed, and tactical stratum. The default 1,440-state plan uses 24 states per
+   4 × 3 × 5 cell.
+3. **Complete member-wise targets.** Every candidate exports aggregate W/D/L,
+   all checkpoint-specific W/D/L values, weighted utility standard deviation,
+   and weighted Jensen–Shannon disagreement.
+4. **Beam convergence.** Identical releases at opponent beams 1, 4, and 8 are
+   aligned by source and action. Beam 4 must converge to beam 8 under
+   predeclared top-action, value, and policy thresholds.
+5. **Direct V3 comparison.** At the observed human action, counterfactual W/D/L
+   must improve over the frozen V3 bootstrap with paired whole-game confidence
+   for Brier and log loss.
+6. **Mechanical integrity.** Full candidate coverage, zero candidate
+   truncation, zero node-budget exhaustion, complete public reserve history,
+   immutable member/calibration hashes, and explicit information scope.
+
+`tools.counterfactual_quality_gate` is the only promotion authority. A staged
+or failed check is work to do, not a threshold to waive.
+
+## Parallel gate — timing as an action
+
+The strict native ABI supports forced locks at exact pair frames.
+`earliest_lock_dominance.py` compares earliest and delayed valid locks and
+separates:
 
 ```text
-transition_changed(a, d)
+clock divergence
+structural next-event divergence
 value_delta(a, d) = Q(state, a, delay=d) - Q(state, a, earliest)
 ```
 
-A nonzero transition difference proves timing is dynamically material. An
-explicit timing head is adopted only if delayed options also produce meaningful
-continuation-value gains at a predeclared frequency/magnitude.
+Dynamic divergence alone shows timing matters to the simulator. A hierarchical
+placement-plus-timing action is adopted only if delayed options produce
+meaningful continuation-value gains at a predeclared rate and magnitude. This
+work can proceed in parallel with the counterfactual-quality gate.
 
-## Phase 2 — exact human and counterfactual teachers
+## Next stage — mature competitive teacher
 
-Continue V3 exact-afterstate learning for human style, immediate tactics, and
-cadence. Then replace its mature competitive ranking with full-pair
-counterfactual labels for **every** legal candidate:
+After the gate passes:
 
-1. restore a complete pair state;
-2. apply the candidate and timing option;
-3. advance causally to the next event;
-4. evaluate continuation against the population mixture;
-5. store W/D/L, expected score, uncertainty, tactical consequences, and
-   win-logit regret.
+1. Fine-tune the V3 competitive head on counterfactual/search/outcome targets.
+2. Keep human action cross-entropy solely on human/style outputs.
+3. Preserve candidate W/D/L distribution, calibrated regret, tactical
+   consequences, and uncertainty rather than distilling only top-1 choices.
+4. Prioritize teacher/student disagreements and high-opportunity states.
+5. Freeze the mature teacher release and its exact source/evidence bundle.
 
-Human action cross-entropy remains on the human/style head only. The
-counterfactual release is immutable and keyed by source corpus, engine, planner,
-teacher, and state schema.
+Human data remains responsible for human choices, style, timing, cadence, and
+immediate tactical representation. It no longer defines competitive candidate
+ranking.
 
-Implemented foundations:
+## G5 representation bakeoff
 
-- backend-independent full-candidate counterfactual teacher;
-- W/D/L and win-logit-regret target schema;
-- adapter-driven release CLI that refuses to assume a legacy simulator.
-- canonical native PairState v2 restore and reveal-boundary branching;
-- hash-verified frozen Strong League continuation mixtures;
-- game-group-held-out Davidson W/D/L calibration.
-
-Open work:
-
-- complete the stratified 512--2,048-state quality pilot and audit tactical
-  coverage, calibration, chance integration, and search-budget exhaustion;
-- candidate tactical-target export and competitive-head fine-tuning;
-- compare distilled candidate W/D/L against the observed-action bootstrap
-  before opening `v3-counterfactual-quality`.
-
-## Phase 3 — G5 bakeoff and distillation
-
-Use matched compute, parents, seeds, and opponents to compare:
+Use a common parent, source release, seeds, opponent mixture, compute budget,
+and arena schedule to compare:
 
 1. root-only G5;
-2. V3-distilled G5;
+2. V3/counterfactual-distilled root-only G5;
 3. G5 plus exact effect tokens;
-4. recurrent/event-state G5.
-
-Teachers have distinct roles:
-
-- V3: exact afterstates, human structure, timing;
-- strongest frozen G4: long-horizon policy/value bootstrap;
-- joint-event search: policy improvement.
-
-Implemented foundations:
-
-- V3-to-V5 distillation path already present;
-- deterministic exact-effect-token builder and projection block;
-- compact recurrent public-event belief encoder for the event-state arm;
-- hard candidate-coverage evidence and no-truncation guard;
-- machine-readable bakeoff gate and artifact identity.
+4. G5 plus recurrent public event belief;
+5. the combined treatment only after single-family effects are understood.
 
 Required measurements:
 
-- held-out candidate W/D/L calibration;
-- paired arena W/D/L and full payoff matrix;
-- decisions per second, candidates per second, and strength per millisecond;
-- candidate truncation count, required to be zero;
-- teacher/student disagreement by decision opportunity.
+- held-out candidate W/D/L and regret calibration;
+- teacher/student policy and uncertainty error by tactical stratum;
+- paired clean-start arena W/D/L and the full payoff matrix;
+- decisions and candidates per second;
+- strength per millisecond;
+- zero candidate truncation in training and evaluation.
 
-The completed G4 Strong League remains a frozen robustness baseline and teacher
-while a bounded exploration rewarm tests whether its mature policy can still
-improve before G5 matures.
+Promotion uses paired full-game evidence, never training return alone.
 
-## Phase 4 — tactical state curriculum
+## Tactical curriculum and outcome population training
 
-Build a versioned full-pair archive with:
+Build a versioned full-pair archive containing:
 
-- near-clear conversion;
+- near-clear and race conversion;
 - attack conversion;
 - imminent topout defense;
 - incoming garbage;
-- race finishes;
 - high-speed difficult reachability;
 - style-divergent choices;
+- teacher/student disagreement;
 - exploiter-discovered failures.
 
-Sampling becomes adaptive to value error, search disagreement, learning
-progress, and active exploiters. Start states remain curriculum data; untouched
-clean-start matches are always the evaluation authority.
+Sampling becomes adaptive to value error, uncertainty, search disagreement,
+learning progress, and active exploiters. Start states are curriculum data;
+untouched clean-start matches remain the evaluation authority.
 
-## Phase 5 — outcome population training
-
-Train the main against a game-theoretic mixture. Tactical signals may shorten
-credit assignment early but anneal toward pure W/D/L. Maintain distinct roles:
+Outcome population training then uses a game-theoretic mixture with four roles:
 
 - main;
 - main exploiter;
 - league exploiter;
 - human/execution exploiter.
 
-The arena retains every promoted lineage and human/style anchor. It publishes
-both scalar ratings and the pairwise payoff structure.
+Dense tactical quantities may be auxiliary predictions, replay priorities, or
+early curriculum signals, but the mature competitive objective is W/D/L.
 
-## Phase 6 — joint-event search policy iteration
+## Joint-event search policy iteration
 
-`JointEventSearch` supports:
+`JointEventSearch` and the native adapter support:
 
 - one-side decisions;
 - simultaneous joint actions;
-- deterministic advancement;
-- newly revealed chance events;
+- deterministic causal advancement;
+- private reserve reveal boundaries with public-belief chance branching;
 - expectation or minimax opponent backups;
 - transposition caching;
-- root policy targets and calibrated W/D/L.
+- full root policy targets and calibrated W/D/L.
 
-The remaining heavy dependency is a fast restorable native full-pair adapter.
-Search first generates offline targets. It controls live or rollout behavior
-only after same-weight paired evaluation opens the gate. If search later
-becomes behavior during learning, use an explicitly search-policy or off-policy
-algorithm rather than calling it ordinary on-policy PPO.
+Search remains an offline teacher until same-weight paired evaluation beats the
+unsearched policy with confidence. A later behavior-search phase must use an
+explicit search-policy or off-policy algorithm rather than being described as
+ordinary on-policy PPO.
 
-## Phase 7 — PSRO and exploitability hardening
+Public deployment also requires replacing privileged continuation features or
+showing that a public recurrent belief/student recovers their useful signal.
+
+## PSRO and exploitability hardening
 
 The PSRO-lite loop is:
 
-1. fit/refresh the empirical payoff matrix;
+1. refresh the empirical payoff matrix;
 2. compute a regularized meta-strategy;
-3. train approximate best responses to the main and mixture;
+3. train best responses to the main and mixture;
 4. add successful responses as immutable entrants;
 5. promote only when mixture value improves and active-opponent regressions
-   stay inside limits.
+   remain bounded.
 
-`meta_strategy.py` implements entropy-regularized multiplicative-weights solving,
-a population mixture, saddle-gap/exploitability evidence, and active-regression
-reporting. The next integration step reads the arena database directly and
-writes opponent-pool mixture weights.
+Scalar rating remains useful for display. The pairwise payoff matrix and
+worst-active-opponent result remain promotion authorities because the game may
+be non-transitive.
 
-## Phase 8 — execution and trainer products
+## Human-rate and trainer products
 
 ### Human-rate superhuman
 
-Fit signed profiles from raw input scripts. The profile includes reaction,
-inter-edge, burst, overlap, correction, reversal, soft-drop, and complexity
-statistics. Build constrained reachability and fine-tune the competitive policy
-under the same profile used for evaluation. Release requires zero hard-profile
-violations and replay divergence.
-
-Implemented foundations:
-
-- script metric extraction;
-- quantile profile fitting and validation CLI;
-- Pareto frontier over timing, edges, bursts, reversals, and complexity;
-- constrained quality decoder.
+Fit signed operation profiles from raw replay-verified scripts. Profiles include
+reaction, inter-edge, burst, overlap, correction, reversal, soft-drop, and
+complexity statistics. Build constrained reachability and fine-tune the same
+competitive core under the execution profile used for evaluation. Release
+requires zero hard-profile violations, zero replay divergence, and a
+superhuman result under the named profile.
 
 ### Human trainer
 
-The trainer does not clone checkpoints at requested ratings. It uses:
+The trainer decodes the common quality oracle through:
 
-- counterfactual quality;
 - conditional empirical regret tails;
-- context-residualized regret adjustment;
-- rating-residualized style latent;
+- context-residualized regret;
+- rating-residualized style;
 - slowly varying form;
-- independent cadence;
-- profile-valid execution;
+- independent decision latency and motor cadence;
+- profile-valid, intent-preserving execution;
 - block-level Bayesian adaptive sparring.
 
-Implemented foundations:
-
-- unified product decoder;
-- contextual regret multiplier fitting;
-- rating-residualized player style space;
-- temporal form state;
-- adaptive sparring controller.
-
-Open work:
-
-- train the context and style systems from immutable corpus releases;
-- model intent-preserving late corrections and motor failures;
-- integrate decoder output into the backend protocol;
-- run held-out human plausibility and pedagogical crossover studies.
+Release requires monotone achieved strength, approximately even matched-rating
+outcomes, style identifiability after controlling strength, held-out human
+plausibility, cadence/error-distribution fidelity, and evidence that targeted
+practice improves a held-out measure.
 
 ## Immediate order of work
 
-1. Finish and evaluate the bounded G4 Strong League rewarm; then choose the
-   permanent +1.0B parent, the strongest rewarm checkpoint, or both for a
-   separately authorized outcome-only consolidation comparison.
-2. Build a stratified strict timing-probe bank and complete the timing gate.
-3. PairState v2 is open with golden/no-leak checks and canonical native
-   full-pair snapshot/restore parity.
-4. V3 full-corpus training is complete; Epoch 5 is the frozen balanced teacher
-   and Epoch 6 the sharper imitation reference.
-5. Run the matched G5 bakeoff, including effect tokens and event state.
-6. Replace the diagnostic native leaf heuristic with a frozen continuation
-   mixture and explicit reveal-time chance integration.
-7. Scale stratified counterfactual labels and remove observed-action supervision from
-   mature competitive quality.
-8. Distill search/counterfactual teachers into G5 and outcome-train the
-   population.
-9. Integrate the PSRO mixture with arena scheduling/opponent sampling.
-10. Fit elite execution profiles, constrained reachability, style, context,
-    cadence, and trainer calibration.
-11. Conduct predeclared top-human, human-rate, plausibility, and pedagogy gates.
+1. Recollect natural Strong League outcomes with enough games and natural draws
+   for grouped aggregate and member-specific calibration.
+2. Generate a large frozen-mixture pair-state source carrying accumulated
+   public reserve belief.
+3. Fill the balanced 1,440-state quota bank without shortfall.
+4. Generate complete member-wise releases at opponent beams 1, 4, and 8 using
+   the corrected seed-posterior chance model.
+5. Audit coverage, chance support, uncertainty, hashes, and search budgets.
+6. Compare beam 4 against beam 8 and retain beam 1 as sensitivity evidence.
+7. Fit the frozen V3 observed-action Davidson link on a content-addressed
+   natural-game calibration split, apply it to disjoint held-out games, and run
+   the paired whole-game comparison.
+8. Run the executable `v3-counterfactual-quality` gate; do not start mature
+   quality distillation until it passes.
+9. Complete the timing-action gate in parallel.
+10. Fine-tune/distill the mature teacher and run the matched G5 bakeoff.
+11. Outcome-train and exploitability-harden the population.
+12. Fit constrained execution and trainer systems only after the common quality
+    core is frozen.
