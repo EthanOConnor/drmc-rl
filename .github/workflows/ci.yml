@@ -53,8 +53,8 @@ jobs:
             tools/build_pair_state_pilot.py \
             tools/balance_pair_state_bank.py \
             tools/calibrate_strong_league_wdl.py \
-            tools/compare_counterfactual_beams.py \
-            tools/compare_counterfactual_v3_bootstrap.py \
+            tools/compare_counterfactual_releases.py \
+            tools/compare_counterfactual_bootstrap.py \
             tools/counterfactual_quality_gate.py \
             tools/execution_profile.py \
             tools/style_space.py \
