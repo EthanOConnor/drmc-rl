@@ -43,13 +43,26 @@ def test_grouped_crossfit_recovers_monotone_link_and_improves_baseline() -> None
         bootstrap_samples=300,
         baseline=DavidsonParameters(0.25, 0.0, -3.0),
     )
-    assert report["schema"] == "drmc-grouped-davidson-calibration-v2"
+    assert report["schema"] == "drmc-grouped-davidson-calibration-v3"
     assert report["parameters"]["slope"] > 0
     assert report["games"] == 80
+    assert report["crossfit"]["fold_count"] == 5
     assert sum(fold["validation_games"] for fold in report["crossfit"]["folds"]) == 80
+    assert report["crossfit"]["all_training_folds_draw_identifiable"] is True
+    assert all(
+        fold["validation_outcome_games"]["draw"] > 0
+        for fold in report["crossfit"]["folds"]
+    )
     assert (
         report["crossfit"]["calibrated"]["log_loss"]
         < report["crossfit"]["baseline"]["log_loss"]
     )
     interval = report["crossfit"]["paired_game_bootstrap"]["log_loss"]
     assert interval["ci95_low"] <= interval["delta"] <= interval["ci95_high"]
+
+
+def test_davidson_parameters_reject_nonpositive_or_nonfinite_slope() -> None:
+    with pytest.raises(ValueError, match="positive slope"):
+        DavidsonParameters(0.0, 0.0, -1.0)
+    with pytest.raises(ValueError, match="finite"):
+        DavidsonParameters(float("nan"), 0.0, -1.0)
