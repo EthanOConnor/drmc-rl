@@ -1,4 +1,4 @@
-"""Verify and summarize one deterministic sharded counterfactual pilot."""
+"""Verify and summarize one deterministic sharded counterfactual release."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from drmc_rl.search.pill_belief import CHANCE_MODEL_ID
 from drmc_rl.teachers.counterfactual_release import (
     RELEASE_SCHEMA,
     canonical_json,
@@ -23,6 +24,8 @@ from drmc_rl.teachers.counterfactual_release import (
 
 def _summary(values: list[float]) -> dict[str, float]:
     array = np.asarray(values, dtype=np.float64)
+    if array.size == 0:
+        return {key: math.nan for key in ("min", "p10", "median", "mean", "p90", "max")}
     return {
         "min": float(array.min()),
         "p10": float(np.quantile(array, 0.10)),
@@ -64,6 +67,10 @@ def audit(
 
     reference = dict(manifests[0]["settings"])
     reference.pop("shard_index", None)
+    chance_model = str(
+        reference.get("chance_model", "independent-uniform-ordered-pair-v0")
+    )
+    information_scope = str(reference.get("information_scope", "unspecified"))
     shard_indices: set[int] = set()
     source_ids: set[str] = set()
     strata: Counter[tuple[str, ...]] = Counter()
@@ -74,13 +81,21 @@ def audit(
     root_losses: list[float] = []
     win_spreads: list[float] = []
     max_regrets: list[float] = []
+    utility_uncertainty: list[float] = []
+    js_uncertainty: list[float] = []
+    chance_support: list[float] = []
     chance_nodes = 0
     chance_outcomes = 0
     candidate_labels = 0
     budget_exhausted = 0
     uncertainty_available = 0
     chance_branched_states = 0
+    memberwise_complete_states = 0
+    memberwise_complete_candidates = 0
     source_rows = _source_index(source_path)
+    source_belief_states = sum(
+        int(isinstance(row.get("reserve_belief"), dict)) for row in source_rows.values()
+    )
 
     for manifest_path, manifest in zip(manifest_paths, manifests, strict=True):
         settings = dict(manifest["settings"])
@@ -105,6 +120,10 @@ def audit(
                     if source_id in source_ids:
                         raise ValueError(f"duplicate source identity: {source_id}")
                     source_ids.add(source_id)
+                    if str(row["metadata"].get("chance_model", chance_model)) != chance_model:
+                        raise ValueError(f"row chance model differs from release at {where}")
+                    if str(row["metadata"].get("information_scope", information_scope)) != information_scope:
+                        raise ValueError(f"row information scope differs from release at {where}")
                     if source_rows:
                         source = source_rows.get(source_id)
                         if source is None:
@@ -149,17 +168,60 @@ def audit(
                     best = next(item for item in candidates if int(item["rank"]) == 1)
                     if int(best["action"]) != int(row["best_action"]):
                         raise ValueError(f"best action/rank mismatch at {where}")
+
+                    teacher_count = int(row.get("teacher_count", 1))
+                    teacher_ids = tuple(str(item) for item in row.get("teacher_ids", ()))
+                    teacher_weights = tuple(float(item) for item in row.get("teacher_weights", ()))
+                    if teacher_ids and len(teacher_ids) != teacher_count:
+                        raise ValueError(f"teacher id count mismatch at {where}")
+                    if teacher_weights and (
+                        len(teacher_weights) != teacher_count
+                        or not math.isclose(sum(teacher_weights), 1.0, abs_tol=2e-6)
+                    ):
+                        raise ValueError(f"teacher weights are invalid at {where}")
+                    complete_candidates = 0
                     for index, item in enumerate(candidates):
                         _check_probability_triplet(
                             item["win"], item["draw"], item["loss"], where=f"{where}#{index}"
                         )
+                        members = tuple(item.get("member_wdl", ()))
+                        if members:
+                            if len(members) != teacher_count:
+                                raise ValueError(f"member W/D/L count mismatch at {where}#{index}")
+                            for member_index, member in enumerate(members):
+                                _check_probability_triplet(
+                                    member[0],
+                                    member[1],
+                                    member[2],
+                                    where=f"{where}#{index}/member-{member_index}",
+                                )
+                            sigma = item.get("uncertainty")
+                            js = item.get("uncertainty_js")
+                            if sigma is None or js is None or not all(
+                                math.isfinite(float(value)) and float(value) >= 0
+                                for value in (sigma, js)
+                            ):
+                                raise ValueError(f"member-wise uncertainty is invalid at {where}#{index}")
+                            utility_uncertainty.append(float(sigma))
+                            js_uncertainty.append(float(js))
+                            complete_candidates += 1
+                    if complete_candidates == len(candidates):
+                        memberwise_complete_states += 1
+                        memberwise_complete_candidates += complete_candidates
                     _check_probability_triplet(
                         row["root_win"], row["root_draw"], row["root_loss"], where=where
                     )
                     row_chance_nodes = int(row["chance_nodes"])
                     row_chance_outcomes = int(row["chance_outcomes"])
-                    if row_chance_outcomes != 9 * row_chance_nodes:
-                        raise ValueError(f"incomplete reveal branching at {where}")
+                    if chance_model == "independent-uniform-ordered-pair-v0":
+                        if row_chance_outcomes != 9 * row_chance_nodes:
+                            raise ValueError(f"incomplete uniform reveal branching at {where}")
+                    elif row_chance_nodes > 0 and not (
+                        row_chance_nodes <= row_chance_outcomes <= 9 * row_chance_nodes
+                    ):
+                        raise ValueError(f"invalid posterior reveal support at {where}")
+                    if row_chance_nodes:
+                        chance_support.append(row_chance_outcomes / row_chance_nodes)
                     chance_branched_states += int(row_chance_nodes > 0)
                     candidate_counts.append(float(len(candidates)))
                     nodes.append(float(row["nodes"]))
@@ -191,7 +253,7 @@ def audit(
         for manifest in manifests
     )
     result: dict[str, Any] = {
-        "schema": "drmc-counterfactual-pilot-audit-v1",
+        "schema": "drmc-counterfactual-pilot-audit-v2",
         "aggregate_sha256": hashlib.sha256(canonical_json(digest_rows)).hexdigest(),
         "shard_release_sha256": [item[1] for item in digest_rows],
         "states": len(source_ids),
@@ -202,9 +264,13 @@ def audit(
         "strata": {"/".join(key): value for key, value in sorted(strata.items())},
         "candidate_count": _summary(candidate_counts),
         "nodes": _summary(nodes),
+        "chance_model": chance_model,
+        "information_scope": information_scope,
         "chance_nodes": chance_nodes,
         "chance_outcomes": chance_outcomes,
-        "all_reveals_nine_way": chance_outcomes == 9 * chance_nodes,
+        "chance_support_per_node": _summary(chance_support),
+        "uniform_nine_way_legacy": chance_model == "independent-uniform-ordered-pair-v0",
+        "chance_model_gate_eligible": chance_model == CHANCE_MODEL_ID,
         "chance_branched_states": chance_branched_states,
         "pre_reveal_terminal_states": len(source_ids) - chance_branched_states,
         "root_win": _summary(root_wins),
@@ -213,15 +279,24 @@ def audit(
         "candidate_win_spread": _summary(win_spreads),
         "max_win_logit_regret": _summary(max_regrets),
         "uncertainty_available_states": uncertainty_available,
+        "memberwise_complete_states": memberwise_complete_states,
+        "memberwise_complete_candidates": memberwise_complete_candidates,
+        "utility_uncertainty": _summary(utility_uncertainty),
+        "js_uncertainty": _summary(js_uncertainty),
+        "source_reserve_belief_states": source_belief_states,
+        "source_reserve_belief_complete": bool(source_rows)
+        and source_belief_states == len(source_rows),
         "settings": reference,
     }
     if calibration_path is not None:
         calibration = json.loads(calibration_path.read_text())
         result["calibration"] = {
             "sha256": sha256_file(calibration_path),
+            "schema": calibration.get("schema"),
             "collection": calibration["collection"],
             "heldout_metrics": calibration["heldout_metrics"],
             "parameters": calibration["parameters"],
+            "grouped_calibration": calibration.get("grouped_calibration"),
         }
     return result
 
