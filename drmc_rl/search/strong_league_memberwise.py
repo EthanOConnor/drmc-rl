@@ -2,7 +2,7 @@
 
 The frozen G4 checkpoints were trained with exact native pending-attack scalars.
 They are therefore a *privileged continuation teacher*, not a deployable
-public-information search evaluator.  Reserve reveals are handled separately by
+public-information search evaluator. Reserve reveals are handled separately by
 :class:`BeliefNativePairSearchModel` using a public seed posterior.
 """
 
@@ -24,6 +24,10 @@ from drmc_rl.search.strong_league import (
 from drmc_rl.teachers.counterfactual import WeightedTeacherModels
 
 INFORMATION_SCOPE = "privileged-pending-attack-continuation-v1"
+_CALIBRATION_SCHEMAS = {
+    "drmc-strong-league-wdl-calibration-v1",
+    "drmc-strong-league-wdl-calibration-v2",
+}
 
 
 def read_mixture_members(manifest_path: Path) -> tuple[MixtureMember, ...]:
@@ -53,6 +57,29 @@ def read_mixture_members(manifest_path: Path) -> tuple[MixtureMember, ...]:
     return tuple(members)
 
 
+def read_davidson_calibration(path: Path) -> DavidsonCalibration:
+    payload = json.loads(path.read_text())
+    if payload.get("schema") not in _CALIBRATION_SCHEMAS:
+        raise ValueError(f"unsupported W/D/L calibration schema in {path}")
+    parameters = payload.get("parameters") or {}
+    return DavidsonCalibration(
+        slope=float(parameters["slope"]),
+        bias=float(parameters["bias"]),
+        draw_logit=float(parameters["draw_logit"]),
+        artifact_sha256=_sha256(path),
+    )
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _register_payload_belief(
     model: BeliefNativePairSearchModel,
     state: NativePairSearchState,
@@ -63,14 +90,21 @@ def _register_payload_belief(
         model.register_belief(state, PillReserveBelief.from_dict(raw))
 
 
+def _load_aggregate(args: Any) -> tuple[tuple[MixtureMember, ...], DavidsonCalibration]:
+    if not args.mixture_manifest or not args.wdl_calibration:
+        raise ValueError("Strong League adapter requires mixture and calibration paths")
+    members = read_mixture_members(Path(args.mixture_manifest))
+    calibration = read_davidson_calibration(Path(args.wdl_calibration))
+    return members, calibration
+
+
 def frozen_strong_league_belief_factory(args: Any):
     """Aggregate mixture values with exact public reserve-belief branching."""
 
-    if not args.mixture_manifest or not args.wdl_calibration:
-        raise ValueError("Strong League adapter requires mixture and calibration paths")
-    mixture = FrozenStrongLeagueMixture.from_manifest(
-        Path(args.mixture_manifest),
-        Path(args.wdl_calibration),
+    members, calibration = _load_aggregate(args)
+    mixture = FrozenStrongLeagueMixture(
+        members,
+        calibration,
         device=str(args.device),
     )
     model = BeliefNativePairSearchModel(
@@ -89,10 +123,7 @@ def frozen_strong_league_belief_factory(args: Any):
 def frozen_strong_league_memberwise_factory(args: Any):
     """Run one complete search per frozen member and export weighted disagreement."""
 
-    if not args.mixture_manifest or not args.wdl_calibration:
-        raise ValueError("Strong League adapter requires mixture and calibration paths")
-    members = read_mixture_members(Path(args.mixture_manifest))
-    calibration = DavidsonCalibration.from_path(Path(args.wdl_calibration))
+    members, calibration = _load_aggregate(args)
     models: list[BeliefNativePairSearchModel] = []
     for member in members:
         continuation = FrozenStrongLeagueMixture(
@@ -124,5 +155,6 @@ __all__ = [
     "INFORMATION_SCOPE",
     "frozen_strong_league_belief_factory",
     "frozen_strong_league_memberwise_factory",
+    "read_davidson_calibration",
     "read_mixture_members",
 ]
