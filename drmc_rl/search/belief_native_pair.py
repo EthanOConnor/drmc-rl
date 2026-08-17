@@ -2,9 +2,9 @@
 
 The retail reserve is generated once by a deterministic two-byte RNG process.
 Consequently, a newly revealed ordered color pair is neither independent nor
-uniform after conditioning on the visible falling and preview pills.  This
+uniform after conditioning on the visible falling and preview pills. This
 adapter keeps the opaque native checkpoint for exact transitions, but chooses
-chance probabilities only from a public seed posterior.  The actual hidden
+chance probabilities only from a public seed posterior. The actual hidden
 reserve byte in the checkpoint is always overwritten before its reveal.
 """
 
@@ -68,11 +68,9 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
         result = belief
         for side in range(2):
             counter = int(buffers.spawn_id[side]) & 0x7F
-            # Normal pair play has already generated falling and preview pills
-            # when counter>=2.  Counters 0/1 are setup/checkpoint edge cases for
-            # which the two-entry relation is not guaranteed.
-            if counter < 2:
-                continue
+            # At a normal decision boundary the reserve counter points one
+            # past the visible preview entry. The modulo relation remains true
+            # across the 128-entry wrap: falling=counter-2, preview=counter-1.
             result = result.condition_visible(
                 reserve_counter=counter,
                 falling_colors=tuple(int(value) for value in buffers.pill_colors[side]),
