@@ -9,6 +9,8 @@ launching work, read in this order:
 3. `docs/ROADMAP.md` — why the stages are ordered as they are.
 4. `docs/OPERATIONS.md` — supported launch, arena, artifact, and recovery
    procedures.
+5. `docs/COUNTERFACTUAL_QUALITY_HANDOFF.md` — exact current instructions for
+   the staged counterfactual-quality evidence program.
 
 Run `python -m tools.program status` at the start of a session. Long-running
 work must be launched through `python -m tools.program launch ...`; do not invoke
@@ -47,12 +49,43 @@ gate that must be completed first.
   lineages; +900M is the evidenced local maximum and +1.0B is retained.
 - Full-corpus V3 afterstate training is complete. Epoch 5 is the balanced
   teacher; Epoch 6 is the sharper imitation reference.
-- `pair-state-v2` is open with canonical native full-pair restore parity.
-- Current architecture work is the stratified counterfactual pilot and
-  `timing-action-gate`. Promotion-quality counterfactual labels still require
-  a frozen continuation mixture and explicit reveal-time chance integration.
-- `g5-v3-bootstrap` and joint-event search remain staged by the program
-  registry; constrained human execution and trainer release remain gated.
+- `pair-state-v2` is complete with canonical native full-pair snapshot/restore,
+  reveal boundaries, and no-leak contracts.
+- The 512-state counterfactual pilot is **mechanics evidence only**. It proved
+  restore, complete candidate enumeration, reveal override, and bounded search,
+  but its independent `1/9` reveal probabilities are not a valid mature chance
+  model.
+- Current work is `v3-counterfactual-quality`: grouped draw-aware calibration,
+  public reserve-seed belief, member-specific uncertainty, a balanced 1,440-state
+  bank, opponent-beam 1/4/8 convergence, and direct observed-action/V3
+  comparison. The executable gate must pass before competitive-head or G5
+  quality distillation proceeds.
+- `timing-action-gate` remains active. `g5-v3-bootstrap`, joint-event search,
+  constrained human execution, and trainer release remain staged or blocked by
+  the program registry.
+
+## Counterfactual quality rules
+
+- The native 128-pill reserve is generated once from a two-byte RNG. Future
+  reveals are correlated with public pill history. Never assign nine independent
+  outcomes probability `1/9` in a quality release.
+- Use `PillReserveBelief` and persist `reserve_belief` with every source state.
+  A posterior reveal node may have fewer than nine supported outcomes.
+- The frozen G4 continuation consumes exact pending-attack scalars and is a
+  privileged teacher. Releases must declare
+  `privileged-pending-attack-continuation-v1`; do not describe them as fair
+  deployable public-information search.
+- Aggregate mixture calibration is not sufficient for epistemic uncertainty.
+  Fit member-specific grouped Davidson links and export each candidate's
+  `member_wdl`, utility standard deviation, and Jensen-Shannon disagreement.
+- Calibration and bootstrap confidence are grouped by whole game. Long games
+  must not receive more total fitting or evaluation weight because more states
+  were sampled.
+- Run identical releases at opponent beams 1, 4, and 8. Only the beam may vary;
+  source ids, legal actions, chance model, checkpoints, calibration, seed,
+  depth, and node budget must match.
+- Promotion is determined only by `tools.counterfactual_quality_gate`. Do not
+  hand-edit or verbally waive a failed evidence check.
 
 ## Engineering rules
 
