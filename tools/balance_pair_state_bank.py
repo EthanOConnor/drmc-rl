@@ -50,8 +50,8 @@ def _source_manifest(
     if path is None:
         if not allow_unverified:
             raise ValueError(
-                "--input-manifest is required for a promotion bank; "
-                "use --allow-unverified-source only for diagnostics"
+                "a source manifest is required for a promotion bank; "
+                "pass --input-manifest or keep the default <input>.manifest.json"
             )
         return {}, None
     payload = json.loads(path.read_text())
@@ -88,7 +88,11 @@ def _consistent_option(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--input-manifest", type=Path)
+    parser.add_argument(
+        "--input-manifest",
+        type=Path,
+        help="defaults to <input>.manifest.json when that file exists",
+    )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--quota-json", type=Path)
@@ -110,9 +114,14 @@ def main() -> None:
     args = parser.parse_args()
     if args.per_cell < 1:
         parser.error("--per-cell must be positive")
+    source_manifest_path = args.input_manifest
+    if source_manifest_path is None:
+        sibling = Path(str(args.input) + ".manifest.json")
+        if sibling.is_file():
+            source_manifest_path = sibling
     try:
         source, source_manifest_hash = _source_manifest(
-            args.input_manifest,
+            source_manifest_path,
             input_path=args.input,
             allow_unverified=args.allow_unverified_source,
         )
@@ -179,7 +188,9 @@ def main() -> None:
         "input": str(args.input.resolve()),
         "input_sha256": sha256_file(args.input),
         "source_manifest": (
-            None if args.input_manifest is None else str(args.input_manifest.resolve())
+            None
+            if source_manifest_path is None
+            else str(source_manifest_path.resolve())
         ),
         "source_manifest_sha256": source_manifest_hash,
         "source_bank_schema": source.get("schema"),
