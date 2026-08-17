@@ -209,6 +209,7 @@ uv run python -m tools.program launch counterfactual-labels --allow-staged \
   --set counterfactual_max_nodes=10000 \
   --set counterfactual_chunk_size=16 \
   --set counterfactual_max_states=512 \
+  --set counterfactual_seed=20260818 \
   --set counterfactual_corpus_release=pair-state-bank-v1-sha256:... \
   --set counterfactual_continuation_mixture=strong-league-frozen-mixture-v1 \
   --set counterfactual_mixture_manifest=mixture-manifest.json \

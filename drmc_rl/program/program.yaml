@@ -286,6 +286,12 @@ recipes:
       - '{counterfactual_chunk_size}'
       - --max-states
       - '{counterfactual_max_states}'
+      - --seed
+      - '{counterfactual_seed}'
+      - --stratum
+      - level
+      - --stratum
+      - speed
       - --resume
       - --corpus-release
       - '{counterfactual_corpus_release}'
