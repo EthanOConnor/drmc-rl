@@ -1,8 +1,8 @@
 """Generate a versioned counterfactual target release through a model adapter.
 
-The adapter argument is ``module:function``.  The function receives parsed CLI
-arguments and returns ``(model_or_models, decode_state)``.  ``decode_state``
-turns each input JSON object into the backend's restorable state.  Keeping the
+The adapter argument is ``module:function``. The function receives parsed CLI
+arguments and returns ``(model_or_models, decode_state)``. ``decode_state``
+turns each input JSON object into the backend's restorable state. Keeping the
 adapter explicit prevents this tool from silently reading hidden state or a
 legacy own-board simulator.
 """
@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import argparse
 import importlib
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 from drmc_rl.search.joint_event import SearchConfig
-from drmc_rl.teachers.counterfactual import CounterfactualTeacher
+from drmc_rl.teachers.counterfactual import CounterfactualTeacher, WeightedTeacherModels
 from drmc_rl.teachers.counterfactual_release import (
     ReleaseSettings,
     build_release,
@@ -31,6 +33,21 @@ def _load_adapter(spec: str, args: argparse.Namespace):
     if not callable(decoder):
         raise TypeError("adapter decoder must be callable")
     return model, decoder
+
+
+def _models(value: Any) -> tuple[Any, ...]:
+    if isinstance(value, WeightedTeacherModels):
+        return value.models
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return tuple(value)
+    return (value,)
+
+
+def _shared_adapter_attribute(value: Any, name: str, default: str) -> str:
+    observed = {str(getattr(model, name, default)) for model in _models(value)}
+    if len(observed) != 1:
+        raise ValueError(f"adapter models disagree on {name}: {sorted(observed)}")
+    return observed.pop()
 
 
 def main() -> None:
@@ -63,6 +80,14 @@ def main() -> None:
     parser.add_argument("--native-revision", required=True)
     parser.add_argument("--planner-revision", required=True)
     parser.add_argument(
+        "--chance-model",
+        help="explicit provenance override; normally supplied by the adapter",
+    )
+    parser.add_argument(
+        "--information-scope",
+        help="explicit provenance override; normally supplied by the adapter",
+    )
+    parser.add_argument(
         "--allow-budget-exhausted",
         action="store_true",
         help="record rather than reject incomplete searches (diagnostics only)",
@@ -78,6 +103,12 @@ def main() -> None:
         chance_beam=args.chance_beam,
         opponent_mode=args.opponent_mode,
         max_nodes=args.max_nodes,
+    )
+    chance_model = args.chance_model or _shared_adapter_attribute(
+        model, "chance_model", "independent-uniform-ordered-pair-v0"
+    )
+    information_scope = args.information_scope or _shared_adapter_attribute(
+        model, "information_scope", "unspecified"
     )
     settings = ReleaseSettings(
         input_sha256=sha256_file(args.input),
@@ -109,6 +140,8 @@ def main() -> None:
         wdl_calibration_sha256=(
             sha256_file(args.wdl_calibration) if args.wdl_calibration else None
         ),
+        chance_model=str(chance_model),
+        information_scope=str(information_scope),
     )
     manifest = build_release(
         input_path=args.input,
