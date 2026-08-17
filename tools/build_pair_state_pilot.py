@@ -192,7 +192,14 @@ def main() -> None:
                 frame_counter_base=int(rng.integers(0, 256)),
             )
             runner.reset(None, [spec])
-            reserve_belief = PillReserveBelief()
+            initial_board = np.asarray(
+                runner.buffers.board_bytes.reshape(2, 128)[0],
+                dtype=np.uint8,
+            ).copy()
+            reserve_belief = PillReserveBelief.from_initial_board(
+                level=level,
+                board=initial_board,
+            )
             game_candidates: list[dict[str, object]] = []
             for decision in range(args.max_decisions_per_game):
                 reserve_belief = _condition_visible_reserve(reserve_belief, runner)
@@ -292,8 +299,10 @@ def main() -> None:
         "native_checkpoint_schema": "drm-vspool-snapshot-v1",
         "chance_model": CHANCE_MODEL_ID,
         "reserve_belief_history": (
-            "all visible falling/preview entries at captured boundaries"
+            "public initial virus bottle plus all visible falling/preview "
+            "entries at captured boundaries"
         ),
+        "reserve_initial_board_conditioned": True,
         "per_game_selection": "whole-game-global-tactical-round-robin-v1",
         "posterior_seed_count": {
             "min": int(seed_counts.min()) if seed_counts.size else 0,

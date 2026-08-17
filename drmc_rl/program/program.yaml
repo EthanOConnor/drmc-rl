@@ -41,7 +41,7 @@ gates:
     evidence_path: runs/program/gates/v3-counterfactual-quality.json
     depends_on: [pair-state-v2]
     criteria:
-      - Every source state carries accumulated public reserve-belief history and reveal probabilities come from the exact seed posterior, never independent one-ninth mass.
+      - Every source state carries the public initial virus bottle plus accumulated reserve-reveal history, and reveal probabilities come from the exact posterior under the declared reset-seed prior, never independent one-ninth mass.
       - A 1024-to-2048-state bank fills declared level, speed, and tactical quotas under a frozen competitive rollout policy.
       - Full root coverage, zero candidate truncation, and zero search-budget exhaustion are verified against the source bank.
       - Aggregate and member-specific Davidson links use equal game weight, grouped cross-fitting, natural draw evidence, and paired game-bootstrap improvement.

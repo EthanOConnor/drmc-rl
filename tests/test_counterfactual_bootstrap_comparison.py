@@ -41,7 +41,7 @@ def test_counterfactual_is_compared_on_observed_action_with_game_bootstrap() -> 
         )
     release = ReleaseDataset(
         settings={
-            "chance_model": "nes-reserve-seed-belief-v1",
+            "chance_model": "nes-reserve-public-seed-belief-v2",
             "information_scope": "privileged-test",
         },
         states=states,

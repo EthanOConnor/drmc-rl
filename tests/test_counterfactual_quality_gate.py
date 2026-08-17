@@ -11,7 +11,18 @@ BANK_HASH = "c" * 64
 SOURCE_MANIFEST_HASH = "d" * 64
 RELEASE_HASH = "e" * 64
 TEACHERS = ("rewarm-900m", "plus-1b", "plus-750m", "plus-500m")
-STRATA = ("5/0/midgame", "5/0/race-finish")
+STRATA = tuple(
+    f"{level}/{speed}/{tactical}"
+    for level in (5, 10, 15, 20)
+    for speed in (0, 1, 2)
+    for tactical in (
+        "midgame",
+        "high-pressure",
+        "topout-defense",
+        "incoming-garbage",
+        "race-finish",
+    )
+)
 
 
 def _paired():
@@ -101,7 +112,7 @@ def _passing_inputs():
     }
     by_stratum = {
         key: {
-            "states": 600,
+            "states": 20,
             "top1_agreement": 0.96,
             "max_win_delta": {"p95": 0.018},
             "policy_js": {"p95": 0.008},
@@ -137,10 +148,12 @@ def _passing_inputs():
         "sha256": BANK_HASH,
         "states": 1200,
         "quota_shortfall": 0,
-        "strata": {key: 600 for key in STRATA},
+        "strata": {key: 20 for key in STRATA},
+        "quota": {key: 20 for key in STRATA},
         "rollout_policy": "frozen-strong-league-mixture-argmax",
         "rollout_policy_manifest_sha256": MIXTURE_HASH,
         "chance_model": CHANCE_MODEL_ID,
+        "reserve_initial_board_conditioned": True,
         "diagnostic_only": False,
         "source_manifest_sha256": SOURCE_MANIFEST_HASH,
         "source_sampling": "whole-game-global-tactical-round-robin-v1",
@@ -231,3 +244,23 @@ def test_quality_gate_rejects_pruned_chance_and_bad_tactical_cell() -> None:
     failed = {check.id for check in report.checks if not check.passed}
     assert "full-chance-support" in failed
     assert "beam-stratum-convergence" in failed
+
+
+def test_quality_gate_rejects_duplicate_calibration_cell_and_missing_bank_cell() -> None:
+    audit, calibration, beam_sweep, bank, bootstrap = _passing_inputs()
+    calibration["collection"]["strata"][-1] = dict(
+        calibration["collection"]["strata"][0]
+    )
+    removed = STRATA[-1]
+    bank["states"] -= bank["strata"].pop(removed)
+    bank["quota"].pop(removed)
+    report = evaluate_quality_gate(
+        audit=audit,
+        calibration=calibration,
+        beam_sweep=beam_sweep,
+        bank_manifest=bank,
+        bootstrap=bootstrap,
+    )
+    failed = {check.id for check in report.checks if not check.passed}
+    assert "calibration-strata" in failed
+    assert "balanced-bank-quotas" in failed

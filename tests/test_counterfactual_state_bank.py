@@ -1,6 +1,16 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
+from drmc_rl.search.pill_belief import PillReserveBelief
+from drmc_rl.seedlab.rng import generate_game
 from drmc_rl.teachers.state_bank import balance_state_rows, select_game_rows
+
+
+@lru_cache(maxsize=None)
+def _belief(level: int):
+    board = generate_game(level, 0x8988).board
+    return PillReserveBelief.from_initial_board(level=level, board=board).to_dict()
 
 
 def _row(index: int, level: int, tactical: str):
@@ -9,7 +19,7 @@ def _row(index: int, level: int, tactical: str):
         "level": level,
         "speed": 2,
         "tactical_stratum": tactical,
-        "reserve_belief": {"schema": "drmc-pill-reserve-belief-v1"},
+        "reserve_belief": _belief(level),
     }
 
 
@@ -66,6 +76,6 @@ def test_balancing_rejects_unknown_belief_schema() -> None:
     try:
         balance_state_rows([row], quota={("5", "2", "midgame"): 1})
     except ValueError as error:
-        assert "unsupported reserve-belief schema" in str(error)
+        assert "unsupported pill reserve belief schema" in str(error)
     else:  # pragma: no cover
         raise AssertionError("unsupported reserve-belief schema should be rejected")

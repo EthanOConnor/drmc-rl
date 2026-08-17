@@ -1,10 +1,15 @@
-"""Exact public-belief model for the hidden 128-pill reserve.
+"""Public-belief model for the hidden 128-pill reserve.
 
 The native engine generates the entire reserve from a two-byte RNG before play.
 The next reserve entry is therefore not an independent uniform ordered color
-pair. This module enumerates the 16-bit seed prior once, conditions it only on
-publicly observed reserve entries, and returns exact posterior-predictive reveal
-probabilities.
+pair. This module enumerates the experiment's uniform 16-bit reset-seed prior,
+conditions it on the public initial virus bottle and every publicly observed
+reserve entry, and returns exact posterior-predictive reveal probabilities
+under that declared prior.
+
+The real console advances one fixed LFSR orbit from its boot state.  The
+uniform-reset prior used by the native training environment is deliberately not
+described as the retail console prior.
 """
 
 from __future__ import annotations
@@ -20,8 +25,9 @@ import numpy as np
 RESERVE_LENGTH = 128
 PILL_COMBINATIONS = 9
 SEED_COUNT = 1 << 16
-CHANCE_MODEL_ID = "nes-reserve-seed-belief-v1"
-BELIEF_SCHEMA = "drmc-pill-reserve-belief-v1"
+CHANCE_MODEL_ID = "nes-reserve-public-seed-belief-v2"
+BELIEF_SCHEMA = "drmc-pill-reserve-belief-v2"
+PRIOR_ID = "uniform-two-byte-reset-seed-v1"
 _CANONICAL_TO_RAW = (1, 0, 2)
 _RAW_TO_CANONICAL = (1, 0, 2)
 
@@ -80,6 +86,25 @@ def reserve_table() -> np.ndarray:
     return table
 
 
+@functools.lru_cache(maxsize=8)
+def initial_board_table(level: int) -> np.ndarray:
+    """Return the public initial virus bottle for every reset-seed hypothesis."""
+
+    from drmc_rl.seedlab.rng import generate_game
+
+    normalized_level = int(level)
+    if not 0 <= normalized_level <= 20:
+        raise ValueError("level must be in [0,20]")
+    table = np.empty((SEED_COUNT, 128), dtype=np.uint8)
+    for seed in range(SEED_COUNT):
+        table[seed] = np.frombuffer(
+            generate_game(normalized_level, seed).board,
+            dtype=np.uint8,
+        )
+    table.setflags(write=False)
+    return table
+
+
 def _normalize_observations(
     observations: Iterable[tuple[int, int]],
 ) -> tuple[tuple[int, int], ...]:
@@ -102,10 +127,19 @@ def _normalize_observations(
 # repeated-node speed while keeping a practical worker memory ceiling.
 @functools.lru_cache(maxsize=4096)
 def _matching_seed_indices(
-    observations: tuple[tuple[int, int], ...]
+    observations: tuple[tuple[int, int], ...],
+    level: int | None,
+    initial_board: bytes | None,
 ) -> np.ndarray:
     table = reserve_table()
     mask = np.ones(SEED_COUNT, dtype=bool)
+    if (level is None) != (initial_board is None):
+        raise ValueError("initial board conditioning requires both level and board")
+    if initial_board is not None:
+        board = np.frombuffer(initial_board, dtype=np.uint8)
+        if board.shape != (128,):
+            raise ValueError("initial public bottle must contain exactly 128 bytes")
+        mask &= np.all(initial_board_table(int(level)) == board, axis=1)
     for index, pill in observations:
         mask &= table[:, index] == pill
     matches = np.flatnonzero(mask).astype(np.int32)
@@ -115,16 +149,24 @@ def _matching_seed_indices(
 
 @dataclass(frozen=True, slots=True)
 class PillReserveBelief:
-    """Uniform posterior over seed hypotheses consistent with public reveals."""
+    """Posterior over reset seeds consistent with public board and reveals."""
 
     observations: tuple[tuple[int, int], ...] = ()
-    prior_id: str = "uniform-two-byte-seed-v1"
+    prior_id: str = PRIOR_ID
+    level: int | None = None
+    initial_board: bytes | None = None
 
     def __post_init__(self) -> None:
         normalized = _normalize_observations(self.observations)
         object.__setattr__(self, "observations", normalized)
-        if self.prior_id != "uniform-two-byte-seed-v1":
+        if self.prior_id != PRIOR_ID:
             raise ValueError(f"unsupported reserve prior {self.prior_id!r}")
+        if (self.level is None) != (self.initial_board is None):
+            raise ValueError("initial board conditioning requires both level and board")
+        if self.level is not None and not 0 <= int(self.level) <= 20:
+            raise ValueError("level must be in [0,20]")
+        if self.initial_board is not None and len(self.initial_board) != 128:
+            raise ValueError("initial public bottle must contain exactly 128 bytes")
         if self.seed_count == 0:
             raise ValueError(
                 "reserve observations are impossible under the configured prior"
@@ -132,7 +174,13 @@ class PillReserveBelief:
 
     @property
     def seed_count(self) -> int:
-        return int(_matching_seed_indices(self.observations).size)
+        return int(
+            _matching_seed_indices(
+                self.observations,
+                self.level,
+                self.initial_board,
+            ).size
+        )
 
     @property
     def entropy_bits(self) -> float:
@@ -140,7 +188,11 @@ class PillReserveBelief:
 
     def probabilities(self, reserve_index: int) -> np.ndarray:
         index = int(reserve_index) % RESERVE_LENGTH
-        seeds = _matching_seed_indices(self.observations)
+        seeds = _matching_seed_indices(
+            self.observations,
+            self.level,
+            self.initial_board,
+        )
         counts = np.bincount(
             reserve_table()[seeds, index], minlength=PILL_COMBINATIONS
         ).astype(np.float64)
@@ -156,7 +208,22 @@ class PillReserveBelief:
             self.observations
             + ((int(reserve_index) % RESERVE_LENGTH, int(pill_id)),),
             self.prior_id,
+            self.level,
+            self.initial_board,
         )
+
+    @classmethod
+    def from_initial_board(
+        cls,
+        *,
+        level: int,
+        board: bytes | bytearray | memoryview | np.ndarray,
+    ) -> "PillReserveBelief":
+        if isinstance(board, (bytes, bytearray, memoryview)):
+            raw = bytes(board)
+        else:
+            raw = np.asarray(board, dtype=np.uint8).reshape(-1).tobytes()
+        return cls(level=int(level), initial_board=raw)
 
     def condition_visible(
         self,
@@ -183,6 +250,10 @@ class PillReserveBelief:
         payload = json.dumps(
             {
                 "prior_id": self.prior_id,
+                "level": self.level,
+                "initial_board": (
+                    None if self.initial_board is None else self.initial_board.hex()
+                ),
                 "observations": self.observations,
             },
             sort_keys=True,
@@ -195,6 +266,11 @@ class PillReserveBelief:
             "schema": BELIEF_SCHEMA,
             "chance_model": CHANCE_MODEL_ID,
             "prior_id": self.prior_id,
+            "level": self.level,
+            "initial_board": (
+                None if self.initial_board is None else self.initial_board.hex()
+            ),
+            "initial_board_conditioned": self.initial_board is not None,
             "observations": [list(item) for item in self.observations],
             "seed_count": self.seed_count,
             "stable_hash": self.stable_hash(),
@@ -211,10 +287,21 @@ class PillReserveBelief:
             raw, (str, bytes, bytearray)
         ):
             raise ValueError("belief observations must be a sequence")
+        raw_board = payload.get("initial_board")
+        board = None if raw_board is None else bytes.fromhex(str(raw_board))
         belief = cls(
-            tuple((int(item[0]), int(item[1])) for item in raw),  # type: ignore[index]
-            str(payload.get("prior_id", "uniform-two-byte-seed-v1")),
+            observations=tuple(
+                (int(item[0]), int(item[1])) for item in raw  # type: ignore[index]
+            ),
+            prior_id=str(payload.get("prior_id", PRIOR_ID)),
+            level=None if payload.get("level") is None else int(payload["level"]),
+            initial_board=board,
         )
+        expected_conditioned = payload.get("initial_board_conditioned")
+        if expected_conditioned is not None and bool(expected_conditioned) != (
+            belief.initial_board is not None
+        ):
+            raise ValueError("initial-board conditioning flag is inconsistent")
         expected_count = payload.get("seed_count")
         if expected_count is not None and int(expected_count) != belief.seed_count:
             raise ValueError(
@@ -230,9 +317,11 @@ __all__ = [
     "BELIEF_SCHEMA",
     "CHANCE_MODEL_ID",
     "PILL_COMBINATIONS",
+    "PRIOR_ID",
     "PillReserveBelief",
     "RESERVE_LENGTH",
     "canonical_pair_to_pill_id",
+    "initial_board_table",
     "pill_id_to_canonical_pair",
     "reserve_for_seed",
     "reserve_table",

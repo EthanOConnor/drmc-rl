@@ -65,6 +65,11 @@ def _source_manifest(
             f"input bank uses ineligible chance model {chance_model!r}; "
             f"expected {CHANCE_MODEL_ID!r}"
         )
+    if not bool(payload.get("reserve_initial_board_conditioned")):
+        raise ValueError(
+            "input bank reserve belief is not conditioned on the public "
+            "initial virus bottle"
+        )
     if bool(payload.get("diagnostic_only")) and not allow_unverified:
         raise ValueError("diagnostic source banks cannot produce promotion banks")
     return dict(payload), sha256_file(path)
@@ -215,6 +220,10 @@ def main() -> None:
             if args.allow_missing_reserve_belief
             else CHANCE_MODEL_ID
         ),
+        "reserve_initial_board_conditioned": bool(
+            source.get("reserve_initial_board_conditioned")
+        )
+        and not args.allow_missing_reserve_belief,
         "diagnostic_only": diagnostic,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

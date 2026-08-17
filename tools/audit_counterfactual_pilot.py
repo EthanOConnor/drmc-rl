@@ -69,7 +69,12 @@ def _source_index(path: Path | None) -> tuple[dict[str, dict[str, Any]], int]:
                 )
             belief = row.get("reserve_belief")
             if isinstance(belief, Mapping):
-                PillReserveBelief.from_dict(belief)
+                parsed_belief = PillReserveBelief.from_dict(belief)
+                if parsed_belief.initial_board is None:
+                    raise ValueError(
+                        f"source belief lacks initial-board conditioning at "
+                        f"{path}:{line_number}"
+                    )
                 belief_rows += 1
             result[identity] = row
     return result, belief_rows

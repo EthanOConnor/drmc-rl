@@ -45,15 +45,18 @@ must use newly generated, content-addressed artifacts.
 
 ### Reserve chance
 
-The NES generates the complete 128-pill reserve once from its two-byte RNG.
-Later pills are correlated with publicly visible falling and preview pills.
-Do not use independent uniform ordered-pair branching.
+The native game generates the complete 128-pill reserve once from its two-byte
+RNG, then generates the publicly visible initial virus bottle from the same
+stream. Later pills are correlated with that bottle and with publicly visible
+falling and preview pills. Do not use independent uniform ordered-pair
+branching. The current experiment declares the uniform two-byte reset-seed
+prior used by randomized native resets; do not call it the retail boot prior.
 
 Use:
 
 - `drmc_rl.search.pill_belief.PillReserveBelief`;
 - `drmc_rl.search.belief_native_pair.BeliefNativePairSearchModel`;
-- chance model id `nes-reserve-seed-belief-v1`.
+- chance model id `nes-reserve-public-seed-belief-v2`.
 
 Every bank row carries the complete public observation history accumulated on
 its trajectory. At a reveal node, branch over every posterior-supported pill;
@@ -196,7 +199,8 @@ The source manifest must report:
 rollout_policy = frozen-strong-league-mixture-argmax
 per_game_selection = whole-game-global-tactical-round-robin-v1
 diagnostic_only = false
-chance_model = nes-reserve-seed-belief-v1
+chance_model = nes-reserve-public-seed-belief-v2
+reserve_initial_board_conditioned = true
 ```
 
 Inspect `tactical_counts`. If a quota cell remains rare, increase game count or

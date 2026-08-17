@@ -66,9 +66,10 @@ gate that must be completed first.
 
 ## Counterfactual quality rules
 
-- The native 128-pill reserve is generated once from a two-byte RNG. Future
-  reveals are correlated with public pill history. Never assign nine independent
-  outcomes probability `1/9` in a quality release.
+- The native 128-pill reserve is generated once from a two-byte RNG and the
+  public initial virus bottle is generated from the same stream. Future reveals
+  are correlated with both that bottle and public pill history. Never assign
+  nine independent outcomes probability `1/9` in a quality release.
 - Use `PillReserveBelief` and persist `reserve_belief` with every source state.
   A posterior reveal node may have fewer than nine supported outcomes.
 - The frozen G4 continuation consumes exact pending-attack scalars and is a

@@ -48,20 +48,24 @@ The first 512-state production-shaped pilot established important mechanics:
 
 It did **not** establish mature quality. The pilot treated each reveal as nine
 independent ordered color pairs at probability `1/9`. The NES instead creates
-the whole 128-entry reserve from a two-byte RNG. Reserve entries are
-nonuniform and correlated with already visible pills. The pilot is retained as
-mechanics evidence; its candidate values must not be used to open the gate.
+the whole 128-entry reserve from a two-byte RNG, then generates the public
+initial virus bottle from the same stream. Reserve entries are nonuniform and
+correlated with both the initial bottle and already visible pills. The pilot is
+retained as mechanics evidence; its candidate values must not open the gate.
 
 ### Corrected chance model
 
-`PillReserveBelief` enumerates the uniform two-byte seed prior used by randomized
-native resets, conditions it on every publicly observed falling/preview entry,
-and predicts the next reveal. `BeliefNativePairSearchModel` still overwrites the
-hidden native reserve byte before reveal, but assigns probability only from the
-public posterior. Some nodes have fewer than nine supported outcomes.
+`PillReserveBelief` enumerates the uniform two-byte reset-seed prior used by the
+randomized native experiment, conditions it on the public initial virus bottle
+and every publicly observed falling/preview entry, and predicts the next reveal.
+This is exact under that declared experimental prior; it is not mislabeled as
+the boot-to-game retail console prior. `BeliefNativePairSearchModel` still
+overwrites the hidden native reserve byte before reveal, but assigns probability
+only from the public posterior. Some nodes have fewer than nine supported
+outcomes.
 
 A mature source bank stores `reserve_belief` on every row. A release records
-chance model `nes-reserve-seed-belief-v1`. Independent one-ninth branching is
+chance model `nes-reserve-public-seed-belief-v2`. Independent one-ninth branching is
 never promotion-eligible.
 
 ### Privileged continuation scope

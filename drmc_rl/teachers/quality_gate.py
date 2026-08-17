@@ -33,6 +33,8 @@ class QualityGateThresholds:
     min_calibration_games_per_stratum: int = 16
     min_calibration_folds: int = 5
     min_natural_draw_games: int = 8
+    min_balanced_cells: int = 60
+    min_states_per_balanced_cell: int = 16
     min_bootstrap_games: int = 48
     min_bootstrap_draw_games: int = 1
     min_beam_top1_agreement: float = 0.95
@@ -55,6 +57,8 @@ class QualityGateThresholds:
             or self.min_calibration_games_per_stratum < 1
             or self.min_calibration_folds < 2
             or self.min_natural_draw_games < 1
+            or self.min_balanced_cells < 1
+            or self.min_states_per_balanced_cell < 1
             or self.min_bootstrap_games < 2
             or self.min_bootstrap_draw_games < 0
         ):
@@ -378,23 +382,46 @@ def evaluate_quality_gate(
         )
         strata_raw = collection.get("strata")
         strata = list(strata_raw) if isinstance(strata_raw, Sequence) else []
-        per_stratum = [
-            int(item.get("games", 0))
-            for item in strata
-            if isinstance(item, Mapping)
-        ]
+        calibration_cells: dict[tuple[int, int], int] = {}
+        malformed_cells = 0
+        for item in strata:
+            if not isinstance(item, Mapping):
+                malformed_cells += 1
+                continue
+            try:
+                cell = (int(item["level"]), int(item["speed"]))
+                games_in_cell = int(item["games"])
+            except (KeyError, TypeError, ValueError):
+                malformed_cells += 1
+                continue
+            if cell in calibration_cells:
+                malformed_cells += 1
+                continue
+            calibration_cells[cell] = games_in_cell
+        expected_calibration_cells = {
+            (level, speed)
+            for level in (5, 10, 15, 20)
+            for speed in (0, 1, 2)
+        }
+        per_stratum = list(calibration_cells.values())
         check(
             "calibration-strata",
-            len(per_stratum) >= limit.min_calibration_strata
+            malformed_cells == 0
+            and set(calibration_cells) == expected_calibration_cells
+            and len(per_stratum) >= limit.min_calibration_strata
             and min(per_stratum, default=0)
-            >= limit.min_calibration_games_per_stratum,
+            >= limit.min_calibration_games_per_stratum
+            and sum(per_stratum) == games,
             {
-                "strata": len(per_stratum),
+                "cells": sorted(calibration_cells),
+                "malformed_or_duplicate": malformed_cells,
                 "min_games": min(per_stratum, default=0),
+                "total_games": sum(per_stratum),
             },
             {
-                "strata": f">={limit.min_calibration_strata}",
+                "cells": sorted(expected_calibration_cells),
                 "min_games": f">={limit.min_calibration_games_per_stratum}",
+                "total_games": games,
             },
             "all level/speed cells need enough independent games",
         )
@@ -621,6 +648,16 @@ def evaluate_quality_gate(
         states = int(bank_manifest.get("states", 0))
         shortfall = int(bank_manifest.get("quota_shortfall", -1))
         policy = str(bank_manifest.get("rollout_policy", ""))
+        bank_strata_raw = bank_manifest.get("strata")
+        bank_strata = (
+            bank_strata_raw if isinstance(bank_strata_raw, Mapping) else {}
+        )
+        quota_raw = bank_manifest.get("quota")
+        quota = quota_raw if isinstance(quota_raw, Mapping) else {}
+        bank_cell_counts = {
+            str(key): int(value) for key, value in bank_strata.items()
+        }
+        quota_counts = {str(key): int(value) for key, value in quota.items()}
         check(
             "balanced-bank-size",
             limit.min_states <= states <= limit.max_states,
@@ -637,9 +674,27 @@ def evaluate_quality_gate(
         )
         check(
             "balanced-bank-quotas",
-            shortfall == 0,
-            shortfall,
-            0,
+            shortfall == 0
+            and len(bank_cell_counts) >= limit.min_balanced_cells
+            and set(bank_cell_counts) == set(quota_counts)
+            and min(bank_cell_counts.values(), default=0)
+            >= limit.min_states_per_balanced_cell
+            and bank_cell_counts == quota_counts
+            and sum(bank_cell_counts.values()) == states,
+            {
+                "shortfall": shortfall,
+                "cells": len(bank_cell_counts),
+                "min_states_per_cell": min(bank_cell_counts.values(), default=0),
+                "cell_total": sum(bank_cell_counts.values()),
+                "quota_matches": bank_cell_counts == quota_counts,
+            },
+            {
+                "shortfall": 0,
+                "cells": f">={limit.min_balanced_cells}",
+                "min_states_per_cell": f">={limit.min_states_per_balanced_cell}",
+                "cell_total": states,
+                "quota_matches": True,
+            },
             "all declared level/speed/tactical quotas must be filled",
         )
         check(
@@ -656,10 +711,19 @@ def evaluate_quality_gate(
         )
         check(
             "balanced-bank-reserve-belief",
-            str(bank_manifest.get("chance_model", "")) == CHANCE_MODEL_ID,
-            bank_manifest.get("chance_model"),
-            CHANCE_MODEL_ID,
-            "bank rows must retain public reserve-belief history",
+            str(bank_manifest.get("chance_model", "")) == CHANCE_MODEL_ID
+            and bool(bank_manifest.get("reserve_initial_board_conditioned")),
+            {
+                "chance_model": bank_manifest.get("chance_model"),
+                "initial_board_conditioned": bank_manifest.get(
+                    "reserve_initial_board_conditioned"
+                ),
+            },
+            {
+                "chance_model": CHANCE_MODEL_ID,
+                "initial_board_conditioned": True,
+            },
+            "bank rows must retain the public initial bottle and reveal history",
         )
         source_manifest_hash = bank_manifest.get("source_manifest_sha256")
         check(

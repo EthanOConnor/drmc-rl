@@ -81,7 +81,7 @@ def _settings(bank: Path, beam: int) -> ReleaseSettings:
         planner_revision="planner",
         mixture_manifest_sha256="a" * 64,
         wdl_calibration_sha256="b" * 64,
-        chance_model="nes-reserve-seed-belief-v1",
+        chance_model="nes-reserve-public-seed-belief-v2",
         information_scope="privileged-test",
     )
 
@@ -137,7 +137,7 @@ def test_release_comparison_aligns_actions_and_reports_beam_sensitivity(
     assert comparison["aggregate"]["states"] == 3
     assert comparison["aggregate"]["top1_agreement"] == 1.0
     assert comparison["aggregate"]["max_win_delta"]["max"] > 0
-    assert comparison["reference"]["chance_model"] == "nes-reserve-seed-belief-v1"
+    assert comparison["reference"]["chance_model"] == "nes-reserve-public-seed-belief-v2"
     assert comparison["settings_compatible"] is True
 
     sweep = compare_beam_sweep({4: candidate, 8: reference})

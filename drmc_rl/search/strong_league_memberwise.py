@@ -105,8 +105,17 @@ def _register_payload_belief(
     payload: Mapping[str, Any],
 ) -> None:
     raw = payload.get("reserve_belief")
-    if isinstance(raw, Mapping):
-        model.register_belief(state, PillReserveBelief.from_dict(raw))
+    if not isinstance(raw, Mapping):
+        raise ValueError(
+            "quality release source lacks the required public reserve belief"
+        )
+    belief = PillReserveBelief.from_dict(raw)
+    if belief.initial_board is None:
+        raise ValueError(
+            "quality release source belief is not conditioned on the public "
+            "initial virus bottle"
+        )
+    model.register_belief(state, belief)
 
 
 def _load_aggregate(
@@ -120,7 +129,7 @@ def _load_aggregate(
 
 
 def frozen_strong_league_belief_factory(args: Any):
-    """Aggregate mixture values with exact public reserve-belief branching."""
+    """Aggregate mixture values with declared-prior public belief branching."""
 
     members, calibration = _load_aggregate(args)
     mixture = FrozenStrongLeagueMixture(

@@ -36,12 +36,21 @@ def _score(seed: int, identity: str) -> int:
 
 
 def _validate_belief(row: Mapping[str, Any], identity: str) -> None:
+    from drmc_rl.search.pill_belief import PillReserveBelief
+
     belief = row.get("reserve_belief")
     if not isinstance(belief, Mapping):
         raise ValueError(f"state {identity} lacks public reserve-belief history")
-    schema = belief.get("schema")
-    if schema not in {None, "drmc-pill-reserve-belief-v1"}:
-        raise ValueError(f"state {identity} has unsupported reserve-belief schema {schema!r}")
+    try:
+        parsed = PillReserveBelief.from_dict(belief)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            f"state {identity} has invalid reserve-belief evidence: {error}"
+        ) from error
+    if parsed.initial_board is None:
+        raise ValueError(
+            f"state {identity} reserve belief lacks initial-board conditioning"
+        )
 
 
 @dataclass(frozen=True, slots=True)

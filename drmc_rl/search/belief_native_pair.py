@@ -1,11 +1,12 @@
 """Native pair search with a public belief over the private pill reserve.
 
-The retail reserve is generated once by a deterministic two-byte RNG process.
+The native reserve is generated once by a deterministic two-byte RNG process.
 Consequently, a newly revealed ordered color pair is neither independent nor
-uniform after conditioning on the visible falling and preview pills. This
-adapter keeps the opaque native checkpoint for exact transitions, but chooses
-chance probabilities only from a public seed posterior. The actual hidden
-reserve byte in the checkpoint is always overwritten before its reveal.
+uniform after conditioning on the public initial virus bottle and the visible
+falling and preview pills. This adapter keeps the opaque native checkpoint for
+exact transitions, but chooses chance probabilities only from the declared
+public seed posterior. The actual hidden reserve byte in the checkpoint is
+always overwritten before its reveal.
 """
 
 from __future__ import annotations

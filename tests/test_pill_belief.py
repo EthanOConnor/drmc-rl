@@ -11,6 +11,7 @@ from drmc_rl.search.pill_belief import (
     reserve_for_seed,
     reserve_table,
 )
+from drmc_rl.seedlab.rng import generate_game
 
 
 def test_reserve_generation_matches_native_golden_seed() -> None:
@@ -64,6 +65,21 @@ def test_observation_changes_posterior_predictive_distribution() -> None:
         posterior.probabilities(1), prior.probabilities(1)
     )
     assert posterior.probabilities(0)[3] == pytest.approx(1.0)
+
+
+def test_public_initial_virus_bottle_conditions_seed_posterior() -> None:
+    content = generate_game(10, 0x8988)
+    prior = PillReserveBelief()
+    posterior = PillReserveBelief.from_initial_board(
+        level=10,
+        board=content.board,
+    )
+    assert posterior.seed_count < prior.seed_count
+    expected = int(content.pills[0])
+    assert posterior.probabilities(0)[expected] > prior.probabilities(0)[expected]
+    payload = posterior.to_dict()
+    assert payload["initial_board_conditioned"] is True
+    assert PillReserveBelief.from_dict(payload) == posterior
 
 
 def test_visible_pills_condition_the_two_previous_reserve_entries() -> None:
