@@ -2,9 +2,9 @@
 
 The native engine generates the entire reserve from a two-byte RNG before play.
 The next reserve entry is therefore not an independent uniform ordered color
-pair. This module enumerates the 16-bit seed prior once, conditions it on
-publicly observed reserve entries, and returns the posterior predictive
-probability of the next reveal under that prior.
+pair. This module enumerates the 16-bit seed prior once, conditions it only on
+publicly observed reserve entries, and returns exact posterior-predictive reveal
+probabilities.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ RESERVE_LENGTH = 128
 PILL_COMBINATIONS = 9
 SEED_COUNT = 1 << 16
 CHANCE_MODEL_ID = "nes-reserve-seed-belief-v1"
+BELIEF_SCHEMA = "drmc-pill-reserve-belief-v1"
 _CANONICAL_TO_RAW = (1, 0, 2)
 _RAW_TO_CANONICAL = (1, 0, 2)
 
@@ -95,8 +96,14 @@ def _normalize_observations(
     return tuple(sorted(by_index.items()))
 
 
-@functools.lru_cache(maxsize=65536)
-def _matching_seed_indices(observations: tuple[tuple[int, int], ...]) -> np.ndarray:
+# A path-dependent search can create many distinct reveal histories. Each
+# cached result may hold tens of thousands of seed indices, so allowing one
+# entry per possible seed can consume gigabytes. A bounded 4k cache preserves
+# repeated-node speed while keeping a practical worker memory ceiling.
+@functools.lru_cache(maxsize=4096)
+def _matching_seed_indices(
+    observations: tuple[tuple[int, int], ...]
+) -> np.ndarray:
     table = reserve_table()
     mask = np.ones(SEED_COUNT, dtype=bool)
     for index, pill in observations:
@@ -119,7 +126,9 @@ class PillReserveBelief:
         if self.prior_id != "uniform-two-byte-seed-v1":
             raise ValueError(f"unsupported reserve prior {self.prior_id!r}")
         if self.seed_count == 0:
-            raise ValueError("reserve observations are impossible under the configured prior")
+            raise ValueError(
+                "reserve observations are impossible under the configured prior"
+            )
 
     @property
     def seed_count(self) -> int:
@@ -144,7 +153,8 @@ class PillReserveBelief:
 
     def condition(self, reserve_index: int, pill_id: int) -> "PillReserveBelief":
         return PillReserveBelief(
-            self.observations + ((int(reserve_index) % RESERVE_LENGTH, int(pill_id)),),
+            self.observations
+            + ((int(reserve_index) % RESERVE_LENGTH, int(pill_id)),),
             self.prior_id,
         )
 
@@ -162,35 +172,62 @@ class PillReserveBelief:
         """
 
         counter = int(reserve_counter) % RESERVE_LENGTH
-        result = self.condition(counter - 2, canonical_pair_to_pill_id(falling_colors))
-        return result.condition(counter - 1, canonical_pair_to_pill_id(preview_colors))
+        result = self.condition(
+            counter - 2, canonical_pair_to_pill_id(falling_colors)
+        )
+        return result.condition(
+            counter - 1, canonical_pair_to_pill_id(preview_colors)
+        )
+
+    def stable_hash(self) -> str:
+        payload = json.dumps(
+            {
+                "prior_id": self.prior_id,
+                "observations": self.observations,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
         return {
-            "schema": "drmc-pill-reserve-belief-v1",
+            "schema": BELIEF_SCHEMA,
+            "chance_model": CHANCE_MODEL_ID,
             "prior_id": self.prior_id,
             "observations": [list(item) for item in self.observations],
             "seed_count": self.seed_count,
+            "stable_hash": self.stable_hash(),
         }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]) -> "PillReserveBelief":
-        if payload.get("schema", "drmc-pill-reserve-belief-v1") != "drmc-pill-reserve-belief-v1":
+        if payload.get("schema", BELIEF_SCHEMA) != BELIEF_SCHEMA:
             raise ValueError("unsupported pill reserve belief schema")
+        if payload.get("chance_model", CHANCE_MODEL_ID) != CHANCE_MODEL_ID:
+            raise ValueError("pill reserve belief uses an incompatible chance model")
         raw = payload.get("observations", ())
-        if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes, bytearray)):
+        if not isinstance(raw, Sequence) or isinstance(
+            raw, (str, bytes, bytearray)
+        ):
             raise ValueError("belief observations must be a sequence")
-        return cls(
+        belief = cls(
             tuple((int(item[0]), int(item[1])) for item in raw),  # type: ignore[index]
             str(payload.get("prior_id", "uniform-two-byte-seed-v1")),
         )
-
-    def stable_hash(self) -> str:
-        payload = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        expected_count = payload.get("seed_count")
+        if expected_count is not None and int(expected_count) != belief.seed_count:
+            raise ValueError(
+                "pill reserve belief seed_count does not match observations"
+            )
+        expected_hash = payload.get("stable_hash")
+        if expected_hash is not None and str(expected_hash) != belief.stable_hash():
+            raise ValueError("pill reserve belief hash does not match observations")
+        return belief
 
 
 __all__ = [
+    "BELIEF_SCHEMA",
     "CHANCE_MODEL_ID",
     "PILL_COMBINATIONS",
     "PillReserveBelief",
