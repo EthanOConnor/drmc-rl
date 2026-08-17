@@ -26,7 +26,7 @@ def canonical_json(value: object) -> bytes:
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
+        for block in iter(lambda: handle.read(1024 * 1024, ), b""):
             digest.update(block)
     return digest.hexdigest()
 
@@ -167,7 +167,7 @@ def _git_revision(root: Path) -> tuple[str | None, bool]:
             ).strip()
         )
         return commit, dirty
-    except FileNotFoundError, subprocess.CalledProcessError:
+    except (FileNotFoundError, subprocess.CalledProcessError):
         return None, False
 
 
@@ -190,6 +190,8 @@ class ReleaseSettings:
     planner_revision: str
     mixture_manifest_sha256: str | None = None
     wdl_calibration_sha256: str | None = None
+    chance_model: str = "independent-uniform-ordered-pair-v0"
+    information_scope: str = "unspecified"
 
     def digest(self) -> str:
         return hashlib.sha256(canonical_json(asdict(self))).hexdigest()
@@ -255,6 +257,8 @@ def build_release(
                     "pair_state_schema": PAIR_STATE_SCHEMA,
                     "corpus_release": settings.corpus_release,
                     "continuation_mixture": settings.continuation_mixture,
+                    "chance_model": settings.chance_model,
+                    "information_scope": settings.information_scope,
                 },
             )
             if label.budget_exhausted:
