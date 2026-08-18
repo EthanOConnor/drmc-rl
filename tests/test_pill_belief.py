@@ -8,6 +8,7 @@ from drmc_rl.search.pill_belief import (
     PillReserveBelief,
     canonical_pair_to_pill_id,
     pill_id_to_canonical_pair,
+    pill_id_to_raw_pair,
     reserve_for_seed,
     reserve_table,
 )
@@ -27,6 +28,12 @@ def test_reserve_generation_matches_native_golden_seed() -> None:
         2,
         0,
     ]
+
+
+def test_reserve_pill_ids_convert_to_raw_and_canonical_color_orders() -> None:
+    assert pill_id_to_raw_pair(0) == (0, 0)
+    assert pill_id_to_canonical_pair(0) == (1, 1)
+    assert canonical_pair_to_pill_id(pill_id_to_canonical_pair(8)) == 8
 
 
 def test_vectorized_reserve_table_matches_scalar_generator() -> None:

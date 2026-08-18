@@ -92,3 +92,46 @@ def test_native_pair_search_branches_all_ordered_preview_reveals() -> None:
         assert len(revealed) >= 9
     finally:
         runner.close()
+
+
+def test_belief_search_does_not_condition_stale_preview_at_pending_reveal() -> None:
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+    from drmc_rl.search.belief_native_pair import BeliefNativePairSearchModel
+    from drmc_rl.search.native_pair import capture_native_state
+
+    runner = DrMarioVsPoolRunner(num_pairs=1)
+    try:
+        if runner._step_search_fn is None:  # pragma: no cover - stale local build
+            pytest.skip("native VS pool predates reveal-aware search ABI")
+        runner.reset(
+            None,
+            [
+                build_vs_reset_spec(
+                    level=(5, 5),
+                    speed_setting=(2, 2),
+                    rng_state=(0x37, 0x91),
+                    rng_override=True,
+                )
+            ],
+        )
+        root = capture_native_state(runner, level=5, speed_setting=2)
+        model = BeliefNativePairSearchModel(runner)
+        child = model.apply_actions(
+            root,
+            root.legal_actions_by_side[0][0],
+            root.legal_actions_by_side[1][0],
+        )
+        runner.restore(0, child.privileged.engine_checkpoint)
+        reveal = runner.search_reveal_info(0)
+        assert reveal is not None
+        assert reveal[1] not in dict(model.belief(child).observations)
+
+        outcomes = model.chance_outcomes(child)
+        assert outcomes
+        assert sum(item.probability for item in outcomes) == pytest.approx(1.0)
+        assert all(
+            reveal[1] in dict(model.belief(item.state).observations)
+            for item in outcomes
+        )
+    finally:
+        runner.close()

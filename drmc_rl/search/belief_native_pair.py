@@ -25,7 +25,8 @@ from drmc_rl.search.native_pair import (
 from drmc_rl.search.pill_belief import (
     CHANCE_MODEL_ID,
     PillReserveBelief,
-    pill_id_to_canonical_pair,
+    canonical_pair_to_pill_id,
+    pill_id_to_raw_pair,
 )
 
 
@@ -67,18 +68,55 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
     def _condition_visible(self, belief: PillReserveBelief) -> PillReserveBelief:
         buffers = self.runner.buffers
         result = belief
+        reveal = self.runner.search_reveal_info(0)
         for side in range(2):
             counter = int(buffers.spawn_id[side]) & 0x7F
+            if not bool(buffers.need_action[side]):
+                # Pill/preview buffers are authoritative public observations
+                # at actionable decision boundaries. During asynchronous
+                # advance and reveal stops they may intentionally retain the
+                # preceding boundary's values while the reserve counter moves.
+                continue
+            if reveal is not None and reveal[0] == side:
+                if reveal[1] != counter:
+                    raise RuntimeError(
+                        "pending reveal index does not match the native reserve counter"
+                    )
+                # stop_before_reveal has advanced the reserve counter to the
+                # pending entry while leaving both visible pill buffers at the
+                # preceding decision boundary. Those observations are already
+                # in the parent belief; re-indexing either buffer relative to
+                # the advanced counter would attach stale colors to the wrong
+                # reserve entry. The chance branch below conditions the new
+                # preview and then normal visible conditioning resumes.
+                continue
             # At a normal decision boundary the reserve counter points one
             # past the visible preview entry. The modulo relation remains true
             # across the 128-entry wrap: falling=counter-2, preview=counter-1.
-            result = result.condition_visible(
-                reserve_counter=counter,
-                falling_colors=tuple(int(value) for value in buffers.pill_colors[side]),
-                preview_colors=tuple(
-                    int(value) for value in buffers.preview_colors[side]
-                ),
-            )
+            try:
+                result = result.condition(
+                    counter - 2,
+                    canonical_pair_to_pill_id(
+                        tuple(int(value) for value in buffers.pill_colors[side])
+                    ),
+                )
+                result = result.condition(
+                    counter - 1,
+                    canonical_pair_to_pill_id(
+                        tuple(int(value) for value in buffers.preview_colors[side])
+                    ),
+                )
+            except ValueError as error:
+                raise ValueError(
+                    "visible reserve conditioning failed "
+                    f"(side={side}, counter={counter}, reveal={reveal}, "
+                    f"need_action={buffers.need_action.tolist()}, "
+                    f"pill_colors={buffers.pill_colors.tolist()}, "
+                    f"preview_colors={buffers.preview_colors.tolist()}, "
+                    f"falling_prior={dict(result.observations).get((counter - 2) & 0x7F)}, "
+                    f"preview_prior={dict(result.observations).get((counter - 1) & 0x7F)}, "
+                    f"observations_tail={result.observations[-8:]})"
+                ) from error
         return result
 
     def key(self, state: NativePairSearchState):
@@ -110,7 +148,7 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
             if float(mass) <= 0.0:
                 continue
             self.runner.restore(0, state.privileged.engine_checkpoint)
-            colors = pill_id_to_canonical_pair(pill_id)
+            colors = pill_id_to_raw_pair(pill_id)
             self.runner.search_reveal(0, side, colors)
             child = capture_native_state(
                 self.runner,
@@ -119,7 +157,14 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
                 viruses_initial=state.viruses_initial,
             )
             child_belief = belief.condition(reserve_index, pill_id)
-            child_belief = self._condition_visible(child_belief)
+            try:
+                child_belief = self._condition_visible(child_belief)
+            except ValueError as error:
+                raise ValueError(
+                    "post-reveal public conditioning failed "
+                    f"(revealed_side={side}, reserve_index={reserve_index}, "
+                    f"pill_id={pill_id})"
+                ) from error
             self.register_belief(child, child_belief)
             outcomes.append(ChanceOutcome(float(mass), child))
         if not outcomes:
