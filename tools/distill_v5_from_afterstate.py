@@ -85,6 +85,24 @@ def _student_forward(student, batch):
     )
 
 
+def _outcome_value_loss(
+    value: torch.Tensor,
+    won: torch.Tensor,
+    row_weight: torch.Tensor,
+) -> torch.Tensor:
+    """Compute probability-form BCE in FP32, outside any active autocast region."""
+
+    with torch.autocast(device_type=value.device.type, enabled=False):
+        probability = ((value.squeeze(-1).float() + 1.0) * 0.5).clamp(
+            1e-5, 1.0 - 1e-5
+        )
+        return F.binary_cross_entropy(
+            probability,
+            won.float(),
+            weight=row_weight.float(),
+        )
+
+
 def _evaluate(
     student,
     teacher,
@@ -243,12 +261,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                         temperature=args.temperature,
                         row_weight=row_weight,
                     )
-                    value_loss = F.binary_cross_entropy(
-                        ((value.squeeze(-1).float() + 1.0) * 0.5).clamp(1e-5, 1.0 - 1e-5),
-                        teacher_batch["won"].float(),
-                        weight=row_weight.float(),
-                    )
-                    loss = policy_loss + float(args.value_coef) * value_loss
+                value_loss = _outcome_value_loss(value, teacher_batch["won"], row_weight)
+                loss = policy_loss + float(args.value_coef) * value_loss
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(student.parameters(), float(args.max_grad_norm))
                 optimizer.step()
