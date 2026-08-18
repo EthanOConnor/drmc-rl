@@ -103,6 +103,39 @@ def _outcome_value_loss(
         )
 
 
+def _checkpoint_payload(
+    *,
+    student,
+    cfg: dict[str, Any],
+    args: argparse.Namespace,
+    epoch: int,
+    optimizer_steps: int,
+    metrics: dict[str, float],
+    epoch_complete: bool,
+) -> dict[str, Any]:
+    state_dict = student.state_dict()
+    return {
+        "schema": "drmc-v5-v3-distill-v1",
+        "cfg": cfg,
+        "state_dict": state_dict,
+        "ema_state_dict": state_dict,
+        "step": 0,
+        "decision_step": 0,
+        "distillation": {
+            "teacher": str(args.teacher),
+            "teacher_schema": HUMAN_AFTERSTATE_SCHEMA,
+            "dataset": str(args.dataset),
+            "afterstates": str(args.afterstates),
+            "epoch": int(epoch),
+            "epoch_complete": bool(epoch_complete),
+            "optimizer_steps": int(optimizer_steps),
+            "metrics": metrics,
+            "temperature": float(args.temperature),
+            "aux_context": "zero-v1-vs",
+        },
+    }
+
+
 def _evaluate(
     student,
     teacher,
@@ -206,6 +239,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     step = 0
     best_loss = float("inf")
     started = time.perf_counter()
+    last_diagnostic = started
     best_metrics: dict[str, float] = {}
     for epoch in range(int(args.epochs)):
         student.train()
@@ -278,6 +312,42 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                         f"policy={float(policy_loss):.4f} value={float(value_loss):.4f}",
                         flush=True,
                     )
+                diagnostic_interval = float(args.diagnostic_checkpoint_minutes) * 60.0
+                now = time.perf_counter()
+                if diagnostic_interval > 0.0 and now - last_diagnostic >= diagnostic_interval:
+                    diagnostic_dir = args.diagnostic_dir or lineage / "diagnostic"
+                    diagnostic_dir.mkdir(parents=True, exist_ok=True)
+                    diagnostic_metrics = {
+                        "train_loss": float(loss.detach()),
+                        "train_policy_loss": float(policy_loss.detach()),
+                        "train_value_loss": float(value_loss.detach()),
+                        "elapsed_seconds": float(now - started),
+                    }
+                    payload = _checkpoint_payload(
+                        student=student,
+                        cfg=cfg,
+                        args=args,
+                        epoch=epoch + 1,
+                        optimizer_steps=step,
+                        metrics=diagnostic_metrics,
+                        epoch_complete=False,
+                    )
+                    diagnostic_path = diagnostic_dir / (
+                        f"v5_v3_distill_epoch{epoch + 1:02d}_step{step:08d}.pt.gz"
+                    )
+                    save_checkpoint(payload, diagnostic_path)
+                    print(
+                        json.dumps(
+                            {
+                                "diagnostic_checkpoint": str(diagnostic_path),
+                                "epoch": epoch + 1,
+                                "optimizer_steps": step,
+                                "metrics": diagnostic_metrics,
+                            }
+                        ),
+                        flush=True,
+                    )
+                    last_diagnostic = time.perf_counter()
         scheduler.step()
         metrics = _evaluate(
             student,
@@ -292,25 +362,15 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             temperature=args.temperature,
             autocast=autocast,
         )
-        payload = {
-            "schema": "drmc-v5-v3-distill-v1",
-            "cfg": cfg,
-            "state_dict": student.state_dict(),
-            "ema_state_dict": student.state_dict(),
-            "step": 0,
-            "decision_step": 0,
-            "distillation": {
-                "teacher": str(args.teacher),
-                "teacher_schema": HUMAN_AFTERSTATE_SCHEMA,
-                "dataset": str(args.dataset),
-                "afterstates": str(args.afterstates),
-                "epoch": epoch + 1,
-                "optimizer_steps": step,
-                "metrics": metrics,
-                "temperature": float(args.temperature),
-                "aux_context": "zero-v1-vs",
-            },
-        }
+        payload = _checkpoint_payload(
+            student=student,
+            cfg=cfg,
+            args=args,
+            epoch=epoch + 1,
+            optimizer_steps=step,
+            metrics=metrics,
+            epoch_complete=True,
+        )
         epoch_path = lineage / f"v5_v3_distill_epoch{epoch + 1:02d}.pt.gz"
         save_checkpoint(payload, epoch_path)
         if metrics["loss"] < best_loss:
@@ -333,6 +393,8 @@ def main() -> None:
     parser.add_argument("--afterstates", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--lineage-dir", type=Path)
+    parser.add_argument("--diagnostic-dir", type=Path)
+    parser.add_argument("--diagnostic-checkpoint-minutes", type=float, default=0.0)
     parser.add_argument("--student-config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--compile-mode", choices=("default", "max-autotune"))
