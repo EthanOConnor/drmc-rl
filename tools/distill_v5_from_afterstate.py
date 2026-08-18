@@ -180,6 +180,9 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     if candidate_max != 128:
         raise ValueError(f"corpus contract requires 128 candidate slots, got {candidate_max}")
     teacher, teacher_condition = _load_teacher(args.teacher, args.device)
+    if args.compile_mode:
+        student.compile(mode=args.compile_mode, dynamic=True)
+        teacher.compile(mode=args.compile_mode, dynamic=True)
     paths = _source_paths(args.dataset, args.afterstates, args.max_shards)
     statistics = _fit_training_statistics(paths)
 
@@ -332,6 +335,7 @@ def main() -> None:
     parser.add_argument("--lineage-dir", type=Path)
     parser.add_argument("--student-config", type=Path, default=DEFAULT_CONFIG)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--compile-mode", choices=("default", "max-autotune"))
     parser.add_argument("--epochs", type=int, default=6)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
