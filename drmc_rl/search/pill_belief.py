@@ -46,6 +46,15 @@ def pill_id_to_canonical_pair(pill_id: int) -> tuple[int, int]:
     return _RAW_TO_CANONICAL[value // 3], _RAW_TO_CANONICAL[value % 3]
 
 
+def pill_id_to_raw_pair(pill_id: int) -> tuple[int, int]:
+    """Return the native/raw NES ordered colors for a reserve pill id."""
+
+    value = int(pill_id)
+    if not 0 <= value < PILL_COMBINATIONS:
+        raise ValueError(f"pill id must be in [0,{PILL_COMBINATIONS - 1}]")
+    return value // 3, value % 3
+
+
 def reserve_for_seed(seed0: int, seed1: int) -> np.ndarray:
     """Generate the retail rev0 reserve for one two-byte RNG seed."""
 
@@ -323,6 +332,7 @@ __all__ = [
     "canonical_pair_to_pill_id",
     "initial_board_table",
     "pill_id_to_canonical_pair",
+    "pill_id_to_raw_pair",
     "reserve_for_seed",
     "reserve_table",
 ]
