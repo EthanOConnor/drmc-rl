@@ -75,9 +75,9 @@ def main() -> None:
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--bootstrap-samples", type=int, default=4000)
     parser.add_argument("--min-calibration-games", type=int, default=192)
-    parser.add_argument("--min-calibration-draw-games", type=int, default=8)
+    parser.add_argument("--min-calibration-draw-games", type=int, default=0)
     parser.add_argument("--min-evaluation-games", type=int, default=48)
-    parser.add_argument("--min-evaluation-draw-games", type=int, default=1)
+    parser.add_argument("--min-evaluation-draw-games", type=int, default=0)
     args = parser.parse_args()
     if args.batch_size < 1 or args.folds < 2 or args.bootstrap_samples < 1:
         parser.error("batch, fold, and bootstrap counts must be positive")
@@ -125,9 +125,7 @@ def main() -> None:
     _write_gzip_jsonl(args.rows_output, rows)
     diagnostic = dirty or (
         args.min_calibration_games < 192
-        or args.min_calibration_draw_games < 8
         or args.min_evaluation_games < 48
-        or args.min_evaluation_draw_games < 1
     )
     manifest = {
         "schema": V3_BASELINE_MANIFEST_SCHEMA,

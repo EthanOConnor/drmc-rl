@@ -57,6 +57,24 @@ def test_v3_baseline_fits_on_disjoint_games_and_normalizes_wdl() -> None:
     assert all(sum(row["baseline_wdl"]) == pytest.approx(1.0) for row in rows)
 
 
+def test_v3_baseline_does_not_require_draw_games() -> None:
+    calibration = _rows("cal", 20, set())
+    evaluation = _rows("eval", 8, set())
+    artifact, rows = build_v3_baseline(
+        calibration,
+        evaluation,
+        seed=7,
+        folds=4,
+        bootstrap_samples=80,
+        min_calibration_games=20,
+        min_evaluation_games=8,
+    )
+    assert artifact["calibration_draw_games"] == 0
+    assert artifact["evaluation_draw_games"] == 0
+    assert len(rows) == 8
+    assert all(sum(row["baseline_wdl"]) == pytest.approx(1.0) for row in rows)
+
+
 def test_v3_baseline_rejects_game_leakage() -> None:
     calibration = _rows("same", 8, {0, 4})
     with pytest.raises(ValueError, match="leakage"):

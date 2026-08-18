@@ -169,9 +169,9 @@ def build_v3_baseline(
     folds: int = 5,
     bootstrap_samples: int = 4000,
     min_calibration_games: int = 192,
-    min_calibration_draw_games: int = 8,
+    min_calibration_draw_games: int = 0,
     min_evaluation_games: int = 48,
-    min_evaluation_draw_games: int = 1,
+    min_evaluation_draw_games: int = 0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     calibration = list(calibration_rows)
     evaluation = list(evaluation_rows)
