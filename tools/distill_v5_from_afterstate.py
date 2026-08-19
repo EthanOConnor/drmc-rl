@@ -112,9 +112,11 @@ def _checkpoint_payload(
     optimizer_steps: int,
     metrics: dict[str, float],
     epoch_complete: bool,
+    optimizer=None,
+    scheduler=None,
 ) -> dict[str, Any]:
     state_dict = student.state_dict()
-    return {
+    payload = {
         "schema": "drmc-v5-v3-distill-v1",
         "cfg": cfg,
         "state_dict": state_dict,
@@ -134,6 +136,11 @@ def _checkpoint_payload(
             "aux_context": "zero-v1-vs",
         },
     }
+    if optimizer is not None:
+        payload["optimizer_state_dict"] = optimizer.state_dict()
+    if scheduler is not None:
+        payload["scheduler_state_dict"] = scheduler.state_dict()
+    return payload
 
 
 def _evaluate(
@@ -212,6 +219,22 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("student config must select candidate_architecture=g5")
     if candidate_max != 128:
         raise ValueError(f"corpus contract requires 128 candidate slots, got {candidate_max}")
+    resume_payload = None
+    resume_step = 0
+    resume_start_epoch = 0
+    if args.resume is not None:
+        resume_payload = load_checkpoint(args.resume, map_location="cpu")
+        if resume_payload.get("schema") != "drmc-v5-v3-distill-v1":
+            raise ValueError(f"unsupported resume schema: {resume_payload.get('schema')!r}")
+        resume_cfg = resume_payload.get("cfg") or {}
+        if resume_cfg != cfg:
+            raise ValueError("resume checkpoint configuration does not match student config")
+        student.load_state_dict(resume_payload["state_dict"], strict=True)
+        resume_distillation = resume_payload.get("distillation") or {}
+        resume_step = int(resume_distillation.get("optimizer_steps", 0))
+        resume_epoch = int(resume_distillation.get("epoch", 0))
+        resume_complete = bool(resume_distillation.get("epoch_complete", False))
+        resume_start_epoch = resume_epoch if resume_complete else max(resume_epoch - 1, 0)
     teacher, teacher_condition = _load_teacher(args.teacher, args.device)
     if args.compile_mode:
         student.compile(mode=args.compile_mode, dynamic=True)
@@ -226,6 +249,29 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=max(int(args.epochs), 1), eta_min=float(args.lr) * 0.05
     )
+    if resume_payload is not None:
+        optimizer_state = resume_payload.get("optimizer_state_dict")
+        scheduler_state = resume_payload.get("scheduler_state_dict")
+        if optimizer_state is not None:
+            optimizer.load_state_dict(optimizer_state)
+        if scheduler_state is not None:
+            scheduler.load_state_dict(scheduler_state)
+        else:
+            # Checkpoints written before resumable optimizer snapshots preserve the
+            # model and exact data cursor but not AdamW moments. Restore the epoch LR.
+            scheduler.step(resume_start_epoch)
+        print(
+            json.dumps(
+                {
+                    "resume": str(args.resume),
+                    "optimizer_steps": resume_step,
+                    "start_epoch_index": resume_start_epoch,
+                    "optimizer_state_restored": optimizer_state is not None,
+                    "scheduler_state_restored": scheduler_state is not None,
+                }
+            ),
+            flush=True,
+        )
     use_bf16 = str(args.device).startswith("cuda") and torch.cuda.is_bf16_supported()
 
     def autocast():
@@ -266,6 +312,9 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                 batch_rows = rows[start : start + int(args.batch_size)]
                 if len(batch_rows) < 2:
                     continue
+                step += 1
+                if step <= resume_step:
+                    continue
                 teacher_np = make_batch(shard, batch_rows, teacher_condition)
                 teacher_batch = _tensor_batch(teacher_np, args.device)
                 student_batch = _student_batch(
@@ -303,7 +352,6 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(student.parameters(), float(args.max_grad_norm))
                 optimizer.step()
-                step += 1
                 if step % int(args.log_every) == 0:
                     elapsed = max(time.perf_counter() - started, 1e-9)
                     print(
@@ -331,6 +379,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                         optimizer_steps=step,
                         metrics=diagnostic_metrics,
                         epoch_complete=False,
+                        optimizer=optimizer,
+                        scheduler=scheduler,
                     )
                     diagnostic_path = diagnostic_dir / (
                         f"v5_v3_distill_epoch{epoch + 1:02d}_step{step:08d}.pt.gz"
@@ -348,6 +398,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
                         flush=True,
                     )
                     last_diagnostic = time.perf_counter()
+        if epoch < resume_start_epoch:
+            continue
         scheduler.step()
         metrics = _evaluate(
             student,
@@ -370,6 +422,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             optimizer_steps=step,
             metrics=metrics,
             epoch_complete=True,
+            optimizer=optimizer,
+            scheduler=scheduler,
         )
         epoch_path = lineage / f"v5_v3_distill_epoch{epoch + 1:02d}.pt.gz"
         save_checkpoint(payload, epoch_path)
@@ -393,6 +447,7 @@ def main() -> None:
     parser.add_argument("--afterstates", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--lineage-dir", type=Path)
+    parser.add_argument("--resume", type=Path)
     parser.add_argument("--diagnostic-dir", type=Path)
     parser.add_argument("--diagnostic-checkpoint-minutes", type=float, default=0.0)
     parser.add_argument("--student-config", type=Path, default=DEFAULT_CONFIG)
