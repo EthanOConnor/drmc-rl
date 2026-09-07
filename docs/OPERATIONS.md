@@ -38,9 +38,14 @@ not use `--ignore-gates` for a scientific run.
 
 ## Environment standup
 
+Use the pinned Python 3.14.7 runtime and uv >=0.12.10. Training selects `rl`;
+portable packaging selects `inference` instead. Do not use `--all-extras`, which
+would request incompatible CPU-packaging and CUDA-training variants. See README
+for the isolated packaging command and the PyTorch 2.14 continuation caveat.
+
 ```bash
 git submodule update --init --recursive
-uv sync --all-extras
+uv sync --locked --extra rl --extra viz --extra eval --extra corpus
 uv run python -m tools.build_drmario_pool
 uv run python -m drmc_rl.training.run --dry_run true
 uv run pytest -q

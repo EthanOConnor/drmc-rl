@@ -11,6 +11,7 @@ that accelerates the placement reachability planner.
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -33,7 +34,10 @@ def _compile_command(src: Path, out: Path) -> list[str]:
     if sys.platform.startswith("linux"):
         return ["clang", *cflags, "-shared", "-fPIC", "-o", str(out), str(src)]
     if sys.platform == "win32":
-        return ["clang", *cflags, "-shared", "-o", str(out), str(src)]
+        definition = out.with_suffix(".def")
+        exports = re.findall(r"^int\s+(drm_\w+)\s*\(", src.read_text(), re.MULTILINE)
+        definition.write_text("EXPORTS\n" + "\n".join(exports) + "\n")
+        return ["clang", *cflags, "-shared", f"-Wl,/DEF:{definition}", "-o", str(out), str(src)]
     raise RuntimeError(f"Unsupported platform: {sys.platform!r}")
 
 
@@ -65,4 +69,3 @@ def main(argv: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-
