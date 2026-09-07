@@ -87,7 +87,7 @@ struct Instance {
 
 struct Workspace {
     // phase 1
-    u16 radj[N_POSES][20];
+    u16 radj[N_POSES][64];
     u8  radj_n[N_POSES];
     u8  wanted[N_POSES];
     u16 wanted_ids[N_POSES];
@@ -298,7 +298,8 @@ __device__ void v4_step(const FitMask* fm, int thr, V4State* s, int act) {
         s->hv += 1;
         if (s->hv >= HOR_ACCEL_SPEED) { s->hv = HOR_RELOAD; allow_move = 1; }
     }
-    if (allow_move && dir != HOLD_NEUTRAL) {
+    if (allow_move && dir != HOLD_NEUTRAL &&
+        (hold_right ? s->x < 6 + (s->rot & 1) : s->x > 0)) {
         const int nx = s->x + (hold_right ? 1 : -1);
         if (fits_masked(fm, nx, s->y, s->rot)) s->x = nx;
         else s->hv = HOR_BLOCKED;
@@ -517,8 +518,10 @@ __device__ int v4_greedy_tuck2(
 }
 
 // drm_reach_full.c:2187-2213
+// Up to 2 * 3 * (1 + 4) = 30 successors. Reverse storage
+// has 64 slots: at most 54 incoming edges including duplicate variants.
 __device__ int v4_composite_succ(
-    const FitMask* fm, int x, int y, int rot, u16 succ[16]
+    const FitMask* fm, int x, int y, int rot, u16 succ[32]
 ) {
     int n = 0;
     for (int dy = 0; dy <= 1; ++dy) {
@@ -671,13 +674,13 @@ __device__ int run_phase12(const Instance* inst, Workspace* ws, Phase12Shared* s
             const int y = (pose >> 3) & 15;
             const int rot = (pose >> 7) & 3;
             if (!fits_masked(&sh->fm, x, y, rot)) continue;
-            u16 succ[16];
+            u16 succ[32];
             const int ns = v4_composite_succ(&sh->fm, x, y, rot, succ);
             for (int i = 0; i < ns; ++i) {
                 const u16 s2 = succ[i];
                 if (s2 == (u16)pose) continue;
                 u8 rn = ws->radj_n[s2];
-                if (rn < 20) { ws->radj[s2][rn] = (u16)pose; ws->radj_n[s2] = rn + 1; }
+                if (rn < 64) { ws->radj[s2][rn] = (u16)pose; ws->radj_n[s2] = rn + 1; }
             }
         }
     }
@@ -817,7 +820,7 @@ __device__ void expand_key(
     const FitMask* fm, Workspace* ws, Phase3Shared* s3,
     u32 key, const u8* acts, int n_act, int p_cur, int cur_buf, u16 next_depth,
     u64 thr_keep_lo, u64 thr_keep_hi, int thr, int two_words,
-    u16* out_costs, u32* parents
+    u16* out_costs, u32* parents, const u16* exact_costs = nullptr
 ) {
     // decode key -> (y, rot, micro, rh); hv/hd from micro (hv dead when hd==N)
     const int y = (int)(key % 16u);
@@ -875,6 +878,9 @@ __device__ void expand_key(
                 // need a script. Exactness guarantees the first lock at such a
                 // pose happens at depth == its cost.
                 if (ws->script_len[pose] != 0xFFFFu) continue;
+                // A longer path cannot certify the known optimal cost. Leave
+                // it unresolved so the host takes the exact CPU fallback.
+                if (next_depth != exact_costs[pose]) continue;
                 const u32 old = atomicOr(&s3->resolved_mask[pose >> 5], 1u << (pose & 31));
                 if (old & (1u << (pose & 31))) continue;
                 int src_sc;
@@ -933,8 +939,8 @@ __device__ void expand_key(
         const u8 g_xm = ygs[gi].xm;
         const int g_sc0 = ygs[gi].sc_zero;
 
-        // X sub-groups (moved / blocked), v3 :1788-1807
-        struct XG { u8 xm; i8 dx; u8 hv; } xgs[2];
+        // X sub-groups: moved / blocked by cells / at bottle boundary.
+        struct XG { u8 xm; i8 dx; u8 hv; } xgs[3];
         int n_xg = 0;
         if (!allow_move || dir == HOLD_NEUTRAL) {
             xgs[0].xm = g_xm; xgs[0].dx = 0; xgs[0].hv = (u8)(hv & 0x0F);
@@ -943,14 +949,18 @@ __device__ void expand_key(
             const u8 fits_row = fm->m[vparity][gy];
             const u8 ok = (u8)(fits_row >> 1);
             const u8 mv = (u8)(g_xm & ok);
-            const u8 bl = (u8)(g_xm & (u8)(~ok));
+            const u8 wall = (u8)(g_xm & (1u << (6 + vparity)));
+            const u8 bl = (u8)(g_xm & (u8)(~(ok | wall)));
+            if (wall) { xgs[n_xg].xm = wall; xgs[n_xg].dx = 0; xgs[n_xg].hv = (u8)(hv & 0x0F); n_xg++; }
             if (mv) { xgs[n_xg].xm = mv; xgs[n_xg].dx = 1; xgs[n_xg].hv = (u8)(hv & 0x0F); n_xg++; }
             if (bl) { xgs[n_xg].xm = bl; xgs[n_xg].dx = 0; xgs[n_xg].hv = (u8)HOR_BLOCKED; n_xg++; }
         } else {
             const u8 fits_row = fm->m[vparity][gy];
             const u8 ok = (u8)((fits_row << 1) & 0xFFu);
             const u8 mv = (u8)(g_xm & ok);
-            const u8 bl = (u8)(g_xm & (u8)(~ok));
+            const u8 wall = (u8)(g_xm & 1u);
+            const u8 bl = (u8)(g_xm & (u8)(~(ok | wall)));
+            if (wall) { xgs[n_xg].xm = wall; xgs[n_xg].dx = 0; xgs[n_xg].hv = (u8)(hv & 0x0F); n_xg++; }
             if (mv) { xgs[n_xg].xm = mv; xgs[n_xg].dx = -1; xgs[n_xg].hv = (u8)(hv & 0x0F); n_xg++; }
             if (bl) { xgs[n_xg].xm = bl; xgs[n_xg].dx = 0; xgs[n_xg].hv = (u8)HOR_BLOCKED; n_xg++; }
         }
@@ -1628,7 +1638,7 @@ __device__ void run_rebfs_scripts(
             expand_key<true>(&sh->fm, ws, s3, ws->frontier[cur_buf][t], acts, n_act,
                              p_cur, cur_buf, next_depth,
                              thr_keep_lo, thr_keep_hi, thr, 0,
-                             nullptr, parents);
+                             nullptr, parents, costs);
         }
         __syncthreads();
 
@@ -1687,13 +1697,15 @@ __device__ void run_rebfs_scripts(
         u32 entry = ws->term_parent[pose];
         rec[c - 1] = (u8)(entry >> 25);
         u32 id = entry & 0x1FFFFFFu;
-        int ok = 1;
         for (int i = c - 2; i >= 0; --i) {
             entry = parents[id];
             rec[i] = (u8)(entry >> 25);
             id = entry & 0x1FFFFFFu;
         }
-        if (ok) ws->script_len[pose] = (u16)c;
+        const u32 root_m = v2_micro((u32)sh->spawn.hd, (u32)sh->spawn.hv);
+        const u32 root_key = (u32)sy + (u32)V3_K_ROT * (u32)(srot & 3)
+                            + (u32)V3_K_M * root_m + (u32)V3_K_RH * (u32)sh->spawn.rh;
+        if (id == state_id(p0, root_key, sx, sc0)) ws->script_len[pose] = (u16)c;
     }
     __syncthreads();
 }

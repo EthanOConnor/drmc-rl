@@ -12,13 +12,13 @@ import copy
 import gzip
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from drmc_rl.teachers.counterfactual_release import RELEASE_SCHEMA, sha256_file
+from drmc_rl.teachers.counterfactual_release import RELEASE_SCHEMA, select_states, sha256_file
 
 
 def _summary(values: Sequence[float]) -> dict[str, float]:
@@ -120,6 +120,7 @@ class ReleaseDataset:
     states: Mapping[str, ReleaseState]
     manifest_paths: tuple[Path, ...]
     release_sha256: tuple[str, ...]
+    stratum_binding: Mapping[str, Any] | None = None
 
     @property
     def chance_model(self) -> str:
@@ -230,6 +231,45 @@ def load_release(manifest_paths: Iterable[str | Path]) -> ReleaseDataset:
     return dataset
 
 
+def bind_source_strata(
+    dataset: ReleaseDataset,
+    source_bank: str | Path,
+    *,
+    fields: Sequence[str] = ("level", "speed", "tactical_stratum"),
+) -> ReleaseDataset:
+    """Recover analysis strata from the exact bank that produced the labels.
+
+    Older full-bank runs did not select by stratum and stored an empty tuple.
+    Reuse their values without rewriting a release or guessing its categories:
+    require the bank hash, every source identity, and original line to agree.
+    """
+    path = Path(source_bank)
+    digest = sha256_file(path)
+    if digest != dataset.settings.get("input_sha256"):
+        raise ValueError("source bank hash differs from the release input")
+    if not fields:
+        raise ValueError("source stratum fields must not be empty")
+    selected = select_states(
+        path, seed=0, shard_index=0, num_shards=1, stratum_fields=fields,
+        per_stratum=None, max_states=None,
+    )
+    sources = {item.identity: item for item in selected}
+    states = {}
+    for source_id, state in dataset.states.items():
+        source = sources.get(source_id)
+        if source is None:
+            raise ValueError(f"source bank omits release state {source_id}")
+        if state.row["metadata"].get("source_line") != source.source_line:
+            raise ValueError(f"source line differs for {source_id}")
+        if state.stratum and state.stratum != source.stratum:
+            raise ValueError(f"source stratum differs for {source_id}")
+        states[source_id] = replace(state, stratum=source.stratum)
+    return replace(dataset, states=states, stratum_binding={
+        "source_bank_sha256": digest, "fields": list(fields),
+        "verified_states": len(states),
+    })
+
+
 def _state_comparison(
     reference: ReleaseState, candidate: ReleaseState
 ) -> dict[str, float | bool]:
@@ -279,6 +319,8 @@ def _state_comparison(
 def _validate_comparison_provenance(
     reference: ReleaseDataset, candidate: ReleaseDataset
 ) -> None:
+    if reference.stratum_binding != candidate.stratum_binding:
+        raise ValueError("release source stratum bindings differ")
     if reference.chance_model != candidate.chance_model:
         raise ValueError(
             "release chance models differ: "
@@ -352,6 +394,7 @@ def compare_releases(
     return {
         "schema": "drmc-counterfactual-release-comparison-v2",
         "settings_compatible": True,
+        "stratum_binding": reference.stratum_binding,
         "reference": {
             "release_sha256": list(reference.release_sha256),
             "search": reference.settings.get("search"),
@@ -404,6 +447,7 @@ def compare_beam_sweep(
 __all__ = [
     "ReleaseDataset",
     "ReleaseState",
+    "bind_source_strata",
     "compare_beam_sweep",
     "compare_releases",
     "load_release",

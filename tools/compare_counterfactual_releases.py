@@ -6,7 +6,11 @@ import argparse
 import json
 from pathlib import Path
 
-from drmc_rl.teachers.release_analysis import compare_beam_sweep, load_release
+from drmc_rl.teachers.release_analysis import (
+    bind_source_strata,
+    compare_beam_sweep,
+    load_release,
+)
 
 
 def _parse_release(value: str) -> tuple[int, list[Path]]:
@@ -32,14 +36,30 @@ def main() -> None:
         help="BEAM=manifest[,manifest...] (repeat for each beam)",
     )
     parser.add_argument("--reference-beam", type=int)
+    parser.add_argument(
+        "--source-bank", type=Path,
+        help="Recover strata from the hash-verified original source bank",
+    )
+    parser.add_argument(
+        "--stratum", action="append",
+        help="Source field to group by (default: level, speed, tactical_stratum)",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
+    if args.stratum and args.source_bank is None:
+        parser.error("--stratum requires --source-bank")
     releases = {}
     for raw in args.release:
         beam, paths = _parse_release(raw)
         if beam in releases:
             parser.error(f"duplicate beam {beam}")
-        releases[beam] = load_release(paths)
+        dataset = load_release(paths)
+        if args.source_bank is not None:
+            dataset = bind_source_strata(
+                dataset, args.source_bank,
+                fields=args.stratum or ("level", "speed", "tactical_stratum"),
+            )
+        releases[beam] = dataset
     result = compare_beam_sweep(releases, reference_beam=args.reference_beam)
     payload = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output is not None:

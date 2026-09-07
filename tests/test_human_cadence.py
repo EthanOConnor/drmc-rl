@@ -1,6 +1,8 @@
 import numpy as np
+import pytest
 
-from drmc_rl.human.cadence import add_thinking_delay, hold_soft_drop_suffix
+from drmc_rl.human.cadence import add_thinking_delay, hold_soft_drop_suffix, shape_human_movement
+from drmc_rl.execution.profile import script_metrics
 from drmc_rl.planning.fast_reach import FrameState, HoldDir, Rotation, simulate_frame
 
 
@@ -101,3 +103,83 @@ def test_human_soft_drop_does_not_erase_late_weaving_input():
     assert changed
     assert held[:9].tolist() == base[:9]
     assert held[9:].tolist() == [3] * (len(held) - 9)
+
+
+def test_held_movement_matches_requested_duration_without_a_button_burst():
+    cols = np.zeros(8, dtype=np.uint16)
+    base = [12, 0, 12, 0, 12] + [3] * 32
+    shaped, info = shape_human_movement(cols, _spawn(), base,
+        speed_threshold=13, target=(6, 15, 0), requested_frames=60,
+        reaction_frames=5, edge_interval=2)
+    assert info["shaped"]
+    assert abs(len(shaped) - 60) <= 1
+    state = _spawn()
+    for action in shaped:
+        assert not state.locked
+        state = simulate_frame(cols, state, int(action), speed_threshold=13)
+    assert state.locked and (state.x, state.y, state.rot) == (6, 15, 0)
+    from drmc_rl.human.backend import ACTION_TO_BUTTONS
+    m = script_metrics([ACTION_TO_BUTTONS[int(a)] for a in shaped])
+    assert m.total_edges <= 5
+    assert m.min_inter_edge_frames >= 2
+
+
+def test_tuck_keeps_exact_planner_route_when_simple_motor_paths_fail():
+    cols = np.zeros(8, dtype=np.uint16)
+    cols[2] = 1 << 5
+    base = [3] * 16 + [2, 6] + [3] * 32
+    state = _spawn()
+    for i, action in enumerate(base, 1):
+        state = simulate_frame(cols, state, action, speed_threshold=13)
+        if state.locked:
+            base = base[:i]
+            break
+    assert state.locked and (state.x, state.y, state.rot) == (2, 15, 1)
+    shaped, info = shape_human_movement(cols, _spawn(), base,
+        speed_threshold=13, target=(2, 15, 1), requested_frames=len(base),
+        reaction_frames=0, edge_interval=2)
+    assert not info["shaped"]
+    assert info["retimed"]
+    state = _spawn()
+    for action in shaped:
+        assert not state.locked
+        state = simulate_frame(cols, state, int(action), speed_threshold=13)
+    assert state.locked and (state.x, state.y, state.rot) == (2, 15, 1)
+
+
+def test_pace_changes_only_lock_time_and_never_reverse():
+    cols = np.zeros(8, dtype=np.uint16)
+    base = [12, 0, 12, 0, 12] + [3] * 32
+    durations = []
+    for requested in range(35, 101):
+        shaped, info = shape_human_movement(cols, _spawn(), base,
+            speed_threshold=3, target=(6, 15, 0), requested_frames=requested,
+            reaction_frames=4, edge_interval=3)
+        assert info["retimed"]
+        durations.append(len(shaped))
+    assert durations == sorted(durations)
+
+
+@pytest.mark.parametrize("threshold", [0, 1, 3, 13, 53])
+@pytest.mark.parametrize("parity", [0, 1])
+def test_timed_drop_formula_matches_exact_frame_replay(threshold, parity):
+    from dataclasses import replace
+    from drmc_rl.human.cadence import _timed_drop
+
+    cols = np.zeros(8, dtype=np.uint16)
+    for y in (0, 7, 14):
+        for counter in (0, threshold, threshold + 2):
+            spawn = replace(_spawn(), y=y, speed_counter=counter,
+                            frame_parity=parity, rot_hold=Rotation.CW)
+            durations = []
+            for requested in (0, 30, 90, 300):
+                script = _timed_drop(cols, spawn, [], speed_threshold=threshold,
+                                     target=(3, 15, 0), requested_frames=requested)
+                assert script is not None
+                state = spawn
+                for action in script:
+                    assert not state.locked
+                    state = simulate_frame(cols, state, int(action), speed_threshold=threshold)
+                assert state.locked and (state.x, state.y, state.rot) == (3, 15, 0)
+                durations.append(len(script))
+            assert durations == sorted(durations)

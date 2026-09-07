@@ -9,11 +9,12 @@ falling-pill per-frame state for every pill spawn.
 This module wraps a small C helper (``reach_native/drm_reach_full.c``) that
 implements the same BFS in native code and returns, for every locked base pose
 ``(x, y, rot)``:
-  - the minimal frame cost (tau),
+  - the minimal frame cost (tau) for unrestricted planning,
   - a compact controller script (per-frame action indices) achieving that pose.
 
-The planner treats this backend as an optional accelerator: if the shared
-library is missing, callers should fall back to the Python reference.
+Named motor constraints return complete feasibility with profile-valid witness
+durations (not necessarily global minima). They require the paced native entry
+point and must never fall back to unrestricted reachability.
 """
 
 import ctypes as C
@@ -196,6 +197,10 @@ class NativeReachabilityRunner:
         ]
         fn.restype = C.c_int
         self._fn = fn
+        self._paced_fn = getattr(self._lib, "drm_reach_bfs_paced", None)
+        if self._paced_fn is not None:
+            self._paced_fn.argtypes = fn.argtypes[:11] + [C.c_int] * 4 + fn.argtypes[11:]
+            self._paced_fn.restype = C.c_int
 
         # Optional stats hook (may be missing in older builds).
         self._stats_fn = None
@@ -243,6 +248,10 @@ class NativeReachabilityRunner:
         spawn: FrameState,
         *,
         speed_threshold: int,
+        reaction_frames: int = 0,
+        edge_interval: int = 0,
+        motion_interval: int = 0,
+        max_buttons: int = 3,
     ) -> NativeReachability:
         cols = np.asarray(cols_u16, dtype=np.uint16).reshape(-1)
         if cols.shape[0] != GRID_W:
@@ -253,8 +262,13 @@ class NativeReachabilityRunner:
         parity = int(spawn.frame_parity) & 1
         rot_hold = int(getattr(spawn.rot_hold, "value", spawn.rot_hold))  # enum or int
 
+        paced = bool(reaction_frames or edge_interval or motion_interval or max_buttons < 3)
+        fn = self._paced_fn if paced else self._fn
+        if fn is None:
+            raise NativeReachError("native planner lacks paced reachability; rebuild the backend")
+        profile_args = [reaction_frames, edge_interval, motion_interval, max_buttons] if paced else []
         rc = int(
-            self._fn(
+            fn(
                 cols.ctypes.data_as(C.POINTER(C.c_uint16)),
                 int(spawn.x),
                 int(spawn.y),
@@ -266,6 +280,7 @@ class NativeReachabilityRunner:
                 int(rot_hold),
                 int(speed_threshold),
                 int(self._max_frames),
+                *profile_args,
                 self._out_costs.ctypes.data_as(C.POINTER(C.c_uint16)),
                 self._out_offsets.ctypes.data_as(C.POINTER(C.c_uint16)),
                 self._out_lengths.ctypes.data_as(C.POINTER(C.c_uint16)),

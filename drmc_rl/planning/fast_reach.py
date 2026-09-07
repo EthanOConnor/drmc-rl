@@ -80,10 +80,10 @@ SPEED_COUNTER_TABLE: Tuple[int, ...] = (
     0x0C, 0x0B, 0x0A, 0x09, 0x09, 0x08, 0x08, 0x07,
     0x07, 0x06, 0x06, 0x05, 0x05, 0x05, 0x05, 0x05,
     0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x05, 0x04,
-    0x04, 0x04, 0x04, 0x03, 0x03, 0x03, 0x03, 0x03,
-    0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x01, 0x01,
+    0x04, 0x04, 0x04, 0x04, 0x03, 0x03, 0x03, 0x03,
+    0x03, 0x02, 0x02, 0x02, 0x02, 0x02, 0x01, 0x01,
     0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
-    0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00,
+    0x00,
 )
 
 SPEED_COUNTER_MAX = len(SPEED_COUNTER_TABLE) - 1
@@ -376,12 +376,12 @@ def _step_state(
 
     if allow_move:
         # ROM order: right check then left check.
-        if hold_right:
+        if hold_right and x < 6 + (rot & 1):
             if _fits(cols_u16, x + 1, y, rot):
                 x += 1
             else:
                 hor_velocity = HOR_BLOCKED
-        if hold_left:
+        if hold_left and x > 0:
             if _fits(cols_u16, x - 1, y, rot):
                 x -= 1
             else:
@@ -569,12 +569,12 @@ def build_reachability(
 
         if allow_move:
             # ROM order: right check then left check.
-            if hold_right:
+            if hold_right and x < 6 + (rot & 1):
                 if fits(x + 1, y, rot):
                     x += 1
                 else:
                     hv = HOR_BLOCKED
-            if hold_left:
+            if hold_left and x > 0:
                 if fits(x - 1, y, rot):
                     x -= 1
                 else:

@@ -118,15 +118,35 @@ population mixture. Labels include:
 `drmc_rl.teachers.counterfactual` enforces full legal-action coverage. A
 candidate omitted by a beam is an error, not an implicit low-value label.
 
-Production counterfactual search uses the hash-verified frozen Strong League
-continuation ensemble in `drmc_rl.search.strong_league`. The ensemble manifest
-fixes checkpoint identities and weights; human-corpus checkpoints are not
-members. The human corpus supplies source states and later consumes the labels,
-so competitive continuation values do not become circular human imitation.
+The frozen comparison teacher uses the hash-verified Strong League ensemble in
+`drmc_rl.search.strong_league`. Its labels failed the held-out V3 comparison and
+are not eligible for training. The diagnostic adapter in
+`drmc_rl.search.public_policy` instead uses the deployed outcome-trained public
+core's policy and value, with an independently fitted W/D/L link. This is still
+an offline teacher with privileged native transitions. No diagnostic opens a
+quality or product gate.
+
+The terminal-rollout pilot tests a separate, outcome-defined teacher under the
+installed public core. Every root action continues through the asynchronous
+pair game until natural termination. Distinct complete reserves are enumerated
+with their exact public-posterior mass, and every newly revealed preview is
+overridden before the actor observes it. No critic or horizon-as-draw fallback
+supplies missing outcomes. This bounded experiment is motivated by the failed
+shallow values and changed historical trajectories; it does not replace the
+existing gate or authorize distillation from unvalidated labels.
+
+Decision-trained critics are evaluated only at actionable boundaries. Search
+finishes forced deterministic and reserve-reveal events after the nominal
+depth expires, then evaluates an acting side and reverses calibrated W/L if
+that side is the opponent. It does not choose an additional player action after
+depth expiration. The versioned leaf contract is
+`acting-decision-after-forced-events-v1`; budget-exhausted searches are rejected.
 
 The native search ABI stops immediately before a private reserve pill becomes
-public. Search then integrates the nine ordered three-color preview outcomes at
-probability `1/9` each before causal advancement. The unrevealed reserve value
+public. `PillReserveBelief` conditions the declared reset-seed prior on the
+public initial bottle and observed pill history; search integrates every
+posterior-supported reveal before causal advancement. Independent `1/9` mass
+is retained only in the historical mechanics pilot. The unrevealed reserve value
 is never presented to a continuation network. W/D/L is produced through a
 positive-slope Davidson link calibrated on game-group-held-out natural Strong
 League continuations; horizon-truncated games are excluded rather than labeled
@@ -141,6 +161,50 @@ and a distributional value. It is initialized from:
 1. the exact V3 teacher;
 2. the strongest frozen G4 lineage for long-horizon structure;
 3. strict joint-event search targets as they become available.
+
+The frozen corpus bootstrap uses a 72-wide zero auxiliary vector. Its explicit
+`zero_v1_vs` checkpoint contract preserves that width in outcome PPO, frozen
+opponents, and evaluation without reading pending attacks or other legacy
+context. Natural full-game outcome learning may improve this public bootstrap
+while search-quality evidence remains staged; failed search labels never enter
+that run. Such a checkpoint still requires paired arena evidence before use and
+does not establish calibrated candidate regret or human ratings.
+
+Semantic bottle planes always retain capsule bonds. The frozen VS actors
+(including the public outcome bootstrap) use the historical encoding that
+hides horizontal bonds on each side's same-color pill turns. Apply that lossy
+encoding only at their network boundary, using both public falling/last-pill
+colors. V3 exact afterstates must decode the native board bytes, never those
+masked actor tensors. The live bridge sends complete semantic bottles and the
+opponent's public pill colors so Maximum receives its training representation.
+
+The current V3 diagnostic trainer selects among non-overlapping, ordered
+log-regret bands. Their width is twice the former envelope tolerance, evaluated
+at the fixed corpus mean rating. Live play holds the human/style conditioning
+at that same population reference; requested rating changes regret. Named pace
+independently sets mechanical limits and consequently also affects match strength.
+This prevents style and overlapping windows from reversing a strength change
+on a fixed position at a common regret quantile. Coaching retains the requested
+human condition. These bootstrap score bands do not certify win-odds regret,
+absolute rating, independently selectable styles, or a complete skill range.
+
+The local trainer applies named motor limits inside native frame reachability,
+before regret or Maximum selects a move. Sloth through Super Human constrain
+reaction, controller-change spacing, actual horizontal/rotation spacing
+(including DAS), and button overlap. Frame Perfect uses unrestricted exact
+reachability. Profile-valid monotone routes accelerate ordinary positions;
+exhaustive constrained search covers all unresolved candidates. There is no
+unrestricted fallback or candidate truncation. Costs for constrained modes are
+realized witness durations, not necessarily globally minimum costs. Independent
+Python replay validates the selected witness and its full mechanical envelope.
+These authored product presets are not corpus-certified ExecutionProfiles;
+Top Humans is a setting name, not a validated percentile. Sustained burst,
+correction, and human-distribution calibration gates remain separate.
+
+Live inference selects an available accelerator and warms its kernels before
+readiness. Metal candidate shapes are padded to bounded buckets; first-use
+shape compilation must not consume a gameplay deadline. Padding changes
+neither legal candidate coverage nor the policy's information scope.
 
 The representation bakeoff compares:
 
@@ -192,6 +256,11 @@ architecture target.
 selection among scripts with different lock time, burst, edge, and complexity
 costs. Profiles used for claims must be signed, versioned corpus artifacts; the
 built-in elite profile is explicitly provisional.
+
+Scripts start after the observed spawn boundary. Pass the already-held
+`initial_buttons` to metrics and validation so carried inputs are not counted
+as fresh presses. Inter-edge intervals measure distinct controller-change
+frames; simultaneous changes are counted by chord and burst metrics.
 
 The human-rate product maximizes competitive value after filtering scripts by
 one profile. It never introduces an intentional strategic mistake.

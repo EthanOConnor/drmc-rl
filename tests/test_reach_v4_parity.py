@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from drmc_rl.envs.backends.drmario_pool import default_library_path
+from drmc_rl.planning.fast_reach import FrameState, HoldDir, Rotation, simulate_frame
 
 GRID_W, GRID_H = 8, 16
 SCRIPT_CAP = 512 * 2048
@@ -114,3 +115,63 @@ def test_v4_matches_oracle_on_fuzzed_boards():
                 f"{bad.size} in-bounds pose costs differ, e.g. pose {bad[0]} "
                 f"oracle={c1[bad[0]]} v4={c4[bad[0]]}"
             )
+
+
+@pytest.mark.parametrize("x,rot,held", [(0, 0, 1), (0, 1, 1), (6, 0, 2), (7, 1, 2)])
+@pytest.mark.parametrize("velocity", [0, 10, 15])
+def test_all_native_variants_and_witnesses_at_bottle_boundaries(x, rot, held, velocity):
+    oracle, v4 = _load()
+    lib = C.CDLL(str(default_library_path()))
+    v2, v3 = lib.drm_reach_bfs_v2, lib.drm_reach_bfs_v3
+    v2.restype, v2.argtypes = oracle.restype, oracle.argtypes
+    v3.restype, v3.argtypes = v4.restype, v4.argtypes
+    cols = np.zeros(8, dtype=np.uint16)
+    # An uneven floor exercises rotations and collision-charged repeats after
+    # leaving the wall, while the root is clear in both orientations.
+    cols[[1, 3, 5]] = (1 << 13) | (1 << 14) | (1 << 15)
+    root = (x, 5, rot, 2, velocity, held, 0, 0, 5, 256)
+    ptr = lambda a: a.ctypes.data_as(C.POINTER(C.c_uint16))
+    costs = np.full(512, 0xFFFF, dtype=np.uint16)
+    offsets = np.zeros(512, dtype=np.uint16)
+    lengths = np.zeros(512, dtype=np.uint16)
+    scripts = np.zeros(SCRIPT_CAP, dtype=np.uint8)
+    used = C.c_int()
+    args = (ptr(cols), *root, ptr(costs), ptr(offsets), ptr(lengths),
+            scripts.ctypes.data_as(C.POINTER(C.c_uint8)), SCRIPT_CAP, C.byref(used))
+    assert oracle(*args) == 0
+    legal = _in_bounds_mask()
+    for variant in (v2, v3, v4):
+        actual = np.full(512, 0xFFFF, dtype=np.uint16)
+        tail = (None, None, None, 0, None) if variant is v2 else ()
+        assert variant(ptr(cols), *root, ptr(actual), *tail) == 0
+        np.testing.assert_array_equal(actual[legal], costs[legal])
+    for pose in np.flatnonzero(legal & (costs != 0xFFFF)):
+        state = FrameState(x=x, y=5, rot=rot, speed_counter=2,
+            hor_velocity=velocity, hold_dir=HoldDir(held), frame_parity=0,
+            rot_hold=Rotation.NONE)
+        script = scripts[int(offsets[pose]):int(offsets[pose]) + int(lengths[pose])]
+        for elapsed, action in enumerate(script, 1):
+            assert not state.locked
+            state = simulate_frame(cols, state, int(action), speed_threshold=5)
+        assert state.locked and elapsed == costs[pose]
+        assert state.rot * 128 + state.y * 8 + state.x == pose
+
+
+def test_geometric_bounds_keep_the_combined_slide_and_rotation_edge():
+    from tools.test_reach_cuda_parity import load_cpu_debug, regression_cases
+
+    case = regression_cases()[0]
+    debug = load_cpu_debug()
+    wanted = np.zeros(512, dtype=np.uint8)
+    upper = np.zeros(512, dtype=np.uint16)
+    distance = np.zeros((512, 512), dtype=np.uint8)
+    ptr16 = lambda a: a.ctypes.data_as(C.POINTER(C.c_uint16))
+    ptr8 = lambda a: a.ctypes.data_as(C.POINTER(C.c_uint8))
+    assert debug(ptr16(case["cols"]), 3, 0, 3, 52, 4, 1, 1, 2, 17,
+                 ptr8(wanted), ptr16(upper), ptr8(distance), 512) > 0
+    target = list(np.flatnonzero(wanted)).index(272)  # (x=0, y=2, rot=2)
+    assert distance[target, 402] == 1  # (x=2, y=2, rot=3): left + rotation
+    _, v4 = _load()
+    costs = np.full(512, 0xFFFF, dtype=np.uint16)
+    assert v4(ptr16(case["cols"]), 3, 0, 3, 52, 4, 1, 1, 2, 17, 256, ptr16(costs)) == 0
+    assert costs[272] == 4

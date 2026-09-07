@@ -73,6 +73,177 @@ The active G4 and staged G5 recipes are sized for the CUDA training host. Keep:
 Never edit an in-progress config in place. Stop, write a new config/recipe or
 recorded override, and resume with a new run identity.
 
+### Local trainer diagnostics
+
+`trainer-terminal-quality-pilot` forces every legal root move and measures
+natural results with both sides subsequently controlled by the installed public
+core. Supply `trainer_control_states`, `competitive_checkpoint`,
+`trainer_control_checkpoint` (the V3 reference), and
+`trainer_terminal_quality_report`. Append `-- --states 24 --batch-size 32
+--device cuda`. It selects independent games across level/speed cells and
+enumerates complete reserve hypotheses from the public posterior. Missing
+terminal results are reported as incomplete, never as draws or critic values.
+The report includes candidate coverage and paired public/V3 choice scores.
+This pilot is a new teacher experiment, not a promotion-quality label release.
+
+`trainer-rollout-consistency-audit` measures whether an older source bank still
+describes the corrected continuation adapter and native engine. Supply
+`trainer_control_states`, `counterfactual_mixture_manifest`,
+`counterfactual_wdl_calibration`, and `trainer_rollout_consistency_report`.
+Append `-- --states 96 --batch-size 16 --device cuda`. The audit selects one
+position per game across tactical cells, forces the recorded root move once,
+then continues both sides with the frozen ensemble argmax. It reports changed
+initial choices, natural-outcome agreement, and incomplete continuations
+separately. Exact hidden reserves are replay capabilities here; these results
+must never be promoted as public counterfactual probabilities or training labels.
+
+`trainer-search-input-audit` counts supported critic boundaries under frozen
+search priors. Supply `trainer_control_states`,
+`counterfactual_mixture_manifest`, `counterfactual_wdl_calibration`, and
+`trainer_search_input_report`. Counts are unweighted search visits; an inactive
+root is valid only when the evaluator uses the acting opponent's perspective.
+
+`trainer-search-prediction-audit` scores exact held-out observed actions before
+spending compute on every alternative. In addition to those source/mixture
+paths, supply `trainer_search_bootstrap`, `trainer_search_bootstrap_manifest`,
+`trainer_search_reference_release`, and `trainer_search_prediction_report`.
+Its single-action search path has the same continuation values as full root
+enumeration. It is diagnostic and cannot substitute for candidate coverage.
+Append `-- --public-checkpoint PATH --calibration-bank PATH` to screen the
+public core's pre-action value using an independent calibration bank. Append
+`-- --public-checkpoint PATH --public-search-calibration REPORT` to evaluate
+candidate continuations with that frozen public value link. Both modes preserve
+the whole-game split and keep the failed historical teacher as a reference.
+
+`trainer-control-audit` checks the current regret decoder on a frozen pair-state
+bank. Supply `trainer_control_checkpoint`, `trainer_control_states`, and
+`trainer_control_report`; the default samples two positions in each bank cell
+and evaluates paired quantiles across 800/1200/1600/2000/2400. It saves model
+scores alongside the report. Population style stays fixed while strength
+changes. Zero fixed-state inversions is a decoder check, not evidence that
+neighboring presets are separated in games or match absolute human ratings.
+
+`trainer-baseline` compares frozen checkpoints before more training. Supply
+`trainer_roster`, `trainer_benchmark_db`, `trainer_benchmark_name`,
+`trainer_benchmark_games`, `trainer_benchmark_pairs`, `trainer_benchmark_level`,
+`trainer_benchmark_speed`, `trainer_benchmark_seed`, and
+`trainer_benchmark_device` through `tools.program launch --set`. Run from an
+activated environment so the recipe's `python` resolves correctly. Use a new
+name and database when checkpoint hashes or entrant parameters change.
+On CUDA hosts, append `-- --gpu-planner` after the recipe name to use the
+parity-tested batched reachability solver. CPU reachability remains the default
+for independent comparisons. Report uncertainty over side-swapped seed pairs;
+the two games sharing a seed are not independent samples.
+
+The native tournament uses fastest reachable placements. It measures strategic
+strength, not live human cadence or absolute WHR-C. The public V5 entrant must
+set `params.public_only=true`, or declare `aux_spec=zero_v1_vs` in its checkpoint;
+its auxiliary vector remains zero, matching the corpus distillation contract.
+G4 references with pending-attack inputs remain
+privileged teachers.
+
+V3 entrants receive complete semantic bonds from native bottle bytes. Earlier
+arena runs that reconstructed afterstates from the legacy actor observations
+used different physics on same-color turns and cannot certify live trainer
+calibration. Keep those results as historical diagnostics and use a fresh
+database after the correction. The Strong League search adapter also needs
+the opponent-side bond mask and complete candidate packing; older teacher
+releases must be regenerated and recalibrated before promotion.
+
+`trainer-execution-sample` prepares input traces from an immutable corpus
+release. Supply `human_corpus_root`, `human_corpus_release`, and
+`execution_scripts`. Sample schema v2 uses the audited FBNeo boundary:
+`held_before_spawn` initializes controller history, `raw[:-1]` supplies movement
+inputs, and recorded frame parity is inverted. Every accepted row must match
+its recorded lock pose and frame. It retains the initial bottle/microstate,
+rating, and whole-game/player holdout identity. Both producer coverage and
+prior-held contracts are mandatory; the old unverified-coverage override has
+been removed. Earlier byte/length checks could accept zero-filled missing input.
+Sampling does not certify an operation profile or open its gate. Profile
+metrics must honor the initial held buttons. Keep traces and model artifacts
+in ignored run directories.
+
+`trainer-execution-replay-audit` checks recorded lock poses and times with the
+independent frame stepper. Supply `human_corpus_root`, `human_corpus_release`,
+and `execution_replay_report`. `--sample-modulus` spreads a bounded probe over
+stable decision-id hashes; `--month` and `--max-rows` bound the scan. The explicit
+`--parity-xor 1 --input-delay-frames 1` combination probes the FBNeo recording
+boundary. It does not alter the live host's parity/input contract. New exports
+include `held_before_spawn` to distinguish pending fresh presses from carried
+holds. Missing prior state and ROM verification remain visible limitations;
+an exact stepper match alone is not a ROM certificate.
+
+The private `trainer-input-2026-08-v1` release contains 1,932,789 decisions and
+declares both coverage and prior-held contracts. Its manifest SHA-256 is
+`6f653c040c8fc4c17008fd58c780c303cdf241f1c3a49227e48c0e3b9e94e9b1`.
+The bounded 4,096-row probe matches 4,029 moves exactly, excludes 65 unsupported
+windows, and retains two unexplained long-window mismatches. Do not fit those
+two rows or promote the old zero-filled sample.
+
+`trainer-execution-control-audit` compares the sampled human targets with exact
+native witnesses after 0/4/8 neutral frames, current cadence shaping, and the
+held-input movement shaper. Supply `execution_scripts` and
+`execution_control_report`; append `-- --heldout-only --seed 20260908` for
+evaluation outside the fitted training partition. Input hash and v2 alignment
+are mandatory. Statistics weight players equally, games equally within player,
+and sampled pills equally within game. The bounded reachability sample balances
+rating/speed/high-board cells and is not a population-prevalence estimate.
+
+The historical v10 1,024-state held-out motor comparison spans 53 players and 602 games.
+Weighted button changes average 5.78 after shaping versus 19.73 under the
+previous matched-duration algorithm and 5.74 in humans. All lock replays and
+2,048 paired pace-order checks pass. The held-input route is selected in about
+91% of weighted states; all remaining planner routes are retimed at their final
+column. Added work averages 2.54 ms on tf3090. These are path diagnostics using
+recorded human total durations,
+not end-to-end timing-model accuracy. Single-pill windows cannot certify
+sustained ten-second operation limits; difficult routes still need constrained
+planning. Pace selects from fixed valid wait/drop families while motor
+parameters remain constant, preventing route changes from reversing pace.
+The first 512-state latency probe preserved all recorded targets at
+eight frames, while reducing some alternative candidate sets.
+
+The current local trainer supersedes that post-selection shaper with named
+constraints inside reachability. Run `trainer-paced-execution-audit` through
+the program launcher with `execution_scripts` pointing to the covered v2
+sample and `execution_control_report` to a new report. It checks every returned
+legal placement witness, nested feasible sets across all seven presets, and
+local CPU latency on held-out boards. This engineering diagnostic does not
+promote the corpus-calibrated human execution or product gates. Pair it with
+the host's ROM-backed `trainer_smoke` using named pace arguments and `--sparring`.
+The v11 engineering audit replays 204,086 witnesses from 1,024 held-out boards
+at the live 2,048-frame horizon: zero motor violations and zero feasible-set
+inversions. Mac median planner times are 2.5–4.6 ms and 95th percentiles
+9.8–15.2 ms. Rare tails remain (up to 275 ms for Sloth, 192 ms for Fast);
+the host uses each pace's fixed reaction window for computation and safely
+replans after missed deadlines. Seven packaged level-14 MED sparring checks
+completed 269 placements with zero missed decisions or placement mismatches;
+two observed-state corrections replanned safely. A separate rating-1200
+Relaxed check completed 43 placements, with one missed decision and three
+corrections, and no placement mismatch. These bounded checks do not certify
+long-session latency, human ratings, or sustained human burst distributions.
+Additional packaged HI checks completed 40 placements at level 14 Relaxed and
+18 at level 20 Fast, with no missed decisions, corrections, or placement
+mismatches. The level-20 Fast game topped out after about 4.6 seconds without
+clearing a virus: execution acceptance is not a pressure-strength claim.
+
+Planner parity includes the retail 81-entry gravity table and bottle-boundary
+DAS behavior. Repeating into a wall preserves the repeat phase; a blocked cell
+charges DAS. Python, the standalone C helper, the pinned native pool copy, and
+CUDA must all preserve this distinction. Rebuild both native libraries after
+changes and run `tests/test_reach_v4_parity.py`; on tf3090 additionally run
+`python -m tools.test_reach_cuda_parity --quarks 0 --fuzz 500` to check costs and scripts.
+The geometric graph needs room for up to 30 successors and more than 20
+incoming variants. The native `make test-reach-bounds` sanitizer check covers
+512 roots and the slide/rotation regression. GPU reconstruction accepts only
+parent chains reaching the original state at the independently computed cost;
+incomplete chains retain an explicit CPU-fallback status.
+
+For local trainer packages, `--device auto` selects CUDA, Metal, then CPU.
+Metal uses a small set of padded candidate shapes warmed before the backend
+reports readiness. Verify packaged Maximum and regret modes against the ROM;
+a warmed microbenchmark alone does not expose first-use shape compilation.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

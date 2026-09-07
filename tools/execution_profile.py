@@ -19,6 +19,10 @@ METRICS = (
     "max_simultaneous_buttons",
     "direction_reversals",
     "correction_bursts",
+    "rotation_presses",
+    "soft_drop_frames",
+    "active_frames",
+    "chord_frames",
     "complexity",
 )
 
@@ -35,7 +39,10 @@ def _scripts(path: Path):
 
 
 def fit(args: argparse.Namespace) -> None:
-    rows = [script_metrics(script, fps=args.fps) for _payload, script in _scripts(args.input)]
+    rows = [
+        script_metrics(script, fps=args.fps, initial_buttons=int(payload.get("initial_buttons", 0)))
+        for payload, script in _scripts(args.input)
+    ]
     if len(rows) < args.min_scripts:
         raise ValueError(f"need at least {args.min_scripts} scripts, got {len(rows)}")
     q = float(args.quantile)
@@ -72,9 +79,9 @@ def validate(args: argparse.Namespace) -> None:
     profile = profile_from_json(args.profile)
     total = valid = 0
     violations: dict[str, int] = {}
-    for _payload, script in _scripts(args.input):
+    for payload, script in _scripts(args.input):
         total += 1
-        result = profile.validate(script)
+        result = profile.validate(script, initial_buttons=int(payload.get("initial_buttons", 0)))
         valid += int(result.valid)
         for violation in result.violations:
             violations[violation] = violations.get(violation, 0) + 1

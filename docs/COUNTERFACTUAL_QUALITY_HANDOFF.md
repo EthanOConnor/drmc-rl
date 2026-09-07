@@ -22,6 +22,57 @@ source bank, and searched only one opponent continuation.
 The next run must replace those limitations rather than merely scale the same
 pilot.
 
+The continuation input audit additionally found that the search adapter did
+not reproduce the frozen actor's opponent-side same-color bond mask and could
+truncate candidate frontiers at 128. These are corrected and covered by native
+observation/candidate parity tests. Existing calibration links and search
+releases describe the earlier adapter and must be regenerated together. The
+failed direct V3 comparison remains failed evidence; an input correction does
+not waive its gate.
+
+A subsequent 60-state audit of the frozen depth-2 expansion visited 6,855
+nonterminal leaves: 5,096 evaluated the root while it could not act, including
+1,548 where neither side was ready. These are visit counts, not game-probability
+weights. The frozen critic was trained at its own actionable decisions. The
+`acting-decision-after-forced-events-v1` search contract therefore finishes
+forced deterministic/reveal events before leaf evaluation, uses an acting
+side's value, and reverses calibrated win/loss when that side is the opponent.
+It never chooses another player action after the depth expires. Budget-exhausted
+searches remain rejected. This fixes input support; held-out quality must still
+be demonstrated before labels are promoted.
+
+The corrected audit visited 6,853 nonterminal leaves with zero unsupported
+acting-side inputs. On 1,210 observed actions from 631 held-out games, however,
+the corrected G4 teacher scored Brier 0.5108 and log loss 0.7798, still worse than
+V3 (0.4616 and 0.7329). Do not regenerate a full release merely because the
+input-support bug is fixed.
+
+The current public outcome-trained core is a more promising diagnostic
+continuation: its candidate-search Brier is 0.4728, improving over the original
+G4 release by 0.0321 (paired 95% interval −0.0546 to −0.0102). It does not yet
+beat V3 with confidence. The new adapter shares the deployed actor's exact
+zero-aux policy/value path and retains public reserve-belief branching; native
+transition checkpoints are still privileged. Its calibration used 220 separate
+games with only two natural draws, and it has one frozen member, so it is not a
+promotion bundle. Existing gate thresholds remain unchanged.
+
+The corrected adapter/native replay audit also found historical target drift:
+on 96 independent, stratified positions, 95 initial argmax actions still
+matched, but only 83 of 95 naturally completed continuations retained their
+recorded outcome (one continuation remained incomplete at 512 events). Each
+recorded root action was forced once. This identifies a reproducibility gap;
+it does not establish why each trajectory changed or rescue the failed quality
+comparison. Rebuild coherent calibration and evaluation trajectories before
+claiming current-policy outcome accuracy.
+
+`trainer-terminal-quality-pilot` is a separate bounded experiment using the
+installed public core for both sides and natural full-game results for every
+root candidate. It integrates distinct full reserve hypotheses with their
+public-posterior mass and overrides every future reveal. The rationale is to
+measure outcome-defined candidate quality without a poorly predictive shallow
+critic. This experiment does not waive or replace any threshold below; its
+results remain diagnostic until a coherent promotion protocol is established.
+
 ## Frozen inputs
 
 - `drmario-native` reveal/snapshot implementation:
@@ -289,6 +340,7 @@ uv run python -m tools.compare_counterfactual_releases \
   --release "4=$ROOT/release-b4/manifest.json" \
   --release "8=$ROOT/release-b8/manifest.json" \
   --reference-beam 8 \
+  --source-bank "$BALANCED_BANK" \
   --output "$ROOT/beam-sweep.json"
 ```
 
@@ -297,6 +349,11 @@ source bytes, mixture/calibration hashes, chance model, information scope,
 seed, depth, node budget, and root/chance beams. It also reports every tactical
 cell separately. If beam 4 does not converge, increase the production teacher
 beam; do not loosen the evidence threshold for runtime convenience.
+
+For existing releases that recorded empty strata, `--source-bank` recovers
+level, speed, and tactical categories only after verifying the original input
+hash, source identity, and source line. The comparison records that binding;
+the immutable release files and values stay unchanged.
 
 ### 7. Compare directly with frozen V3
 

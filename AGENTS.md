@@ -63,6 +63,11 @@ gate that must be completed first.
 - `timing-action-gate` remains active. `g5-v3-bootstrap`, joint-event search,
   constrained human execution, and trainer release remain staged or blocked by
   the program registry.
+- The bounded `trainer-public-outcome` diagnostic improves the frozen public
+  V5 bootstrap from natural full-game results at level 20 and checks level-14
+  regressions. The current counterfactual teacher failed its held-out V3
+  comparison; none of those labels or legacy hidden auxiliary inputs enter
+  this run. This does not open a search-quality or product gate.
 
 ## Counterfactual quality rules
 

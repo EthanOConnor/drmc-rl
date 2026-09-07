@@ -101,6 +101,16 @@ def fuzz_cases(n: int, rng) -> list[dict]:
     return cases
 
 
+def regression_cases() -> list[dict]:
+    # A legal four-frame path needs consecutive gravity/soft-drop rows and
+    # the horizontal shift on rotation. The old geometric tables overflowed
+    # successors and dropped reverse edges; re-BFS found a six-frame path and
+    # incorrectly emitted only its last four frames.
+    return [dict(cols=np.array([6160, 43016, 44296, 24880, 1080, 22420, 2314, 37956],
+                               dtype=np.uint16),
+                 sx=3, sy=0, srot=3, sc=52, hv=4, hd=1, parity=1, rh=2, thr=17)]
+
+
 def check_phase12(ctx, cases: list[dict], label: str, gd_cap: int = 128) -> int:
     cpu_dbg = load_cpu_debug()
     cols = np.stack([c["cols"] for c in cases])
@@ -211,7 +221,7 @@ def _py_v4_step(fm_h, fm_v, thr, s, act):
         s["hv"] += 1
         if s["hv"] >= 0x10:
             s["hv"] = 0x0A; allow = True
-    if allow and dir_ != 0:
+    if allow and dir_ != 0 and (s["x"] < 6 + (s["rot"] & 1) if dir_ == 2 else s["x"] > 0):
         nx = s["x"] + (1 if dir_ == 2 else -1)
         if fits(nx, s["y"], s["rot"]):
             s["x"] = nx
@@ -289,7 +299,7 @@ def check_scripts(ctx, cases: list[dict], label: str) -> int:
                           f"cost={costs[i, pose]}")
     matched = float((st == 0).mean())
     print(f"[scripts/{label}] {n_replayed} scripts replayed, {bad} bad; "
-          f"greedy-matched instances: {matched:.4f}")
+          f"completed GPU instances: {matched:.4f}")
     return bad
 
 
@@ -305,12 +315,17 @@ def main() -> int:
     ctx = CudaReach(max_batch=16384)
 
     bad = 0
-    boards = corpus_boards(args.quarks, rng)
-    corpus_cases = [dict(cols=c, parity=p, thr=t) for c, p, t in boards]
-    print(f"corpus cases: {len(corpus_cases)}")
-    bad += check_phase12(ctx, corpus_cases, "corpus")
-    bad += check_costs(ctx, corpus_cases, "corpus")
-    bad += check_scripts(ctx, corpus_cases[:600], "corpus")
+    regression = regression_cases()
+    bad += check_phase12(ctx, regression, "regression")
+    bad += check_costs(ctx, regression, "regression")
+    bad += check_scripts(ctx, regression, "regression")
+    if args.quarks:
+        boards = corpus_boards(args.quarks, rng)
+        corpus_cases = [dict(cols=c, parity=p, thr=t) for c, p, t in boards]
+        print(f"corpus cases: {len(corpus_cases)}")
+        bad += check_phase12(ctx, corpus_cases, "corpus")
+        bad += check_costs(ctx, corpus_cases, "corpus")
+        bad += check_scripts(ctx, corpus_cases[:600], "corpus")
 
     fz = fuzz_cases(args.fuzz, rng)
     bad += check_phase12(ctx, fz, "fuzz")

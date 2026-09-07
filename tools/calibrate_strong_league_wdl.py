@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from drmc_rl.eval.wdl_calibration import calibration_report
-from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
+from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 from drmc_rl.search.strong_league import FrozenStrongLeagueMixture
 from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
 
@@ -27,22 +27,15 @@ def _sha256(path: Path) -> str:
 def _batch_infer(mixture: FrozenStrongLeagueMixture, env, obs):
     batch = env.policy_batch("v1_vs")
     size = len(obs)
-    actions = np.full((size, 128), -1, dtype=np.int32)
-    masks = np.zeros((size, 128), dtype=bool)
-    costs = np.zeros((size, 128), dtype=np.float32)
-    for index in range(size):
-        packed = pack_feasible_candidates(
-            batch.feasible_mask[index],
-            batch.cost_to_lock[index],
-            max_candidates=128,
-            sort_by_cost=True,
-        )
-        actions[index], masks[index], costs[index] = (
-            packed.actions,
-            packed.mask,
-            packed.cost,
-        )
-    probabilities = np.zeros((size, 128), dtype=np.float64)
+    required = batch.feasible_mask.reshape(size, -1).sum(axis=1)
+    width = max(128, int(required.max(initial=0)))
+    packed = pack_feasible_candidates_batch(
+        batch.feasible_mask, batch.cost_to_lock, max_candidates=width, sort_by_cost=True
+    )
+    if not np.array_equal(packed.count, required):
+        raise RuntimeError("calibration candidate packing dropped a feasible placement")
+    actions, masks, costs = packed.actions, packed.mask, packed.cost
+    probabilities = np.zeros((size, width), dtype=np.float64)
     member_values = np.zeros((size, len(mixture.members)), dtype=np.float64)
     for member_index, (weight, member) in enumerate(
         zip(mixture.weights, mixture.members, strict=True)
@@ -174,6 +167,8 @@ def collect(
                         "horizon_truncations_excluded": truncated_games,
                     }
                 )
+                print(f"calibrated trajectories: level={level}, speed={speed}, "
+                      f"games={completed}, horizon_truncations={truncated_games}", flush=True)
             finally:
                 env.close()
     return (
@@ -281,6 +276,9 @@ def main() -> None:
             "sampling": "first-8-and-every-8th-decision-per-side",
             "weighting": "equal-total-weight-per-game",
             "member_ids": [member.id for member in members],
+            "candidate_truncations": 0,
+            "value_perspective": "acting-side decisions only",
+            "candidate_packing": "complete-native-frontier-v1",
         },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

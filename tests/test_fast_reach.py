@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from drmc_rl.planning.fast_reach import (
     FrameState,
@@ -6,6 +7,7 @@ from drmc_rl.planning.fast_reach import (
     ReachabilityConfig,
     Rotation,
     build_reachability,
+    compute_speed_threshold,
     frame_action_from_index,
     simulate_frame,
 )
@@ -14,6 +16,49 @@ from drmc_rl.planning.placement_actions import GRID_HEIGHT, GRID_WIDTH
 
 def _empty_columns() -> np.ndarray:
     return np.zeros(GRID_WIDTH, dtype=np.uint16)
+
+
+@pytest.mark.parametrize("speed_ups,lock_frames", [(28, 80), (33, 64), (38, 48), (49, 16)])
+def test_late_game_gravity_matches_retail_speed_transitions(speed_ups, lock_frames):
+    # NTSC HI starts at speed-table index 31. At these late-game boundaries
+    # the ROM waits 5/4/3/1 frames per row, including the blocked lock attempt.
+    state = FrameState(x=3, y=0, rot=0, speed_counter=0, hor_velocity=0,
+                       hold_dir=HoldDir.NEUTRAL, frame_parity=0)
+    threshold = compute_speed_threshold(2, speed_ups)
+    for elapsed in range(1, lock_frames + 1):
+        state = simulate_frame(_empty_columns(), state, 0, speed_threshold=threshold)
+        assert state.locked == (elapsed == lock_frames)
+    assert (state.x, state.y, state.rot) == (3, 15, 0)
+
+
+@pytest.mark.parametrize("x,rotation,direction", [(0, 0, HoldDir.LEFT), (6, 0, HoldDir.RIGHT), (7, 1, HoldDir.RIGHT)])
+def test_bottle_boundary_does_not_charge_das_like_a_blocking_capsule(x, rotation, direction):
+    state = FrameState(x=x, y=5, rot=rotation, speed_counter=0, hor_velocity=15,
+                       hold_dir=direction, frame_parity=0)
+    result = simulate_frame(_empty_columns(), state,
+                            _action_index(direction, False, Rotation.NONE), speed_threshold=100)
+    assert result.x == x
+    assert result.hor_velocity == 10
+
+
+def test_rotation_away_from_right_boundary_preserves_repeat_phase():
+    state = FrameState(x=6, y=5, rot=0, speed_counter=0, hor_velocity=15,
+                       hold_dir=HoldDir.RIGHT, frame_parity=0)
+    for rotation in (Rotation.NONE, Rotation.CW, Rotation.CW):
+        state = simulate_frame(_empty_columns(), state,
+            _action_index(HoldDir.RIGHT, False, rotation), speed_threshold=100)
+    assert (state.x, state.rot, state.hor_velocity) == (6, 3, 12)
+
+
+def test_board_collision_still_charges_das_for_immediate_recovery():
+    columns = _empty_columns()
+    columns[7] = 1 << 5
+    state = FrameState(x=5, y=5, rot=0, speed_counter=0, hor_velocity=0,
+                       hold_dir=HoldDir.NEUTRAL, frame_parity=0)
+    result = simulate_frame(columns, state,
+        _action_index(HoldDir.RIGHT, False, Rotation.NONE), speed_threshold=100)
+    assert result.x == 5
+    assert result.hor_velocity == 15
 
 
 def _action_index(hold_dir: HoldDir, hold_down: bool, rotation: Rotation) -> int:

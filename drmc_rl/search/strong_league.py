@@ -1,7 +1,8 @@
 """Frozen Strong League continuation mixture for strict pair search.
 
-The policy mixture consumes only public pair state. Native reserve bytes are
-used exclusively by restore/chance transitions and never enter network input.
+The frozen mixture is a privileged teacher: its legacy auxiliary vector uses
+pending-attack counts. Reserve bytes remain exclusive to restore/chance
+transitions and never enter network input.
 """
 
 from __future__ import annotations
@@ -16,17 +17,11 @@ from typing import Any, Sequence
 import numpy as np
 import torch
 
-import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.game.observation import board_bytes_to_semantic_planes, legacy_vs_policy_boards
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 from drmc_rl.search.joint_event import WDL
 from drmc_rl.search.native_pair import NativePairSearchState
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
-
-_TILE_EMPTY = 0xFF
-_TILE_CLEARED = 0xB0
-_TILE_JUST_EMPTIED = 0xF0
-_MASK_TYPE = 0xF0
-_MASK_COLOR = 0x03
 
 
 def _sha256(path: Path) -> str:
@@ -103,17 +98,33 @@ class _FrozenMember:
         mask: np.ndarray,
         aux: np.ndarray,
     ) -> tuple[np.ndarray, float]:
+        logits, values = self.infer_batch(
+            obs[None], pill[None], preview[None], actions[None], costs[None],
+            mask[None], aux[None],
+        )
+        return logits[0], float(values[0])
+
+    def infer_batch(
+        self,
+        obs: np.ndarray,
+        pill: np.ndarray,
+        preview: np.ndarray,
+        actions: np.ndarray,
+        costs: np.ndarray,
+        mask: np.ndarray,
+        aux: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
         with torch.inference_mode():
             logits, value = self.net(
-                torch.from_numpy(obs[None]).to(self.device),
-                torch.from_numpy(pill[None]).to(self.device),
-                torch.from_numpy(preview[None]).to(self.device),
-                torch.from_numpy(actions[None]).to(self.device),
-                torch.from_numpy(costs[None]).to(self.device),
-                torch.from_numpy(mask[None]).to(self.device),
-                aux=(None if self.aux_dim == 0 else torch.from_numpy(aux[None]).to(self.device)),
+                torch.from_numpy(obs).to(self.device),
+                torch.from_numpy(pill).to(self.device),
+                torch.from_numpy(preview).to(self.device),
+                torch.from_numpy(actions).to(self.device),
+                torch.from_numpy(costs).to(self.device),
+                torch.from_numpy(mask).to(self.device),
+                aux=(None if self.aux_dim == 0 else torch.from_numpy(aux).to(self.device)),
             )
-        return logits[0].float().cpu().numpy(), float(value.reshape(-1)[0].cpu())
+        return logits.float().cpu().numpy(), value.reshape(-1).float().cpu().numpy()
 
 
 class FrozenStrongLeagueMixture:
@@ -177,10 +188,66 @@ class FrozenStrongLeagueMixture:
         return tuple(max(floor, probabilities.get(int(action), floor)) for action in actions)
 
     def evaluate(self, state: NativePairSearchState, root_side: int) -> WDL:
-        _probabilities, score = self._infer(state, int(root_side))
-        return self.calibration.wdl(score)
+        root_side = int(root_side)
+        need = state.privileged.need_action
+        if not any(need):
+            raise ValueError("Strong League value requires an actionable decision boundary")
+        # The frozen value was trained only where its own side can act. At an
+        # asynchronous opponent decision, evaluate that supported perspective
+        # and reverse W/L after applying its calibrated link.
+        value_side = root_side if need[root_side] else 1 - root_side
+        _probabilities, score = self._infer(state, value_side)
+        value = self.calibration.wdl(score)
+        return value if value_side == root_side else WDL(value.loss, value.draw, value.win)
+
+    def infer_batch(
+        self, requests: Sequence[tuple[NativePairSearchState, int]],
+    ) -> list[tuple[dict[int, float], float]]:
+        """Batch independent acting sides without changing the frozen mixture.
+
+        Every frontier is retained. Candidate padding carries zero probability;
+        it never participates in normalization or action selection.
+        """
+        if not requests:
+            return []
+        inputs = []
+        for state, side in requests:
+            if not state.privileged.need_action[side] or not state.legal_actions_by_side[side]:
+                raise ValueError("Strong League inference requires an acting side with legal candidates")
+            inputs.append(_policy_inputs(state, side))
+        width = max(len(item[3]) for item in inputs)
+        batch = []
+        for index in range(7):
+            values = []
+            for item in inputs:
+                value = item[index]
+                if index in (3, 4, 5):
+                    fill = 0xFFFF if index == 4 else 0
+                    value = np.pad(value, (0, width-len(value)), constant_values=fill)
+                values.append(value)
+            batch.append(np.stack(values))
+        mask = batch[5]
+        probability = np.zeros(mask.shape, dtype=np.float64)
+        value = np.zeros(len(requests), dtype=np.float64)
+        for weight, member in zip(self.weights, self.members, strict=True):
+            logits, member_value = member.infer_batch(*batch)
+            if not np.isfinite(logits[mask]).all() or not np.isfinite(member_value).all():
+                raise ValueError("frozen mixture returned non-finite predictions")
+            logits = np.where(mask, logits, -np.inf).astype(np.float64)
+            scores = np.exp(np.clip(logits-logits.max(axis=1, keepdims=True), -60, 0))
+            scores[~mask] = 0
+            scores /= scores.sum(axis=1, keepdims=True)
+            probability += weight*scores
+            value += weight*member_value
+        return [
+            (dict(zip(map(int, actions[valid]), map(float, weights[valid]), strict=True)),
+             float(score))
+            for actions, valid, weights, score in zip(batch[3], mask, probability, value, strict=True)
+        ]
 
     def _infer(self, state: NativePairSearchState, side: int) -> tuple[dict[int, float], float]:
+        if not state.privileged.need_action[side] or not state.legal_actions_by_side[side]:
+            raise ValueError("Strong League inference requires an acting side with legal candidates")
         key = (hashlib.sha256(state.privileged.engine_checkpoint).hexdigest(), side)
         cached = self._cache.get(key)
         if cached is not None:
@@ -212,29 +279,6 @@ class FrozenStrongLeagueMixture:
         return result
 
 
-def board_bytes_to_semantic_planes(board_bytes: bytes) -> np.ndarray:
-    """Decode canonical native bottle bytes into the shared eight-plane schema."""
-
-    board = np.frombuffer(board_bytes, dtype=np.uint8).reshape(16, 8)
-    type_hi = board & _MASK_TYPE
-    color_lo = board & _MASK_COLOR
-    is_empty = board == _TILE_EMPTY
-    is_zero = board == 0x00
-    just_emptied = (type_hi == _TILE_JUST_EMPTIED) & ~is_empty
-    clearing = (type_hi == _TILE_CLEARED) | just_emptied
-    color_valid = ~(is_empty | is_zero | clearing)
-    planes = np.zeros((8, 16, 8), dtype=np.float32)
-    planes[0] = color_valid & (color_lo == 1)
-    planes[1] = color_valid & (color_lo == 0)
-    planes[2] = color_valid & (color_lo == 2)
-    planes[3] = type_hi == ram_specs.T_VIRUS
-    planes[4] = type_hi == ram_specs.T_BOTTOM
-    planes[5] = type_hi == ram_specs.T_TOP
-    planes[6] = type_hi == ram_specs.T_RIGHT
-    planes[7] = type_hi == ram_specs.T_LEFT
-    return planes
-
-
 def _policy_inputs(state: NativePairSearchState, side: int):
     public = state.privileged.public
     own = public.sides[side]
@@ -252,14 +296,13 @@ def _policy_inputs(state: NativePairSearchState, side: int):
     if pill[0] == pill[1]:
         feasible.reshape(4, 16, 8)[2:] = False
         costs.reshape(4, 16, 8)[2:] = 0xFFFF
-        own_planes[6:8] = 0.0
     packed = pack_feasible_candidates(
         feasible.reshape(4, 16, 8),
         costs.reshape(4, 16, 8),
-        max_candidates=128,
+        max_candidates=max(128, int(feasible.sum())),
         sort_by_cost=True,
     )
-    obs = np.concatenate((own_planes, opponent_planes), axis=0).astype(np.float32)
+    obs = legacy_vs_policy_boards(own_planes, opponent_planes, pill, opponent.pill)
     aux = _aux_v1_vs(state, side, obs, feasible)
     return (
         obs,
@@ -356,7 +399,6 @@ def frozen_strong_league_factory(args: Any):
 
 
 __all__ = [
-    "board_bytes_to_semantic_planes",
     "DavidsonCalibration",
     "FrozenStrongLeagueMixture",
     "MixtureMember",

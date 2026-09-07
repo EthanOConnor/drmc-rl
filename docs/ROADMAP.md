@@ -37,6 +37,86 @@ The following are now foundations, not open design questions:
 
 ## Current gate — counterfactual quality
 
+The local Professor Pills build is playable while these scientific gates remain
+open work. It bundles the full V3 epoch-5 regret/cadence model and a public V5
+Maximum opponent improved with public outcome training, opens real two-player setup through recorded inputs,
+and validates scheduled controller scripts. This does not establish the full
+target skill range or a human operation profile.
+
+Current diagnostic evidence identifies the next product gaps:
+
+- The corrected 960-game level-14 HI round robin separates Maximum strongly
+  from the V3 rating settings (306 wins in 320 games). The five rating settings
+  are ordered overall, but every adjacent pair still has an overlapping 95%
+  interval. A separate fixed-state audit has zero regret reversals across
+  47,520 paired comparisons. The displayed corpus target is not an
+  achieved human rating; calibration must use whole-game evidence and a common
+  competitive quality scale.
+- Public outcome PPO reached 10,133,254 frames with finite losses and zero
+  candidate truncation. In a fresh 256-game comparison per opponent and level,
+  it beats the previous public maximum 155–101 at level 14 HI and 177–79 at
+  level 20 HI. Side-swapped-seed bootstrap score intervals are 53.9–67.6% and
+  61.7–76.6%. Against G4 it scores 241–15 and 198–58 respectively. This clears
+  the predeclared local adoption check; it does not establish a human rating.
+  These tests use fastest placements. Real-ROM high-board starts can still
+  top out early, so pressure robustness under human cadence remains work.
+- A further 40M-frame continuation did not pass adoption. Its selected 20M
+  checkpoint scored 126–130 at level 14 and 133–123 at level 20 against the
+  installed 10M core on fresh 256-game comparisons. Paired score intervals were
+  41.4–57.0% and 44.1–59.8%. The final 50M checkpoint regressed to 10–54 in the
+  level-20 screen. Keep the installed core; more of this unchanged training
+  recipe is not an evidenced improvement.
+- The immutable 54,819-decision input sample passed byte/window checks but is
+  **not validated profile data**. The producer zero-filled unrecorded input
+  spans. Its FBNeo snapshot/input convention also differs from the live host's
+  boundary. The corrected private August release distinguishes missing input
+  and preserves prior held state. With explicit FBNeo frame alignment and the
+  retail gravity/wall-repeat corrections, 4,029 of 4,031 eligible sampled moves
+  reproduce their exact lock pose and frame (2,446 games; 65 menu/chord
+  exclusions). Two long windows remain unexplained and ineligible for profile
+  fitting. This is independent stepper evidence, not a ROM replay certificate. Initial held
+  buttons, operation bursts, and reaction distributions must drive the motor
+  profile; an average-cadence scalar is insufficient. The extreme rating bands
+  are sparsely represented, and the underlying V3 conditioning range is about
+  718–2451, so 500 and above-3000 performance still need independent evidence.
+- Style controls must be exposed and shown to vary independently of strength.
+  The local build currently offers corpus targets, seven named motor paces,
+  and Maximum. Pace restricts feasible moves before strategic selection, with
+  no faster fallback; the presets still require human-distribution calibration.
+- Live inference now selects available acceleration. On this Mac, a 48-request
+  comparison reduced median planning time from 54 ms on CPU to 19 ms on Metal,
+  with identical actions and scripts. Bounded Metal shapes must be warmed
+  before readiness; without this, new candidate counts caused 200+ ms pauses.
+  Subsequent source-build level-14 ROM checks completed with zero missed
+  decisions or execution mismatches in Maximum and 1600 modes. Level-20 starts
+  still reveal the separate strategic/cadence weakness.
+- Exact-planner auditing corrected a late-game gravity table, bottle-wall DAS,
+  and undersized geometric graph tables. The latter could discard a legal
+  four-frame slide/rotation and emit a truncated six-frame GPU witness. Native
+  sanitizer checks and a 500-case GPU sweep now pass, including 10,277 emitted
+  scripts with no replay errors. Future arena/training runs must record the
+  corrected native revision; historical matches keep their original identity.
+
+Run artifacts for these diagnostics are retained under
+`runs/trainer-baseline-v1/`; they do not override any promotion gate.
+
+The recovered 1,440-state beam sweep has 99.93% beam-4/8 action agreement and
+at least 95.83% in every one of its 60 tactical cells. However, the direct
+631-game comparison is worse than V3: Brier delta +0.0433 (95% whole-game CI
++0.0213 to +0.0648) and log-loss delta +0.0407 (+0.0102 to +0.0702).
+These labels remain ineligible for promotion. The bounded
+`trainer-public-outcome` recipe instead trains the existing public V5 student
+from natural game outcomes at level 20, with level-14 regression evaluation.
+It neither waives the search-quality gate nor certifies the trainer's ratings.
+
+The subsequent boundary correction removes unsupported critic calls but does
+not rescue that teacher: Brier is 0.5108 versus V3's 0.4616 on the same 631
+games. The current public outcome-trained core improves the candidate-search
+diagnostic to 0.4728, with a significant Brier improvement over the original
+teacher, but still does not reliably beat V3. Its pre-action decision value
+scores 0.4547; this is not a candidate-regret result. Further full-candidate
+labeling is deferred while the common outcome-trained core is improved.
+
 The first 512-state production-shaped pilot established important mechanics:
 
 - exact restore of unique full-pair states;

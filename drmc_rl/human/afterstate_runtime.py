@@ -40,7 +40,9 @@ class AfterstatePolicyRuntime:
         self.meta = payload["human_meta"]
         self.condition = HumanSkillCondition.from_dict(self.meta["skill_condition"])
         self.calibration = RegretCalibration.from_dict(self.meta["regret_calibration"])
-        self.controller = RegretStrengthController(self.calibration, seed=seed)
+        self.controller = RegretStrengthController(
+            self.calibration, seed=seed, reference_rating=self.condition.mean
+        )
         self.device = torch.device(device)
         self.policy = build_afterstate_policy(
             self.cfg,
@@ -67,7 +69,8 @@ class AfterstatePolicyRuntime:
             "rating_range": [self.condition.minimum, self.condition.maximum],
             "parameters": self.meta.get("parameters"),
             "competitive_quality": "rating-independent exact afterstate value",
-            "strength_control": "monotone corpus-calibrated action regret",
+            "strength_control": "ordered corpus-regret bands with fixed population style",
+            "regret_units": "V3 bootstrap score; absolute human strength remains unvalidated",
         }
 
     def score(
@@ -81,6 +84,7 @@ class AfterstatePolicyRuntime:
         opponent_rating_sd: float = 0.0,
         game_phase: float = 0.0,
         recent_decisions=(),
+        style_rating: float | None = None,
         pill: np.ndarray,
         preview: np.ndarray,
         candidate_actions: np.ndarray,
@@ -101,6 +105,7 @@ class AfterstatePolicyRuntime:
                     "opponent_rating_sd": opponent_rating_sd,
                     "game_phase": game_phase,
                     "recent_decisions": recent_decisions,
+                    "style_rating": style_rating,
                     "pill": pill,
                     "preview": preview,
                     "candidate_actions": candidate_actions,
@@ -154,10 +159,13 @@ class AfterstatePolicyRuntime:
             resolved, clamped = self.condition.resolve(float(request["rating"]))
             resolved_ratings.append(resolved)
             clamped_ratings.append(clamped)
+            # Live regret control holds the population/style condition fixed;
+            # the requested rating selects regret and cadence separately.
+            style_rating = request.get("style_rating")
             conditions.append(
                 policy_condition_features(
                     self.condition,
-                    rating=resolved,
+                    rating=resolved if style_rating is None else float(style_rating),
                     rating_sd=float(request.get("rating_sd", 0.0)),
                     opponent_rating=request.get("opponent_rating"),
                     opponent_rating_sd=float(request.get("opponent_rating_sd", 0.0)),

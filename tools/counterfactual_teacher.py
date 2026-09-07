@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from drmc_rl.search.joint_event import SearchConfig
+from drmc_rl.search.joint_event import LEAF_VALUE_CONTRACT, SearchConfig
 from drmc_rl.teachers.counterfactual import CounterfactualTeacher, WeightedTeacherModels
 from drmc_rl.teachers.counterfactual_release import (
     ReleaseSettings,
@@ -115,6 +115,7 @@ def main() -> None:
         adapter=args.adapter,
         root_side=args.root_side,
         search={
+            "leaf_value_contract": LEAF_VALUE_CONTRACT,
             "depth_events": search.depth_events,
             "own_beam": search.own_beam,
             "opponent_beam": search.opponent_beam,

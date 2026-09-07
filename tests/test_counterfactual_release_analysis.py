@@ -10,7 +10,12 @@ from drmc_rl.game.pair_state import DecisionBoundary
 from drmc_rl.search.joint_event import SearchConfig, WDL
 from drmc_rl.teachers.counterfactual import CounterfactualTeacher
 from drmc_rl.teachers.counterfactual_release import ReleaseSettings, build_release, sha256_file
-from drmc_rl.teachers.release_analysis import compare_beam_sweep, compare_releases, load_release
+from drmc_rl.teachers.release_analysis import (
+    bind_source_strata,
+    compare_beam_sweep,
+    compare_releases,
+    load_release,
+)
 
 
 @dataclass(frozen=True)
@@ -169,3 +174,60 @@ def test_beam_sweep_rejects_mislabeled_release(tmp_path: Path) -> None:
     candidate = load_release([_release(tmp_path, "beam4", _model(0.05), 4)])
     with pytest.raises(ValueError, match="does not match release setting"):
         compare_beam_sweep({4: reference, 8: candidate})
+
+
+def test_source_binding_recovers_stratified_evidence_without_changing_labels(
+    tmp_path: Path,
+) -> None:
+    original = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    candidate = load_release([_release(tmp_path, "beam4", _model(0.05), 4)])
+    bank = tmp_path / "bank.jsonl"
+    reference = bind_source_strata(original, bank, fields=("score",))
+    candidate = bind_source_strata(candidate, bank, fields=("score",))
+    comparison = compare_releases(reference, candidate)
+    assert set(comparison["by_stratum"]) == {"0", "1", "2"}
+    assert all(cell["states"] == 1 for cell in comparison["by_stratum"].values())
+    assert comparison["stratum_binding"] == {
+        "source_bank_sha256": sha256_file(bank),
+        "fields": ["score"], "verified_states": 3,
+    }
+    assert reference.release_sha256 == original.release_sha256
+    for source_id, state in reference.states.items():
+        assert state.row is original.states[source_id].row
+        assert state.candidates is original.states[source_id].candidates
+        assert original.states[source_id].stratum == ()
+
+
+def test_source_binding_rejects_different_bank_bytes(tmp_path: Path) -> None:
+    dataset = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    bank = tmp_path / "bank.jsonl"
+    bank.write_text(bank.read_text() + "\n")
+    with pytest.raises(ValueError, match="bank hash differs"):
+        bind_source_strata(dataset, bank, fields=("score",))
+
+
+@pytest.mark.parametrize("drift", ["identity", "line", "stratum"])
+def test_source_binding_rejects_inconsistent_release_metadata(
+    tmp_path: Path, drift: str,
+) -> None:
+    dataset = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    source_id = "state-0"
+    state = dataset.states[source_id]
+    if drift == "identity":
+        states = {"unknown": replace(state, source_id="unknown")}
+    elif drift == "line":
+        row = dict(state.row, metadata=dict(state.row["metadata"], source_line=999))
+        states = {source_id: replace(state, row=row)}
+    else:
+        states = {source_id: replace(state, stratum=("wrong",))}
+    with pytest.raises(ValueError, match="omits release state|line differs|stratum differs"):
+        bind_source_strata(
+            replace(dataset, states=states), tmp_path / "bank.jsonl", fields=("score",),
+        )
+
+
+def test_comparison_rejects_asymmetric_source_binding(tmp_path: Path) -> None:
+    dataset = load_release([_release(tmp_path, "beam8", _model(), 8)])
+    bound = bind_source_strata(dataset, tmp_path / "bank.jsonl", fields=("score",))
+    with pytest.raises(ValueError, match="stratum bindings differ"):
+        compare_releases(dataset, bound)

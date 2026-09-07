@@ -235,6 +235,16 @@ def test_v3_runtime_batches_variable_candidate_widths_losslessly() -> None:
         ):
             np.testing.assert_allclose(batch_result[key], scalar_result[key], rtol=1e-5, atol=1e-6)
 
+    # Strength and population style are independent at inference. The model
+    # still reports the actual requested strength for the regret decoder.
+    fixed_style = runtime.score_batch([
+        {**requests[0], "rating": rating, "style_rating": runtime.condition.mean}
+        for rating in (1100., 1900.)
+    ])
+    assert [row["resolved_rating"] for row in fixed_style] == [1100., 1900.]
+    for key in ("competitive_score", "human_logits"):
+        np.testing.assert_allclose(fixed_style[0][key], fixed_style[1][key], rtol=0, atol=1e-6)
+
 
 def test_sparse_afterstates_round_trip_exactly() -> None:
     from drmc_rl.human.afterstate_sim import decode_sparse_deltas, encode_sparse_deltas

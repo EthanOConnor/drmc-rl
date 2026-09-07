@@ -24,6 +24,65 @@ from tools.tournament import (
 )
 
 
+@pytest.mark.parametrize("checkpoint_capacity", [128, 512])
+def test_plain_policy_preserves_a_winning_candidate_beyond_padding_width(checkpoint_capacity) -> None:
+    import torch
+    from tools.vs_head_to_head import PlainPolicy
+
+    class LastCandidate(torch.nn.Module):
+        def forward(self, obs, pills, previews, actions, costs, mask, aux=None):
+            assert actions.shape == (2, 140)
+            assert mask.sum(dim=1).tolist() == [140, 2]
+            return actions.float(), torch.zeros((2, 1))
+
+    policy = PlainPolicy.__new__(PlainPolicy)
+    policy.in_channels = 20
+    policy.candidate_max = checkpoint_capacity
+    policy.device = "cpu"
+    policy.public_only = False
+    policy.aux_shim = None
+    policy.net = LastCandidate()
+    infos = []
+    for count in (140, 2):
+        mask = np.zeros(512, dtype=bool)
+        mask[:count] = True
+        infos.append({
+            "placements/feasible_mask": mask.reshape(4, 16, 8),
+            "placements/cost_to_lock": np.ones((4, 16, 8), dtype=np.uint16),
+            "next_pill_colors": [0, 1],
+            "preview_pill": {"first_color": 0, "second_color": 1},
+        })
+    actions = policy.act(np.zeros((2, 20, 16, 8), dtype=np.float32), infos)
+    assert actions.tolist() == [139, 1]
+
+
+def test_public_policy_does_not_read_legacy_privileged_auxiliary_state() -> None:
+    import torch
+    from tools.vs_head_to_head import PlainPolicy
+
+    class ForbiddenAux:
+        def _build_aux_batch(self, *args):
+            raise AssertionError("public actor read privileged context")
+
+    class PublicNet(torch.nn.Module):
+        def forward(self, obs, pills, previews, actions, costs, mask, aux=None):
+            assert aux.shape == (1, 12)
+            assert torch.count_nonzero(aux) == 0
+            return actions.float(), torch.zeros((1, 1))
+
+    policy = PlainPolicy.__new__(PlainPolicy)
+    policy.in_channels, policy.candidate_max = 20, 128
+    policy.device, policy.public_only, policy.aux_dim = "cpu", True, 12
+    policy.aux_shim, policy.net = ForbiddenAux(), PublicNet()
+    mask = np.zeros((4, 16, 8), dtype=bool)
+    mask[0, 15, 0] = True
+    info = {"placements/feasible_mask": mask,
+            "placements/cost_to_lock": np.ones((4, 16, 8), dtype=np.uint16),
+            "next_pill_colors": [0, 1],
+            "preview_pill": {"first_color": 1, "second_color": 2}}
+    assert policy.act(np.zeros((1, 20, 16, 8), dtype=np.float32), [info]).tolist() == [120]
+
+
 def test_entry_policy_inherits_runner_device(tmp_path, monkeypatch) -> None:
     import tools.vs_head_to_head as head_to_head
     from tools.tournament import _EntryPolicy
@@ -49,6 +108,26 @@ def test_entry_policy_inherits_runner_device(tmp_path, monkeypatch) -> None:
     )
     policy.close()
     assert seen == ["mps"]
+
+
+@pytest.mark.parametrize("gpu_planner", [False, True])
+def test_match_runner_forwards_planner_choice(monkeypatch, gpu_planner) -> None:
+    import drmc_rl.training.envs.drmario_vs_vec as vs_vec
+    from tools.tournament import VsMatchRunner
+
+    seen = {}
+
+    class Env:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(vs_vec, "DrMarioVsPoolVecEnv", Env)
+    runner = VsMatchRunner(device="cpu", gpu_planner=gpu_planner)
+    runner.close()
+    assert seen["gpu_planner"] is gpu_planner
 
 
 # ----------------------------------------------------------------- Wilson CI

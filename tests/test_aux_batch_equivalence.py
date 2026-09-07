@@ -49,3 +49,30 @@ def test_build_aux_batch_matches_per_env():
     for i in range(B):
         single = adapter._build_aux_v1(obs[i], infos[i])
         np.testing.assert_allclose(batched[i], single, atol=1e-6, err_msg=f"env {i}")
+
+
+def test_public_zero_aux_never_reads_private_context():
+    from tools.eval_policy import _make_aux_builder
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+
+    class PrivateInfo(dict):
+        def get(self, *args, **kwargs):
+            raise AssertionError("public policy read private context")
+
+    adapter = _make_aux_builder(72, aux_spec="zero_v1_vs")
+    private = PrivateInfo()
+    obs = np.full((2, 20, 16, 8), np.nan, dtype=np.float32)
+    np.testing.assert_array_equal(adapter._build_aux_batch(obs, [private] * 2), np.zeros((2, 72)))
+    np.testing.assert_array_equal(adapter._build_aux(obs[0], private), np.zeros(72))
+    np.testing.assert_array_equal(adapter._build_aux_v1(obs[0], private), np.zeros(72))
+    # No native runner or hidden buffers exist on this instance: the direct
+    # learner/opponent path must return before consulting any of them.
+    env = DrMarioVsPoolVecEnv.__new__(DrMarioVsPoolVecEnv)
+    np.testing.assert_array_equal(env._build_direct_aux(np.array([0, 3]), "zero_v1_vs"), np.zeros((2, 72)))
+
+
+def test_aux_builder_rejects_incompatible_checkpoint_contract():
+    from tools.eval_policy import _make_aux_builder
+
+    with pytest.raises(ValueError, match="does not match width"):
+        _make_aux_builder(57, aux_spec="zero_v1_vs")

@@ -1,0 +1,105 @@
+# Bounded outcome-only continuation of the frozen public V5 epoch-5 student.
+# Level 20 targets the measured weakness; level 14 is a held-out regression gate.
+# This experiment does not promote the failed counterfactual teacher or certify
+# a human rating, execution profile, or superhuman product.
+algo: ppo_smdp
+seed: 20260912
+device: cuda
+viz: []
+video_interval: 0
+
+train:
+  total_steps: 10000000
+  checkpoint_interval: 2000000
+  checkpoint_keep_last: 6
+  checkpoint_compress: false
+  skill_grading: false
+  strict_checkpoint: true
+  resume_step: false
+  resume_optimizer: false
+
+smdp_ppo:
+  lr: 1.0e-5
+  gamma: 1.0
+  gae_lambda: 0.98
+  clip_epsilon: 0.10
+  value_coef: 0.6
+  entropy_coef: 0.001
+  entropy_schedule_end: 0.001
+  entropy_schedule_steps: 10000000
+  max_grad_norm: 0.7
+  decisions_per_update: 4096
+  num_epochs: 2
+  minibatch_size: 128
+  compile_mode: "default"
+  rollout_compute_dtype: bf16
+  update_compute_dtype: bf16
+  policy_type: candidate
+  candidate_architecture: g5
+  pill_embed_dim: 160
+  pill_embed_type: ordered_pair
+  encoder_blocks: 8
+  candidate_max_candidates: 512
+  candidate_d_model: 320
+  candidate_pos_embed_dim: 32
+  candidate_cost_embed_dim: 32
+  candidate_hidden_dim: 768
+  candidate_board_channels: 16
+  candidate_transformer_heads: 8
+  candidate_transformer_ff_mult: 4
+  candidate_patch_kernel: 9
+  candidate_cross_layers: 3
+  candidate_cross_ff_mult: 4
+  candidate_interaction_layers: 2
+  candidate_value_atoms: 51
+  candidate_conditioned_trunk: true
+  candidate_opponent_features: true
+  candidate_bottle_block: dense
+  candidate_compact_features: false
+  aux_spec: zero_v1_vs
+  value_loss_type: huber
+  teacher_distill:
+    enabled: false
+  search_distill:
+    enabled: false
+
+env:
+  id: drmario-vs
+  obs_mode: state
+  backend: cpp-vs-pool
+  gpu_planner: true
+  direct_policy_batch: true
+  state_repr: bitplane_bottle_conn_mask_vs
+  num_pairs: 64
+  frame_stack: 1
+  randomize_rng: true
+  level: 20
+  speed_setting: 2
+  garbage_reward_coef: 0.0
+  clear_win_bonus: 0.0
+  virus_progress_reward_coef: 0.0
+  decision_penalty: 0.0
+  match_horizon_pills: 0
+  horizon_penalty: 0.0
+  start_bank:
+    enabled: false
+  opponent_pool:
+    enabled: true
+    max_pool: 6
+    snapshot_every_matches: 4096
+    snapshot_gate:
+      enabled: false
+    device: cuda
+    seed_paths:
+      - runs/trainer-baseline-v1/v5-full-epoch05-public.pt.gz
+      - runs/trainer-baseline-v1/g4-strongest.pt.gz
+    league:
+      mode: mixed
+      exploiter_fraction: 0.5
+      main_agents:
+        - runs/trainer-baseline-v1/v5-full-epoch05-public.pt.gz
+        - runs/trainer-baseline-v1/g4-strongest.pt.gz
+
+curriculum:
+  enabled: false
+logdir: runs/trainer-public-outcome-v1

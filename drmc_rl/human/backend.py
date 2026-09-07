@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
+import hashlib
 from dataclasses import dataclass
+from collections import deque
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,7 +14,7 @@ import numpy as np
 from drmc_rl.human.afterstate_model import HUMAN_AFTERSTATE_SCHEMA
 from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
 from drmc_rl.human.coach import analyze_choice
-from drmc_rl.human.cadence import add_thinking_delay, hold_soft_drop_suffix
+from drmc_rl.execution.pace import PACES, Pace, resolve_pace
 from drmc_rl.human.model import canonicalize_same_color_action
 from drmc_rl.human.runtime import HumanPolicyRuntime
 from drmc_rl.human.search import (
@@ -21,7 +23,13 @@ from drmc_rl.human.search import (
     competitive_scores,
 )
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
-from drmc_rl.planning.fast_reach import FrameState, HoldDir, Rotation, compute_speed_threshold
+from drmc_rl.planning.fast_reach import (
+    FrameState,
+    HoldDir,
+    Rotation,
+    compute_speed_threshold,
+    simulate_frame,
+)
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 from tools.annotate_replay_events import POSE_TO_ACTION
@@ -115,6 +123,19 @@ def _pair(value: Any, name: str) -> np.ndarray:
     return result
 
 
+def _frame_payload(frame: FrameState) -> dict[str, int]:
+    return {
+        "x": frame.x,
+        "y": frame.y,
+        "rotation": frame.rot,
+        "speed_counter": frame.speed_counter,
+        "horizontal_velocity": frame.hor_velocity,
+        "hold_dir": frame.hold_dir.value,
+        "rotation_hold": frame.rot_hold.value,
+        "frame_parity": frame.frame_parity,
+    }
+
+
 class HumanBackend:
     """Synchronous worker intended to be supervised off the gameplay thread."""
 
@@ -126,6 +147,7 @@ class HumanBackend:
         seed: int = 0,
         max_frames: int = 2048,
         realtime_profile: str = "auto",
+        competitive_checkpoint: str | None = None,
     ):
         started = time.perf_counter()
         schema = load_checkpoint(Path(checkpoint), map_location="cpu").get("schema")
@@ -135,6 +157,27 @@ class HumanBackend:
         else:
             self.runtime = HumanPolicyRuntime(checkpoint, device=device, seed=seed)
         self.device = device
+        with Path(checkpoint).open("rb") as artifact:
+            self.checkpoint_sha256 = hashlib.file_digest(artifact, "sha256").hexdigest()
+        self.competitive = None
+        self.competitive_identity = None
+        if competitive_checkpoint is not None:
+            from tools.vs_head_to_head import PlainPolicy
+
+            if not self.afterstate_v3:
+                raise ValueError("a competitive ceiling requires a V3 human/timing checkpoint")
+            self.competitive = PlainPolicy(
+                Path(competitive_checkpoint), device=device, public_only=True
+            )
+            with Path(competitive_checkpoint).open("rb") as artifact:
+                digest = hashlib.file_digest(artifact, "sha256").hexdigest()
+            self.competitive_identity = {
+                "checkpoint": Path(competitive_checkpoint).name,
+                "sha256": digest,
+                "information_scope": "public-boards-pills-reachability-zero-aux-v1",
+                "observation_encoding": "legacy-vs-horizontal-bond-mask-v1",
+                "control": "quality_argmax; no absolute human rating claim",
+            }
         self.seed = int(seed)
         if realtime_profile == "auto":
             realtime_profile = "balanced" if str(device).startswith("cuda") else "fast"
@@ -145,6 +188,7 @@ class HumanBackend:
         self.search_budget = AdaptiveSearchBudget()
         self.search: HumanValueSearch | None = None
         self.planner = NativeReachabilityRunner(max_frames=max_frames)
+        self.warmup()
         self.ready = True
         self.started_at = time.time()
         self.load_ms = (time.perf_counter() - started) * 1e3
@@ -153,7 +197,53 @@ class HumanBackend:
         self.cancelled: set[int] = set()
         self.last_request_id = -1
         self.latest_frame_id = -1
-        self.latencies_ms: list[float] = []
+        self.latencies_ms: deque[float] = deque(maxlen=256)
+
+    def warmup(self) -> None:
+        """Initialize inference kernels before accepting a timed game request.
+
+        Score a legal neutral position without choosing an action or sampling
+        timing, so warm-up cannot consume the player's seeded error sequence.
+        """
+
+        planes = np.zeros((8, GRID_H, GRID_W), dtype=np.float32)
+        state = {"board_planes": planes, "opponent_board_planes": planes,
+                 "pill": [0, 1], "preview": [2, 0], "speed": 2, "speed_ups": 0}
+        _own, _opp, pill, preview, speed, speed_ups, _frame, _reach, packed, costs = self._candidates(state)
+        rating = self.runtime.condition.mean
+        args = dict(board_planes=planes, opponent_board_planes=planes,
+                    opponent_state_age_frames=0, pill=pill, preview=preview,
+                    candidate_actions=packed.actions, candidate_costs=packed.cost,
+                    candidate_mask=packed.mask, rating=rating)
+        if self.afterstate_v3:
+            self.runtime.score(**args, speed=speed, speed_ups=speed_ups)
+        else:
+            self.runtime.score(**args)
+        self.runtime.timing_prediction(
+            board_planes=planes, rating=rating, chosen_cost=float(packed.cost[0]),
+            speed=speed, speed_ups=speed_ups, candidate_count=packed.count,
+        )
+        if self.competitive is not None:
+            feasible = (costs != 0xFFFF).reshape(4, GRID_H, GRID_W)
+            masks = [feasible]
+            if str(self.competitive.device).startswith("mps"):
+                legal = np.ones((4, GRID_H, GRID_W), dtype=bool)
+                legal[::2, :, -1] = False
+                legal[1::2, 0, :] = False
+                positions = np.flatnonzero(legal)
+                masks = []
+                for count in (32, 64, 128, 256, len(positions)):
+                    mask = np.zeros(legal.size, dtype=bool)
+                    mask[positions[:count]] = True
+                    masks.append(mask.reshape(legal.shape))
+            for mask in masks:
+                observation = np.concatenate((planes, planes, mask.astype(np.float32)))
+                self.competitive.score(observation[None], [{
+                    "placements/feasible_mask": mask,
+                    "placements/cost_to_lock": np.where(mask, 32, 0xFFFF),
+                    "next_pill_colors": pill,
+                    "preview_pill": {"first_color": 2, "second_color": 1},
+                }])
 
     def capabilities(self) -> dict[str, Any]:
         return {
@@ -162,14 +252,25 @@ class HumanBackend:
             "modes": ["play", "coach"],
             "state": {
                 "board_planes": "8x16x8 canonical color/virus/connectivity planes",
+                "opponent_pill": "public current/last falling colors; required by the competitive ceiling",
                 "colors": "0=red, 1=yellow, 2=blue",
                 "coordinates": "planner coordinates: row 0 is bottle top",
             },
             "outputs": ["placement", "controller_frames", "timing", "coach_analysis"],
+            "scheduled_execution": {"version": 1, "max_delay_frames": 30},
+            "strength": {
+                "sample_regret": "V3 only; sample calibrated regret tails independently of imitation temperature",
+                "controls": ["regret", "quality"] if self.afterstate_v3 else ["regret"],
+                "competitive_ceiling": self.competitive_identity,
+                "regret_decoder": "ordered-log-regret-bands-v1" if self.afterstate_v3 else None,
+                "style_conditioning": "fixed population mean for play; requested rating for coaching",
+            },
             "cadence": {
-                "control": "timing_scale >= 0; zero is planner-minimal, one is corpus-calibrated",
-                "conditioning": "rating, pressure, phase, speed, prior tau, path cost",
-                "validation": "every delayed script is replayed before return",
+                "control": "named motor pace; legacy timing_scale maps to a preset",
+                "validation": "independent per-frame physics and hard motor limits",
+                "movement_scope": "complete constrained feasibility before strategic selection",
+                "unrestricted_fallback": False,
+                "profiles": [pace.to_dict() for pace in PACES],
             },
             "search": {
                 "available": True,
@@ -182,11 +283,11 @@ class HumanBackend:
                 "adaptive_deadline": True,
             },
             "cancellation": "cooperative between requests; hosts must discard stale frame_ids",
-            "model": self.runtime.identity,
+            "model": {**self.runtime.identity, "sha256": self.checkpoint_sha256},
         }
 
     def health(self) -> dict[str, Any]:
-        latencies = np.asarray(self.latencies_ms[-256:], dtype=np.float64)
+        latencies = np.asarray(self.latencies_ms, dtype=np.float64)
         return {
             "ready": self.ready,
             "uptime_s": time.time() - self.started_at,
@@ -198,7 +299,7 @@ class HumanBackend:
                 "p50": None if latencies.size == 0 else float(np.percentile(latencies, 50)),
                 "p95": None if latencies.size == 0 else float(np.percentile(latencies, 95)),
             },
-            "model": self.runtime.identity,
+            "model": {**self.runtime.identity, "sha256": self.checkpoint_sha256},
             "search": {
                 "realtime_profile": self.realtime_profile,
                 "beam": self.search_beam,
@@ -207,7 +308,8 @@ class HumanBackend:
             },
         }
 
-    def _candidates(self, state: Mapping[str, Any]):
+    def _candidates(self, state: Mapping[str, Any], execution_delay_frames: int = 0,
+                    pace: Pace | None = None):
         planes = _board_planes(state["board_planes"])
         opponent_planes = _board_planes(state["opponent_board_planes"])
         pill = _pair(state["pill"], "pill")
@@ -227,10 +329,20 @@ class HumanBackend:
         )
         speed = int(state.get("speed", 2))
         speed_ups = int(state.get("speed_ups", 0))
+        for _ in range(execution_delay_frames):
+            frame = simulate_frame(
+                _columns(planes),
+                frame,
+                0,
+                speed_threshold=compute_speed_threshold(speed, speed_ups),
+            )
+            if frame.locked:
+                raise ValueError("pill locks before scheduled execution")
         reach = self.planner.bfs_full(
             _columns(planes),
             frame,
             speed_threshold=compute_speed_threshold(speed, speed_ups),
+            **({} if pace is None else pace.planner_args(execution_delay_frames)),
         )
         costs = np.full(512, 0xFFFF, dtype=np.uint16)
         for pose in np.flatnonzero(reach.costs_u16 != 0xFFFF):
@@ -242,7 +354,7 @@ class HumanBackend:
         packed = pack_feasible_candidates(
             (costs != 0xFFFF).reshape(4, GRID_H, GRID_W),
             costs.reshape(4, GRID_H, GRID_W),
-            max_candidates=128,
+            max_candidates=max(128, int(np.count_nonzero(costs != 0xFFFF))),
             sort_by_cost=True,
         )
         if packed.count == 0:
@@ -274,6 +386,14 @@ class HumanBackend:
         state = request["state"]
         rating = float(request["target_rating"])
         temperature = float(request.get("temperature", 1.0))
+        execution_delay = int(request.get("execution_delay_frames", 0))
+        pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
+        if not 0 <= execution_delay <= 30:
+            raise ValueError("execution_delay_frames must be in [0,30]")
+        if not np.isfinite(rating) or not np.isfinite(temperature) or temperature < 0:
+            raise ValueError(
+                "rating and temperature must be finite; temperature must be non-negative"
+            )
         (
             planes,
             opponent_planes,
@@ -285,7 +405,7 @@ class HumanBackend:
             reach,
             packed,
             costs512,
-        ) = self._candidates(state)
+        ) = self._candidates(state, execution_delay, pace)
         rating_sd = float(request.get("target_rating_sd", 0.0))
         opponent_rating = state.get("opponent_rating")
         opponent_rating_sd = float(state.get("opponent_rating_sd", 0.0))
@@ -307,8 +427,25 @@ class HumanBackend:
             candidate_mask=packed.mask,
             rating=rating,
         )
-        if self.afterstate_v3:
-            details = self.runtime.score(**score_args, speed=speed, speed_ups=speed_ups)
+        competitive_only = (
+            self.afterstate_v3 and self.competitive is not None
+            and request.get("strength_control") == "quality" and request.get("type") != "coach"
+        )
+        if competitive_only:
+            # Maximum play needs the public competitive policy and the cheap
+            # cadence model. Only coaching needs a second full human/afterstate
+            # evaluation; do not spend the live decision budget on unused heads.
+            resolved_rating, rating_clamped = self.runtime.condition.resolve(rating)
+            logits, state_value, details = None, None, {}
+        elif self.afterstate_v3:
+            style_rating = (
+                self.runtime.condition.mean
+                if request.get("type") != "coach" and request.get("strength_control", "regret") == "regret"
+                else None
+            )
+            details = self.runtime.score(
+                **score_args, speed=speed, speed_ups=speed_ups, style_rating=style_rating
+            )
             logits = details["human_logits"]
             resolved_rating = float(details["resolved_rating"])
             rating_clamped = bool(details["rating_clamped"])
@@ -316,9 +453,9 @@ class HumanBackend:
         else:
             logits, state_value, resolved_rating, rating_clamped = self.runtime.score(**score_args)
         valid_actions = packed.actions[packed.mask]
-        valid_logits = logits[packed.mask]
+        valid_logits = None if logits is None else logits[packed.mask]
         search_info = None
-        comp = details["competitive_score"][packed.mask] if self.afterstate_v3 else None
+        comp = details["competitive_score"][packed.mask] if self.afterstate_v3 and not competitive_only else None
         search_error = None
         search_weight = max(float(request.get("search_weight", 0.0)), 0.0)
         use_search = (
@@ -329,7 +466,7 @@ class HumanBackend:
         )
         if self.afterstate_v3:
             search_info = {
-                "stage": "exact-afterstate",
+                "stage": "public-policy" if competitive_only else "exact-afterstate",
                 "nodes_expanded": int(packed.count),
             }
         elif use_search and search_deadline_ms >= self.search_budget.minimum_ms:
@@ -360,13 +497,48 @@ class HumanBackend:
                 search_error = {"kind": type(exc).__name__, "message": str(exc)}
         strength = None
         if self.afterstate_v3:
-            packed_slot, strength = self.runtime.choose_strength(
-                details["competitive_score"],
-                details["human_logits"],
-                packed.mask,
-                rating=resolved_rating,
-                temperature=temperature,
-            )
+            control = str(request.get("strength_control", "regret"))
+            if control not in {"regret", "quality"}:
+                raise ValueError("strength_control must be regret or quality")
+            if control == "quality":
+                scores = details.get("competitive_score")
+                if self.competitive is not None:
+                    from drmc_rl.game.observation import legacy_vs_policy_boards
+
+                    opponent_pill = _pair(state["opponent_pill"], "opponent_pill")
+                    policy_boards = legacy_vs_policy_boards(
+                        planes, opponent_planes, pill, opponent_pill
+                    )
+                    observed = np.concatenate((policy_boards,
+                        (costs512 != 0xFFFF).reshape(4, 16, 8).astype(np.float32)))
+                    raw_colors = (1, 0, 2)
+                    actions, masks, logits = self.competitive.score(observed[None], [{
+                        "placements/feasible_mask": (costs512 != 0xFFFF).reshape(4, 16, 8),
+                        "placements/cost_to_lock": costs512.reshape(4, 16, 8),
+                        "next_pill_colors": pill,
+                        "vs/opponent_pill_colors": opponent_pill,
+                        "preview_pill": {"first_color": raw_colors[int(preview[0])],
+                                         "second_color": raw_colors[int(preview[1])]},
+                    }])
+                    if set(actions[0, masks[0]]) != set(valid_actions):
+                        raise RuntimeError("competitive policy changed candidate coverage")
+                    by_action = np.full(512, -np.inf, dtype=np.float32)
+                    by_action[actions[0, masks[0]]] = logits[0, masks[0]]
+                    scores = np.where(packed.mask, by_action[packed.actions.clip(min=0)], -np.inf)
+                    comp = scores[packed.mask]
+                packed_slot = self.runtime.choose_quality(scores, packed.mask)
+                strength = {"control": "quality", "chosen_regret": 0.0,
+                            "rating_calibrated": False,
+                            "competitive_model": self.competitive_identity}
+            else:
+                packed_slot, strength = self.runtime.choose_strength(
+                    details["competitive_score"],
+                    details["human_logits"],
+                    packed.mask,
+                    rating=resolved_rating,
+                    temperature=1.0 if request.get("sample_regret", False) else temperature,
+                )
+                strength["control"] = "regret"
         else:
             decision_logits = (
                 valid_logits
@@ -401,41 +573,51 @@ class HumanBackend:
             speed_ups=speed_ups,
             candidate_count=packed.count,
         )
-        timing_scale = max(float(request.get("timing_scale", 1.0)), 0.0)
-        requested_slack = self.runtime.sample_slack_frames(timing, scale=timing_scale)
-        script, realized_slack = add_thinking_delay(
-            _columns(planes),
-            frame,
-            script,
+        motor_audit = pace.validate(
+            _columns(planes), frame, script,
             speed_threshold=compute_speed_threshold(speed, speed_ups),
-            target=(x, y, rotation),
-            requested_frames=requested_slack,
-        )
-        script, held_soft_drop = hold_soft_drop_suffix(
-            _columns(planes),
-            frame,
-            script,
-            speed_threshold=compute_speed_threshold(speed, speed_ups),
-            target=(x, y, rotation),
+            execution_delay=execution_delay,
         )
         timing.update(
-            scale=timing_scale,
-            requested_slack_frames=float(requested_slack),
-            realized_slack_frames=float(realized_slack),
-            cadence_clamped=bool(realized_slack < requested_slack),
-            held_soft_drop=held_soft_drop,
+            execution_profile=pace.to_dict(),
+            movement={"algorithm": "constrained-frame-search-v1", "validated": True,
+                      "unrestricted_fallback": False, **motor_audit},
+            planner_cost_frames=int(packed.cost[packed_slot]),
+            cost_semantics="duration of selected profile-valid witness",
         )
+        replay = frame
+        controller_states = []
+        for buttons in script:
+            if replay.locked:
+                break
+            controller_states.append(_frame_payload(replay))
+            replay = simulate_frame(
+                _columns(planes),
+                replay,
+                int(buttons),
+                speed_threshold=compute_speed_threshold(speed, speed_ups),
+            )
+        if not replay.locked or (replay.x, replay.y, replay.rot) != (x, y, rotation):
+            raise RuntimeError("controller script did not replay to selected placement")
+        script = script[: len(controller_states)]
+        timing["execution_frames"] = len(script)
         result = {
+            "execution": {
+                "start_frame": int(request["frame_id"]) + execution_delay,
+                "delay_frames": execution_delay,
+                "falling": _frame_payload(frame),
+            },
+            "controller_states": controller_states,
             "target_rating": rating,
             "resolved_rating": resolved_rating,
             "rating_clamped": rating_clamped,
-            "state_win_probability": float(1.0 / (1.0 + np.exp(-state_value))),
+            "state_win_probability": None if state_value is None else float(1.0 / (1.0 + np.exp(-state_value))),
             "placement": {"action": action, "x": x, "y_top": y, "rotation": rotation},
             "controller_frames": [ACTION_TO_BUTTONS[int(value)] for value in script],
             "controller_encoding": "NES button mask: R=1 L=2 D=4 B=64 A=128",
             "timing": timing,
             "candidate_count": int(packed.count),
-            "human_logits": valid_logits.tolist(),
+            "human_logits": None if valid_logits is None else valid_logits.tolist(),
             "candidate_actions": valid_actions.tolist(),
             "competitive_scores": None if comp is None else comp.tolist(),
             "strength": strength,

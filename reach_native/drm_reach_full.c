@@ -17,7 +17,7 @@
 //     - Edge press moves immediately and resets hor_velocity.
 //     - When holding L/R, hor_velocity increments; on >= 16 it triggers a move,
 //       then reloads to 10 (repeat every 6 frames).
-//     - Blocked movement sets hor_velocity = 15.
+//     - Cell collisions set hor_velocity = 15; bottle boundaries preserve it.
 // - Rotation quirks:
 //     - Rotation uses btnsPressed edge semantics: holding A/B across consecutive
 //       frames triggers only on the first frame.
@@ -746,7 +746,7 @@ int drm_reach_bfs_full(
                     uint8_t hv;
                     int8_t dx;
                 } Tmp;
-                Tmp tmp[2];
+                Tmp tmp[3];
                 int ntmp = 0;
 
                 if (!allow_move || hold_dir_now == HOLD_NEUTRAL) {
@@ -758,7 +758,9 @@ int drm_reach_bfs_full(
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)(fits_row >> 1);
                     const uint8_t movable = (uint8_t)(xmask & ok);
-                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & (1u << (6 + (rot & 1))));
+                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = 0; ntmp++; }
                     if (movable) {
                         tmp[ntmp].xmask = (uint8_t)(movable << 1);
                         tmp[ntmp].hv = (uint8_t)(hv & 0x0F);
@@ -775,7 +777,9 @@ int drm_reach_bfs_full(
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)((fits_row << 1) & 0xFFu);
                     const uint8_t movable = (uint8_t)(xmask & ok);
-                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & 1u);
+                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = 0; ntmp++; }
                     if (movable) {
                         tmp[ntmp].xmask = (uint8_t)(movable >> 1);
                         tmp[ntmp].hv = (uint8_t)(hv & 0x0F);
@@ -1297,7 +1301,7 @@ int drm_reach_bfs_v2(
                 }
 
                 typedef struct { uint8_t xmask; uint8_t hv; int8_t dx; } Tmp;
-                Tmp tmp[2];
+                Tmp tmp[3];
                 int ntmp = 0;
 
                 if (!allow_move || hold_dir_now == HOLD_NEUTRAL) {
@@ -1309,14 +1313,18 @@ int drm_reach_bfs_v2(
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)(fits_row >> 1);
                     const uint8_t movable = (uint8_t)(xmask & ok);
-                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & (1u << (6 + (rot & 1))));
+                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = 0; ntmp++; }
                     if (movable) { tmp[ntmp].xmask = (uint8_t)(movable << 1); tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = 1; ntmp += 1; }
                     if (blocked) { tmp[ntmp].xmask = blocked; tmp[ntmp].hv = (uint8_t)HOR_BLOCKED; tmp[ntmp].dx = 0; ntmp += 1; }
                 } else {
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)((fits_row << 1) & 0xFFu);
                     const uint8_t movable = (uint8_t)(xmask & ok);
-                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & 1u);
+                    const uint8_t blocked = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = 0; ntmp++; }
                     if (movable) { tmp[ntmp].xmask = (uint8_t)(movable >> 1); tmp[ntmp].hv = (uint8_t)(hv & 0x0F); tmp[ntmp].dx = -1; ntmp += 1; }
                     if (blocked) { tmp[ntmp].xmask = blocked; tmp[ntmp].hv = (uint8_t)HOR_BLOCKED; tmp[ntmp].dx = 0; ntmp += 1; }
                 }
@@ -1784,8 +1792,8 @@ int drm_reach_bfs_v3(
                     const int g_sc0 = ygs[gi].sc_zero;
                     const int gvp = vparity;  // rot unchanged until rotate stage
 
-                    // X stage on xmask level: ≤2 sub-groups (moved / blocked)
-                    struct XG { uint8_t xm; int8_t dx; uint8_t hv; } xgs[2];
+                    // X stage: moved / blocked by cells / at bottle boundary
+                    struct XG { uint8_t xm; int8_t dx; uint8_t hv; } xgs[3];
                     int n_xg = 0;
                     if (!allow_move || dir == HOLD_NEUTRAL) {
                         xgs[0].xm = g_xm; xgs[0].dx = 0; xgs[0].hv = (uint8_t)(hv & 0x0F);
@@ -1794,14 +1802,18 @@ int drm_reach_bfs_v3(
                         const uint8_t fits_row = fit_mask[gvp][gy];
                         const uint8_t ok = (uint8_t)(fits_row >> 1);
                         const uint8_t mv = (uint8_t)(g_xm & ok);
-                        const uint8_t bl = (uint8_t)(g_xm & (uint8_t)(~ok));
+                        const uint8_t wall = (uint8_t)(g_xm & (1u << (6 + gvp)));
+                        const uint8_t bl = (uint8_t)(g_xm & (uint8_t)(~(ok | wall)));
+                        if (wall) { xgs[n_xg].xm = wall; xgs[n_xg].dx = 0; xgs[n_xg].hv = (uint8_t)(hv & 0x0F); n_xg++; }
                         if (mv) { xgs[n_xg].xm = mv; xgs[n_xg].dx = 1; xgs[n_xg].hv = (uint8_t)(hv & 0x0F); n_xg++; }
                         if (bl) { xgs[n_xg].xm = bl; xgs[n_xg].dx = 0; xgs[n_xg].hv = (uint8_t)HOR_BLOCKED; n_xg++; }
                     } else {
                         const uint8_t fits_row = fit_mask[gvp][gy];
                         const uint8_t ok = (uint8_t)((fits_row << 1) & 0xFFu);
                         const uint8_t mv = (uint8_t)(g_xm & ok);
-                        const uint8_t bl = (uint8_t)(g_xm & (uint8_t)(~ok));
+                        const uint8_t wall = (uint8_t)(g_xm & 1u);
+                        const uint8_t bl = (uint8_t)(g_xm & (uint8_t)(~(ok | wall)));
+                        if (wall) { xgs[n_xg].xm = wall; xgs[n_xg].dx = 0; xgs[n_xg].hv = (uint8_t)(hv & 0x0F); n_xg++; }
                         if (mv) { xgs[n_xg].xm = mv; xgs[n_xg].dx = -1; xgs[n_xg].hv = (uint8_t)(hv & 0x0F); n_xg++; }
                         if (bl) { xgs[n_xg].xm = bl; xgs[n_xg].dx = 0; xgs[n_xg].hv = (uint8_t)HOR_BLOCKED; n_xg++; }
                     }
@@ -2028,7 +2040,10 @@ static void v4_step(
         s->hv += 1;
         if (s->hv >= HOR_ACCEL_SPEED) { s->hv = HOR_RELOAD; allow_move = 1; }
     }
-    if (allow_move && dir != HOLD_NEUTRAL) {
+    // The ROM checks the bottle boundary before collision. Only a cell
+    // collision charges DAS; a wall preserves the press/repeat phase.
+    if (allow_move && dir != HOLD_NEUTRAL &&
+        (hold_right ? s->x < 6 + (s->rot & 1) : s->x > 0)) {
         const int nx = s->x + (hold_right ? 1 : -1);
         if (fits_masked(fit_mask, nx, s->y, s->rot)) s->x = nx;
         else s->hv = HOR_BLOCKED;
@@ -2189,8 +2204,10 @@ static int v4_greedy_tuck(
 // optionally move one column (X stage), then optionally rotate with kick
 // quirks (rotate stage). Every real frame is one composite edge, so BFS
 // distance over this graph is an admissible frame lower bound.
+// Up to 2 * 3 * (1 + 4) = 30 successors. Reverse storage
+// has 64 slots: at most 54 incoming edges including duplicate variants.
 static int v4_composite_succ(
-    const uint8_t fit_mask[2][GRID_H], int x, int y, int rot, uint16_t succ[16]
+    const uint8_t fit_mask[2][GRID_H], int x, int y, int rot, uint16_t succ[32]
 ) {
     int n = 0;
     for (int dy = 0; dy <= 1; ++dy) {
@@ -2316,7 +2333,7 @@ int drm_reach_bfs_v4(
     }
 
     // ---- Phase 1a: composite geometric lower bounds (backward BFS per pose) ----
-    static _Thread_local uint16_t radj[512][20];
+    static _Thread_local uint16_t radj[512][64];
     static _Thread_local uint8_t radj_n[512];
     memset(radj_n, 0, sizeof(radj_n));
     for (int pose = 0; pose < 512; ++pose) {
@@ -2324,13 +2341,13 @@ int drm_reach_bfs_v4(
         const int y = (pose >> 3) & 15;
         const int rot = (pose >> 7) & 3;
         if (!fits_masked(fit_mask, x, y, rot)) continue;
-        uint16_t succ[16];
+        uint16_t succ[32];
         const int ns = v4_composite_succ(fit_mask, x, y, rot, succ);
         for (int i = 0; i < ns; ++i) {
             const uint16_t s2 = succ[i];
             if (s2 == (uint16_t)pose) continue;
             uint8_t* rn = &radj_n[s2];
-            if (*rn < 20) { radj[s2][*rn] = (uint16_t)pose; *rn += 1; }
+            if (*rn < 64) { radj[s2][*rn] = (uint16_t)pose; *rn += 1; }
         }
     }
     int wanted_ids[512];
@@ -2567,7 +2584,7 @@ int drm_reach_bfs_v4(
                 }
 
                 typedef struct { uint8_t xmask; uint8_t hv; } Tmp;
-                Tmp tmp[2];
+                Tmp tmp[3];
                 int ntmp = 0;
                 if (!allow_move || hold_dir_now == HOLD_NEUTRAL) {
                     tmp[0].xmask = xmask; tmp[0].hv = (uint8_t)(hv & 0x0F); ntmp = 1;
@@ -2575,14 +2592,18 @@ int drm_reach_bfs_v4(
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)(fits_row >> 1);
                     const uint8_t mv = (uint8_t)(xmask & ok);
-                    const uint8_t bl = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & (1u << (6 + (rot & 1))));
+                    const uint8_t bl = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); ntmp++; }
                     if (mv) { tmp[ntmp].xmask = (uint8_t)(mv << 1); tmp[ntmp].hv = (uint8_t)(hv & 0x0F); ntmp++; }
                     if (bl) { tmp[ntmp].xmask = bl; tmp[ntmp].hv = (uint8_t)HOR_BLOCKED; ntmp++; }
                 } else {
                     const uint8_t fits_row = fit_mask[(rot & 1) ? 1 : 0][y];
                     const uint8_t ok = (uint8_t)((fits_row << 1) & 0xFFu);
                     const uint8_t mv = (uint8_t)(xmask & ok);
-                    const uint8_t bl = (uint8_t)(xmask & (uint8_t)(~ok));
+                    const uint8_t wall = (uint8_t)(xmask & 1u);
+                    const uint8_t bl = (uint8_t)(xmask & (uint8_t)(~(ok | wall)));
+                    if (wall) { tmp[ntmp].xmask = wall; tmp[ntmp].hv = (uint8_t)(hv & 0x0F); ntmp++; }
                     if (mv) { tmp[ntmp].xmask = (uint8_t)(mv >> 1); tmp[ntmp].hv = (uint8_t)(hv & 0x0F); ntmp++; }
                     if (bl) { tmp[ntmp].xmask = bl; tmp[ntmp].hv = (uint8_t)HOR_BLOCKED; ntmp++; }
                 }
@@ -2697,4 +2718,488 @@ v4_done:
     }
     return 0;
 #undef V4_REFRESH_G
+}
+
+// Profile-constrained frame BFS. Cooldowns and the complete previous controller
+// action are part of the visited key: an unrestricted pose witness cannot stand
+// in for a route that satisfies these motor limits. The scalar NES transition
+// remains independently checked against fast_reach.simulate_frame.
+typedef struct {
+    uint32_t parent, effort, next;
+    uint16_t depth;
+    uint8_t x, y, rot, sc, hv, parity, action, edge_wait, motion_wait, span;
+} PacedNode;
+
+static uint64_t paced_key(const PacedNode* n) {
+    const uint64_t hv = ACT_HOLD_DIR[n->action] ? n->hv : 0;
+    return (uint64_t)n->x | ((uint64_t)n->y << 3) | ((uint64_t)n->rot << 7)
+        | ((uint64_t)n->sc << 9) | (hv << 16) | ((uint64_t)n->action << 20)
+        | ((uint64_t)n->parity << 25) | ((uint64_t)n->edge_wait << 26)
+        | ((uint64_t)n->motion_wait << 32);
+}
+
+static uint32_t paced_hash(uint64_t key) {
+    key ^= key >> 30;
+    key *= UINT64_C(0xbf58476d1ce4e5b9);
+    key ^= key >> 27;
+    key *= UINT64_C(0x94d049bb133111eb);
+    return (uint32_t)(key ^ (key >> 31));
+}
+
+static uint32_t paced_slot(uint64_t key, const PacedNode* nodes,
+                           const uint32_t* table, uint32_t capacity) {
+    uint32_t slot = paced_hash(key) & (capacity - 1);
+    while (table[slot] && paced_key(&nodes[table[slot] - 1]) != key)
+        slot = (slot + 1) & (capacity - 1);
+    return slot;
+}
+
+static uint8_t paced_buttons(int action) {
+    return (ACT_HOLD_DIR[action] == 1 ? 2 : ACT_HOLD_DIR[action] == 2 ? 1 : 0)
+        | (ACT_HOLD_DOWN[action] ? 4 : 0)
+        | (ACT_ROT[action] == 1 ? 128 : ACT_ROT[action] == 2 ? 64 : 0);
+}
+
+static unsigned paced_popcount(unsigned value) {
+    unsigned n = 0;
+    while (value) { value &= value - 1; ++n; }
+    return n;
+}
+
+typedef struct {
+    int head[512], from[4096], next[4096], count;
+} PacedReverse;
+
+static void paced_reverse_edge(PacedReverse* graph, int from, int to) {
+    int i = graph->count++;
+    graph->from[i] = from; graph->next[i] = graph->head[to]; graph->head[to] = i;
+}
+
+static void paced_build_reverse(const uint8_t fit[2][GRID_H], PacedReverse* graph) {
+    memset(graph->head, 0xFF, sizeof(graph->head)); graph->count = 0;
+    for (int p = 0; p < 512; ++p) {
+        int x = p & 7, y = (p >> 3) & 15, rot = p >> 7;
+        if (!fits_masked(fit, x, y, rot)) continue;
+        for (int dx = -1; dx <= 1; dx += 2)
+            if (fits_masked(fit, x + dx, y, rot))
+                paced_reverse_edge(graph, p, pose_index(x + dx, y, rot));
+        if (y < 15 && fits_masked(fit, x, y + 1, rot))
+            paced_reverse_edge(graph, p, pose_index(x, y + 1, rot));
+        for (int rotation = 1; rotation <= 2; ++rotation)
+            for (int left = 0; left <= 1; ++left) {
+                int nx = x, nr = rot;
+                apply_rotation_masked(fit, &nx, y, &nr, rotation, left);
+                int np = pose_index(nx, y, nr);
+                if (np != p) paced_reverse_edge(graph, p, np);
+            }
+    }
+}
+
+// A conservative geometric reverse closure: if a state cannot reach any still
+// unresolved target even with unrestricted operation timing, its descendants
+// cannot add a candidate. This prunes no profile-feasible placement.
+static void paced_needed(const PacedReverse* graph, const uint8_t wanted[512],
+                         const uint16_t costs[512], uint8_t needed[512]) {
+    uint16_t queue[512]; int head = 0, tail = 0;
+    memset(needed, 0, 512);
+    for (int p = 0; p < 512; ++p)
+        if (wanted[p] && costs[p] == 0xFFFFu) { needed[p] = 1; queue[tail++] = p; }
+    while (head < tail) {
+        for (int e = graph->head[queue[head++]]; e != -1; e = graph->next[e]) {
+            int p = graph->from[e];
+            if (!needed[p]) { needed[p] = 1; queue[tail++] = p; }
+        }
+    }
+}
+
+// Bounded goal-directed witness finder. It is only an accelerator: any target
+// it cannot witness is still proved by the exhaustive solver below.
+static int paced_probe(const uint8_t fit[2][GRID_H], const PacedReverse* graph,
+    V4State initial, int target, int threshold, int edge_interval, int motion_interval,
+    int max_buttons, int horizon, uint8_t* script) {
+    uint16_t distance[512], queue[512]; int qh = 0, qt = 0;
+    memset(distance, 0xFF, sizeof(distance)); distance[target] = 0; queue[qt++] = target;
+    while (qh < qt) {
+        int p = queue[qh++];
+        for (int e = graph->head[p]; e != -1; e = graph->next[e]) {
+            int from = graph->from[e];
+            if (distance[from] == 65535) { distance[from] = distance[p] + 1; queue[qt++] = from; }
+        }
+    }
+    enum { LIMIT = 32768, TABLE = 65536 };
+    PacedNode* nodes = malloc(LIMIT * sizeof(*nodes));
+    uint32_t* heap = malloc(LIMIT * sizeof(*heap));
+    uint32_t* table = calloc(TABLE, sizeof(*table));
+    if (!nodes || !heap || !table) { free(nodes); free(heap); free(table); return -1; }
+    nodes[0] = (PacedNode){.parent=UINT32_MAX, .x=initial.x, .y=initial.y, .rot=initial.rot,
+        .sc=initial.sc, .hv=initial.hv, .parity=initial.p, .action=initial.hd * 6 + initial.rh};
+    table[paced_slot(paced_key(nodes), nodes, table, TABLE)] = 1;
+    heap[0] = 0; unsigned count = 1, heapsize = 1, expanded = 0;
+    int result = -1;
+    while (heapsize && expanded++ < 4096 && count < LIMIT - 18) {
+        uint32_t parent = heap[0], replacement = heap[--heapsize];
+        unsigned at = 0;
+        while (at * 2 + 1 < heapsize) {
+            unsigned child = at * 2 + 1;
+            if (child + 1 < heapsize && nodes[heap[child + 1]].effort < nodes[heap[child]].effort) ++child;
+            if (nodes[replacement].effort <= nodes[heap[child]].effort) break;
+            heap[at] = heap[child]; at = child;
+        }
+        heap[at] = replacement;
+        PacedNode current = nodes[parent];
+        if (current.depth >= horizon) continue;
+        for (int action = 0; action < 18; ++action) {
+            if (ACT_HOLD_DIR[action] && ACT_HOLD_DOWN[action]) continue;
+            if ((int)paced_popcount(paced_buttons(action)) > max_buttons) continue;
+            V4State state = {current.x, current.y, current.rot, current.sc, current.hv,
+                ACT_HOLD_DIR[current.action], current.parity, ACT_ROT[current.action], 0};
+            int dwell = action != current.action && edge_interval > 1 ? edge_interval : 1;
+            int span = 0, wait = current.motion_wait, invalid = 0;
+            while (span < dwell && current.depth + span < horizon && !state.locked) {
+                int x = state.x, rot = state.rot;
+                v4_step(fit, threshold, &state, action);
+                int moved = state.x != x || state.rot != rot;
+                if (moved && wait) { invalid = 1; break; }
+                wait = moved ? (motion_interval ? motion_interval - 1 : 0) : (wait ? wait - 1 : 0);
+                ++span;
+            }
+            if (invalid) continue;
+            int pose = pose_index(state.x, state.y, state.rot);
+            if (state.locked) {
+                if (pose != target) continue;
+                result = current.depth + span;
+                int index = result;
+                for (int i = 0; i < span; ++i) script[--index] = action;
+                for (uint32_t n = parent; nodes[n].parent != UINT32_MAX; n = nodes[n].parent)
+                    for (int i = 0; i < nodes[n].span; ++i) script[--index] = nodes[n].action;
+                if (index) result = -1;
+                goto probe_done;
+            }
+            if (span < dwell || distance[pose] == 65535) continue;
+            PacedNode next = {.parent=parent, .depth=current.depth + span,
+                .x=state.x, .y=state.y, .rot=state.rot, .sc=state.sc, .hv=state.hv,
+                .parity=state.p, .action=action, .motion_wait=wait, .span=span};
+            uint32_t slot = paced_slot(paced_key(&next), nodes, table, TABLE);
+            if (table[slot]) continue;
+            next.effort = (uint32_t)distance[pose] * 65536 + next.depth;
+            nodes[count] = next; table[slot] = count + 1;
+            unsigned index = heapsize++;
+            while (index && nodes[heap[(index - 1) / 2]].effort > next.effort) {
+                heap[index] = heap[(index - 1) / 2]; index = (index - 1) / 2;
+            }
+            heap[index] = count++;
+        }
+    }
+probe_done:
+    free(nodes); free(heap); free(table);
+    return result;
+}
+
+// Intent-preserving, monotone steering for ordinary moves. Every frame obeys
+// exactly the same envelope as the exhaustive solver below. These witnesses
+// establish feasibility cheaply; their reported costs are realized durations,
+// not a claim of the minimum duration over all constrained scripts.
+static int paced_simple_route(const uint8_t fit[2][GRID_H], int threshold,
+    V4State state, int px, int py, int prot, int edge_interval, int motion_interval,
+    int max_buttons, int max_frames, int order, int tap, uint8_t* script,
+    int waypoint_x, int waypoint_rot, int switch_y) {
+    int previous = state.hd * 6 + state.rh, edge_wait = 0, motion_wait = 0;
+    for (int frame = 0; frame < max_frames; ++frame) {
+        if (switch_y >= 0 && state.x == waypoint_x && state.rot == waypoint_rot && state.y >= switch_y)
+            switch_y = -1;
+        int dx = (switch_y >= 0 ? waypoint_x : px) - state.x;
+        int rotations = (state.rot - (switch_y >= 0 ? waypoint_rot : prot)) & 3;
+        int moving = dx != 0, rotating = rotations != 0;
+        if (order == 0 && rotating) moving = 0;
+        if (order == 1 && moving) rotating = 0;
+        int dir = moving ? (dx < 0 ? 1 : 2) : 0;
+        int rot = rotating ? (rotations == 3 ? 2 : 1) : 0;
+        if (tap && dir == state.hd) dir = 0;
+        if (rot == state.rh) rot = 0;
+        int action = dx || rotations ? dir * 6 + rot : 3;
+        if (edge_wait) action = previous;
+        if ((int)paced_popcount(paced_buttons(action)) > max_buttons) return -1;
+        V4State next = state;
+        v4_step(fit, threshold, &next, action);
+        int moved = next.x != state.x || next.rot != state.rot;
+        if (moved && motion_wait) {
+            if (edge_wait) return -1;
+            action = 0; next = state;
+            v4_step(fit, threshold, &next, action);
+            moved = next.x != state.x || next.rot != state.rot;
+            if (moved) return -1;
+        }
+        const int changed = action != previous;
+        edge_wait = changed ? (edge_interval > 0 ? edge_interval - 1 : 0)
+                            : (edge_wait ? edge_wait - 1 : 0);
+        motion_wait = moved ? (motion_interval > 0 ? motion_interval - 1 : 0)
+                            : (motion_wait ? motion_wait - 1 : 0);
+        script[frame] = (uint8_t)action;
+        state = next; previous = action;
+        if (state.locked) return state.x == px && state.y == py && state.rot == prot ? frame + 1 : -1;
+        if (state.y > py) return -1;
+    }
+    return -1;
+}
+
+int drm_reach_bfs_paced(
+    const uint16_t cols[GRID_W], int sx, int sy, int srot,
+    int speed_counter, int hor_velocity, int hold_dir, int parity, int rot_hold,
+    int speed_threshold, int max_frames,
+    int reaction_frames, int edge_interval, int motion_interval, int max_buttons,
+    uint16_t out_costs[512], uint16_t out_offsets[512], uint16_t out_lengths[512],
+    uint8_t* out_script_buf, int script_buf_cap, int* out_script_used
+) {
+    if (!cols || !out_costs || !out_offsets || !out_lengths || !out_script_buf
+        || !out_script_used || max_frames < 1 || max_frames > 65534
+        || reaction_frames < 0 || reaction_frames > max_frames
+        || edge_interval < 0 || edge_interval > 60
+        || motion_interval < 0 || motion_interval > 60
+        || max_buttons < 1 || max_buttons > 3) return -1;
+    *out_script_used = 0;
+    for (int i = 0; i < 512; ++i) {
+        out_costs[i] = 0xFFFFu; out_offsets[i] = 0; out_lengths[i] = 0;
+    }
+    if ((unsigned)sx >= 8 || (unsigned)sy >= 16 || (unsigned)srot >= 4
+        || speed_threshold < 0 || speed_threshold > 127
+        || speed_counter < 0 || speed_counter > speed_threshold
+        || (unsigned)hold_dir > 2 || (unsigned)rot_hold > 2) return -1;
+    uint8_t fit[2][GRID_H];
+    build_fit_masks(cols, fit);
+    if (!fits_masked(fit, sx, sy, srot)) return 0;
+    V4State initial = {sx, sy, srot, speed_counter, hor_velocity & 15,
+                       hold_dir, parity & 1, rot_hold, 0};
+    int prefix = 0;
+    while (prefix < reaction_frames && !initial.locked) {
+        v4_step(fit, speed_threshold, &initial, 0);
+        ++prefix;
+    }
+    if (initial.locked) {
+        if (prefix > script_buf_cap) return -3;
+        int pose = pose_index(initial.x, initial.y, initial.rot);
+        out_costs[pose] = out_lengths[pose] = (uint16_t)prefix;
+        memset(out_script_buf, 0, (size_t)prefix);
+        *out_script_used = prefix;
+        return 0;
+    }
+    if (prefix == max_frames) return 0;
+
+    uint8_t wanted[512];
+    int wanted_count = build_wanted_terminal_poses_reachable(
+        fit, initial.x, initial.y, initial.rot, wanted);
+    int found_wanted = 0, last_lock_depth = 0;
+    uint8_t* simple = malloc((size_t)max_frames * 2);
+    if (!simple) return -2;
+    for (int pose = 0; pose < 512; ++pose) {
+        if (!wanted[pose]) continue;
+        int best = max_frames + 1;
+        for (int tap = 0; tap < 2; ++tap) {
+            for (int order = 0; order < 3; ++order) {
+                int length = paced_simple_route(fit, speed_threshold, initial,
+                    pose & 7, (pose >> 3) & 15, pose >> 7, edge_interval, motion_interval,
+                    max_buttons, max_frames - prefix, order, tap, simple, 0, 0, -1);
+                if (length > 0 && length < best) {
+                    best = length; memcpy(simple + max_frames, simple, (size_t)length);
+                }
+            }
+        }
+        if (best > max_frames) continue;
+        const int offset = *out_script_used, length = prefix + best;
+        if (offset + length > script_buf_cap || offset + length > 65535) { free(simple); return -3; }
+        out_costs[pose] = out_lengths[pose] = (uint16_t)length;
+        out_offsets[pose] = (uint16_t)offset;
+        memset(out_script_buf + offset, 0, (size_t)prefix);
+        memcpy(out_script_buf + offset + prefix, simple + max_frames, (size_t)best);
+        *out_script_used += length;
+        ++found_wanted;
+    }
+    free(simple);
+    if (found_wanted == wanted_count) return 0;
+
+    // The independent unrestricted oracle cheaply proves some geometric
+    // targets impossible under gravity. Its scripts are NEVER executed here;
+    // only its superset feasibility mask prunes impossible search goals.
+    uint16_t upper_costs[512], upper_offsets[512], upper_lengths[512];
+    int upper_used = 0, upper_capacity = max_frames * 512;
+    uint8_t* upper_scripts = malloc((size_t)upper_capacity);
+    if (!upper_scripts) return -2;
+    int upper_rc = drm_reach_bfs_full(cols, initial.x, initial.y, initial.rot,
+        initial.sc, initial.hv, initial.hd, initial.p, initial.rh,
+        speed_threshold, max_frames - prefix, upper_costs, upper_offsets,
+        upper_lengths, upper_scripts, upper_capacity, &upper_used);
+    free(upper_scripts);
+    if (upper_rc) return upper_rc;
+    for (int p = 0; p < 512; ++p) {
+        if (wanted[p] && upper_costs[p] == 0xFFFFu) {
+            if (out_lengths[p]) return -4; // a valid witness contradicts the oracle
+            wanted[p] = 0; --wanted_count;
+        }
+    }
+    if (found_wanted == wanted_count) return 0;
+
+    PacedReverse reverse;
+    paced_build_reverse(fit, &reverse);
+    // Tucks usually have a staging column/orientation, a controlled descent,
+    // and final steering. Try that intent directly before exhaustive proof.
+    // Failure only advances to constrained search, never to a faster script.
+    simple = malloc((size_t)max_frames);
+    if (!simple) return -2;
+    for (int p = 0; p < 512; ++p) {
+        if (!wanted[p] || out_lengths[p]) continue;
+        int length = -1, px = p & 7, py = (p >> 3) & 15, prot = p >> 7;
+        for (int ry = py; ry >= 0 && length < 0; --ry)
+          for (int rd = 0; rd < 4 && length < 0; ++rd)
+            for (int distance = 0; distance < 8 && length < 0; ++distance)
+              for (int sign = -1; sign <= 1 && length < 0; sign += 2) {
+                int wx = px + sign * distance, wr = (prot + rd) & 3;
+                if (wx < 0 || wx > 7 || !fits_masked(fit, wx, ry, wr)) continue;
+                for (int tap = 0; tap < 2 && length < 0; ++tap)
+                  for (int order = 0; order < 3 && length < 0; ++order)
+                    length = paced_simple_route(fit, speed_threshold, initial, px, py, prot,
+                        edge_interval, motion_interval, max_buttons, max_frames - prefix,
+                        order, tap, simple, wx, wr, ry);
+              }
+        if (length < 0)
+            length = paced_probe(fit, &reverse, initial, p, speed_threshold,
+                edge_interval, motion_interval, max_buttons, max_frames - prefix, simple);
+        if (length < 0) continue;
+        int offset = *out_script_used;
+        if (offset + prefix + length > script_buf_cap || offset + prefix + length > 65535) { free(simple); return -3; }
+        out_costs[p] = out_lengths[p] = (uint16_t)(prefix + length);
+        out_offsets[p] = (uint16_t)offset;
+        memset(out_script_buf + offset, 0, (size_t)prefix);
+        memcpy(out_script_buf + offset + prefix, simple, (size_t)length);
+        *out_script_used += prefix + length; ++found_wanted;
+    }
+    free(simple);
+    if (found_wanted == wanted_count) return 0;
+
+    uint8_t needed[512];
+    paced_needed(&reverse, wanted, out_costs, needed);
+    int needed_dirty = 0;
+
+    uint32_t capacity = 4096, table_capacity = 8192, count = 1;
+    PacedNode* nodes = malloc((size_t)capacity * sizeof(*nodes));
+    uint32_t* table = calloc(table_capacity, sizeof(*table));
+    uint32_t* first = malloc((size_t)(max_frames + 1) * sizeof(*first));
+    uint32_t* last = malloc((size_t)(max_frames + 1) * sizeof(*last));
+    if (!nodes || !table || !first || !last) {
+        free(nodes); free(table); free(first); free(last); return -2;
+    }
+    memset(first, 0xFF, (size_t)(max_frames + 1) * sizeof(*first));
+    memset(last, 0xFF, (size_t)(max_frames + 1) * sizeof(*last));
+    first[prefix] = last[prefix] = 0;
+    nodes[0] = (PacedNode){.parent=UINT32_MAX, .effort=0, .next=UINT32_MAX, .depth=(uint16_t)prefix,
+        .x=(uint8_t)initial.x, .y=(uint8_t)initial.y, .rot=(uint8_t)initial.rot,
+        .sc=(uint8_t)initial.sc, .hv=(uint8_t)initial.hv, .parity=(uint8_t)initial.p,
+        .action=(uint8_t)(initial.hd * 6 + initial.rh), .edge_wait=0, .motion_wait=0, .span=0};
+    table[paced_slot(paced_key(nodes), nodes, table, table_capacity)] = 1;
+    uint32_t parents[512], efforts[512];
+    uint8_t actions[512], spans[512];
+    for (int i = 0; i < 512; ++i) { parents[i] = UINT32_MAX; efforts[i] = UINT32_MAX; }
+    int rc = 0;
+    for (int layer = prefix; layer < max_frames; ++layer) {
+      if (found_wanted == wanted_count && layer >= last_lock_depth) break;
+      if (needed_dirty) {
+          paced_needed(&reverse, wanted, out_costs, needed);
+          needed_dirty = 0;
+      }
+      for (uint32_t head = first[layer]; head != UINT32_MAX; head = nodes[head].next) {
+        const PacedNode current = nodes[head];
+        if (!needed[pose_index(current.x, current.y, current.rot)]) continue;
+        if (table[paced_slot(paced_key(&current), nodes, table, table_capacity)] != head + 1) continue;
+        for (int action = 0; action < 18; ++action) {
+            // Down has no effect while steering horizontally. Removing that
+            // redundant bit preserves physics and cannot add controller edges.
+            if (ACT_HOLD_DIR[action] && ACT_HOLD_DOWN[action]) continue;
+            if ((int)paced_popcount(paced_buttons(action)) > max_buttons) continue;
+            V4State state = {current.x, current.y, current.rot, current.sc, current.hv,
+                ACT_HOLD_DIR[current.action], current.parity, ACT_ROT[current.action], 0};
+            const unsigned edges = paced_popcount(paced_buttons(action) ^ paced_buttons(current.action));
+            // Contract a forced dwell into one graph edge. Continuing an input
+            // still advances one frame, so every legal change time is explored.
+            const int dwell = edges && edge_interval > 1 ? edge_interval : 1;
+            int span = 0, motion_wait = current.motion_wait, invalid = 0;
+            uint32_t effort = current.effort + 4 * edges;
+            while (span < dwell && current.depth + span < max_frames && !state.locked) {
+                const int old_x = state.x, old_rot = state.rot;
+                v4_step(fit, speed_threshold, &state, action);
+                const int moved = old_x != state.x || old_rot != state.rot;
+                if (moved && motion_wait) { invalid = 1; break; }
+                effort += (unsigned)abs(state.x - old_x) + 2 * (state.rot != old_rot);
+                motion_wait = moved ? (motion_interval > 0 ? motion_interval - 1 : 0)
+                                    : (motion_wait ? motion_wait - 1 : 0);
+                ++span;
+            }
+            if (invalid) continue;
+            const uint16_t depth = current.depth + span;
+            if (state.locked) {
+                int pose = pose_index(state.x, state.y, state.rot);
+                if (out_lengths[pose]) continue;  // already has a simple valid route
+                if (depth < out_costs[pose] || (depth == out_costs[pose] && effort < efforts[pose])) {
+                    if (out_costs[pose] == 0xFFFFu && wanted[pose]) { ++found_wanted; needed_dirty = 1; }
+                    if (depth > last_lock_depth) last_lock_depth = depth;
+                    out_costs[pose] = depth; parents[pose] = head;
+                    efforts[pose] = effort; actions[pose] = (uint8_t)action; spans[pose] = (uint8_t)span;
+                }
+                continue;
+            }
+            if (span < dwell) continue;
+            if (!needed[pose_index(state.x, state.y, state.rot)]) continue;
+            PacedNode next = {.parent=head, .effort=effort, .next=UINT32_MAX, .depth=depth,
+                .x=(uint8_t)state.x, .y=(uint8_t)state.y, .rot=(uint8_t)state.rot,
+                .sc=(uint8_t)state.sc, .hv=(uint8_t)state.hv, .parity=(uint8_t)state.p,
+                .action=(uint8_t)action,
+                .edge_wait=0, .motion_wait=(uint8_t)motion_wait, .span=(uint8_t)span};
+            uint64_t key = paced_key(&next);
+            uint32_t slot = paced_slot(key, nodes, table, table_capacity);
+            if (table[slot]) {
+                PacedNode* known = &nodes[table[slot] - 1];
+                // Positive-duration edges settle all parents before this layer.
+                if (known->depth == depth && effort < known->effort) {
+                    known->parent = head; known->effort = effort; known->span = (uint8_t)span;
+                }
+                if (known->depth <= depth) continue;
+            }
+            if (count == capacity) {
+                if (capacity > UINT32_MAX / 2 / sizeof(*nodes)) { rc = -2; goto paced_done; }
+                capacity *= 2;
+                PacedNode* grown = realloc(nodes, (size_t)capacity * sizeof(*nodes));
+                if (!grown) { rc = -2; goto paced_done; }
+                nodes = grown;
+            }
+            if ((uint64_t)(count + 1) * 10 > (uint64_t)table_capacity * 7) {
+                if (table_capacity >= UINT32_MAX / 2) { rc = -2; goto paced_done; }
+                table_capacity *= 2;
+                uint32_t* grown = calloc(table_capacity, sizeof(*table));
+                if (!grown) { rc = -2; goto paced_done; }
+                free(table); table = grown;
+                for (uint32_t i = 0; i < count; ++i)
+                    table[paced_slot(paced_key(&nodes[i]), nodes, table, table_capacity)] = i + 1;
+                slot = paced_slot(key, nodes, table, table_capacity);
+            }
+            nodes[count] = next;
+            if (last[depth] != UINT32_MAX) nodes[last[depth]].next = count;
+            else first[depth] = count;
+            last[depth] = count;
+            table[slot] = ++count;
+        }
+      }
+    }
+    for (int pose = 0; pose < 512; ++pose) {
+        if (parents[pose] == UINT32_MAX) continue;
+        const int length = out_costs[pose], offset = *out_script_used;
+        if (offset + length > script_buf_cap || offset + length > 65535) { rc = -3; goto paced_done; }
+        out_offsets[pose] = (uint16_t)offset; out_lengths[pose] = (uint16_t)length;
+        int at = offset + length - 1;
+        for (int i = 0; i < spans[pose]; ++i) out_script_buf[at--] = actions[pose];
+        for (uint32_t node = parents[pose]; nodes[node].parent != UINT32_MAX; node = nodes[node].parent)
+            for (int i = 0; i < nodes[node].span; ++i) out_script_buf[at--] = nodes[node].action;
+        if (at != offset + prefix - 1) { rc = -4; goto paced_done; }
+        memset(out_script_buf + offset, 0, (size_t)prefix);
+        *out_script_used += length;
+    }
+paced_done:
+    free(nodes); free(table); free(first); free(last);
+    return rc;
 }

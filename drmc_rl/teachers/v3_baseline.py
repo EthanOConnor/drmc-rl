@@ -82,7 +82,7 @@ def score_source_rows(
 ) -> list[V3ScoreRow]:
     """Score the recorded rollout action at each exact PairState boundary."""
 
-    from drmc_rl.search.strong_league import board_bytes_to_semantic_planes
+    from drmc_rl.game.observation import board_bytes_to_semantic_planes
 
     source = list(rows)
     if batch_size < 1:

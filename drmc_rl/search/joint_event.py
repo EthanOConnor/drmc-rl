@@ -18,6 +18,7 @@ import numpy as np
 from drmc_rl.game.pair_state import DecisionBoundary
 
 StateT = TypeVar("StateT")
+LEAF_VALUE_CONTRACT = "acting-decision-after-forced-events-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +120,12 @@ class PairSearchModel(Protocol[StateT]):
         """Return terminal W/D/L from the root side, or None if ongoing."""
 
     def evaluate(self, state: StateT, root_side: int) -> WDL:
-        """Return a calibrated leaf estimate from public/belief state."""
+        """Estimate root W/D/L at a supported decision boundary.
+
+        A decision-trained critic must use an acting side's perspective and
+        reverse win/loss when that side is not the root. Search resolves
+        no-decision events before calling this method.
+        """
 
 
 @dataclass(frozen=True, slots=True)
@@ -175,7 +181,9 @@ class JointEventSearch(Generic[StateT]):
         self._chance_nodes = 0
         self._chance_outcomes = 0
 
-    def search(self, state: StateT, *, root_side: int) -> SearchResult:
+    def search(
+        self, state: StateT, *, root_side: int, root_actions: Sequence[int] | None = None
+    ) -> SearchResult:
         if root_side not in (0, 1):
             raise ValueError("root_side must be 0 or 1")
         self._cache.clear()
@@ -192,7 +200,16 @@ class JointEventSearch(Generic[StateT]):
         if boundary not in {expected, DecisionBoundary.BOTH}:
             raise ValueError(f"root side {root_side} is not acting at boundary {boundary.value!r}")
 
-        own_actions = self._ranked_actions(state, root_side, self.config.own_beam, maximize=True)
+        if root_actions is None:
+            own_actions = self._ranked_actions(state, root_side, self.config.own_beam, maximize=True)
+        else:
+            # Observed-action prediction audits need the same continuation
+            # value without relabeling every alternative at the root. This
+            # does not change any later action/chance branch or backup.
+            own_actions = [int(action) for action in root_actions]
+            legal = set(self.model.legal_actions(state, root_side))
+            if len(set(own_actions)) != len(own_actions) or not set(own_actions) <= legal:
+                raise ValueError("explicit root actions must be unique and legal")
         if not own_actions:
             raise ValueError("root side has no legal actions")
         values: list[WDL] = []
@@ -230,11 +247,22 @@ class JointEventSearch(Generic[StateT]):
         self._nodes += 1
         if self._nodes > self.config.max_nodes:
             self._budget_exhausted = True
-            return self.model.evaluate(state, root_side)
         terminal = self.model.terminal_value(state, root_side)
         if terminal is not None:
             return terminal
-        if depth <= 0:
+        if self._nodes > self.config.max_nodes:
+            # An exhausted search is rejected by the teacher release. Do not
+            # feed a resolving/chance state to a decision-trained critic just
+            # to manufacture an apparently calibrated fallback.
+            return WDL(0.5, 0.0, 0.5)
+        boundary = self.model.boundary(state)
+        if boundary == DecisionBoundary.TERMINAL:
+            raise RuntimeError("terminal boundary has no authoritative outcome")
+        # The event budget can end between a lock and the next spawn, including
+        # before a correlated reserve reveal. Finish these forced events with
+        # their exact chance expectation before asking a decision value model.
+        # No further player action is selected after the depth expires.
+        if depth <= 0 and boundary != DecisionBoundary.ADVANCE:
             return self.model.evaluate(state, root_side)
         cache_key = (self.model.key(state), int(depth), int(root_side))
         cached = self._cache.get(cache_key)
@@ -242,7 +270,6 @@ class JointEventSearch(Generic[StateT]):
             self._cache_hits += 1
             return cached
 
-        boundary = self.model.boundary(state)
         if boundary == DecisionBoundary.ADVANCE:
             outcomes = tuple(self.model.chance_outcomes(state))
             if outcomes:
@@ -250,16 +277,15 @@ class JointEventSearch(Generic[StateT]):
                 self._chance_outcomes += len(outcomes)
                 value = self._chance_value(outcomes, depth, root_side)
             else:
-                value = self._value(self.model.advance(state), depth - 1, root_side)
+                child = self.model.advance(state)
+                if self.model.key(child) == cache_key[0]:
+                    raise RuntimeError("deterministic advance made no progress")
+                value = self._value(child, max(0, depth - 1), root_side)
         elif boundary == DecisionBoundary.BOTH:
             value = self._simultaneous_value(state, depth, root_side)
         elif boundary in {DecisionBoundary.P1, DecisionBoundary.P2}:
             acting_side = 0 if boundary == DecisionBoundary.P1 else 1
             value = self._single_side_value(state, acting_side, depth, root_side)
-        elif boundary == DecisionBoundary.TERMINAL:
-            value = self.model.terminal_value(state, root_side) or self.model.evaluate(
-                state, root_side
-            )
         else:  # pragma: no cover - enum guard
             raise RuntimeError(f"unsupported decision boundary {boundary}")
         self._cache[cache_key] = value
@@ -333,7 +359,7 @@ class JointEventSearch(Generic[StateT]):
         if not ordered:
             return self.model.evaluate(outcomes[0].state, root_side)  # pragma: no cover
         weights = np.asarray([item.probability for item in ordered], dtype=np.float64)
-        values = [self._value(item.state, depth - 1, root_side) for item in ordered]
+        values = [self._value(item.state, max(0, depth - 1), root_side) for item in ordered]
         return WDL.mixture(weights, values)
 
     def _ranked_actions(self, state: StateT, side: int, beam: int, *, maximize: bool) -> list[int]:
@@ -372,6 +398,7 @@ class JointEventSearch(Generic[StateT]):
 __all__ = [
     "ChanceOutcome",
     "JointEventSearch",
+    "LEAF_VALUE_CONTRACT",
     "PairSearchModel",
     "SearchConfig",
     "SearchResult",

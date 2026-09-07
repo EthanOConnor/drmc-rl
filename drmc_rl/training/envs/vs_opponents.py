@@ -429,7 +429,9 @@ class OpponentPool:
             from tools.eval_policy import _build_net_from_cfg
 
             cfg = payload.get("cfg", {})
-            net, aux_dim, candidate_max = _build_net_from_cfg(cfg, 12, "cpu")
+            sp = cfg.get("smdp_ppo", cfg)
+            in_channels = max(12, int(sp.get("candidate_board_channels", 8)) + 4)
+            net, aux_dim, candidate_max = _build_net_from_cfg(cfg, in_channels, "cpu")
             entry.aux_dim = int(aux_dim)
             entry.aux_spec = str(cfg.get("smdp_ppo", cfg).get("aux_spec", "v1")).strip().lower()
             entry.candidate_max = int(candidate_max)

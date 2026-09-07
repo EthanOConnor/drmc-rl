@@ -51,6 +51,48 @@ uv run python -m tools.program artifact runs/example/checkpoint.pt.gz \
 
 ## Core contracts
 
+The local Professor Pills trainer uses the full-corpus V3 epoch-5 model for
+adjustable regret and cadence, with the public outcome-trained 10M V5 policy as
+the Maximum opponent. This is an experimental local build; the unified
+trainer release above remains gated. `tools.human_backend` serves semantic
+v1 requests with scheduled execution: `execution_delay_frames` advances neutral
+inputs before planning; responses include the start frame, expected microstate,
+and replay-verified `controller_states`. The live host uses a fixed reaction
+window for each pace (30/20/14/10/8/8/8 frames), checks
+the state, and replans on drift. `sample_regret=true` samples V3 regret tails
+independently of imitation temperature; median-only selection flattens most of
+the rating scale. Capabilities include the checkpoint SHA-256 and rating range.
+`strength_control=quality` selects the optional competitive model's best move
+without applying V3 regret calibration to its logits. Its auxiliary context is
+zero, matching distillation; hidden pending attacks never enter the actor.
+The backend selects CUDA, Metal, or CPU according to availability; `--device`
+can override it. CPU inference defaults to one thread. Metal candidate arrays
+use bounded padded shapes, all warmed before readiness, to avoid compilation
+pauses during games.
+Maximum play evaluates only the competitive network and cadence model;
+coaching also evaluates the human model. Uncomputed human logits and state-win
+probabilities are returned as `null` in Maximum play responses.
+
+Named pace (`sloth`, `relaxed`, `normal`, `fast`, `top_humans`, `super_human`,
+`frame_perfect`) restricts feasibility before strategic selection. The three
+slowest presets use one button at a time; faster modes permit chords. Native
+reachability constrains reaction, button-change spacing, actual steering
+including DAS, and overlap on every frame. Validated route accelerators and
+complete constrained search share the same limits; no unrestricted script
+fallback is allowed. `timing.execution_profile` identifies the limits and
+`timing.movement` records independent replay validation. These are authored
+product presets, not corpus-certified human percentiles. Pace changes actual
+playing strength as well as appearance.
+
+The sibling Professor Pills `train-versus --rating 1600 --pace relaxed` launcher
+starts this local trainer; `--maximum` selects the competitive ceiling. Default
+artifacts live in `runs/human_policy/versus_trainer/`. The V3 conditioning range
+is approximately 718–2451 WHR-C; those are requested corpus targets, not measured
+achieved ratings. `tools.package_human_backend --competitive-checkpoint ...`
+can bundle both models for standalone use.
+Achieved WHR-C calibration, named human operation profiles, and the unified
+trainer release remain gated.
+
 - One decision per pill spawn over exact planner-feasible final poses.
 - SMDP returns discount over actual elapsed frames.
 - `PublicPairState` is the only deployable actor input.

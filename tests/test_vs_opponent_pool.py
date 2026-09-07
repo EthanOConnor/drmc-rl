@@ -52,6 +52,60 @@ def _tiny_net():
     return _build_net_from_cfg(TINY_CFG, 12, "cpu")
 
 
+def test_public_pair_checkpoint_roundtrips_through_pool_and_evaluator(tmp_path):
+    import copy
+    import torch
+    from drmc_rl.training.utils.checkpoint_io import save_checkpoint
+    from tools.eval_policy import _build_net_from_cfg
+    from tools.vs_head_to_head import PlainPolicy
+
+    cfg = copy.deepcopy(TINY_CFG)
+    cfg["smdp_ppo"].update(candidate_board_channels=16, aux_spec="zero_v1_vs")
+    net, _, _ = _build_net_from_cfg(cfg, 20, "cpu")
+    path = tmp_path / "public.pt.gz"
+    save_checkpoint({"cfg": cfg, "state_dict": net.state_dict()}, path)
+    pool = OpponentPool(tmp_path / "pool", device="cpu")
+    pool.seed([path])
+    entry = pool.entries[0]
+    pool.ensure_loaded(entry)
+    assert entry.aux_spec == "zero_v1_vs"
+    assert entry.aux_dim == 72
+    assert all(torch.equal(v, entry.net.state_dict()[k]) for k, v in net.state_dict().items())
+    evaluator = PlainPolicy(path)
+    assert evaluator.aux_shim.aux_spec == "zero_v1_vs"
+    assert evaluator.in_channels == 20
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_frozen_opponent_keeps_feasible_actions_beyond_checkpoint_padding(device):
+    import torch
+    from types import SimpleNamespace
+    from drmc_rl.training.envs.drmario_vs_vec import DrMarioVsPoolVecEnv
+
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+
+    class PreferLast(torch.nn.Module):
+        def forward(self, obs, pills, previews, actions, costs, mask, aux=None):
+            return actions.float().masked_fill(~mask, -1e9), torch.zeros(len(obs), device=obs.device)
+
+    env = DrMarioVsPoolVecEnv.__new__(DrMarioVsPoolVecEnv)
+    env.num_pairs, env.num_sides = 1, 2
+    env._obs = np.zeros((2, 20, 16, 8), dtype=np.float32)
+    env._mask = np.zeros((2, 4, 16, 8), dtype=bool)
+    env._mask[1].reshape(-1)[:140] = True
+    env._cost = np.arange(1024, dtype=np.float32).reshape(2, 4, 16, 8)
+    env._runner = SimpleNamespace(buffers=SimpleNamespace(
+        pill_colors=np.zeros((2, 2), dtype=np.int64),
+        preview_colors=np.zeros((2, 2), dtype=np.int64),
+    ))
+    entry = SimpleNamespace(net=PreferLast(), candidate_max=128, aux_dim=0, device=device)
+    if device == "cuda":
+        assert env._opponent_actions_cuda({"test": [1]}, {"test": entry}) == [(1, 139)]
+    else:
+        np.testing.assert_array_equal(env._forward_opponent(entry, [1]), [139])
+
+
 # ------------------------------------------------------------------ PFSP math
 def test_pfsp_unplayed_gets_max_weight(tmp_path) -> None:
     pool = OpponentPool(tmp_path / "pool")

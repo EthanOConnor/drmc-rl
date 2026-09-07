@@ -474,6 +474,7 @@ class VsMatchRunner:
         state_repr: str = "bitplane_bottle_conn_mask",
         replay_sample_rate: float = 0.0,
         max_decisions_per_side: int = ARENA_MAX_DECISIONS_PER_SIDE,
+        gpu_planner: bool = False,
     ) -> None:
         import torch
 
@@ -499,6 +500,7 @@ class VsMatchRunner:
             seed_provider=self._seed_for_pair,
             frame_counter_provider=self._frame_counter_for_pair,
             state_repr=state_repr,
+            gpu_planner=gpu_planner,
         )
         self._policies: Dict[str, Any] = {}
 
@@ -693,7 +695,10 @@ class _EntryPolicy:
         # actually uses opponent information.
         self.mask_opponent = bool(params.get("mask_opponent", False))
         if self.mode == "plain":
-            self.plain = PlainPolicy(ckpt, device=str(params.get("device", runner.device)))
+            public_args = {"public_only": True} if params.get("public_only", False) else {}
+            self.plain = PlainPolicy(
+                ckpt, device=str(params.get("device", runner.device)), **public_args
+            )
             if self.mask_opponent and self.plain.in_channels != 20:
                 raise SystemExit(
                     f"entry '{entry.get('name')}': mask_opponent requires an "
@@ -717,7 +722,9 @@ class _EntryPolicy:
             self.human = runtime(ckpt, **runtime_args)
             self.human_rating = float(params["rating"])
             self.human_rating_sd = float(params.get("rating_sd", 0.0))
-            self.human_opponent_rating = float(params.get("opponent_rating", self.human_rating))
+            self.human_opponent_rating = (
+                float(params["opponent_rating"]) if "opponent_rating" in params else None
+            )
             self.human_temperature = float(params.get("temperature", 1.0))
             self.human_strength_control = str(params.get("strength_control", "regret")).lower()
             if self.human_strength_control not in {"regret", "style", "quality"}:
@@ -775,6 +782,7 @@ class _EntryPolicy:
                 ]
             return self.plain.act(sub_obs, sub_infos)
         if self.mode == "human":
+            from drmc_rl.game.observation import board_bytes_to_semantic_planes
             from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
 
             if obs.shape[1] != 20:
@@ -788,7 +796,7 @@ class _EntryPolicy:
                     np.asarray(info["placements/feasible_mask"], dtype=bool),
                     info["placements/cost_to_lock"],
                     max_candidates=(
-                        128
+                        max(128, int(np.count_nonzero(info["placements/feasible_mask"])))
                         if self.human_v3
                         else int(self.human.cfg["smdp_ppo"]["candidate_max_candidates"])
                     ),
@@ -802,8 +810,13 @@ class _EntryPolicy:
                     if int(action) >= 0
                 ]
                 score_args = dict(
-                    board_planes=obs[i, :8],
-                    opponent_board_planes=obs[i, 8:16],
+                    # Legacy actor observations hide horizontal capsule bonds
+                    # on same-color turns. Never reconstruct V3 physics from
+                    # that lossy tensor; V2 applies its own encoding at inference.
+                    board_planes=board_bytes_to_semantic_planes(info["board"]),
+                    opponent_board_planes=board_bytes_to_semantic_planes(
+                        info["vs/opponent_board"]
+                    ),
                     opponent_state_age_frames=0,
                     rating_sd=self.human_rating_sd,
                     opponent_rating=self.human_opponent_rating,
@@ -829,6 +842,10 @@ class _EntryPolicy:
                                 **score_args,
                                 "speed": self.runner.speed_setting,
                                 "speed_ups": speed_ups,
+                                "style_rating": (
+                                    self.human.condition.mean
+                                    if self.human_strength_control == "regret" else None
+                                ),
                             },
                         )
                     )
@@ -1166,6 +1183,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         p.add_argument("--seed", type=int, default=12345, help="tournament seed (schedule)")
         p.add_argument("--device", type=str, default="auto")
         p.add_argument("--threads", type=int, default=4)
+        p.add_argument("--gpu-planner", action="store_true",
+                       help="use the parity-tested CUDA reachability solver")
 
     p_run = sub.add_parser("run", help="round-robin tournament over a roster yaml")
     p_run.add_argument("--roster", type=str, required=True)
@@ -1208,6 +1227,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             threads=args.threads,
             run_seed=args.seed,
             state_repr=pick_state_repr(roster["entries"]),
+            gpu_planner=args.gpu_planner,
         )
         t0 = time.perf_counter()
         try:
@@ -1242,6 +1262,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             threads=args.threads,
             run_seed=args.seed,
             state_repr=pick_state_repr([entry_a, entry_b]),
+            gpu_planner=args.gpu_planner,
         )
         try:
             out = run_sprt(

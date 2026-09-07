@@ -66,7 +66,7 @@ def wilson_ci(wins: float, n: int, z: float = 1.96) -> tuple[float, float]:
 class PlainPolicy:
     """Deterministic argmax over packed candidates (the live-bridge default)."""
 
-    def __init__(self, checkpoint: Path, device: str = "cpu") -> None:
+    def __init__(self, checkpoint: Path, device: str = "cpu", *, public_only: bool = False) -> None:
         from tools.eval_policy import _build_net_from_cfg, _make_aux_builder
         from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 
@@ -79,10 +79,18 @@ class PlainPolicy:
             cfg, self.in_channels, device
         )
         self.net.load_state_dict(payload.get("ema_state_dict") or payload["state_dict"])
-        self.aux_shim = _make_aux_builder(aux_dim)
+        self.net.eval()
+        self.aux_shim = _make_aux_builder(aux_dim, aux_spec=sp.get("aux_spec"))
+        self.aux_spec = sp.get("aux_spec")
+        self.aux_dim = int(aux_dim)
+        self.public_only = bool(public_only)
         self.device = device
 
-    def act(self, obs: np.ndarray, infos: List[Dict[str, Any]]) -> np.ndarray:
+    def score(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
+        ca, cm, logits, _value = self.score_and_value(obs, infos)
+        return ca, cm, logits
+
+    def score_and_value(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
         C = int(obs.shape[1])
         if C != self.in_channels:
             if C == 20 and self.in_channels == 12:
@@ -94,16 +102,27 @@ class PlainPolicy:
                     f"obs has {C} channels but the checkpoint expects {self.in_channels}"
                 )
         B = int(obs.shape[0])
-        ca = np.full((B, self.candidate_max), -1, dtype=np.int32)
-        cm = np.zeros((B, self.candidate_max), dtype=np.bool_)
-        cc = np.zeros((B, self.candidate_max), dtype=np.float32)
+        # Candidate networks accept variable K. A training buffer's capacity
+        # neither limits legal moves nor requires evaluating hundreds of empty
+        # slots on an ordinary bottle.
+        width = max(32, max(
+            (int(np.count_nonzero(info["placements/feasible_mask"])) for info in infos),
+            default=0,
+        ))
+        if str(self.device).startswith("mps"):
+            # MPS compiles shape-specific graphs on first use. A small set of
+            # padded shapes can be warmed before live deadlines begin.
+            width = 1 << (width - 1).bit_length()
+        ca = np.full((B, width), -1, dtype=np.int32)
+        cm = np.zeros((B, width), dtype=np.bool_)
+        cc = np.zeros((B, width), dtype=np.float32)
         pills = np.zeros((B, 2), dtype=np.int64)
         prevs = np.zeros((B, 2), dtype=np.int64)
         for i, info in enumerate(infos):
             pk = pack_feasible_candidates(
                 np.asarray(info["placements/feasible_mask"], dtype=bool),
                 info["placements/cost_to_lock"],
-                max_candidates=self.candidate_max,
+                max_candidates=width,
                 sort_by_cost=True,
             )
             ca[i], cm[i], cc[i] = pk.actions, pk.mask, pk.cost
@@ -115,9 +134,15 @@ class PlainPolicy:
                         _CANON_TO_RAW[int(pv["second_color"])])
         aux = None
         if self.aux_shim is not None:
-            aux = self.aux_shim._build_aux_batch(obs.astype(np.float32), infos)
+            if self.public_only:
+                # The corpus-distilled V5 was trained with zero auxiliary
+                # context. In particular, never read the legacy pending-attack
+                # scalars when using it as a public-information opponent.
+                aux = np.zeros((B, self.aux_dim), dtype=np.float32)
+            else:
+                aux = self.aux_shim._build_aux_batch(obs.astype(np.float32), infos)
         with torch.inference_mode():
-            logits, _v = self.net(
+            logits, value = self.net(
                 torch.from_numpy(obs.astype(np.float32)).to(self.device),
                 torch.from_numpy(pills).to(self.device),
                 torch.from_numpy(prevs).to(self.device),
@@ -127,9 +152,14 @@ class PlainPolicy:
                 aux=None if aux is None else torch.from_numpy(aux).to(self.device),
             )
             lg = logits.float().cpu().numpy()
+            values = value.reshape(-1).float().cpu().numpy()
         lg[~cm] = -np.inf
+        return ca, cm, lg, values
+
+    def act(self, obs: np.ndarray, infos: List[Dict[str, Any]]) -> np.ndarray:
+        ca, cm, lg = self.score(obs, infos)
         slots = np.argmax(lg, axis=1)
-        acts = ca[np.arange(B), slots]
+        acts = ca[np.arange(len(ca)), slots]
         acts[~cm.any(axis=1)] = -1  # empty mask: noop-fall escape hatch
         return acts.astype(np.int32)
 

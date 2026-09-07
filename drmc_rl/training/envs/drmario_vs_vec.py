@@ -660,6 +660,8 @@ class DrMarioVsPoolVecEnv:
         """Build aux_v1[_vs] directly from vector state, without info dictionaries."""
 
         spec = str(aux_spec).strip().lower()
+        if spec == "zero_v1_vs":
+            return np.zeros((len(side_idxs), 72), dtype=np.float32)
         if spec not in {"v1", "v1_vs"}:
             raise ValueError(f"Unsupported direct aux spec: {aux_spec!r}")
         obs = self._obs[side_idxs]
@@ -987,13 +989,15 @@ class DrMarioVsPoolVecEnv:
     def _afterstate_opponent_actions(self, entry: Any, side_idxs: List[int]) -> np.ndarray:
         """Exact V3 actions for one opponent entry, losslessly batched."""
 
+        from drmc_rl.game.observation import board_bytes_to_semantic_planes
         from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates_batch
 
         sides = np.asarray(side_idxs, dtype=np.int64)
+        width = max(int(entry.candidate_max), int(self._mask[sides].reshape(len(sides), -1).sum(1).max()))
         packed = pack_feasible_candidates_batch(
             self._mask[sides].astype(bool, copy=False),
             self._cost[sides],
-            max_candidates=int(entry.candidate_max),
+            max_candidates=width,
             sort_by_cost=True,
         )
         rating = float(
@@ -1011,8 +1015,12 @@ class DrMarioVsPoolVecEnv:
             ]
             requests.append(
                 {
-                    "board_planes": self._obs[int(side), :8],
-                    "opponent_board_planes": self._obs[int(side), 8:16],
+                    "board_planes": board_bytes_to_semantic_planes(
+                        self._runner.buffers.board_bytes[int(side)]
+                    ),
+                    "opponent_board_planes": board_bytes_to_semantic_planes(
+                        self._runner.buffers.board_bytes[int(side) ^ 1]
+                    ),
                     "opponent_state_age_frames": 0,
                     "rating_sd": float(entry.rating_sd),
                     "opponent_rating": rating,
@@ -1085,7 +1093,11 @@ class DrMarioVsPoolVecEnv:
                     )
                     buf["aux"][lo:hi, : rows.shape[1]] = rows
 
-        candidate_cap = max(int(entry.candidate_max) for entry, _lo, _hi in spans)
+        feasible_counts = buf["feasible"][:n].reshape(n, -1).sum(axis=1)
+        candidate_cap = max(
+            max(int(entry.candidate_max) for entry, _lo, _hi in spans),
+            int(feasible_counts.max()),
+        )
         packed_width = candidate_bucket_width(
             buf["feasible"][:n], max_candidates=candidate_cap
         )
@@ -1100,13 +1112,14 @@ class DrMarioVsPoolVecEnv:
         with torch.inference_mode():
             for entry, lo, hi in spans:
                 aux = dev["aux"][lo:hi, : int(entry.aux_dim)] if int(entry.aux_dim) > 0 else None
+                width = max(int(entry.candidate_max), int(feasible_counts[lo:hi].max()))
                 logits, _values = entry.net(
                     dev["obs"][lo:hi],
                     dev["pills"][lo:hi],
                     dev["previews"][lo:hi],
-                    packed.actions[lo:hi, : int(entry.candidate_max)],
-                    packed.cost[lo:hi, : int(entry.candidate_max)],
-                    packed.mask[lo:hi, : int(entry.candidate_max)],
+                    packed.actions[lo:hi, :width],
+                    packed.cost[lo:hi, :width],
+                    packed.mask[lo:hi, :width],
                     aux=aux,
                 )
                 # logits are already -1e9 on masked slots -> plain argmax.
@@ -1159,7 +1172,10 @@ class DrMarioVsPoolVecEnv:
         pills = self._runner.buffers.pill_colors[side_idxs].astype(np.int64)
         previews = self._runner.buffers.preview_colors[side_idxs].astype(np.int64)
 
-        kmax = int(entry.candidate_max)
+        kmax = max(
+            int(entry.candidate_max),
+            int(self._mask[side_idxs].reshape(len(side_idxs), -1).sum(axis=1).max()),
+        )
         packed = pack_feasible_candidates_batch(
             self._mask[side_idxs].astype(bool, copy=False),
             self._cost[side_idxs],

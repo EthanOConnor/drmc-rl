@@ -20,6 +20,19 @@ from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
 DEFAULT_CHECKPOINTS = ("human_policy.pt.gz", "human_policy_v2.pt.gz")
 
 
+def resolve_device(requested: str) -> str:
+    """Use available acceleration for live deadlines; honor explicit devices."""
+    if requested != "auto":
+        return requested
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def resolve_checkpoint(path: str | None) -> Path:
     """Find the requested model or the model shipped with a frozen backend."""
 
@@ -43,6 +56,16 @@ def resolve_checkpoint(path: str | None) -> Path:
             return candidate.resolve()
     searched = ", ".join(str(candidate) for candidate in candidates)
     raise FileNotFoundError(f"Human policy checkpoint not found; searched: {searched}")
+
+
+def resolve_competitive_checkpoint(path: str | None, checkpoint: Path) -> Path | None:
+    """Use an explicit ceiling or the companion model in a trainer package."""
+    candidate = Path(path).expanduser() if path else checkpoint.parent / "competitive_policy.pt.gz"
+    if candidate.is_file():
+        return candidate.resolve()
+    if path:
+        raise FileNotFoundError(candidate)
+    return None
 
 
 def serve(backend: HumanBackend) -> None:
@@ -74,7 +97,7 @@ def serve(backend: HumanBackend) -> None:
         backend.close()
 
 
-def benchmark(backend: HumanBackend, iterations: int) -> None:
+def benchmark(backend: HumanBackend, iterations: int, *, strength_control: str = "regret") -> None:
     planes = np.zeros((8, 16, 8), dtype=np.float32).tolist()
     for request_id in range(1, int(iterations) + 2):
         response = backend.handle(
@@ -86,11 +109,13 @@ def benchmark(backend: HumanBackend, iterations: int) -> None:
                 "deadline_ms": 10_000,
                 "target_rating": backend.runtime.condition.mean,
                 "temperature": 0,
+                "strength_control": strength_control,
                 "state": {
                     "board_planes": planes,
                     "opponent_board_planes": planes,
                     "opponent_state_age_frames": 0,
                     "pill": [0, 1],
+                    "opponent_pill": [0, 1],
                     "preview": [2, 0],
                     "speed": 2,
                     "speed_ups": 0,
@@ -111,8 +136,11 @@ def main() -> None:
         "--checkpoint",
         help="model path; defaults to DRMC_HUMAN_MODEL or the packaged model",
     )
-    parser.add_argument("--device", default="cpu")
+    parser.add_argument("--device", default="auto", help="auto selects CUDA, Metal, then CPU")
+    parser.add_argument("--threads", type=int, default=1, help="inference CPU threads; default 1 keeps gameplay responsive")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--competitive-checkpoint", help="optional public V5 ceiling for quality mode")
+    parser.add_argument("--bench-strength", choices=("regret", "quality"), default="regret")
     parser.add_argument(
         "--realtime-profile",
         choices=("auto", "fast", "balanced", "deep"),
@@ -120,14 +148,20 @@ def main() -> None:
     )
     parser.add_argument("--bench", type=int, default=0, help="benchmark N warmed-up decisions")
     args = parser.parse_args()
+    if args.threads < 1:
+        parser.error("--threads must be positive")
+    import torch
+    torch.set_num_threads(args.threads)
+    checkpoint = resolve_checkpoint(args.checkpoint)
     backend = HumanBackend(
-        resolve_checkpoint(args.checkpoint),
-        device=args.device,
+        checkpoint,
+        device=resolve_device(args.device),
         seed=args.seed,
         realtime_profile=args.realtime_profile,
+        competitive_checkpoint=resolve_competitive_checkpoint(args.competitive_checkpoint, checkpoint),
     )
     if args.bench:
-        benchmark(backend, args.bench)
+        benchmark(backend, args.bench, strength_control=args.bench_strength)
     else:
         serve(backend)
 

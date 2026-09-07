@@ -87,8 +87,10 @@ class ExecutionProfile:
     allow_menu_buttons: bool = False
     distribution_targets: Mapping[str, tuple[float, float]] | None = None
 
-    def validate(self, script: Sequence[int] | np.ndarray) -> ExecutionValidation:
-        metrics = script_metrics(script, fps=self.fps)
+    def validate(
+        self, script: Sequence[int] | np.ndarray, *, initial_buttons: int = 0
+    ) -> ExecutionValidation:
+        metrics = script_metrics(script, fps=self.fps, initial_buttons=initial_buttons)
         violations: list[str] = []
         checks = (
             (
@@ -205,13 +207,22 @@ def profile_from_json(path: str | Path) -> ExecutionProfile:
     return ExecutionProfile.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
-def script_metrics(script: Sequence[int] | np.ndarray, *, fps: float = 60.1) -> ScriptMetrics:
+def script_metrics(
+    script: Sequence[int] | np.ndarray, *, fps: float = 60.1, initial_buttons: int = 0
+) -> ScriptMetrics:
+    """Measure post-boundary inputs relative to the already-held controller state.
+
+    Edge intervals separate frames with controller changes. Multiple buttons
+    changing on one poll are a chord, counted by burst and overlap metrics.
+    """
+    if not 0 <= initial_buttons <= 255:
+        raise ValueError("initial_buttons must be a controller byte")
     masks = np.asarray(script, dtype=np.uint8).reshape(-1)
     frames = int(masks.size)
     if frames == 0:
-        return ScriptMetrics(0, 0, 0, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
+        return ScriptMetrics(0, 0, 0, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0)
 
-    previous = np.concatenate((np.zeros(1, dtype=np.uint8), masks[:-1]))
+    previous = np.concatenate((np.asarray([initial_buttons], dtype=np.uint8), masks[:-1]))
     rising = masks & ~previous
     falling = previous & ~masks
     rising_counts = np.fromiter((_bit_count(int(value)) for value in rising), dtype=np.int16)
@@ -220,9 +231,7 @@ def script_metrics(script: Sequence[int] | np.ndarray, *, fps: float = 60.1) -> 
     reaction_candidates = np.flatnonzero(masks & GAMEPLAY_MASK)
     reaction = int(reaction_candidates[0]) if reaction_candidates.size else frames
 
-    edge_times: list[int] = []
-    for frame, count in enumerate(edge_counts):
-        edge_times.extend([frame] * int(count))
+    edge_times = np.flatnonzero(edge_counts)
     if len(edge_times) < 2:
         min_interval = None
     else:
@@ -243,10 +252,14 @@ def script_metrics(script: Sequence[int] | np.ndarray, *, fps: float = 60.1) -> 
     horizontal = np.zeros(frames, dtype=np.int8)
     horizontal[masks & BUTTON_LEFT != 0] = -1
     horizontal[masks & BUTTON_RIGHT != 0] = 1
-    nonzero = horizontal[horizontal != 0]
+    initial_direction = (
+        1 if initial_buttons & BUTTON_RIGHT else -1 if initial_buttons & BUTTON_LEFT else 0
+    )
+    nonzero = np.concatenate(([initial_direction], horizontal))
+    nonzero = nonzero[nonzero != 0]
     reversals = int((nonzero[1:] != nonzero[:-1]).sum()) if len(nonzero) >= 2 else 0
     correction_bursts = 0
-    last_dir = 0
+    last_dir = initial_direction
     last_change = -1000
     for frame, direction in enumerate(horizontal):
         if direction == 0 or direction == last_dir:

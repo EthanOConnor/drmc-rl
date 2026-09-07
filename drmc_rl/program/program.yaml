@@ -98,6 +98,311 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-terminal-quality-pilot:
+    status: active
+    stage: 1
+    purpose: Compare every root move by natural full-game outcomes under the installed public core and exact public reserve posterior before considering a new quality teacher.
+    requires_paths:
+      - tools/audit_terminal_quality.py
+      - '{trainer_control_states}'
+      - '{competitive_checkpoint}'
+      - '{trainer_control_checkpoint}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.audit_terminal_quality
+      - --state-bank
+      - '{trainer_control_states}'
+      - --checkpoint
+      - '{competitive_checkpoint}'
+      - --v3-checkpoint
+      - '{trainer_control_checkpoint}'
+      - --output
+      - '{trainer_terminal_quality_report}'
+    produces:
+      - Diagnostic full-candidate terminal W/D/L and paired public-policy versus V3 choice evidence
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - This versioned teacher experiment does not replace or waive the failed shallow-search quality gate.
+      - Incomplete posterior continuations have no W/D/L label; no value-head or horizon fallback is allowed.
+  trainer-rollout-consistency-audit:
+    status: active
+    stage: 1
+    purpose: Measure whether frozen natural outcomes reproduce after observation and native execution corrections before reusing them as continuation targets.
+    requires_paths:
+      - tools/audit_rollout_consistency.py
+      - '{trainer_control_states}'
+      - '{counterfactual_mixture_manifest}'
+      - '{counterfactual_wdl_calibration}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.audit_rollout_consistency
+      - --state-bank
+      - '{trainer_control_states}'
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --wdl-calibration
+      - '{counterfactual_wdl_calibration}'
+      - --output
+      - '{trainer_rollout_consistency_report}'
+    produces:
+      - Stratified exact-reserve replay agreement; diagnostic only, never public counterfactual labels
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  trainer-paced-execution-audit:
+    status: active
+    stage: 1
+    purpose: Audit authored product pace limits, complete feasibility, replay, and CPU latency; does not promote human calibration.
+    requires_paths:
+      - tools/audit_paced_execution.py
+      - '{execution_scripts}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.audit_paced_execution
+      - --input
+      - '{execution_scripts}'
+      - --output
+      - '{execution_control_report}'
+    produces:
+      - Named pace frame compliance and local planning latency diagnostic
+    resources:
+      preferred_host: local
+      accelerator: cpu
+  trainer-execution-control-audit:
+    status: active
+    stage: 1
+    purpose: Compare covered human controller scripts with exact witnesses and measure target loss during neutral planning intervals.
+    requires_paths:
+      - tools/audit_execution_control.py
+      - '{execution_scripts}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.audit_execution_control
+      - --input
+      - '{execution_scripts}'
+      - --output
+      - '{execution_control_report}'
+    produces:
+      - Player/game-weighted motor statistics and bounded exact-target latency diagnostics
+    resources:
+      preferred_host: tf3090
+      accelerator: cpu
+  trainer-execution-replay-audit:
+    status: active
+    stage: 1
+    purpose: Verify recorded human controller boundaries against the exact frame stepper before fitting a motor profile.
+    requires_paths:
+      - tools/audit_execution_replay.py
+      - '{human_corpus_root}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.audit_execution_replay
+      - --root
+      - '{human_corpus_root}'
+      - --release
+      - '{human_corpus_release}'
+      - --output
+      - '{execution_replay_report}'
+    produces:
+      - Bounded initial-state, exact-lock-pose, and input-window replay diagnostics
+    resources:
+      accelerator: cpu
+  trainer-search-prediction-audit:
+    status: active
+    stage: 1
+    purpose: Screen competitive decision values and compare corrected pair-search predictions with the failed teacher and frozen V3 before relabeling every candidate.
+    requires_paths:
+      - tools/audit_search_predictions.py
+      - '{trainer_control_states}'
+      - '{counterfactual_mixture_manifest}'
+      - '{counterfactual_wdl_calibration}'
+      - '{trainer_search_bootstrap}'
+      - '{trainer_search_bootstrap_manifest}'
+      - '{trainer_search_reference_release}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.audit_search_predictions
+      - --state-bank
+      - '{trainer_control_states}'
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --wdl-calibration
+      - '{counterfactual_wdl_calibration}'
+      - --bootstrap
+      - '{trainer_search_bootstrap}'
+      - --bootstrap-manifest
+      - '{trainer_search_bootstrap_manifest}'
+      - --reference-release
+      - '{trainer_search_reference_release}'
+      - --output
+      - '{trainer_search_prediction_report}'
+    produces:
+      - Observed-action W/D/L predictions and paired whole-game diagnostic comparison
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  trainer-search-input-audit:
+    status: active
+    stage: 1
+    purpose: Check whether bounded search evaluates decision-trained critics at supported public decision boundaries.
+    requires_paths:
+      - tools/audit_search_boundaries.py
+      - '{trainer_control_states}'
+      - '{counterfactual_mixture_manifest}'
+      - '{counterfactual_wdl_calibration}'
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - tools.audit_search_boundaries
+      - --state-bank
+      - '{trainer_control_states}'
+      - --mixture-manifest
+      - '{counterfactual_mixture_manifest}'
+      - --wdl-calibration
+      - '{counterfactual_wdl_calibration}'
+      - --output
+      - '{trainer_search_input_report}'
+    produces:
+      - Native leaf-boundary and candidate-availability diagnostics under frozen expansion priors
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  trainer-control-audit:
+    status: active
+    stage: 1
+    purpose: Isolate fixed-state regret ordering and style interference before changing the trainer decoder or its calibration.
+    requires_paths:
+      - tools/audit_trainer_control.py
+      - '{trainer_control_checkpoint}'
+      - '{trainer_control_states}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.audit_trainer_control
+      - --checkpoint
+      - '{trainer_control_checkpoint}'
+      - --state-bank
+      - '{trainer_control_states}'
+      - --output
+      - '{trainer_control_report}'
+    produces:
+      - Frozen per-state quality/style scores and measured decoder ordering diagnostics
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Uses the current unpromoted V3 score; this is not evidence of calibrated competitive regret or human rating.
+  trainer-public-outcome:
+    status: active
+    stage: 3
+    purpose: Improve the frozen public V5 bootstrap from natural full-game outcomes on the measured high-board weakness; evaluate against its parent and G4 before adoption.
+    config: drmc_rl/training/configs/vs_trainer_public_outcome_tf3090.yaml
+    requires_paths:
+      - drmc_rl/training/configs/vs_trainer_public_outcome_tf3090.yaml
+      - '{competitive_checkpoint}'
+      - runs/trainer-baseline-v1/v5-full-epoch05-public.pt.gz
+      - runs/trainer-baseline-v1/g4-strongest.pt.gz
+    requires_gates: [pair-state-v2]
+    command:
+      - python
+      - -m
+      - drmc_rl.training.run
+      - --cfg
+      - '{repo}/drmc_rl/training/configs/vs_trainer_public_outcome_tf3090.yaml'
+      - --override
+      - 'train.init_checkpoint={competitive_checkpoint}'
+      - --logdir
+      - '{trainer_training_output}'
+      - --ui
+      - headless
+    produces:
+      - Bounded public V5 outcome checkpoints with complete candidate sets and no teacher targets
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Uses only win/loss/draw reward; no attack, clearance, speed, or horizon shaping.
+      - zero_v1_vs preserves the corpus student's auxiliary width while never reading hidden context.
+      - Counterfactual quality and all product gates remain unchanged; this is an independent outcome-learning diagnostic.
+      - Evaluate side-swapped held-out seeds at levels 14 and 20 against the frozen parent and G4; adopt only with improvement and no material regression.
+  trainer-execution-sample:
+    status: active
+    stage: 1
+    purpose: Prepare covered and aligned human controller traces that reproduce their recorded lock pose and frame; this does not promote an execution profile.
+    requires_paths:
+      - tools/extract_execution_corpus.py
+      - '{human_corpus_root}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.extract_execution_corpus
+      - --root
+      - '{human_corpus_root}'
+      - --release
+      - '{human_corpus_release}'
+      - --output
+      - '{execution_scripts}'
+    produces:
+      - Sampled human input traces with source hashes, ratings, and game/player holdout identity
+    resources:
+      preferred_host: tf3090
+      accelerator: cpu
+  trainer-baseline:
+    status: active
+    stage: 1
+    purpose: Compare frozen trainer and competitive checkpoints in reproducible clean-start, side-swapped native games before spending training compute.
+    requires_paths:
+      - tools/tournament.py
+      - '{trainer_roster}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.tournament
+      - run
+      - --roster
+      - '{trainer_roster}'
+      - --db
+      - '{trainer_benchmark_db}'
+      - --name
+      - '{trainer_benchmark_name}'
+      - --games-per-pair
+      - '{trainer_benchmark_games}'
+      - --pairs
+      - '{trainer_benchmark_pairs}'
+      - --level
+      - '{trainer_benchmark_level}'
+      - --speed-setting
+      - '{trainer_benchmark_speed}'
+      - --seed
+      - '{trainer_benchmark_seed}'
+      - --device
+      - '{trainer_benchmark_device}'
+    produces:
+      - Resumable full-game results and paired W/D/L baseline
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Native fastest-placement execution is a competitive baseline, not evidence of human input timing or absolute human rating.
+      - Roster checkpoints must be frozen and hashed before launch.
   g4-strong-league:
     status: complete
     stage: 1
@@ -416,6 +721,7 @@ recipes:
     requires_paths:
       - tools/compare_counterfactual_releases.py
       - drmc_rl/teachers/release_analysis.py
+      - '{pair_state_bank}'
       - '{counterfactual_release_b1_manifest}'
       - '{counterfactual_release_b4_manifest}'
       - '{counterfactual_release_b8_manifest}'
@@ -432,6 +738,8 @@ recipes:
       - '8={counterfactual_release_b8_manifest}'
       - --reference-beam
       - '8'
+      - --source-bank
+      - '{pair_state_bank}'
       - --output
       - '{counterfactual_beam_sweep}'
     produces:

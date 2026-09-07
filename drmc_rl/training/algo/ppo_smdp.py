@@ -50,6 +50,7 @@ from drmc_rl.training.utils.reproducibility import git_commit
 _AUX_SPEC_NONE = "none"
 _AUX_SPEC_V1 = "v1"
 _AUX_SPEC_V1_VS = "v1_vs"
+_AUX_SPEC_ZERO_V1_VS = "zero_v1_vs"
 
 _AUX_V1_LEVEL_MIN = -15
 _AUX_V1_LEVEL_MAX = 20
@@ -81,7 +82,13 @@ _AUX_V1_VS_EXTRA = 1 + 1 + 1 + 6 + 6  # 15
 _AUX_V1_VS_DIM = _AUX_V1_DIM + _AUX_V1_VS_EXTRA  # 72
 _AUX_GARBAGE_PENDING_NORM = 4.0
 
-_AUX_DIM_BY_SPEC = {_AUX_SPEC_V1: _AUX_V1_DIM, _AUX_SPEC_V1_VS: _AUX_V1_VS_DIM}
+_AUX_DIM_BY_SPEC = {
+    _AUX_SPEC_V1: _AUX_V1_DIM,
+    _AUX_SPEC_V1_VS: _AUX_V1_VS_DIM,
+    # Preserve the corpus-distilled network's width without exposing private
+    # pending-attack state, or changing its training-time zero context.
+    _AUX_SPEC_ZERO_V1_VS: _AUX_V1_VS_DIM,
+}
 
 # Order must match the stacked per-minibatch metric rows in `_update_policy`.
 _UPDATE_METRIC_KEYS = (
@@ -486,7 +493,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.pill_embed_type = pill_embed_type_norm
 
         aux_spec_norm = str(self.hparams.aux_spec or "none").strip().lower()
-        if aux_spec_norm not in {_AUX_SPEC_NONE, _AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
+        if aux_spec_norm not in {_AUX_SPEC_NONE, *_AUX_DIM_BY_SPEC}:
             raise ValueError(f"Unknown smdp_ppo.aux_spec: {self.hparams.aux_spec!r}")
         self.aux_spec = aux_spec_norm
         self.aux_dim = int(_AUX_DIM_BY_SPEC.get(self.aux_spec, 0))
@@ -665,6 +672,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.decision_step = 0  # Total decisions made
         self.total_steps = int(getattr(cfg.train, "total_steps", 5000000))
         self.checkpoint_interval = int(getattr(cfg.train, "checkpoint_interval", 100000))
+        self.checkpoint_compress = bool(getattr(cfg.train, "checkpoint_compress", True))
+        self.skill_grading = bool(getattr(cfg.train, "skill_grading", True))
         # 0 = keep everything (historical behavior). N > 0 = after each save,
         # delete this run's oldest step checkpoints beyond the newest N.
         self.checkpoint_keep_last = int(getattr(cfg.train, "checkpoint_keep_last", 0))
@@ -1889,6 +1898,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             return None
 
     def _build_aux(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
+            return np.zeros((self.aux_dim,), dtype=np.float32)
         if self.aux_spec in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
             return self._build_aux_v1(obs, info)
         raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
@@ -1920,6 +1931,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         Must stay output-identical to per-env `_build_aux_v1` (covered by
         tests); scalar info lookups remain per-env, plane math is batched.
         """
+        if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
+            return np.zeros((len(obs_arr), self.aux_dim), dtype=np.float32)
         if self.aux_spec not in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
             raise ValueError(f"aux_spec={self.aux_spec!r} does not define auxiliary inputs")
         B = int(obs_arr.shape[0])
@@ -2063,6 +2076,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         return heights
 
     def _build_aux_v1(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
+            return np.zeros((self.aux_dim,), dtype=np.float32)
         if self.aux_dim != _AUX_DIM_BY_SPEC.get(self.aux_spec):
             raise ValueError(
                 f"aux_dim mismatch: expected {_AUX_DIM_BY_SPEC.get(self.aux_spec)}, "
@@ -2526,7 +2541,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             except Exception:
                 pass
             self.logger.log_scalars(values, step)
-            self._maybe_grade_vs_skill(step)
+            if self.skill_grading:
+                self._maybe_grade_vs_skill(step)
             # Opponent-pool snapshots (vs env with opponent_pool enabled):
             # freeze the EMA weights into the pool every N learner matches.
             maybe_snapshot = getattr(self.env, "maybe_snapshot", None)
@@ -2622,7 +2638,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         }
 
         path = checkpoint_path(
-            self.checkpoint_dir, "smdp_ppo", checkpoint_step, compress=True
+            self.checkpoint_dir, "smdp_ppo", checkpoint_step,
+            compress=self.checkpoint_compress,
         )
         save_checkpoint(payload, path)
 

@@ -86,13 +86,17 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     return net, aux_dim, int(g("candidate_max_candidates", 128))
 
 
-def _make_aux_builder(aux_dim: int):
+def _make_aux_builder(aux_dim: int, *, aux_spec: str | None = None):
     if aux_dim <= 0:
         return None
     from drmc_rl.training.algo.ppo_smdp import _AUX_DIM_BY_SPEC, SMDPPPOAdapter
 
     shim = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
-    spec = next((s for s, d in _AUX_DIM_BY_SPEC.items() if int(d) == int(aux_dim)), "v1")
+    spec = aux_spec or next(
+        (s for s, d in _AUX_DIM_BY_SPEC.items() if int(d) == int(aux_dim)), "v1"
+    )
+    if _AUX_DIM_BY_SPEC.get(spec) != aux_dim:
+        raise ValueError(f"aux spec {spec!r} does not match width {aux_dim}")
     shim.aux_spec = spec
     shim.aux_dim = aux_dim
     return shim
@@ -323,7 +327,7 @@ def main() -> None:
         net, aux_dim, candidate_max = _build_net_from_cfg(cfg, in_ch, args.device)
         sd = payload.get("ema_state_dict") or payload["state_dict"]
         net.load_state_dict(sd)
-        aux_shim = _make_aux_builder(aux_dim)
+        aux_shim = _make_aux_builder(aux_dim, aux_spec=cfg.get("smdp_ppo", cfg).get("aux_spec"))
         print(f"loaded checkpoint step={payload.get('step')} sha={payload.get('sha')}")
 
     results = []

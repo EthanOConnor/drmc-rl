@@ -203,11 +203,23 @@ class RegretCalibration:
 
 
 class RegretStrengthController:
-    """Select human-plausible actions from the calibrated conditional tail."""
+    """Select a fixed, ordered regret band, then apply the style preference.
 
-    def __init__(self, calibration: RegretCalibration, *, seed: int = 0) -> None:
+    Bands depend on the position and a fixed reference population, never the
+    requested strength. With the same style and quantile, increasing rating
+    cannot select a higher-regret action, even across gaps in legal qualities.
+    """
+
+    def __init__(
+        self, calibration: RegretCalibration, *, seed: int = 0,
+        reference_rating: float | None = None,
+    ) -> None:
         self.calibration = calibration
         self.rng = np.random.default_rng(int(seed))
+        self.reference_rating = float(
+            np.mean(calibration.rating_edges[[0, -1]])
+            if reference_rating is None else reference_rating
+        )
 
     def choose(
         self,
@@ -217,6 +229,7 @@ class RegretStrengthController:
         *,
         rating: float,
         deterministic: bool = False,
+        quantile: float | None = None,
     ) -> tuple[int, dict[str, float | int]]:
         valid = np.flatnonzero(np.asarray(candidate_mask, dtype=np.bool_))
         if valid.size == 0:
@@ -226,20 +239,39 @@ class RegretStrengthController:
         best = float(np.max(quality))
         regret = np.maximum(best - quality, 0.0)
         opportunity = float(np.std(quality))
-        if deterministic:
-            target, tolerance = self.calibration.parameters(rating, opportunity)
+        if quantile is not None:
+            if not np.isfinite(quantile) or not 0 <= quantile <= 1:
+                raise ValueError("quantile must be finite and in [0,1]")
+            target = float(np.interp(quantile, self.calibration.quantile_levels,
+                                    self.calibration.curve(rating, opportunity)))
+        elif deterministic:
+            target, _tolerance = self.calibration.parameters(rating, opportunity)
         else:
             target = self.calibration.sample(rating, opportunity, self.rng)
-            _median, tolerance = self.calibration.parameters(rating, opportunity)
-        distance = np.abs(np.log1p(regret) - np.log1p(target))
-        closest = float(np.min(distance))
-        plausible = distance <= closest + tolerance
+        # Preserve the former envelope's full width at one fixed population
+        # reference, but partition it into non-overlapping ordered bands.
+        # Overlapping, rating-dependent windows allowed style to reverse the
+        # requested regret, especially when feasible qualities had large gaps.
+        _, tolerance = self.calibration.parameters(self.reference_rating, opportunity)
+        width = 2 * tolerance
+        log_regret = np.log1p(regret)
+        labels = np.floor(log_regret / width).astype(np.int64)
+        bands = np.unique(labels)
+        centers = np.asarray([
+            (log_regret[labels == band].min() + log_regret[labels == band].max()) * .5
+            for band in bands
+        ])
+        selected_band = bands[int(np.argmin(np.abs(centers - np.log1p(target))))]
+        plausible = labels == selected_band
         style = np.where(plausible, style, -np.inf)
         local = int(np.argmax(style))
         return int(valid[local]), {
             "target_regret": float(target),
             "chosen_regret": float(regret[local]),
             "opportunity": opportunity,
+            "regret_band_min": float(regret[plausible].min()),
+            "regret_band_max": float(regret[plausible].max()),
+            "style_reference_rating": self.reference_rating,
             "best_candidate_slot": int(valid[int(np.argmax(quality))]),
         }
 

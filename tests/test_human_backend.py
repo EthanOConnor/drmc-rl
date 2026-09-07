@@ -2,11 +2,45 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from types import SimpleNamespace
 
 from drmc_rl.human.coach import analyze_choice
 from drmc_rl.human.conditioning import HumanSkillCondition
 from drmc_rl.human.search import blend_human_and_search, semantic_planes_to_nes_board
 from drmc_rl.planning.native_reach import is_library_present
+
+
+@pytest.mark.parametrize("cuda,mps,expected", [(True, True, "cuda"),
+    (False, True, "mps"), (False, False, "cpu")])
+def test_live_device_uses_available_acceleration_and_honors_override(monkeypatch, cuda, mps, expected):
+    import torch
+    from tools.human_backend import resolve_device
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+    monkeypatch.setattr(torch.backends.mps, "is_available", lambda: mps)
+    assert resolve_device("auto") == expected
+    assert resolve_device("cpu") == "cpu"
+    assert resolve_device("cuda:1") == "cuda:1"
+
+
+def test_live_candidates_are_not_truncated_at_128() -> None:
+    from drmc_rl.human.backend import HumanBackend
+
+    backend = HumanBackend.__new__(HumanBackend)
+    backend.planner = SimpleNamespace(
+        bfs_full=lambda *args, **kwargs: SimpleNamespace(costs_u16=np.ones(512, dtype=np.uint16))
+    )
+    planes = np.zeros((8, 16, 8), dtype=np.float32)
+    *_, packed, costs = backend._candidates(
+        {
+            "board_planes": planes,
+            "opponent_board_planes": planes,
+            "pill": [0, 1],
+            "preview": [1, 2],
+        }
+    )
+    assert packed.count > 128
+    assert packed.count == np.count_nonzero(costs != 0xFFFF)
 
 
 def test_skill_condition_is_continuous_and_clamped() -> None:
@@ -435,9 +469,7 @@ def test_vs_pool_batches_exact_afterstate_opponents(tmp_path) -> None:
     checkpoint = tmp_path / "afterstate.pt.gz"
     _afterstate_checkpoint(checkpoint)
     pool = OpponentPool(tmp_path / "pool", device="cpu")
-    pool.seed_afterstates(
-        [{"checkpoint": checkpoint, "selection": "quality", "rating": 1900}]
-    )
+    pool.seed_afterstates([{"checkpoint": checkpoint, "selection": "quality", "rating": 1900}])
     env = DrMarioVsPoolVecEnv(
         num_pairs=2,
         state_repr="bitplane_bottle_conn_mask_vs",
@@ -533,12 +565,35 @@ def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None
 
 
 @pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
-def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -> None:
+@pytest.mark.parametrize("maximum", [False, True])
+@pytest.mark.parametrize("same_color", [False, True])
+@pytest.mark.parametrize("pace", ["sloth", "relaxed", "normal", "fast", "top_humans", "super_human", "frame_perfect"])
+def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path, maximum, same_color, pace) -> None:
     from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
 
     checkpoint = tmp_path / "human-v3.pt.gz"
     _afterstate_checkpoint(checkpoint)
     backend = HumanBackend(str(checkpoint), seed=3)
+    expected_action = []
+    if maximum:
+        def competitive_score(obs, infos):
+            assert obs.shape == (1, 20, 16, 8)
+            assert infos[0]["next_pill_colors"].tolist() == ([0, 0] if same_color else [0, 1])
+            assert infos[0]["vs/opponent_pill_colors"].tolist() == [2, 2]
+            assert bool(obs[0, 6:8].any()) is not same_color
+            assert not obs[0, 14:16].any()
+            assert infos[0]["preview_pill"] == {"first_color": 2, "second_color": 1}
+            actions = np.flatnonzero(infos[0]["placements/feasible_mask"].reshape(-1))[::-1]
+            expected_action.append(int(actions[-1]))
+            return actions[None], np.ones((1, len(actions)), dtype=bool), np.arange(len(actions))[None]
+
+        def reject_regret(*args, **kwargs):
+            raise AssertionError("V3 regret calibration must not be applied to another model's scores")
+
+        backend.competitive = SimpleNamespace(score=competitive_score)
+        backend.competitive_identity = {"sha256": "competitive-fixture"}
+        backend.runtime.choose_strength = reject_regret
+        backend.runtime.score = reject_regret
     try:
         hello = backend.handle({"schema": PROTOCOL_SCHEMA, "type": "hello"})
         assert hello["capabilities"]["model"]["schema"] == "drmc-human-afterstate-v3"
@@ -546,6 +601,10 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -
         planes = np.zeros((8, 16, 8), dtype=np.float32)
         planes[0, 15, 0] = 1.0
         planes[3, 15, 0] = 1.0
+        planes[0, 15, 1:3] = 1
+        planes[7, 15, 1] = 1
+        planes[6, 15, 2] = 1
+        original_planes = planes.copy()
         response = backend.handle(
             {
                 "schema": PROTOCOL_SCHEMA,
@@ -555,10 +614,15 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -
                 "deadline_ms": 10_000,
                 "target_rating": 1600,
                 "temperature": 0,
+                "strength_control": "quality" if maximum else "regret",
+                "pace": pace,
+                "timing_scale": 0,  # legacy speed must not override the named limit
+                "execution_delay_frames": 8,
                 "state": {
                     "board_planes": planes.tolist(),
-                    "opponent_board_planes": np.zeros_like(planes).tolist(),
-                    "pill": [0, 1],
+                    "opponent_board_planes": planes.tolist(),
+                    "pill": [0, 0] if same_color else [0, 1],
+                    "opponent_pill": [2, 2],
                     "preview": [2, 0],
                     "speed": 2,
                     "speed_ups": 0,
@@ -567,10 +631,44 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path) -
             }
         )
         assert response["type"] == "result"
+        np.testing.assert_array_equal(planes, original_planes)
         result = response["result"]
-        assert result["search"]["stage"] == "exact-afterstate"
+        assert result["timing"]["execution_profile"]["id"] == pace
+        assert result["timing"]["movement"]["validated"]
+        assert result["timing"]["movement"]["unrestricted_fallback"] is False
+        assert result["search"]["stage"] == ("public-policy" if maximum else "exact-afterstate")
         assert len(result["competitive_scores"]) == result["candidate_count"]
         assert result["strength"]["chosen_regret"] >= 0
+        if maximum:
+            assert result["human_logits"] is None
+            assert result["state_win_probability"] is None
+            assert result["placement"]["action"] == expected_action[0]
+            assert result["strength"]["rating_calibrated"] is False
+            assert result["strength"]["competitive_model"]["sha256"] == "competitive-fixture"
+        assert result["execution"]["start_frame"] == 18
+        assert result["execution"]["falling"]["speed_counter"] == 8
+        assert result["controller_states"][0] == result["execution"]["falling"]
+        assert len(result["controller_states"]) == len(result["controller_frames"])
+    finally:
+        backend.close()
+
+
+@pytest.mark.skipif(not is_library_present(), reason="native planner library is not built")
+def test_backend_warms_inference_without_consuming_requests_or_random_choices(tmp_path) -> None:
+    from drmc_rl.human.backend import HumanBackend
+
+    checkpoint = tmp_path / "human-v3.pt.gz"
+    _afterstate_checkpoint(checkpoint)
+    backend = HumanBackend(str(checkpoint), seed=37)
+    try:
+        assert backend.ready and backend.requests == backend.errors == 0
+        assert backend.last_request_id == backend.latest_frame_id == -1
+        assert not backend.latencies_ms
+        assert backend.runtime.rng.bit_generator.state == np.random.default_rng(37).bit_generator.state
+        assert backend.runtime.controller.rng.bit_generator.state == np.random.default_rng(37).bit_generator.state
+        backend.warmup()
+        assert backend.runtime.rng.bit_generator.state == np.random.default_rng(37).bit_generator.state
+        assert backend.runtime.controller.rng.bit_generator.state == np.random.default_rng(37).bit_generator.state
     finally:
         backend.close()
 
