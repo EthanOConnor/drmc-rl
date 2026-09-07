@@ -39,8 +39,20 @@ def verify_package(package_dir: Path, *, competitive: bool = True) -> dict:
     return caps
 
 
+def source_identity(path: Path) -> tuple[str, bool]:
+    revision = subprocess.check_output(
+        ["git", "-C", str(path), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    status = subprocess.check_output(
+        ["git", "-C", str(path), "status", "--porcelain", "--untracked-files=normal"], text=True,
+    )
+    return revision, bool(status.strip())
+
+
 def package(checkpoint: Path, output: Path, *, competitive_checkpoint: Path | None = None) -> Path:
     repo = Path(__file__).resolve().parents[1]
+    source_revision, source_dirty = source_identity(repo)
+    native_revision, native_dirty = source_identity(repo / "vendor/drmario_native")
     checkpoint = checkpoint.expanduser().resolve()
     if not checkpoint.is_file():
         raise FileNotFoundError(checkpoint)
@@ -92,9 +104,6 @@ def package(checkpoint: Path, output: Path, *, competitive_checkpoint: Path | No
         with path.open("rb") as stream:
             models[path.name] = {"sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
                                  "size_bytes": path.stat().st_size}
-    def revision(path: Path) -> str:
-        return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True).strip()
-
     capabilities = verify_package(package_dir, competitive=competitive_checkpoint is not None)
     (model_dir / "manifest.json").write_text(json.dumps({
         "schema": "drmc-trainer-package-v1", "models": models,
@@ -104,8 +113,10 @@ def package(checkpoint: Path, output: Path, *, competitive_checkpoint: Path | No
         "unrestricted_pace_fallback": False,
         "reach_library_sha256": hashlib.sha256(reach_library.read_bytes()).hexdigest(),
         "pool_library_sha256": hashlib.sha256(pool_library.read_bytes()).hexdigest(),
-        "source_revision": revision(repo),
-        "native_revision": revision(repo / "vendor/drmario_native"),
+        "source_revision": source_revision,
+        "source_dirty": source_dirty,
+        "native_revision": native_revision,
+        "native_dirty": native_dirty,
         "python_version": sys.version,
         "dependencies": {name: importlib.metadata.version(name) for name in
                          ("torch", "numpy", "pyinstaller", "pyinstaller-hooks-contrib")},

@@ -95,6 +95,7 @@ jobs:
       - name: Focused architecture and quality-evidence tests
         run: |
           uv run pytest -q \
+            tests/test_trainer_package.py \
             tests/test_program_authority.py \
             tests/test_pair_state_v2.py \
             tests/test_execution_profile.py \
