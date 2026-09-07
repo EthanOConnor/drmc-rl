@@ -35,8 +35,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - name: Resolve pinned native engine
+        id: native
+        shell: bash
+        run: echo "revision=$(git rev-parse HEAD:vendor/drmario_native)" >> "$GITHUB_OUTPUT"
+      - name: Checkout private native engine
+        uses: actions/checkout@v7
         with:
-          submodules: true
+          repository: EthanOConnor/drmario-native
+          ref: ${{ steps.native.outputs.revision }}
+          path: vendor/drmario_native
+          ssh-key: ${{ secrets.DRMC_NATIVE_DEPLOY_KEY }}
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: '0.12.10'

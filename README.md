@@ -112,6 +112,11 @@ revisions and library/checkpoint hashes. The release workflow requires a
 published model release containing both policies; it no longer guesses a
 nonexistent V3 release or silently omits Maximum's checkpoint.
 
+GitHub Actions checks out the native engine at the submodule's exact commit.
+Because that repository is private, native CI and backend releases require the
+`DRMC_NATIVE_DEPLOY_KEY` Actions secret: an SSH deploy key with read-only access
+to `EthanOConnor/drmario-native`. Pure-Python CI does not need this credential.
+
 [PyTorch 2.14](https://github.com/pytorch/pytorch/releases/tag/v2.14.0) brings MPS
 reduction/copy optimizations, less allocator fragmentation, and Metal correctness
 fixes relevant to local inference. Its clamp/min/max boundary subgradients also
