@@ -9,16 +9,39 @@ permissions:
   contents: read
 
 jobs:
+  trainer-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: '0.12.10'
+      - run: uv sync --locked --group dev --extra inference
+      - run: uv run --no-sync python -m tools.build_reach_native
+      - run: uv run --no-sync python -m tools.build_drmario_pool
+      - name: Trainer and native regression tests
+        run: uv run --no-sync pytest -q tests/test_human_backend.py tests/test_afterstate_v3.py tests/test_execution_profile.py tests/test_paced_reach.py tests/test_pair_state_v2.py tests/test_reach_native_smoke.py
+
   pure-python:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-      - uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
+          submodules: true
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: '0.12.10'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.14.7'
       - name: Install
-        run: uv sync --group dev --extra rl
+        run: uv sync --locked --group dev --extra inference
       - name: Validate program authority
         run: uv run python -m tools.program validate
       - name: Compile architecture and evidence tooling

@@ -23,9 +23,13 @@ quality rather than unrelated agents:
 
 ## Start here
 
+Use Python 3.14.7 and uv 0.12.10 or newer. The locked September 2026 baseline
+includes PyTorch 2.14, NumPy 2.5.3 and PyInstaller 6.22.2. Python 3.15 remains a
+prerelease and is intentionally outside the supported runtime.
+
 ```bash
 git submodule update --init --recursive
-uv sync --all-extras
+uv sync --locked --extra rl --extra viz --extra eval --extra corpus
 uv run python -m tools.build_drmario_pool
 uv run python -m tools.program status
 uv run python -m tools.program validate --check-paths
@@ -90,6 +94,34 @@ artifacts live in `runs/human_policy/versus_trainer/`. The V3 conditioning range
 is approximately 718–2451 WHR-C; those are requested corpus targets, not measured
 achieved ratings. `tools.package_human_backend --competitive-checkpoint ...`
 can bundle both models for standalone use.
+Use a separate packaging environment so training dependencies do not enter the
+download:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv-package uv sync --locked --no-dev --group package --extra inference
+UV_PROJECT_ENVIRONMENT=.venv-package uv run --no-sync python -m tools.package_human_backend \
+  --checkpoint runs/human_policy/versus_trainer/v3-full-epoch05.pt.gz \
+  --competitive-checkpoint runs/human_policy/versus_trainer/competitive_policy.pt.gz
+```
+
+The `inference` and `rl` extras are mutually exclusive: portable inference uses
+locked CPU wheels on Linux/Windows and MPS-capable wheels on macOS; `rl` retains
+CUDA training wheels on Linux. The packager starts the frozen process, checks
+its model/execution capabilities, and records runtime versions, native/source
+revisions and library/checkpoint hashes. The release workflow requires a
+published model release containing both policies; it no longer guesses a
+nonexistent V3 release or silently omits Maximum's checkpoint.
+
+[PyTorch 2.14](https://github.com/pytorch/pytorch/releases/tag/v2.14.0) brings MPS
+reduction/copy optimizations, less allocator fragmentation, and Metal correctness
+fixes relevant to local inference. Its clamp/min/max boundary subgradients also
+changed: future training resumes must record the new runtime and be evaluated as
+a new continuation, not claimed to reproduce a 2.13 trajectory. Existing model
+weights and inference information boundaries are unchanged. CUDA graph replay
+hooks and reduced cuDNN cold-start cost are useful profiling opportunities on
+tf3090; compiled or captured inference must prove a latency benefit across the
+trainer's candidate-size buckets before deployment.
+
 Achieved WHR-C calibration, named human operation profiles, and the unified
 trainer release remain gated.
 

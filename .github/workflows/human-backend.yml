@@ -6,13 +6,16 @@ on:
   workflow_dispatch:
     inputs:
       model_release:
-        description: Release tag containing the calibrated V3 human policy
+        description: Release tag containing the V3 human and competitive policies
         required: true
-        default: human-policy-v3
       model_asset:
         description: Checkpoint asset name in the model release
         required: true
-        default: human_afterstate_v3.pt.gz
+        default: human_policy.pt.gz
+      competitive_asset:
+        description: Competitive policy asset in the same model release
+        required: true
+        default: competitive_policy.pt.gz
 
 permissions:
   contents: write
@@ -25,25 +28,21 @@ jobs:
         include:
           - os: ubuntu-latest
             platform: linux-x86_64
-          - os: macos-14
+          - os: macos-latest
             platform: macos-aarch64
           - os: windows-latest
             platform: windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+        with:
+          submodules: true
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: '0.12.10'
 
       - name: Install packaging environment
-        run: uv sync --group package
-
-      - name: Install CPU-only PyTorch (Linux)
-        if: runner.os == 'Linux'
-        run: uv pip install 'torch>=2.13,<2.14' --index-url https://download.pytorch.org/whl/cpu
-
-      - name: Install PyTorch
-        if: runner.os != 'Linux'
-        run: uv sync --group package --extra rl
+        run: uv sync --locked --no-dev --group package --extra inference
 
       - name: Resolve model identity
         id: model
@@ -51,26 +50,36 @@ jobs:
         env:
           INPUT_RELEASE: ${{ inputs.model_release }}
           INPUT_ASSET: ${{ inputs.model_asset }}
+          INPUT_COMPETITIVE: ${{ inputs.competitive_asset }}
           DEFAULT_RELEASE: ${{ vars.DRMC_HUMAN_POLICY_RELEASE }}
           DEFAULT_ASSET: ${{ vars.DRMC_HUMAN_POLICY_ASSET }}
+          DEFAULT_COMPETITIVE: ${{ vars.DRMC_COMPETITIVE_POLICY_ASSET }}
         run: |
-          release="${INPUT_RELEASE:-${DEFAULT_RELEASE:-human-policy-v3}}"
-          asset="${INPUT_ASSET:-${DEFAULT_ASSET:-human_afterstate_v3.pt.gz}}"
+          release="${INPUT_RELEASE:-${DEFAULT_RELEASE}}"
+          asset="${INPUT_ASSET:-${DEFAULT_ASSET:-human_policy.pt.gz}}"
+          competitive="${INPUT_COMPETITIVE:-${DEFAULT_COMPETITIVE:-competitive_policy.pt.gz}}"
+          test -n "$release" || { echo 'Set DRMC_HUMAN_POLICY_RELEASE to a published model release containing both policies.' >&2; exit 1; }
           echo "release=$release" >> "$GITHUB_OUTPUT"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "competitive=$competitive" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch published calibrated policy
+      - name: Fetch published policies
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release download '${{ steps.model.outputs.release }}'
-          --pattern '${{ steps.model.outputs.asset }}' --dir model
+          MODEL_RELEASE: ${{ steps.model.outputs.release }}
+          HUMAN_ASSET: ${{ steps.model.outputs.asset }}
+          COMPETITIVE_ASSET: ${{ steps.model.outputs.competitive }}
+        run: |
+          gh release download "$MODEL_RELEASE" --pattern "$HUMAN_ASSET" --pattern "$COMPETITIVE_ASSET" --dir model
 
       - name: Build standalone backend
         shell: bash
-        run: >-
-          uv run --no-sync python -m tools.package_human_backend
-          --checkpoint 'model/${{ steps.model.outputs.asset }}'
+        env:
+          HUMAN_ASSET: ${{ steps.model.outputs.asset }}
+          COMPETITIVE_ASSET: ${{ steps.model.outputs.competitive }}
+        run: |
+          uv run --no-sync python -m tools.package_human_backend --checkpoint "model/$HUMAN_ASSET" --competitive-checkpoint "model/$COMPETITIVE_ASSET"
 
       - name: Archive backend
         if: runner.os != 'Windows'
