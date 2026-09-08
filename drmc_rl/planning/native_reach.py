@@ -112,6 +112,11 @@ class NativeReachability:
     lengths_u16: np.ndarray  # (512,) uint16; 0 == unreachable
     script_buf: np.ndarray  # (used,) uint8
 
+    def copy(self) -> "NativeReachability":
+        """Own the witnesses when another BFS may run before consumption."""
+        return NativeReachability(self.costs_u16.copy(), self.offsets_u16.copy(),
+                                  self.lengths_u16.copy(), self.script_buf.copy())
+
     @staticmethod
     def pose_index(x: int, y: int, rot: int) -> int:
         return int((int(rot) & 3) * (GRID_H * GRID_W) + int(y) * GRID_W + int(x))

@@ -1,14 +1,59 @@
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let replay=null,replayIndex=0,replayStart=0,replayWindow=0,replayTimer=null,replayPlaying=true;
-const colors=['#ef5350','#53b9ff','#f5d44d','#89938e'];
-function boardSVG(bytes){let cells='';for(let i=0;i<128;i++){let v=bytes[i]||0;if(!v)continue;let x=i%8,y=Math.floor(i/8),c=colors[v&3],virus=(v&0xf0)===0xd0;cells+=virus?`<circle class="cell-virus" cx="${x+.5}" cy="${y+.5}" r=".39" fill="${c}"/><circle cx="${x+.38}" cy="${y+.43}" r=".07" fill="#09110e"/><circle cx="${x+.62}" cy="${y+.43}" r=".07" fill="#09110e"/>`:`<rect x="${x+.08}" y="${y+.08}" width=".84" height=".84" rx=".3" fill="${c}"/>`;}return `<svg class="bottle-svg" viewBox="-.5 -.8 9 17.3"><path d="M0 0v15.8h8V0M0 0h2.7v-.6h2.6V0H8" fill="#0b1511" stroke="#789187" stroke-width=".14"/>${cells}</svg>`}
-function drawReplay(){if(!replay?.replay?.length)return;let f=replay.replay[replayIndex%replay.replay.length];document.querySelector('#bottle-a').innerHTML=boardSVG(f.boards[0]);document.querySelector('#bottle-b').innerHTML=boardSVG(f.boards[1]);document.querySelector('#replay-pos').textContent=`placement ${replayIndex+1} / ${replay.replay.length}`;}
-function scheduleReplay(){clearTimeout(replayTimer);if(!replayPlaying||!replay)return;let speed=+document.querySelector('#replay-speed').value||4,ms=Math.max(90,(replay.match_len_sec/replay.replay.length)*1000/speed);replayTimer=setTimeout(()=>{replayIndex++;if(replayIndex>=replayStart+replayWindow)replayIndex=replayStart;drawReplay();scheduleReplay()},ms)}
-async function loadReplay(id,by){replay=await fetch(`/api/replay/${id}`).then(r=>r.json());replayWindow=Math.min(160,replay.replay.length);replayStart=Math.floor(Math.random()*Math.max(1,replay.replay.length-replayWindow));replayIndex=replayStart;document.querySelector('#replay-section').hidden=false;document.querySelector('#replay-title').textContent=`${by[replay.agent_a]?.name||replay.agent_a} vs ${by[replay.agent_b]?.name||replay.agent_b} · random excerpt`;drawReplay();scheduleReplay()}
+let replay=null,replayIndex=0,replayTimer=null,replayPlaying=true,replayRequest=0;
+const colors=['#f5d44d','#ef5350','#53b9ff','#89938e'];
+function boardSVG(bytes,pill){let cells='';for(let i=0;i<128;i++){let v=bytes[i]||0;if(!v||v===255||(v&0xf0)===0xf0||(v&0xf0)===0xb0)continue;let x=i%8,y=Math.floor(i/8),c=colors[v&3],virus=(v&0xf0)===0xd0;cells+=virus?`<circle class="cell-virus" cx="${x+.5}" cy="${y+.5}" r=".39" fill="${c}"/><circle cx="${x+.38}" cy="${y+.43}" r=".07" fill="#09110e"/><circle cx="${x+.62}" cy="${y+.43}" r=".07" fill="#09110e"/>`:`<rect x="${x+.08}" y="${y+.08}" width=".84" height=".84" rx=".3" fill="${c}"/>`;}cells+=fallingSVG(pill);return `<svg class="bottle-svg" viewBox="-.5 -.8 9 17.3"><path d="M0 0v15.8h8V0M0 0h2.7v-.6h2.6V0H8" fill="#0b1511" stroke="#789187" stroke-width=".14"/>${cells}</svg>`}
+function drawReplay(){
+ if(!replay?.replay?.length)return;
+ const f=replay.replay[replayIndex];
+ document.querySelector('#bottle-a').innerHTML=boardSVG(f.boards[0],f.pills?.[0]);
+ document.querySelector('#bottle-b').innerHTML=boardSVG(f.boards[1],f.pills?.[1]);
+ document.querySelector('#replay-pos').textContent=`snapshot ${replayIndex+1} / ${replay.replay.length}${Number.isFinite(f.frame)?` · ${(f.frame/60.0988).toFixed(2)}s`:''}`;
+ document.querySelector('#replay-seek').value=replayIndex;
+ document.querySelector('#replay-detail').textContent=f.note||'Recorded board snapshots; these do not show every controller input.';
+}
+function scheduleReplay(){
+ cancelAnimationFrame(replayTimer);
+ if(!replayPlaying||!replay?.replay?.length)return;
+ if(replayIndex>=replay.replay.length-1){replayPlaying=false;document.querySelector('#replay-toggle').textContent='Play';return;}
+ const speed=+document.querySelector('#replay-speed').value||4;
+ const at=i=>Number.isFinite(replay.replay[i].frame)?replay.replay[i].frame/60.0988:i*replay.match_len_sec/replay.replay.length;
+ const origin=at(replayIndex), started=performance.now();
+ const tick=now=>{
+   const target=origin+(now-started)*speed/1000, previous=replayIndex;
+   while(replayIndex+1<replay.replay.length&&at(replayIndex+1)<=target)replayIndex++;
+   if(previous!==replayIndex)drawReplay();
+   if(replayIndex===replay.replay.length-1){replayPlaying=false;document.querySelector('#replay-toggle').textContent='Play';return;}
+   replayTimer=requestAnimationFrame(tick);
+ };
+ replayTimer=requestAnimationFrame(tick);
+}
+async function loadReplay(id,by){
+ const request=++replayRequest;
+ const response=await fetch(`/api/replay/${id}`);
+ if(!response.ok)throw Error(`Replay HTTP ${response.status}`);
+ const loaded=await response.json();
+ if(request!==replayRequest)return;
+ if(!loaded.replay?.length)throw Error('Replay has no snapshots');
+ replay=loaded;replay.id=String(id);replayIndex=0;
+ document.querySelector('#replay-picker').value=String(id);
+ document.querySelector('#replay-section').hidden=false;
+ document.querySelector('#replay-title').textContent=`${by[replay.agent_a]?.name||replay.agent_a} vs ${by[replay.agent_b]?.name||replay.agent_b} · game ${replay.id} · L${replay.level ?? '?'} HI · seed ${replay.seed}`;
+ document.querySelector('#replay-seek').max=replay.replay.length-1;
+ drawReplay();scheduleReplay();
+}
 function speedChart(points){if(!points?.length)return '';let vals=points.map(p=>+p[1]),lo=Math.min(...vals),hi=Math.max(...vals),span=hi-lo||1;return `<polyline fill="none" stroke="#b9ef63" stroke-width="4" vector-effect="non-scaling-stroke" points="${vals.map((v,i)=>`${i/(vals.length-1||1)*1000},${140-(v-lo)/span*125}`).join(' ')}"/>`}
 function workerHost(worker){let key=(worker.worker_id||'unknown').split('-')[0].toLowerCase();return key==='mac'?'Mac':key==='green'?'Green':key[0]?.toUpperCase()+key.slice(1)||'Unknown'}
 function hostSummaries(workers){let groups=new Map;for(let worker of workers){let host=workerHost(worker),group=groups.get(host)||{host,workers:[],frames_per_sec:0,decisions_per_sec:0,games_per_min:0,games:0,simulated_frames:0,wall_seconds:0};group.workers.push(worker);group.frames_per_sec+=worker.frames_per_sec;group.decisions_per_sec+=worker.decisions_per_sec;group.games_per_min+=worker.games_per_min;group.games+=worker.games;group.simulated_frames+=worker.frames_per_game*worker.games;group.wall_seconds=Math.max(group.wall_seconds,worker.wall_seconds);groups.set(host,group)}return [...groups.values()].map(group=>{let devices=new Map;for(let worker of group.workers){let device=worker.device.toUpperCase(),summary=devices.get(device)||{count:0,threads:0,batches:new Set};summary.count++;summary.threads+=worker.threads;summary.batches.add(worker.batch_size);devices.set(device,summary)}group.configuration=[...devices].map(([device,x])=>`${x.count}× ${device} · ${x.threads} threads · batch ${[...x.batches].join('/')}`).join(' + ');group.frames_per_game=group.games?group.simulated_frames/group.games:0;return group}).sort((a,b)=>a.host.localeCompare(b.host))}
 async function refresh(){const d=await fetch('/api/snapshot').then(r=>r.json());const by=Object.fromEntries(d.agents.map(a=>[a.id,a])),visibleAgents=d.agents.filter(a=>a.status!=='retired');
+ const recorded=d.recorded_matches||[], picker=document.querySelector('#replay-picker');
+ const archiveKey=JSON.stringify(recorded);
+ if(picker.dataset.archive!==archiveKey){
+   const selection=replay?.id||picker.value;
+   picker.innerHTML='<option value="">Choose a recorded match</option>'+recorded.map(m=>`<option value="${m.id}">${esc(by[m.agent_a]?.name||m.agent_a)} vs ${esc(by[m.agent_b]?.name||m.agent_b)} · game ${m.id} · L${m.level} · seed ${m.seed} · ${esc(m.terminal_reason)}</option>`).join('');
+   picker.value=selection;picker.dataset.archive=archiveKey;
+ }
+ picker.onchange=()=>{if(picker.value)loadReplay(picker.value,by).catch(console.error)};
+ if(!replay&&recorded.length)loadReplay(recorded[0].id,by).catch(console.error);
  document.querySelector('#games').textContent=`${d.games.toLocaleString()} games`;document.querySelector('#updated').textContent=new Date(d.generated).toLocaleTimeString();
  const ratingFit=d.ratings||{},ratingDiag=ratingFit.diagnostics||{},live=ratingFit.method==='laplace',quality=live?`local Gaussian · mode gradient ${(+ratingDiag.mode_gradient_max||0).toExponential(1)}`:`R̂ ${ratingDiag.max_rhat?.toFixed(3)??'—'} · ESS ${Math.round(ratingDiag.min_ess??0).toLocaleString()}`,ratingState=ratingFit.status==='pending'?'posterior fit pending':`${ratingFit.status==='updating'?`${ratingFit.pending_games} new games pending · `:''}${live?'live Bayesian W/D/L':'audited Bayesian W/D/L'} · ${quality}`;document.querySelector('#ratings-status').textContent=`${ratingState} · active roster; historical evidence retained`;
  const champ=visibleAgents.find(a=>a.status==='champion'),leader=champ||visibleAgents.find(a=>a.games>0);document.querySelector('#leader-label').textContent=champ?'Current champion':'Provisional leader';document.querySelector('#champion').textContent=leader?.name||'Waiting for games';document.querySelector('#champion-meta').textContent=leader?`${leader.family} · generation ${leader.generation} · ${leader.games} rated games${champ?'':' · no champion crowned'}`:'Play connected matchups to establish the field.';
@@ -20,6 +65,13 @@ async function refresh(){const d=await fetch('/api/snapshot').then(r=>r.json());
  document.querySelector('#matches').innerHTML=d.recent.slice(0,12).map(m=>{let A=by[m.agent_a]?.name||m.agent_a,B=by[m.agent_b]?.name||m.agent_b,w=m.winner==='a'?A:m.winner==='b'?B:'draw';return `<div class="card ${m.has_replay?'replay-link':''}" ${m.has_replay?`data-replay="${m.id}"`:''}><span>${esc(A)}</span><b class="score">${esc(w)}${m.has_replay?' · ▶':''}</b><span>${esc(B)}</span></div>`}).join('')||'<p class="event">No matches yet.</p>';
  document.querySelector('#events').innerHTML=d.events.slice(0,12).map(e=>`<div class="event"><time>${new Date(e.created).toLocaleDateString()}</time><span><b>${esc(e.kind)}</b> · ${esc(by[e.agent_id]?.name||e.agent_id||'arena')}</span></div>`).join('');
  document.querySelector('#matches').onclick=e=>{let row=e.target.closest('[data-replay]');if(row)loadReplay(row.dataset.replay,by).catch(console.error)};
- if(!replay){let sample=d.recent.filter(m=>m.has_replay);if(sample.length)loadReplay(sample[Math.floor(Math.random()*sample.length)].id,by).catch(console.error)}}
-document.querySelector('#replay-toggle').onclick=e=>{replayPlaying=!replayPlaying;e.target.textContent=replayPlaying?'Pause':'Play';scheduleReplay()};document.querySelector('#replay-speed').onchange=scheduleReplay;
-refresh().catch(console.error);setInterval(()=>refresh().catch(console.error),5000);
+ if(!replay&&!recorded.length){let sample=d.recent.filter(m=>m.has_replay);if(sample.length)loadReplay(sample[0].id,by).catch(console.error)}}
+document.querySelector('#replay-toggle').onclick=e=>{replayPlaying=!replayPlaying;if(replayPlaying&&replayIndex===replay?.replay.length-1){replayIndex=0;drawReplay()}e.target.textContent=replayPlaying?'Pause':'Play';scheduleReplay()};document.querySelector('#replay-speed').onchange=scheduleReplay;
+function seekReplay(index){if(!replay)return;replayPlaying=false;cancelAnimationFrame(replayTimer);document.querySelector('#replay-toggle').textContent='Play';replayIndex=Math.max(0,Math.min(replay.replay.length-1,index));drawReplay()}
+document.querySelector('#replay-seek').oninput=e=>seekReplay(+e.target.value);
+document.querySelector('#replay-prev').onclick=()=>seekReplay(replayIndex-1);
+document.querySelector('#replay-next').onclick=()=>seekReplay(replayIndex+1);
+async function pollArena(){try{await refresh();document.querySelector('#connection-status').textContent='CONNECTED';document.querySelector('#connection-dot').classList.remove('stale')}catch(error){document.querySelector('#connection-status').textContent='RECONNECTING';document.querySelector('#connection-dot').classList.add('stale');console.error(error)}finally{setTimeout(pollArena,5000)}}
+pollArena();
+
+function fallingSVG(pill){if(!Array.isArray(pill)||pill.length!==5)return "";const [x,y,r,a,b]=pill;if(!Number.isInteger(r)||r<0||r>3)return "";const dx=[[0,1],[0,0],[1,0],[0,0]][r],dy=[[0,0],[0,-1],[0,0],[-1,0]][r];return [a,b].map((c,i)=>`<rect x="${x+dx[i]+.06}" y="${y+dy[i]+.06}" width=".88" height=".88" rx=".28" fill="${colors[c&3]}" stroke="#fff" stroke-width=".05"/>`).join("")}

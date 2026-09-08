@@ -136,6 +136,60 @@ def _frame_payload(frame: FrameState) -> dict[str, int]:
     }
 
 
+def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: int = 0,
+                pace: Pace | None = None):
+    planes = _board_planes(state["board_planes"])
+    opponent_planes = _board_planes(state["opponent_board_planes"])
+    pill = _pair(state["pill"], "pill")
+    preview = _pair(state["preview"], "preview")
+    falling = state.get("falling", {})
+    hold = HoldDir(int(falling.get("hold_dir", 0)))
+    rotation_hold = Rotation(int(falling.get("rotation_hold", 0)))
+    frame = FrameState(
+        x=int(falling.get("x", 3)),
+        y=int(falling.get("y", 0)),
+        rot=int(falling.get("rotation", 0)) & 3,
+        speed_counter=int(falling.get("speed_counter", 0)),
+        hor_velocity=int(falling.get("horizontal_velocity", 0)) & 0x0F,
+        hold_dir=hold,
+        frame_parity=int(falling.get("frame_parity", 0)) & 1,
+        rot_hold=rotation_hold,
+    )
+    speed = int(state.get("speed", 2))
+    speed_ups = int(state.get("speed_ups", 0))
+    for _ in range(execution_delay_frames):
+        frame = simulate_frame(
+            _columns(planes),
+            frame,
+            0,
+            speed_threshold=compute_speed_threshold(speed, speed_ups),
+        )
+        if frame.locked:
+            raise ValueError("pill locks before scheduled execution")
+    reach = planner.bfs_full(
+        _columns(planes),
+        frame,
+        speed_threshold=compute_speed_threshold(speed, speed_ups),
+        **({} if pace is None else pace.planner_args(execution_delay_frames)),
+    ).copy()
+    costs = np.full(512, 0xFFFF, dtype=np.uint16)
+    for pose in np.flatnonzero(reach.costs_u16 != 0xFFFF):
+        action = int(POSE_TO_ACTION[pose])
+        if action >= 0:
+            costs[action] = reach.costs_u16[pose]
+    if pill[0] == pill[1]:
+        costs[256:] = 0xFFFF
+    packed = pack_feasible_candidates(
+        (costs != 0xFFFF).reshape(4, GRID_H, GRID_W),
+        costs.reshape(4, GRID_H, GRID_W),
+        max_candidates=max(128, int(np.count_nonzero(costs != 0xFFFF))),
+        sort_by_cost=True,
+    )
+    if packed.count == 0:
+        raise RuntimeError("no reachable placement")
+    return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
+
+
 class HumanBackend:
     """Synchronous worker intended to be supervised off the gameplay thread."""
 
@@ -187,6 +241,7 @@ class HumanBackend:
         self.search_beam, self.search_num_sim_envs = _SEARCH_PROFILES[realtime_profile]
         self.search_budget = AdaptiveSearchBudget()
         self.search: HumanValueSearch | None = None
+        self.preparer = None
         self.planner = NativeReachabilityRunner(max_frames=max_frames)
         self.warmup()
         self.ready = True
@@ -238,26 +293,32 @@ class HumanBackend:
                     masks.append(mask.reshape(legal.shape))
             for mask in masks:
                 observation = np.concatenate((planes, planes, mask.astype(np.float32)))
-                self.competitive.score(observation[None], [{
+                info = {
                     "placements/feasible_mask": mask,
                     "placements/cost_to_lock": np.where(mask, 32, 0xFFFF),
                     "next_pill_colors": pill,
                     "preview_pill": {"first_color": 2, "second_color": 1},
-                }])
+                }
+                for batch in (1, 18):
+                    self.competitive.score(np.repeat(observation[None], batch, axis=0), [info] * batch)
 
     def capabilities(self) -> dict[str, Any]:
         return {
             "schema": PROTOCOL_SCHEMA,
-            "request_types": ["hello", "health", "decide", "coach", "cancel", "shutdown"],
+            "request_types": ["hello", "health", "decide", "coach", "prepare_next", "cancel", "shutdown"],
+            "anticipation": {"version": 1, "available": self.competitive is not None,
+                             "preview_branches": 9, "frame_parities": 2,
+                             "public_information_only": True, "opponent_ablation": True},
             "modes": ["play", "coach"],
             "state": {
                 "board_planes": "8x16x8 canonical color/virus/connectivity planes",
                 "opponent_pill": "public current/last falling colors; required by the competitive ceiling",
+                "pill_counter_total": "visible pill counter in packed BCD; used only to predict the next gravity speed-up",
                 "colors": "0=red, 1=yellow, 2=blue",
                 "coordinates": "planner coordinates: row 0 is bottle top",
             },
             "outputs": ["placement", "controller_frames", "timing", "coach_analysis"],
-            "scheduled_execution": {"version": 1, "max_delay_frames": 30},
+            "scheduled_execution": {"version": 1, "max_delay_frames": max(30, max(p.reaction_frames for p in PACES))},
             "strength": {
                 "sample_regret": "V3 only; sample calibrated regret tails independently of imitation temperature",
                 "controls": ["regret", "quality"] if self.afterstate_v3 else ["regret"],
@@ -308,60 +369,13 @@ class HumanBackend:
             },
         }
 
-    def _candidates(self, state: Mapping[str, Any], execution_delay_frames: int = 0,
-                    pace: Pace | None = None):
-        planes = _board_planes(state["board_planes"])
-        opponent_planes = _board_planes(state["opponent_board_planes"])
-        pill = _pair(state["pill"], "pill")
-        preview = _pair(state["preview"], "preview")
-        falling = state.get("falling", {})
-        hold = HoldDir(int(falling.get("hold_dir", 0)))
-        rotation_hold = Rotation(int(falling.get("rotation_hold", 0)))
-        frame = FrameState(
-            x=int(falling.get("x", 3)),
-            y=int(falling.get("y", 0)),
-            rot=int(falling.get("rotation", 0)) & 3,
-            speed_counter=int(falling.get("speed_counter", 0)),
-            hor_velocity=int(falling.get("horizontal_velocity", 0)) & 0x0F,
-            hold_dir=hold,
-            frame_parity=int(falling.get("frame_parity", 0)) & 1,
-            rot_hold=rotation_hold,
-        )
-        speed = int(state.get("speed", 2))
-        speed_ups = int(state.get("speed_ups", 0))
-        for _ in range(execution_delay_frames):
-            frame = simulate_frame(
-                _columns(planes),
-                frame,
-                0,
-                speed_threshold=compute_speed_threshold(speed, speed_ups),
-            )
-            if frame.locked:
-                raise ValueError("pill locks before scheduled execution")
-        reach = self.planner.bfs_full(
-            _columns(planes),
-            frame,
-            speed_threshold=compute_speed_threshold(speed, speed_ups),
-            **({} if pace is None else pace.planner_args(execution_delay_frames)),
-        )
-        costs = np.full(512, 0xFFFF, dtype=np.uint16)
-        for pose in np.flatnonzero(reach.costs_u16 != 0xFFFF):
-            action = int(POSE_TO_ACTION[pose])
-            if action >= 0:
-                costs[action] = reach.costs_u16[pose]
-        if pill[0] == pill[1]:
-            costs[256:] = 0xFFFF
-        packed = pack_feasible_candidates(
-            (costs != 0xFFFF).reshape(4, GRID_H, GRID_W),
-            costs.reshape(4, GRID_H, GRID_W),
-            max_candidates=max(128, int(np.count_nonzero(costs != 0xFFFF))),
-            sort_by_cost=True,
-        )
-        if packed.count == 0:
-            raise RuntimeError("no reachable placement")
-        return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
+    def _candidates(self, state, execution_delay_frames=0, pace=None):
+        return plan_candidates(self.planner, state, execution_delay_frames, pace)
 
     def close(self) -> None:
+        if self.preparer is not None:
+            self.preparer.close()
+            self.preparer = None
         if self.search is not None:
             self.search.close()
             self.search = None
@@ -679,6 +693,22 @@ class HumanBackend:
                     type="cancelled", cancel_request_id=int(request["cancel_request_id"])
                 )
                 return response
+            if kind == "prepare_next":
+                from drmc_rl.human.anticipation import NextTurnPreparer
+                if self.competitive is None:
+                    raise ValueError("next-turn preparation requires the public competitive policy")
+                if self.preparer is None:
+                    self.preparer = NextTurnPreparer(self.competitive, self.planner)
+                pace = resolve_pace(request.get("pace"))
+                prepared = self.preparer.prepare(request["state"], request["committed"], pace)
+                if prepared is not None:
+                    # All arrays cross the sidecar protocol as ordinary public
+                    # planes; no native snapshot bytes are ever serialized.
+                    prepared["state"] = {k: (v.astype(np.uint8).tolist() if k.endswith("board_planes") else v.tolist())
+                                         if isinstance(v, np.ndarray) else v
+                                         for k, v in prepared["state"].items()}
+                response.update(type="prepared", prepared=prepared)
+                return response
             if kind not in {"decide", "coach"}:
                 raise ValueError(f"unsupported request type {kind!r}")
             if request_id <= self.last_request_id:
@@ -692,6 +722,9 @@ class HumanBackend:
                 return response
             self.latest_frame_id = frame_id
             budget_ms = float(request.get("deadline_ms", float("inf")))
+            if budget_ms <= 0:
+                response.update(type="deadline_exceeded", elapsed_ms=0.0)
+                return response
             elapsed_before_infer = (time.perf_counter() - started) * 1e3
             result = self._infer(request, remaining_ms=budget_ms - elapsed_before_infer)
             elapsed_ms = (time.perf_counter() - started) * 1e3

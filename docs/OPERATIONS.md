@@ -283,6 +283,68 @@ Metal uses a small set of padded candidate shapes warmed before the backend
 reports readiness. Verify packaged Maximum and regret modes against the ROM;
 a warmed microbenchmark alone does not expose first-use shape compilation.
 
+### Trainer planning tournaments
+
+Use `tools.program launch trainer-planning-latency` with
+`competitive_checkpoint`, `trainer_control_checkpoint`, `trainer_planning_roots`
+and `trainer_planning_report` to measure complete warm decisions and conditional
+preview batches. Measure transport and deadline reliability separately with
+the source backend and Professor Pills' `trainer_smoke`; inference timings alone
+do not determine a safe frame deadline.
+
+`tools.program launch trainer-planning-arena --set trainer_arena_config=PATH`
+runs an explicit JSON schedule. The config supplies checkpoint/device/library
+paths, output and working-DB paths, variants with `delay`, optional `anticipation`,
+`strict_opponent` and `own_board_only`, measured `reactive_compute_frames` and
+`preparation_compute_frames`, and comparison rows with `id`, `a`, `b`, `games`,
+`seed`, `level` and optional `pace`. Games must be even: each seed runs on both
+physical sides. `seed_exclusions` keeps confirmation seeds separate from the
+screen. `memoize` reuses exact immutable planner/policy answers without changing
+the simulated compute charge. The arena uses actual controller frames and
+aborts on a script/microstate mismatch. Keep level 14 HI primary; report level
+20 HI and slower paces separately. The default 60,000-frame cap bounds only
+unfinished games; completed rounds stop naturally.
+
+The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
+measurement. Reject a deployment deadline that fails the real host check even
+if it wins offline. `trainer-planning-analysis` replays saved `trainer_planning_moves`
+through controller frames and writes `trainer_planning_analysis`, comparing
+fresh opponent inputs and reachability after four/eight idle frames with the
+same `competitive_checkpoint`. Sample whole side-swapped games and keep their
+correlation visible. Policy-logit changes are sensitivity evidence, not win-odds regret.
+
+Every game retains public move roots, chosen placements, controller scripts,
+cache status and terminal outcome in `moves/` plus `games.jsonl`. Distributed
+replay samples retain both bottles and falling pills. Working SQLite must stay
+on a local filesystem (on tf3090, `/dev/shm`); output, closed SQLite snapshots
+and compressed traces may use the mombox `trainer-output` network mount.
+
+The `trainer-experiment-dashboard` recipe takes `trainer_experiment`, `arena_db`
+and `arena_port`. Its plan JSON names the work, goals and variants. Synchronize
+closed remote outputs with `python -m tools.trainer_arena_sync --source DIR
+--target DIR --feed NAME`; use a different feed per worker output. This imports
+into the live DB instead of replacing a SQLite file with active WAL readers.
+For live remote runs, launch `trainer-planning-sync` with `trainer_sync_config`:
+its JSON contains local `target`, `interval_seconds` (at least ten), and `feeds`
+mapping each feed name to an `SSH-host:/output/path`. It transfers closed
+snapshots and sampled replays; the full move archive stays on remote storage.
+The viewer exposes progress, recorded matches, playback and scrubbing, relative
+Elo and matchup coverage. Ratings use the existing Davidson/Laplace model,
+anchor the baseline at zero, count each paired seed as one effective observation,
+and separate `rating_group`, level and pace. They are experiment comparisons,
+not drmariostats ratings. Inspect the payoff matrix for matchup dependence.
+
+The September 8 experiment lives under `runs/trainer-anticipation-v1/`, with
+remote outputs in `trainer-output/anticipation-20260908/`. Professor Pills'
+`PROFESSOR_PILLS_AI_PLANNING` permits `baseline`, `reactive` (three frames),
+`reactive2`, `anticipatory` (exact opponent), `cached` (older opponent),
+`own_reactive`, `own_prepared`, and the measured-budget variants `adaptive`,
+`adaptive_exact`, `adaptive_cached`, `adaptive_own`. The app defaults to
+`adaptive_cached`. Preparation applies only at Max and the three fastest paces,
+and only when the reaction floor does not already cover computation.
+Source and package release verification
+remain distinct; these execution experiments do not certify human calibration.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

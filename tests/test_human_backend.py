@@ -27,8 +27,11 @@ def test_live_candidates_are_not_truncated_at_128() -> None:
     from drmc_rl.human.backend import HumanBackend
 
     backend = HumanBackend.__new__(HumanBackend)
+    from drmc_rl.planning.native_reach import NativeReachability
+    reach = NativeReachability(np.ones(512, dtype=np.uint16), np.zeros(512, dtype=np.uint16),
+                               np.zeros(512, dtype=np.uint16), np.empty(0, dtype=np.uint8))
     backend.planner = SimpleNamespace(
-        bfs_full=lambda *args, **kwargs: SimpleNamespace(costs_u16=np.ones(512, dtype=np.uint16))
+        bfs_full=lambda *args, **kwargs: reach
     )
     planes = np.zeros((8, 16, 8), dtype=np.float32)
     *_, packed, costs = backend._candidates(

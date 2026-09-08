@@ -201,6 +201,37 @@ These authored product presets are not corpus-certified ExecutionProfiles;
 Top Humans is a setting name, not a validated percentile. Sustained burst,
 correction, and human-distribution calibration gates remain separate.
 
+### Anticipatory execution
+
+Maximum can prepare the next turn while its committed controller script runs.
+The public current preview supplies that turn's pill. A one-placement native
+simulation predicts the settled own bottle; it is not a search teacher or an
+opponent rollout. Exact reachability covers both possible spawn parities, and
+one batch scores the nine possible new previews for each parity. These are
+conditional answers selected after the actual reveal, not nine independent
+events assigned uniform probabilities. No reserve, RNG or queued attack state
+enters the actor.
+
+Prepared execution requires an exact observed own bottle, pill, gravity speed
+and controller microstate. Incoming garbage, a different lock, or a controller
+correction invalidates it. The selected implementation retains the previous
+opponent observation. The exact-context comparison additionally requires the
+same public opponent input; neither variant relaxes own-state validation.
+An opponent-input ablation zeros those
+channels with fixed weights; it does not establish the capability of a retrained
+opponent-blind policy. Candidate buffers must be owned across native BFS calls.
+
+The host measures queue, serialization, pipe and inference round-trip time.
+Adaptive execution uses a four-frame floor plus an eight-millisecond margin
+over the recent maximum, without retiming an outstanding decision. Preparation
+removes compute wait on a hit; named reaction and motor limits still apply to
+the witness. Skip preparation when the human reaction floor already covers
+computation: it saves no movement time and would age the opponent observation.
+Lower skill settings keep their regret decoder and existing timing.
+The legacy eight-frame path remains available for controlled comparison.
+The measured timing and full-game selection evidence are in `ROADMAP.md`;
+this execution improvement does not open the separate calibration/search gates.
+
 ### Repertoire and motor-aware strategy
 
 The current Maximum actor chooses policy logits, not calibrated candidate win

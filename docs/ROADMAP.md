@@ -110,6 +110,48 @@ Current diagnostic evidence identifies the next product gaps:
   Subsequent source-build level-14 ROM checks completed with zero missed
   decisions or execution mismatches in Maximum and 1600 modes. Level-20 starts
   still reveal the separate strategic/cadence weakness.
+- Anticipatory execution is the selected Max scheduler after the September 8
+  controller-frame study: 768 screening games, a fresh 1,536-game level-14 HI
+  round robin, and a separate 384-game level-20 HI field. Each matchup used
+  side-swapped seeds; confirmation seeds excluded the screen. At 14 HI,
+  prepared/four-frame fallback beat legacy eight-frame execution **367–145**
+  (71.7%, paired 95% interval 65.9–76.8%) and four-frame reactive **306–206**
+  (59.8%, 53.7–65.6%). Reactive beat legacy **328–184**. The three-agent
+  Davidson fit gives preparation +165 Elo [127, 202] and reactive +98 [61, 135]
+  relative to legacy, counting each paired seed as one effective observation.
+  These are experiment-relative estimates, not human ratings. At 20 HI,
+  preparation scored 79–47–2 against legacy and 79–49 against reactive;
+  the latter's paired interval still includes 50%. All 1,920 confirmation and
+  pressure games finished naturally, with median duration 3.2 minutes and
+  maximum 15.0 minutes, below the 60,000-frame cap.
+- Preparation reused 110,190 of 126,741 Max decisions in the primary round
+  robin (86.9%), reducing mean spawn wait from eight frames to 0.52. It retains
+  the previous opponent observation but requires exact own-state and input
+  agreement. Requiring unchanged opponent context reused just one of 623
+  turns in the initial smoke. Zeroing opponent inputs with frozen weights lost
+  32–96 to full context; this does not rule out a separately trained
+  opponent-blind actor. Twelve sampled games (six side-swapped seeds) replayed
+  exactly; refreshing opponent context changed two of 96 sampled choices,
+  the same position on both sides. None of those selected targets became
+  unreachable after four/eight idle frames. This small sensitivity sample
+  suggests faster tempo contributes more than extra move access; it is not
+  a win-probability regret estimate.
+- On-device measurement supports a combined design: complete warm decisions
+  took 18.0 ms median / 23.4 ms p95 on Metal; one nine-preview batch took
+  20.7 / 23.6 ms versus 109.9 / 116.7 ms for nine separate calls. Complete
+  next-bottle preparation, including both spawn parities and all nine previews,
+  took 33.3 / 47.0 ms, maximum 51.4 ms across 46 public roots. The arena charged
+  six frames for this preparation and four for fresh decisions. Three-frame
+  fresh deadlines were unreliable with two live Mac sidecars, despite winning
+  offline. The app therefore uses an adaptive four-frame floor with measured
+  end-to-end headroom; the latest cartridge/Super Human and ROM-free checks
+  made 129 decisions with zero missed deadlines or wrong placements, and one
+  caught controller-read correction. Load occasionally raised the fallback to
+  five frames. The arena's fixed four-frame comparison is not a claim of
+  identical timing on every host. All 11,100,884 checked input frames across
+  the main study matched their predicted microstates. Focused scheduler,
+  backend, anticipation, frame-API, memoization and rating checks passed;
+  packaging and full release verification were not part of this study.
 - Exact-planner auditing corrected a late-game gravity table, bottle-wall DAS,
   and undersized geometric graph tables. The latter could discard a legal
   four-frame slide/rotation and emit a truncated six-frame GPU witness. Native
@@ -118,7 +160,9 @@ Current diagnostic evidence identifies the next product gaps:
   corrected native revision; historical matches keep their original identity.
 
 Run artifacts for these diagnostics are retained under
-`runs/trainer-baseline-v1/`; they do not override any promotion gate.
+`runs/trainer-baseline-v1/` and `runs/trainer-anticipation-v1/`; full planning
+move archives and remote outputs are on mombox under
+`trainer-output/anticipation-20260908/`. They do not override any promotion gate.
 
 The recovered 1,440-state beam sweep has 99.93% beam-4/8 action agreement and
 at least 95.83% in every one of its 60 tactical cells. However, the direct

@@ -1029,6 +1029,7 @@ def rating_loop(args: argparse.Namespace, stopped: threading.Event | None = None
 
 class DashboardHandler(BaseHTTPRequestHandler):
     db: Path
+    experiment_file: Path | None = None
     replay_dir: Path | None = None
     worker_token: str | None = None
     lease_ttl: float = 600.0
@@ -1066,6 +1067,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path = self.path.split("?", 1)[0]
+        if path == "/api/experiment":
+            from drmc_rl.arena.experiment import read_experiment
+
+            try:
+                self._send_json(200, read_experiment(self.experiment_file))
+            except (OSError, ValueError) as error:
+                self._send_json(503, {"error": f"Experiment update unavailable: {type(error).__name__}"})
+            return
         if path == "/api/v1/capabilities":
             self._send_json(
                 200,
@@ -1303,6 +1312,10 @@ def refresh_dashboard_snapshot(db: Path, replay_dir: Path | None) -> bytes:
     store = ArenaStore(db, replay_dir=replay_dir)
     try:
         snapshot = store.snapshot()
+        snapshot["recorded_matches"] = [dict(row) for row in store.conn.execute(
+            "SELECT id,agent_a,agent_b,winner,seed,level,terminal_reason FROM matches "
+            "WHERE replay IS NOT NULL OR replay_ref IS NOT NULL ORDER BY id DESC LIMIT 200"
+        )]
         snapshot["scheduler"] = scheduler_snapshot(store)
         return json.dumps(snapshot, separators=(",", ":")).encode()
     finally:
@@ -1335,6 +1348,9 @@ def dashboard_snapshot_loop(
 
 def serve(args: argparse.Namespace) -> None:
     DashboardHandler.db = Path(args.db)
+    DashboardHandler.experiment_file = (
+        None if getattr(args, "experiment_file", None) is None else Path(args.experiment_file)
+    )
     DashboardHandler.replay_dir = None if args.replay_dir is None else Path(args.replay_dir)
     DashboardHandler.lease_ttl = float(args.lease_ttl)
     DashboardHandler.lease_seed = int(args.lease_seed)
@@ -1422,6 +1438,7 @@ def main() -> None:
     web = sub.add_parser("serve")
     web.add_argument("--host", default="127.0.0.1")
     web.add_argument("--port", type=int, default=8097)
+    web.add_argument("--experiment-file", help="live work plan JSON; sibling results.json supplies tournament progress")
     web.add_argument("--worker-token-file")
     web.add_argument(
         "--snapshot-refresh",

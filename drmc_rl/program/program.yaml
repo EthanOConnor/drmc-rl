@@ -98,6 +98,94 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-planning-analysis:
+    status: active
+    stage: 1
+    purpose: Replay completed controller games and measure fresh-opponent sensitivity and moves lost during planning delay.
+    requires_paths: [tools/analyze_trainer_planning.py, '{trainer_planning_moves}', '{competitive_checkpoint}']
+    requires_gates: []
+    command: [python, -m, tools.analyze_trainer_planning, --moves, '{trainer_planning_moves}', --checkpoint, '{competitive_checkpoint}', --output, '{trainer_planning_analysis}']
+    produces: [Replayed outcome checks and public-decision sensitivity measurements]
+    resources:
+      preferred_host: local
+      accelerator: mps
+  trainer-planning-sync:
+    status: active
+    stage: 1
+    purpose: Keep the local trainer dashboard current from closed remote tournament snapshots.
+    requires_paths: [tools/trainer_arena_sync.py, '{trainer_sync_config}']
+    requires_gates: []
+    command: [python, -m, tools.trainer_arena_sync, --watch-config, '{trainer_sync_config}']
+    produces: [Live local tournament results and replay archive]
+    resources:
+      preferred_host: local
+      accelerator: cpu
+  trainer-planning-arena:
+    status: active
+    stage: 1
+    purpose: Compare measured compute budgets and anticipatory trainer execution in side-balanced round robins with actual controller inputs, primarily at level 14 HI.
+    requires_paths:
+      - tools/trainer_planning_arena.py
+      - '{trainer_arena_config}'
+    requires_gates: []
+    command: [python, -m, tools.trainer_planning_arena, --config, '{trainer_arena_config}']
+    produces:
+      - Paired WDL, exact input validation, preparation hit rates, match replays and move traces
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  trainer-planning-latency:
+    status: active
+    stage: 1
+    purpose: Measure the installed competitive policy, exact planning, and batched conditional previews on public positions before selecting execution delays.
+    requires_paths:
+      - tools/benchmark_trainer_planning.py
+      - '{competitive_checkpoint}'
+      - '{trainer_control_checkpoint}'
+      - '{trainer_planning_roots}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.benchmark_trainer_planning
+      - --checkpoint
+      - '{competitive_checkpoint}'
+      - --human-checkpoint
+      - '{trainer_control_checkpoint}'
+      - --roots
+      - '{trainer_planning_roots}'
+      - --output
+      - '{trainer_planning_report}'
+    produces:
+      - On-device stage latencies and conditional-preview batch comparisons
+    resources:
+      preferred_host: local
+      accelerator: mps
+  trainer-experiment-dashboard:
+    status: active
+    stage: 1
+    purpose: Serve the local trainer experiment plan, tournament progress, and recorded games without launching training or automatic promotion.
+    requires_paths:
+      - tools/arena.py
+      - '{trainer_experiment}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.arena
+      - --db
+      - '{arena_db}'
+      - serve
+      - --experiment-file
+      - '{trainer_experiment}'
+      - --port
+      - '{arena_port}'
+      - --no-ratings
+    produces:
+      - Loopback dashboard with live work status, comparison results, and recorded board playback
+    resources:
+      preferred_host: local
+      accelerator: cpu
   trainer-repertoire-source:
     status: active
     stage: 1
