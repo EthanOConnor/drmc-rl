@@ -69,9 +69,12 @@ def test_complete_feasibility_matches_independent_frame_oracle(pace):
     columns[1] = (1 << 14) | (1 << 15)
     columns[6] = 1 << 15
     initial = spawn(y=13)
-    runner = NativeReachabilityRunner(max_frames=40)
+    # The native API requires a horizon that includes the reaction window,
+    # even when gravity will lock the pill before that window elapses.
+    horizon = max(40, pace.reaction_frames)
+    runner = NativeReachabilityRunner(max_frames=horizon)
     actual = runner.bfs_full(columns, initial, speed_threshold=1, **pace.planner_args())
-    expected = reference_poses(columns, initial, pace, 1, 40)
+    expected = reference_poses(columns, initial, pace, 1, horizon)
     assert set(np.flatnonzero(actual.costs_u16 != 65535)) == expected
 
 

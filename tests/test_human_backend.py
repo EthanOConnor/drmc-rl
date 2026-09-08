@@ -570,6 +570,10 @@ def test_backend_contract_is_semantic_monotonic_and_stale_safe(tmp_path) -> None
 @pytest.mark.parametrize("pace", ["sloth", "relaxed", "normal", "fast", "top_humans", "super_human", "frame_perfect"])
 def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path, maximum, same_color, pace) -> None:
     from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
+    from drmc_rl.execution.pace import resolve_pace
+    from drmc_rl.planning.fast_reach import compute_speed_threshold
+
+    execution_delay = max(8, resolve_pace(pace).reaction_frames)
 
     checkpoint = tmp_path / "human-v3.pt.gz"
     _afterstate_checkpoint(checkpoint)
@@ -617,7 +621,7 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path, m
                 "strength_control": "quality" if maximum else "regret",
                 "pace": pace,
                 "timing_scale": 0,  # legacy speed must not override the named limit
-                "execution_delay_frames": 8,
+                "execution_delay_frames": execution_delay,
                 "state": {
                     "board_planes": planes.tolist(),
                     "opponent_board_planes": planes.tolist(),
@@ -645,8 +649,10 @@ def test_backend_v3_uses_exact_afterstate_quality_and_regret_control(tmp_path, m
             assert result["placement"]["action"] == expected_action[0]
             assert result["strength"]["rating_calibrated"] is False
             assert result["strength"]["competitive_model"]["sha256"] == "competitive-fixture"
-        assert result["execution"]["start_frame"] == 18
-        assert result["execution"]["falling"]["speed_counter"] == 8
+        assert result["execution"]["start_frame"] == 10 + execution_delay
+        gravity_period = compute_speed_threshold(2, 0) + 1
+        assert result["execution"]["falling"]["speed_counter"] == execution_delay % gravity_period
+        assert result["execution"]["falling"]["y"] == execution_delay // gravity_period
         assert result["controller_states"][0] == result["execution"]["falling"]
         assert len(result["controller_states"]) == len(result["controller_frames"])
     finally:

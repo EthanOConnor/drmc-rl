@@ -388,8 +388,9 @@ class HumanBackend:
         temperature = float(request.get("temperature", 1.0))
         execution_delay = int(request.get("execution_delay_frames", 0))
         pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
-        if not 0 <= execution_delay <= 30:
-            raise ValueError("execution_delay_frames must be in [0,30]")
+        max_delay = max(30, pace.reaction_frames)
+        if not 0 <= execution_delay <= max_delay:
+            raise ValueError(f"execution_delay_frames must be in [0,{max_delay}]")
         if not np.isfinite(rating) or not np.isfinite(temperature) or temperature < 0:
             raise ValueError(
                 "rating and temperature must be finite; temperature must be non-negative"

@@ -95,6 +95,18 @@ gate that must be completed first.
 
 ## Engineering rules
 
+- Routine iteration uses focused pytest files or node IDs for the current edit,
+  not the full suite or every dirty file in the working tree. Pace constants
+  require paced-reach coverage and a backend case exercising the changed actual
+  execution delay; planner algorithm changes require the relevant oracle/parity
+  tests. Broaden only for failures, shared invariants, or release verification.
+- Use the source backend during local trainer development. Do not rebuild the
+  frozen sidecar, repeat multi-pace cartridge matches, run benchmarks, or launch
+  training/evaluation as a default response to a routine tweak. Package only
+  when a distributable is requested. Before external handoff/release, run the
+  full applicable backend/planner/package suites and final artifact validation;
+  certified promotion still requires every program gate. State verification
+  scope accurately, and do not rerun passing checks without a relevant change.
 - `drm_reach_bfs_full` remains the independent planner oracle. Changes to
   v4/CUDA planning require parity and fuzz tests.
 - `vendor/drmario_native/` is a pinned submodule. Commit engine changes in the

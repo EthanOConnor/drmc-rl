@@ -32,7 +32,7 @@ def verify_package(package_dir: Path, *, competitive: bool = True) -> dict:
             or caps.get("model", {}).get("schema") != "drmc-human-afterstate-v3"
             or caps.get("scheduled_execution", {}).get("version") != 1
             or caps.get("cadence", {}).get("unrestricted_fallback") is not False
-            or {p["id"] for p in caps.get("cadence", {}).get("profiles", [])} != {p.id for p in PACES}
+            or caps.get("cadence", {}).get("profiles", []) != [p.to_dict() for p in PACES]
             or "quality" not in caps.get("strength", {}).get("controls", [])
             or (competitive and not caps.get("strength", {}).get("competitive_ceiling"))):
         raise ValueError(f"packaged trainer is incompatible: {caps}")

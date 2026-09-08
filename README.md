@@ -88,6 +88,22 @@ fallback is allowed. `timing.execution_profile` identifies the limits and
 product presets, not corpus-certified human percentiles. Pace changes actual
 playing strength as well as appearance.
 
+`trainer-internal-v20-20260907` preserves the current internal-test baseline:
+quite good, and good enough to get testers; Spunky remains an internal tester.
+The deployed competitive model SHA-256 is
+`805c2b75444baba4325796753564686f1b9c7a5705a7444501b73b61f264c488`;
+the V3 human/timing model is
+`af8b5eea0a5429b9254318e2b861bd28292a63e6d9e2501a1539eb000af00010`.
+These weights remain frozen during expressive-play and slow-pace experiments.
+Internal readiness does not open calibrated-strength, human-profile, or
+counterfactual-teacher promotion gates.
+
+The slower end is deliberately broad: Sloth, Relaxed, Normal, and Fast use
+reaction windows of 60/36/22/12 frames and minimum steering intervals of
+24/14/8/5 frames, respectively. Sloth therefore waits about one second and
+spaces steering by at least 0.4 seconds. Cartridge gravity continues normally;
+these limits can remove placements, never trigger a faster fallback.
+
 The sibling Professor Pills `train-versus --rating 1600 --pace relaxed` launcher
 starts this local trainer; `--maximum` selects the competitive ceiling. Default
 artifacts live in `runs/human_policy/versus_trainer/`. The V3 conditioning range
