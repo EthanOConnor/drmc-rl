@@ -80,6 +80,40 @@ recorded override, and resume with a new run identity.
 
 ### Local trainer diagnostics
 
+`trainer-repertoire-audit` collects one public decision per fresh incumbent
+self-play game across levels 10/14/20, MED/HI, and early/later decisions. Supply
+`competitive_checkpoint` and `trainer_repertoire_report`; append
+`-- --games 48 --device cuda`. `--evaluation-checkpoint PATH` scores another
+model on the same collected roots. Compare the saved root hashes before
+pairing reports. `--source-bank PATH` instead samples one synthetic root per
+source replay from a held-out curriculum bank. Native first-wave checks,
+complete feasible candidate details, reaction-window locks, and the fixed-mask
+cost ablation are diagnostics, not paced full-game win rates. Use v2 reports;
+the initial v1 afterstate event counts used incorrect raw pill colors and are
+superseded. Its geometric and mechanical counts were unaffected.
+
+`trainer-repertoire-source` runs the lightweight extractor on mombox with
+`repertoire_replay_db`, `repertoire_fcr_root`, and
+`trainer_repertoire_source`. The populated archive is under
+`/home/ethan/fightcadeRatings/data/`; development DB copies may lack blobs.
+The default bounds extraction to 2,048 replay sessions and does not modify
+the source. Follow it on tf3090 with `trainer-repertoire-curriculum`, supplying
+that NPZ as `trainer_repertoire_source` and a fresh `trainer_repertoire_bank`
+directory. The default examines at most 4,096 source rows, keeps at most two
+per replay, excludes unsettled roots, and uses native resolution to identify
+reachable horizontal, crossing, large first-wave, and cascade opportunities.
+`train.npz` and `heldout.npz` have disjoint replay sessions; the manifest records
+source hashes, exclusions, opportunity counts, and inherited approximations.
+
+Repertoire training uses `trainer-public-outcome` with frozen recorded config
+overrides, a common parent, and a matched control. Change reset sampling only;
+keep terminal W/D/L as the reward. Predeclare frame budgets, evaluation seeds,
+checkpoint selection, and adoption criteria before starting. The September 7
+pilot uses 25% curriculum resets versus none, two 5M-frame arms, and optimizer
+resets in both. The untouched tester baseline remains
+`trainer-internal-v20-20260907` in both repositories. Results belong under
+`runs/trainer-repertoire-v1/` and do not change any product gate.
+
 `trainer-terminal-quality-pilot` forces every legal root move and measures
 natural results with both sides subsequently controlled by the installed public
 core. Supply `trainer_control_states`, `competitive_checkpoint`,

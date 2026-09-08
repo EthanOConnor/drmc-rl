@@ -73,7 +73,6 @@ Usage (single-threaded on purpose -- a training run shares this box):
 from __future__ import annotations
 
 import argparse
-import base64
 import ctypes as C
 import json
 import sys
@@ -89,6 +88,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
 from drmc_rl.envs.backends.drmario_pool import default_library_path
+from drmc_rl.game.replay_events import decode_field, parse_quark_events
 from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.game.specs.ram_to_state import COLOR_VALUE_TO_INDEX
 from drmc_rl.models.policy.candidate_packing import pack_feasible_candidates
@@ -276,10 +276,6 @@ def make_batch_planner(backend: str):
     return solve_cpu
 
 
-def decode_field(b64: str) -> np.ndarray:
-    return np.frombuffer(base64.b64decode(b64), dtype=np.uint8).reshape(GRID_H, GRID_W)
-
-
 def occupancy_cols(field: np.ndarray) -> np.ndarray:
     """uint16[8] column masks, bit y = occupied (engine collision semantics)."""
     occ = (field != 0x00) & (field < 0xF0)
@@ -312,26 +308,6 @@ def build_obs(field: np.ndarray, feasible_512: np.ndarray) -> np.ndarray:
     feas = feasible_512.reshape(4, GRID_H, GRID_W)
     obs[8:12] = feas.astype(np.float32)
     return obs
-
-
-def parse_quark_events(raw: bytes) -> Dict[str, list]:
-    """Split a JSONL event blob into init/spawn/lock/grb records (in order)."""
-    inits, spawns, locks, grbs = [], [], [], []
-    for line in raw.decode("utf-8", errors="replace").splitlines():
-        if '"t":"spawn"' in line:
-            spawns.append(json.loads(line))
-        elif '"t":"lock"' in line:
-            locks.append(json.loads(line))
-        elif '"t":"init"' in line:
-            inits.append(json.loads(line))
-        elif '"grb"' in line:
-            try:
-                ev = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if "grb" in ev and "f" in ev:
-                grbs.append(ev)
-    return {"init": inits, "spawn": spawns, "lock": locks, "grb": grbs}
 
 
 PILL_HALF_TYPES = {0x40, 0x50, 0x60, 0x70}  # connected pill-half tile codes

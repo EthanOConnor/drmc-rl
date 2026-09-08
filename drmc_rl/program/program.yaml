@@ -98,6 +98,83 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-repertoire-source:
+    status: active
+    stage: 1
+    purpose: Extract a bounded original human VS start bank from the read-only replay archive before repertoire filtering.
+    requires_paths:
+      - tools/build_start_bank.py
+      - '{repertoire_replay_db}'
+      - '{repertoire_fcr_root}/store.py'
+    requires_gates: []
+    command:
+      - python3
+      - -m
+      - tools.build_start_bank
+      - --db
+      - '{repertoire_replay_db}'
+      - --fcr-root
+      - '{repertoire_fcr_root}'
+      - --out
+      - '{trainer_repertoire_source}'
+      - --max-quarks
+      - '2048'
+      - --seed
+      - '20260907'
+      - --validate
+      - '0'
+    produces:
+      - Unmodified human bottle snapshots and source replay identities for native curriculum validation
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
+    notes:
+      - Extraction is read-only. Native validation occurs in trainer-repertoire-curriculum before training, not on this data host.
+  trainer-repertoire-curriculum:
+    status: active
+    stage: 1
+    purpose: Select reachable horizontal, crossing, large-clear, and cascade opportunities from a human VS start bank for outcome-only curriculum sampling.
+    requires_paths:
+      - tools/build_repertoire_bank.py
+      - '{trainer_repertoire_source}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.build_repertoire_bank
+      - --source
+      - '{trainer_repertoire_source}'
+      - --output-dir
+      - '{trainer_repertoire_bank}'
+    produces:
+      - Game-disjoint training and held-out synthetic reset banks with exact opportunity labels and source hashes
+    resources:
+      preferred_host: tf3090
+      accelerator: cpu
+    notes:
+      - Resets retain the source bank's asynchronous-board and randomized-future approximations; they are not replay-certified trajectories.
+      - Labels select situations only, never action targets or additional reward. Clean-start arena outcomes govern adoption.
+  trainer-repertoire-audit:
+    status: active
+    stage: 1
+    purpose: Measure first-clear geometry, exact clear opportunities, and policy sensitivity to live pace costs on fresh public self-play roots; never changes the deployed policy.
+    requires_paths:
+      - tools/audit_trainer_repertoire.py
+      - '{competitive_checkpoint}'
+    requires_gates: []
+    command:
+      - python
+      - -m
+      - tools.audit_trainer_repertoire
+      - --checkpoint
+      - '{competitive_checkpoint}'
+      - --output
+      - '{trainer_repertoire_report}'
+    produces:
+      - Diagnostic candidate geometry and live-pace input-sensitivity report
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
   trainer-terminal-quality-pilot:
     status: active
     stage: 1

@@ -49,7 +49,7 @@ import numpy as np
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FCR_ROOT = REPO_ROOT.parent / "fightcadeRatings"
 
-from tools.annotate_replay_events import decode_field, parse_quark_events
+from drmc_rl.game.replay_events import decode_field, parse_quark_events
 
 GRID_H, GRID_W = 16, 8
 STRATA = ("early", "mid", "late", "crisis")

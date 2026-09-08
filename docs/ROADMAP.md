@@ -66,6 +66,26 @@ Current diagnostic evidence identifies the next product gaps:
   41.4–57.0% and 44.1–59.8%. The final 50M checkpoint regressed to 10–54 in the
   level-20 screen. Keep the installed core; more of this unchanged training
   recipe is not an evidenced improvement.
+- The September 7 v20 checkpoint is tagged `trainer-internal-v20-20260907`
+  in Professor Pills and drmc-rl: **quite good — good enough to get testers**.
+  Spunky is an internal tester; this is not an external-release certificate or
+  a calibrated claim about human strength. The app's baseline manifest records
+  the package, model, and authored motor-profile identities.
+- A fresh 48-game repertoire probe retained 46 selected public roots and
+  explicitly reported two early terminations. At Frame Perfect, horizontal
+  clears were available in nine roots and selected in two. The human-trained
+  parent and selected 20M continuation had the same count on identical hashed
+  roots. The one available cascade was selected by all three. This small
+  fixed-root sample does not establish their overall style distributions or
+  the competitive value of the rejected horizontal moves.
+- Sloth's compulsory reaction window locked the pill in 12 of those 46 roots,
+  all at level 20, including opening positions. Relaxed locked in three;
+  Normal in none. Among actionable roots, Sloth averaged 12.7 candidates versus
+  Frame Perfect's 27.6. Holding the feasible set fixed and replacing paced
+  costs with unrestricted costs changed one Sloth choice and one Normal
+  choice. None of the sampled costs reached the actor's clipping threshold.
+  The main intervention to investigate is preparation for future constrained
+  turns; cost rescaling cannot rescue a spawn that locks during reaction.
 - The immutable 54,819-decision input sample passed byte/window checks but is
   **not validated profile data**. The producer zero-filled unrecorded input
   spans. Its FBNeo snapshot/input convention also differs from the live host's
@@ -80,8 +100,8 @@ Current diagnostic evidence identifies the next product gaps:
   are sparsely represented, and the underlying V3 conditioning range is about
   718–2451, so 500 and above-3000 performance still need independent evidence.
 - Style controls must be exposed and shown to vary independently of strength.
-  The local build currently offers corpus targets, seven named motor paces,
-  and Maximum. Pace restricts feasible moves before strategic selection, with
+  The focused trainer currently offers uncalibrated skill 0–10, Max, and seven
+  named motor paces. Pace restricts feasible moves before strategic selection, with
   no faster fallback; the presets still require human-distribution calibration.
 - Live inference now selects available acceleration. On this Mac, a 48-request
   comparison reduced median planning time from 54 ms on CPU to 19 ms on Metal,
@@ -251,6 +271,59 @@ Build a versioned full-pair archive containing:
 Sampling becomes adaptive to value error, uncertainty, search disagreement,
 learning progress, and active exploiters. Start states are curriculum data;
 untouched clean-start matches remain the evaluation authority.
+
+The first repertoire intervention samples exact opportunities from original
+human VS positions. Commentary from the July speed brackets highlights
+horizontal setups, linked clears, and named shapes, but also praises passing
+up a flashy combination for a better finish. Those race comments guide motif
+discovery, not VS action-value labels. The inspected video transcripts include
+checkpoint-fit fallbacks and sequence gaps; exact video timing alone does not
+make them replay-certified imitation data.
+
+The original replay extraction yields 63,112 positions from 2,046 sessions.
+A bounded scan produces 1,626 training roots from 1,102 sessions and 408 held-out
+roots from 267 sessions. It excludes one unsettled original root. By contrast,
+4,032 of 4,088 examined roots from the old virus-reduced practice derivative
+were unsettled; do not mine its apparent pre-gravity lines as human motifs.
+The matched 5M-frame pilot changes only a 25% repertoire reset mixture, keeping
+the current public core, terminal outcome objective, and a clean-start control.
+
+Both arms completed with finite metrics and zero candidate truncation: 5,020,775
+frames for curriculum and 5,210,954 for control (whole-update budget rounding).
+On 96 identical held-out roots from separate replay sessions, horizontal clears
+were selected in 11/33 available cases by the incumbent and 12/33 by each arm.
+The same single root changed in both arms. All three selected 30/32 available
+cascades. This is no distinct repertoire gain from the curriculum.
+
+The 384-game screen also rejected curriculum: it lost 25–39 to control at
+level 14 and 29–35 at level 20; against incumbent it scored 38–26 and 30–32–2.
+Control's promising 44–20 and 36–28 incumbent screen did not replicate. On
+512 independent confirmation games it scored 129–127 at level 14 and
+123–131–2 at level 20. Whole side-swapped-seed bootstrap 95% score intervals
+were 43.4–57.4% and 40.6–56.3%, respectively. **Retain the incumbent.** Neither
+arm is an evidenced replacement, and the conditional G4 confirmation is
+unnecessary after the incumbent gate fails. The frozen experiment plans,
+checkpoint hashes, complete reports, and decision manifest are retained under
+`runs/trainer-repertoire-v1/` and tf3090's
+`/home/ethan/.cache/drmc-rl/trainer-output/repertoire-20260907/`.
+
+The next repertoire curriculum should begin two to six placements before a
+verified human setup completes, so the learner practises construction as well
+as conversion. This pilot's negative result is specific to one short run and
+opportunity-based reset mixture; it does not reject curriculum learning in
+general. Human setup sequences must pass replay/settled-board checks before
+they define sampling priorities, and all final policy choices still optimize
+match outcome.
+
+The next strength experiments should discriminate mechanisms, not just add
+frames: conditional slow-pace adaptation with the fast route frozen; exact
+afterstate/effect features and public timing/event context; and opponents that
+exploit specific weaknesses in the current core. G5's cross-bottle summaries
+pool by column, making additional row/spatial features an architecture
+hypothesis to test, not an established explanation for vertical play. Require
+matched compute, fresh paired seed evaluations, and retained human/style
+anchors. Validate the failed quality-teacher contracts before using search
+labels or interpreting policy-logit gaps as a safe style envelope.
 
 Outcome population training then uses a game-theoretic mixture with four roles:
 

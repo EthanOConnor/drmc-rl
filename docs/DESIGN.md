@@ -201,6 +201,49 @@ These authored product presets are not corpus-certified ExecutionProfiles;
 Top Humans is a setting name, not a validated percentile. Sustained burst,
 correction, and human-distribution calibration gates remain separate.
 
+### Repertoire and motor-aware strategy
+
+The current Maximum actor chooses policy logits, not calibrated candidate win
+probabilities. A small logit gap does not certify a small competitive loss.
+Do not add a horizontal/combo bonus to that decoder and describe it as free
+style. Repertoire first enters through outcome-only start-state sampling and
+exact tactical auxiliary predictions. Named motifs require verified sequences
+of placements, bonds, falls, and clear waves; a horizontal capsule alone does
+not identify horizontal play or a Fat Log.
+
+`human/repertoire.py` measures first-wave horizontal/vertical lines, their
+intersection, length, and union size on a settled raw-NES bottle. The audit
+checks those labels against native clear resolution and measures later clear
+events separately. Raw-NES and canonical policy colors are converted only at
+their respective boundaries. Source roots that already fall or clear when
+resolved are excluded from the curriculum. Old synthetic practice banks that
+remove viruses can violate this requirement even when their reset succeeds.
+
+The human curriculum is grouped by complete replay session before splitting.
+It selects situations with reachable combinations, not a preferred action or
+an additional reward. Its inherited asynchronous two-board snapshots, omitted
+in-flight attacks, and randomized future make it synthetic training data,
+not an exact historical continuation or a public-posterior quality label.
+Matched clean-start training and held-out full-game outcomes are needed to
+attribute a gain to this sampling change.
+
+The public outcome bootstrap learned unrestricted movement. Its feasible set
+and realized costs change at live pace, but it receives no explicit motor
+envelope describing what future pills will be able to do. Pace training must
+teach board preparation across successive constrained turns. A root cost
+ablation alone cannot test this. Use the same reaction window, gravity,
+mechanical limits, and causal opponent/garbage progression during rollouts;
+replay representative scripts against the live host before trusting a
+cost-injected macro approximation as a motor-training environment.
+
+A conditional adapter on the common frozen core is the first isolation
+experiment for slow strategy. Its public context includes the motor envelope
+and cartridge gravity, not skill rating or hidden opponent state. Preserve
+the existing fast route exactly until paired per-pace results support a
+shared-weight replacement. Root locks during the compulsory reaction window
+are physical limits: training cannot rescue an already doomed spawn, though
+it can learn to avoid creating such boards on earlier turns.
+
 Live inference selects an available accelerator and warms its kernels before
 readiness. Metal candidate shapes are padded to bounded buckets; first-use
 shape compilation must not consume a gameplay deadline. Padding changes
