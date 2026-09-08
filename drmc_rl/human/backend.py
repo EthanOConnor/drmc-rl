@@ -136,6 +136,10 @@ def _frame_payload(frame: FrameState) -> dict[str, int]:
     }
 
 
+class NoReachablePlacement(ValueError):
+    """The valid motor/physics envelope leaves no controllable lock pose."""
+
+
 def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: int = 0,
                 pace: Pace | None = None):
     planes = _board_planes(state["board_planes"])
@@ -165,7 +169,7 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
             speed_threshold=compute_speed_threshold(speed, speed_ups),
         )
         if frame.locked:
-            raise ValueError("pill locks before scheduled execution")
+            raise NoReachablePlacement("pill locks before scheduled execution")
     reach = planner.bfs_full(
         _columns(planes),
         frame,
@@ -186,7 +190,7 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
         sort_by_cost=True,
     )
     if packed.count == 0:
-        raise RuntimeError("no reachable placement")
+        raise NoReachablePlacement("no reachable placement")
     return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
 
 

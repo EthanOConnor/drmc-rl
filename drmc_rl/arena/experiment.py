@@ -111,10 +111,16 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
     results = json.loads(result_path.read_text()) if result_path.is_file() else {}
     if not isinstance(results, dict):
         raise ValueError("results must be an object")
+    training_path = path.parent / plan.get("training_file", "training.json")
+    training = json.loads(training_path.read_text()) if training_path.is_file() else {}
+    pipeline_path = path.parent / plan.get("pipeline_file", "pipeline.json")
+    pipeline = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else {}
     # Results cannot overwrite the operator's task, goals, or stage descriptions.
     return {
         **plan,
         "active": True,
         "results": results,
+        "training": training,
+        "pipeline": pipeline,
         "served_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }

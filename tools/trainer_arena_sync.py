@@ -81,9 +81,11 @@ def sync(source: Path, target: Path, feed: str = "screen"):
     metrics = [{"label": f"{id} · spawn wait", "value": f"{stats['spawn_wait_frames']/max(stats['decisions'],1):.2f} frames",
         "detail": f"{stats['decisions']:,} decisions · {stats['cache_hit']:,} exact hits · {stats['cache_stale_opponent']:,} older opponent contexts"}
         for id, stats in totals.items()]
+    plan_path = target / "experiment.json"
+    anchor = json.loads(plan_path.read_text()).get("rating_anchor", "baseline8") if plan_path.is_file() else "baseline8"
     dump(target / "results.json", {"updated_at": max(updated), "tournaments": list(comparisons.values()),
         "metrics": metrics, "execution_totals": totals,
-        "rating_groups": relative_ratings(comparisons, records)})
+        "rating_groups": relative_ratings(comparisons, records, anchor=anchor)})
     return count
 
 
@@ -96,7 +98,8 @@ def watch(path):
             source = target / f"incoming-{feed}"
             source.mkdir(parents=True, exist_ok=True)
             try:
-                subprocess.run(["rsync", "-az", "--exclude", "moves", remote.rstrip("/")+"/", str(source)+"/"],
+                subprocess.run(["rsync", "-az", "--exclude", "moves", "--exclude", "*.pt*",
+                                remote.rstrip("/")+"/", str(source)+"/"],
                     check=True, capture_output=True, timeout=30)
                 if not (source / "games.jsonl").is_file():
                     continue

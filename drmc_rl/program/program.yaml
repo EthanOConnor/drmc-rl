@@ -98,6 +98,33 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-pace-study:
+    status: active
+    stage: 3
+    purpose: Run a bounded pace adapter experiment followed by fixed held-out controller tournaments, without automatic model promotion.
+    requires_paths: [tools/run_pace_study.py, '{trainer_pace_study}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.run_pace_study, --config, '{trainer_pace_study}']
+    produces: [Pace training checkpoints, independent per-pace tournament results, study status]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+  trainer-pace-strategy:
+    status: active
+    stage: 3
+    purpose: Train a public motor-conditioned adapter on the frozen competitive core from natural full-game outcomes under exact paced controller execution.
+    requires_paths: [tools/train_pace_strategy.py, '{trainer_pace_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.train_pace_strategy, --config, '{trainer_pace_config}']
+    produces: [Bounded pace adapter checkpoints, natural-terminal training metrics and frozen-parent identity]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - The first adapter trains Sloth through Top Humans; Super Human and Frame Perfect remain exact frozen-parent routes.
+      - Full controller frames preserve incoming garbage, reaction, movement and gravity. Gamma is one and only natural terminal outcomes train the adapter.
+      - Training results are not evaluation ratings. Disjoint paired-seed games at 14 HI govern selection; 20 HI remains a separate pressure check.
+      - This outcome-learning diagnostic does not use failed search labels or open calibration, search-quality or release gates.
   trainer-planning-analysis:
     status: active
     stage: 1

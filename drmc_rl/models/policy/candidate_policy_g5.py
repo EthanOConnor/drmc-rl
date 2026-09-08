@@ -366,7 +366,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             dim=-1, keepdim=True
         )
         if return_aux:
-            return logits, value, {"value_logits": value_logits}
+            return logits, value, {"value_logits": value_logits,
+                                   "candidate_context": candidate, "global_context": global_context}
         return logits, value
 
     def distributional_value_loss(

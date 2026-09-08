@@ -78,6 +78,16 @@ PACES = (
 BY_ID = {pace.id: pace for pace in PACES}
 
 
+def strategy_context(pace: Pace, state: dict, execution_delay: int) -> np.ndarray:
+    """Own public motor/gravity context; no rating or hidden opponent inputs."""
+    from drmc_rl.planning.fast_reach import compute_speed_threshold
+    return np.asarray([pace.reaction_frames / 60, pace.edge_interval / 12,
+        pace.motion_interval / 24, pace.max_buttons / 3,
+        compute_speed_threshold(state["speed"], state["speed_ups"]) / 81,
+        state["speed_ups"] / 49, execution_delay / 60,
+        float(pace.id not in ("super_human", "frame_perfect"))], dtype=np.float32)
+
+
 def resolve_pace(name: str | None = None, timing_scale: float = 1.0) -> Pace:
     if name is not None:
         if name not in BY_ID:

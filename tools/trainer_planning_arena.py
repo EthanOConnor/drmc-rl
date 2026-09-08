@@ -26,18 +26,18 @@ import torch
 from drmc_rl.arena.store import ArenaStore
 from drmc_rl.arena.experiment import dump, score_interval
 from drmc_rl.envs.backends.vs_frames import FrameVsPool
-from drmc_rl.execution.pace import resolve_pace
+from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import (
     NextTurnPreparer, execution_for_action, own_board_only, public_policy_inputs, score_public_inputs, select_prepared,
 )
-from drmc_rl.human.backend import plan_candidates
+from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.vs_head_to_head import PlainPolicy
 
 FPS = 60.0988
 
 
-def run_batch(config, match, jobs, policy, planner, preparer):
+def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
     pace = resolve_pace(match.get("pace", "frame_perfect"))
     variants = config["variants"]
     count = len(jobs)
@@ -61,7 +61,7 @@ def run_batch(config, match, jobs, policy, planner, preparer):
             states = pool.states
             if all(states[2*p].terminal for p in range(count)):
                 break
-            fresh, observations, infos = [], [], []
+            fresh, observations, infos, policy_ids = [], [], [], []
             for side, current in enumerate(states):
                 pair, physical = divmod(side, 2)
                 variant = match["a"] if physical == jobs[pair][1] else match["b"]
@@ -82,6 +82,8 @@ def run_batch(config, match, jobs, policy, planner, preparer):
                     state = own_board_only(state)
                 anticipates = (params.get("anticipation", False) and pace.reaction_frames <= 6
                                and pace.reaction_frames < int(params["delay"]))
+                if anticipates and policies is not None:
+                    raise ValueError("mixed-policy preparation requires separate per-actor preparers")
                 selected, reason = (None, "disabled")
                 if anticipates:
                     if frame >= ready_at[side]:
@@ -97,19 +99,43 @@ def run_batch(config, match, jobs, policy, planner, preparer):
                 else:
                     try:
                         candidate = plan_candidates(planner, state, delay, pace)
-                    except (ValueError, RuntimeError):
+                    except NoReachablePlacement:
                         statistics[side]["no_reachable_after_delay"] += 1
                         prepared[side] = None
                         continue
                     obs, info = public_policy_inputs(candidate[0], candidate[1], candidate[2],
                         state["opponent_pill"], candidate[-1], [state["preview"]])
+                    info[0]["pace/context"] = strategy_context(pace, state, delay)
+                    legal_count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
+                    statistics[side]["feasible_candidates"] += legal_count
+                    statistics[side]["forced_placements"] += int(legal_count == 1)
                     observations.append(obs)
                     infos.extend(info)
+                    policy_ids.append(variant)
                     fresh.append((side, state, candidate, None, delay, reason, anticipates))
-            scored = iter(score_public_inputs(policy, np.concatenate(observations), infos)) if infos else iter(())
+            learning = {}
+            if infos:
+                obs_batch = np.concatenate(observations)
+                all_scores = np.empty((len(infos),512), np.float32)
+                groups = set(policy_ids) if policies is not None else {None}
+                for id in groups:
+                    indices = [i for i,v in enumerate(policy_ids) if id is None or v == id]
+                    actor = policy if id is None else policies[id]
+                    all_scores[indices] = score_public_inputs(actor, obs_batch[indices], [infos[i] for i in indices])
+                    records = getattr(actor, "learning_records", None)
+                    if records is not None:
+                        learning.update(zip(indices,records))
+                scored = iter(enumerate(all_scores))
+            else:
+                scored = iter(())
             for side, state, candidate, selected, delay, reason, anticipates in fresh:
+                sample = None
                 if selected is None:
-                    selected = execution_for_action(candidate, int(next(scored).argmax()), pace, delay=delay)
+                    score_index, scores = next(scored)
+                    selected = execution_for_action(candidate, int(scores.argmax()), pace, delay=delay)
+                    sample = learning.get(score_index)
+                    if sample is not None and sample["action"] != selected["placement"]["action"]:
+                        raise RuntimeError("learning record differs from the executed action")
                     controllers[side] = (frame + delay, selected)
                 statistics[side]["spawn_wait_frames"] += delay
                 pair, physical = divmod(side, 2)
@@ -117,6 +143,8 @@ def run_batch(config, match, jobs, policy, planner, preparer):
                     "placement": selected["placement"], "controller_frames": selected["controller_frames"],
                     "board": list(states[side].board), "opponent": list(states[side ^ 1].board),
                     "pill": state["pill"], "preview": state["preview"], "speed_ups": state["speed_ups"]})
+                if sample is not None:
+                    moves[pair][-1]["learning"] = sample
                 if anticipates:
                     prepared[side] = preparer.prepare(state, selected, pace)
                     ready_at[side] = frame + (0 if delay == 0 else budget) + preparation_budget
@@ -194,6 +222,23 @@ def publish(config, results, output, store):
     destination.replace(output / "arena.sqlite")
 
 
+def paired_jobs(config, match):
+    """Honor an explicit held-out bank, or draw the historical random schedule."""
+    if match["games"] < 2 or match["games"] % 2:
+        raise ValueError("tournaments require complete side-swapped seed pairs")
+    excluded = set(config.get("seed_exclusions", []))
+    if "seeds" in match:
+        seeds = match["seeds"]
+        if (len(seeds) != match["games"]//2 or len(set(seeds)) != len(seeds)
+                or any(type(s) is not int or not 1 <= s <= 65535 or s in excluded for s in seeds)):
+            raise ValueError("explicit tournament seeds must be unique, valid, allowed, and complete")
+    else:
+        rng = np.random.default_rng(match["seed"])
+        available = np.setdiff1d(np.arange(1, 65536), list(excluded))
+        seeds = rng.choice(available, match["games"]//2, replace=False)
+    return [(int(seed), side, 2*i+side) for i, seed in enumerate(seeds) for side in (0, 1)]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -208,11 +253,24 @@ def main():
     if config.get("memoize", False):
         from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
         policy, planner = MemoPolicy(policy), MemoPlanner(planner)
-    preparer = NextTurnPreparer(policy, planner, lib_path=config.get("native_library"))
+    policies = None
+    if any("adapter_checkpoint" in p for p in config["variants"].values()):
+        from drmc_rl.models.policy.pace_adapter import PacePolicy
+        policies = {}
+        for id, params in config["variants"].items():
+            if params.get("anticipation"):
+                raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
+            actor = (PacePolicy(config["checkpoint"], config.get("device", "cuda"),
+                     adapter_path=params["adapter_checkpoint"]) if "adapter_checkpoint" in params else policy)
+            if config.get("memoize", False) and "adapter_checkpoint" in params:
+                actor = MemoPolicy(actor)
+            policies[id] = actor
+    preparer = None if policies is not None else NextTurnPreparer(policy, planner, lib_path=config.get("native_library"))
     store = ArenaStore(config["working_db"], replay_dir=output / "replays")
     for id, params in config["variants"].items():
         store.register(agent_id=id, name=params["name"], family="trainer planning", generation=1,
-            checkpoint=config["checkpoint"], params=params, status="active")
+            checkpoint=params.get("adapter_checkpoint", config["checkpoint"]),
+            params={"parent_checkpoint":config["checkpoint"], **params}, status="active")
     records = output / "games.jsonl"
     results = {}
     if records.exists():
@@ -222,12 +280,7 @@ def main():
     publish(config, results, output, store)
     try:
         for match in config["schedule"]:
-            if match["games"] % 2:
-                raise ValueError("tournaments require complete side-swapped seed pairs")
-            rng = np.random.default_rng(match["seed"])
-            available = np.setdiff1d(np.arange(1, 65536), config.get("seed_exclusions", []))
-            seeds = rng.choice(available, match["games"]//2, replace=False)
-            jobs = [(int(seed), side, 2*i+side) for i, seed in enumerate(seeds) for side in (0, 1)]
+            jobs = paired_jobs(config, match)
             completed = {row["index"] for row in results.get(match["id"], [])}
             jobs = [job for job in jobs if job[2] not in completed]
             batch_size = config.get("pairs", 16)
@@ -235,7 +288,7 @@ def main():
                 profile = cProfile.Profile() if config.get("profile") else None
                 if profile:
                     profile.enable()
-                batch, elapsed = run_batch(config, match, jobs[start:start+batch_size], policy, planner, preparer)
+                batch, elapsed = run_batch(config, match, jobs[start:start+batch_size], policy, planner, preparer, policies=policies)
                 if profile:
                     profile.disable()
                     profile.dump_stats(output / "profile.pstats")
@@ -266,7 +319,8 @@ def main():
                     "batch_seconds": round(elapsed, 2)}), flush=True)
     finally:
         store.close()
-        preparer.close()
+        if preparer is not None:
+            preparer.close()
         planner.close()
 
 

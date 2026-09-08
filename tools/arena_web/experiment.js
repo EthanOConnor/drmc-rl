@@ -10,8 +10,8 @@ function ratingViews(groups, name, openMatrices) {
     const ids = group.ratings.map(r => r.id);
     const signed = n => n > 0 ? `+${n}` : `${n}`;
     return `<div class="section-title"><h3>Relative Elo · ${esc(group.label)}</h3><p>L${group.level} HI · ${esc(group.pace)}</p></div>
-      <p class="experiment-note">${esc(name(group.anchor))} = 0. These compare the planners in this experiment; they are not drmariostats ratings. Intervals are approximate and count each side-swapped seed as one effective observation.</p>
-      <div class="table-wrap"><table><thead><tr><th>Planner</th><th>Relative Elo</th><th>95% interval</th><th>Games</th></tr></thead><tbody>
+      <p class="experiment-note">${esc(name(group.anchor))} = 0. These compare the players in this experiment; they are not drmariostats ratings. Intervals are approximate and count each side-swapped seed as one effective observation.</p>
+      <div class="table-wrap"><table><thead><tr><th>Player</th><th>Relative Elo</th><th>95% interval</th><th>Games</th></tr></thead><tbody>
       ${group.ratings.map(r => `<tr><td><strong>${esc(name(r.id))}</strong></td><td>${signed(r.elo)}</td><td>${signed(r.low)} to ${signed(r.high)}</td><td>${r.games}</td></tr>`).join('')}</tbody></table></div>
       <details class="matchup-matrix" data-group="${esc(key)}" ${openMatrices.has(key) ? 'open' : ''}><summary>Matchup scores and coverage</summary><div class="table-wrap"><table><thead><tr><th>Row player vs column</th>${ids.map(id => `<th>${esc(name(id))}</th>`).join('')}</tr></thead><tbody>
       ${ids.map(a => `<tr><th>${esc(name(a))}</th>${ids.map(b => {
@@ -31,7 +31,7 @@ function experimentView(data) {
   if (!data.active) return;
   const results = data.results || {};
   const renderKey = JSON.stringify([data.title, data.status, data.current_work, data.updated_at,
-    data.hypothesis, data.goals, data.stages, data.variants, data.findings, results]);
+    data.hypothesis, data.goals, data.stages, data.variants, data.findings, data.training, data.pipeline, results]);
   if (renderKey === lastExperiment) return;
   lastExperiment = renderKey;
   experimentPanel.innerHTML = `
@@ -51,8 +51,15 @@ function experimentView(data) {
   const total = tournaments.reduce((sum, t) => sum + safeNumber(t.played), 0);
   const target = tournaments.reduce((sum, t) => sum + safeNumber(t.target), 0);
   const openMatrices = new Set([...resultsPanel.querySelectorAll('details[open]')].map(el => el.dataset.group));
+  const training = data.training || {};
   resultsPanel.innerHTML = `
-    <div class="section-title"><h3>Planning candidates</h3><p>Same competitive model · execution changes</p></div>
+    ${data.pipeline?.status ? `<p class="experiment-note"><strong>Study: ${esc(data.pipeline.status)}</strong> · ${safeNumber(data.pipeline.evaluations_complete)} / ${safeNumber(data.pipeline.evaluations_total)} continuation tournament workers complete${data.pipeline.error ? ` · ${esc(data.pipeline.error)}` : ''}</p>` : ''}
+    ${training.status ? `<div class="section-title"><h3>Pace-conditioned training</h3><p>${esc(training.status)}</p></div>
+      <div class="metrics"><div><span>Updates</span><strong>${training.updates} / ${training.target_updates}</strong><small>${esc(training.current_pace || 'Starting')} · L${training.current_level || 14} HI</small></div>
+      <div><span>Completed training games</span><strong>${safeNumber(training.games).toLocaleString()}</strong><small>${safeNumber(training.decisions).toLocaleString()} decisions · ${safeNumber(training.frames).toLocaleString()} console frames</small></div>
+      <div><span>Latest batch</span><strong>${safeNumber(training.batch_seconds).toFixed(1)}s</strong><small>${esc(training.error || 'Natural terminal rewards · frozen base model')}</small></div></div>
+      <p class="experiment-note">Training outcomes describe sampled exploratory play. Only separate held-out tournaments below determine whether a checkpoint is stronger.</p>` : ''}
+    <div class="section-title"><h3>${esc(data.variant_title || 'Planning candidates')}</h3><p>${esc(data.comparison_note || 'Same competitive model · execution changes')}</p></div>
     <div class="variant-grid">${variants.map(v => `<article class="variant-card"><span class="badge">${esc(v.status || 'Proposed')}</span><h4>${esc(v.name)}</h4><p>${esc(v.description)}</p></article>`).join('')}</div>
     <div class="section-title"><h3>Tournament progress</h3><p>${total.toLocaleString()}${target ? ` / ${target.toLocaleString()}` : ''} games</p></div>
     <div class="table-wrap"><table><thead><tr><th>Comparison</th><th>Conditions</th><th>Progress</th><th>W / L / D</th><th>Score · 95% interval</th></tr></thead>
@@ -63,7 +70,7 @@ function experimentView(data) {
       <td>${played.toLocaleString()} / ${goal.toLocaleString()}<progress value="${played}" max="${Math.max(1, goal)}"></progress><span class="sub">${esc(t.status || (played >= goal && goal ? 'Complete' : played ? 'Running' : 'Pending'))}</span></td>
       <td>${safeNumber(t.wins)} / ${safeNumber(t.losses)} / ${safeNumber(t.draws)}</td>
       <td>${played ? percent((safeNumber(t.wins) + .5 * safeNumber(t.draws)) / played) : '—'}<span class="sub">${t.score_ci ? t.score_ci.map(percent).join('–') : 'Awaiting complete seed pairs'}</span></td></tr>`;
-    }).join('') || '<tr><td colspan="5">Tournament schedule will be fixed after the latency and correctness measurements identify viable candidates.</td></tr>'}</tbody></table></div>
+    }).join('') || '<tr><td colspan="5">Held-out match results will appear here when the first candidates are ready.</td></tr>'}</tbody></table></div>
     <p class="experiment-note">Score includes draws as half a point. Intervals group the two sides of each seed; live results are provisional. Select a recorded game below to inspect its play.</p>
     ${ratingViews(results.rating_groups || [], name, openMatrices)}
     ${(results.metrics || []).length ? `<div class="section-title"><h3>Execution measurements</h3></div><div class="metrics">${results.metrics.map(m => `<div><span>${esc(m.label)}</span><strong>${esc(m.value)}</strong><small>${esc(m.detail || '')}</small></div>`).join('')}</div>` : ''}`;

@@ -86,6 +86,16 @@ Current diagnostic evidence identifies the next product gaps:
   choice. None of the sampled costs reached the actor's clipping threshold.
   The main intervention to investigate is preparation for future constrained
   turns; cost rescaling cannot rescue a spawn that locks during reaction.
+- The September 8 pace-strategy diagnostic implements that intervention as
+  a small conditional adapter on the frozen public core. Its 160-game natural
+  outcome pilot completed 9,763 learner decisions with finite updates and
+  checked controller execution. A five-pace held-out round robin and bounded
+  1,600-game continuation are running; no strength improvement or promotion
+  is established. Super Human and Frame Perfect retain exact parent outputs.
+  In 64 fresh opening checks, Sloth at 14 HI always had choices (6.1 mean
+  candidates), while every 20 HI opening locked during its reaction window.
+  This limits useful Sloth training pressure; it does not justify bypassing
+  the declared motor limits.
 - The immutable 54,819-decision input sample passed byte/window checks but is
   **not validated profile data**. The producer zero-filled unrecorded input
   spans. Its FBNeo snapshot/input convention also differs from the live host's

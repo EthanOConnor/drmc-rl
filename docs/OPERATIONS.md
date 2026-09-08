@@ -285,6 +285,41 @@ a warmed microbenchmark alone does not expose first-use shape compilation.
 
 ### Trainer planning tournaments
 
+The pace-conditioned strategy experiment uses
+`tools.program launch trainer-pace-strategy --set trainer_pace_config=PATH`.
+Its JSON names the frozen `checkpoint`, `output`, local `working_db`, native
+library, device, seed, `holdout_seeds`, `paces`, `updates`, and even
+`games_per_update`. The initial five paces are Sloth through Top Humans.
+Sloth training stays at 14 HI; the other paces may use `level20_fraction` for
+pressure exposure. Keep complete natural games and exclude time-capped games
+from the update. Training win rates include exploration and are not ratings.
+Checkpoints contain only the adapter, optimizer, sampling RNG and resume
+metadata; the parent remains a separate frozen artifact.
+Set `resume` to a completed adapter checkpoint to restore optimizer and
+sampling state. Resume discards game-journal rows beyond that checkpoint,
+including an interrupted final write, while rejecting corrupt completed rows.
+
+`trainer-pace-study` takes `trainer_pace_study`, a JSON containing `output`,
+`training_config`, `evaluation_configs`, and `evaluation_workers`. It launches
+the bounded training recipe, then the fixed held-out arena schedules. Failure
+status and logs are published alongside training metrics; success requires
+every evaluation worker to finish. It never promotes a checkpoint. The arena
+accepts variant `adapter_checkpoint` paths on the common frozen parent and
+explicit per-comparison `seeds` for reserved evaluation banks. Mixed-policy
+evaluation currently requires reaction-covered computation; speculative
+preparation remains the separately validated single-policy path.
+
+The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
+outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
+completed 9,763 learner decisions, then launched a bounded continuation to
+1,600 games. Pilot and continuation use separate slices of a 2,048-seed bank
+excluded from this adapter training. Historical parent pretraining exposure
+is shared by all candidates. The continuation queues 14 HI round robins and
+separate 20 HI pressure games. Read live results before drawing a strength
+conclusion; no adapter has been adopted. The dashboard plan can set
+`training_file`, `pipeline_file`, and `rating_anchor`; sync excludes checkpoints
+and leaves full move archives on the overflow mount.
+
 Use `tools.program launch trainer-planning-latency` with
 `competitive_checkpoint`, `trainer_control_checkpoint`, `trainer_planning_roots`
 and `trainer_planning_report` to measure complete warm decisions and conditional

@@ -275,6 +275,24 @@ shared-weight replacement. Root locks during the compulsory reaction window
 are physical limits: training cannot rescue an already doomed spawn, though
 it can learn to avoid creating such boards on earlier turns.
 
+The first executable adapter keeps G5's candidate and global representations
+frozen. A 158k-parameter policy/value residual receives those representations
+and an eight-scalar public motor/gravity context. The actor residual is bounded
+to four logits in either direction. Zero initialization preserves the parent;
+an explicit gate preserves its outputs for Super Human and Frame Perfect even
+after training. Sloth through Top Humans share one conditional adapter.
+
+Training uses categorical exploration over the complete paced feasible set
+and executes the selected script in the controller-frame VS runner. Frozen
+features and the actual behavior likelihood are retained only for that update.
+PPO uses full natural-terminal W/D/L returns, gamma one, and equal total weight
+per game, with a small KL penalty to the parent. Unfinished games supply no
+targets. Planner failures abort; only explicitly unreachable physics states
+become uncontrolled falls. Evaluation uses deterministic argmax on disjoint
+side-swapped seeds and reports every pace separately. Adapter checkpoints are
+bound to their parent hash and context schema; they are experimental artifacts,
+not an automatic replacement for the installed core.
+
 Live inference selects an available accelerator and warms its kernels before
 readiness. Metal candidate shapes are padded to bounded buckets; first-use
 shape compilation must not consume a gameplay deadline. Padding changes
