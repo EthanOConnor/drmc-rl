@@ -248,6 +248,9 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(config.get("threads", 1))
     torch.set_num_interop_threads(1)
+    if config.get("strict_fp32",False):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     policy = PlainPolicy(Path(config["checkpoint"]), config.get("device", "cuda"), public_only=True)
     planner = NativeReachabilityRunner()
     if config.get("memoize", False):

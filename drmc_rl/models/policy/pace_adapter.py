@@ -79,28 +79,42 @@ class PacePolicy:
         self.learning_records = None
 
     def score(self, obs, infos):
-        self.core.motor = torch.as_tensor(np.stack([i["pace/context"] for i in infos]))
+        return self.score_mixed(obs, infos, np.ones(len(infos),dtype=bool))
+
+    def score_mixed(self, obs, infos, adapted):
+        """One shared core pass for learner and frozen-parent decision requests."""
+        adapted = np.asarray(adapted,dtype=bool)
+        if adapted.shape != (len(infos),):
+            raise ValueError("one adapter role per decision required")
+        motor = np.asarray([i["pace/context"] for i in infos],dtype=np.float32)
+        motor[~adapted,-1] = 0
+        self.core.motor = torch.as_tensor(motor)
         actions, masks, logits, values = self.plain.score_and_value(obs, infos)
         self.learning_records = None
-        if not self.training:
+        if not self.training or not adapted.any():
             return actions, masks, logits
         # Record the exact distribution that chose the controller target.
         # Force score_public_inputs/argmax to select that sampled target; the
         # original logits and likelihood are retained for PPO, never the marker.
-        features = tuple(t.detach().cpu().numpy().copy() for t in self.core.features)
-        probabilities = torch.softmax(torch.as_tensor(logits), -1)
+        indices = np.flatnonzero(adapted)
+        selected = torch.as_tensor(indices,device=self.core.features[0].device)
+        # Retain only learner rows. Parent features and padding otherwise stay
+        # alive through NumPy views for an entire full-game PPO collection.
+        features = tuple(t.detach().index_select(0,selected).cpu().numpy()
+                         for t in self.core.features)
+        probabilities = torch.softmax(torch.as_tensor(logits[indices]), -1)
         slots = torch.multinomial(probabilities, 1, generator=self.rng).squeeze(1).cpu().numpy()
-        self.learning_records = []
-        for i, slot in enumerate(slots):
+        self.learning_records = [None] * len(infos)
+        for row,(i, slot) in enumerate(zip(indices,slots)):
             n = int(masks[i].sum())
             if not np.array_equal(masks[i], np.arange(len(masks[i])) < n) or not masks[i,slot]:
                 raise RuntimeError("pace rollout requires complete contiguous packed candidates")
-            record = {"candidate":features[0][i,:n], "context":features[1][i],
-                "motor":features[2][i], "base_logits":features[3][i,:n],
-                "base_value":float(features[4][i]), "slot":int(slot), "action":int(actions[i,slot]),
-                "old_logprob":float(np.log(probabilities[i,int(slot)].item())),
+            record = {"candidate":features[0][row,:n], "context":features[1][row],
+                "motor":features[2][row], "base_logits":features[3][row,:n],
+                "base_value":float(features[4][row]), "slot":int(slot), "action":int(actions[i,slot]),
+                "old_logprob":float(np.log(probabilities[row,int(slot)].item())),
                 "old_value":float(values[i])}
-            self.learning_records.append(record)
+            self.learning_records[i] = record
             logits[i,int(slot)] = np.max(logits[i,masks[i]]) + 1
         return actions, masks, logits
 

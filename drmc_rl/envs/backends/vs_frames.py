@@ -113,3 +113,62 @@ class FrameVsPool:
 
     def __exit__(self, *_):
         self.close()
+
+
+class ControllerFrame(C.Structure):
+    _fields_ = [(name, C.c_uint8) for name in (
+        "buttons", "x", "y_top", "rotation", "speed_counter", "horizontal_velocity",
+        "hold_dir", "rotation_hold", "frame_parity")]
+
+
+class FrameScript(C.Structure):
+    _fields_ = [("start_frame", C.c_uint64), ("frames", C.POINTER(ControllerFrame)),
+               ("length", C.c_uint32), ("pill_counter_total", C.c_uint16),
+               ("spawn_id", C.c_uint8), ("accepted", C.c_uint8)]
+
+
+class FrameAdvance(C.Structure):
+    _fields_ = [("validated_input_frames", C.c_uint32), ("locks", C.c_uint32),
+               ("unplanned_locks", C.c_uint32), ("needs_action", C.c_uint8)]
+
+
+class EventVsPool(FrameVsPool):
+    """Park independent pairs at decisions, executing every input frame in C++."""
+    def __init__(self, num_pairs=1, *, lib_path=None):
+        super().__init__(num_pairs, lib_path=lib_path)
+        self.advance_fn = self.lib.drm_vspool_frame_advance
+        self.advance_fn.argtypes = [C.c_void_p, C.POINTER(FrameScript), C.c_uint64,
+            C.POINTER(FrameState), C.c_size_t, C.POINTER(FrameAdvance)]
+        self.advance_fn.restype = C.c_int
+        self.scripts = (FrameScript * (2*self.num_pairs))()
+        self.progress = (FrameAdvance * (2*self.num_pairs))()
+        self.script_storage = [None] * (2*self.num_pairs)
+
+    def reset(self, seeds, *, level=14, speed=2, mask=None):
+        states = super().reset(seeds,level=level,speed=speed,mask=mask)
+        for pair in range(self.num_pairs):
+            if mask is None or mask[pair]:
+                for side in (2*pair,2*pair+1):
+                    self.scripts[side] = FrameScript()
+                    self.script_storage[side] = None
+        return states
+
+    def install(self, side, move=None, *, delay=0):
+        state = self.states[side]
+        script = self.scripts[side]
+        script.start_frame = state.frame + delay
+        script.spawn_id, script.pill_counter_total, script.accepted = state.spawn_id, state.pill_counter_total, 1
+        frames = [] if move is None else move["controller_states"]
+        if move is not None and len(move["controller_frames"]) != len(frames):
+            raise ValueError("one expected microstate per controller frame required")
+        storage = (ControllerFrame * len(frames))(*[
+            ControllerFrame(buttons, f["x"], f["y"], f["rotation"], f["speed_counter"],
+                f["horizontal_velocity"], f["hold_dir"], f["rotation_hold"], f["frame_parity"])
+            for buttons, f in zip([] if move is None else move["controller_frames"], frames)])
+        self.script_storage[side] = storage
+        script.frames, script.length = storage, len(frames)
+
+    def advance(self, frame_limit):
+        self._check(self.advance_fn(self.handle, self.scripts, frame_limit,
+                                   self.states, C.sizeof(FrameState), self.progress))
+        return self.progress

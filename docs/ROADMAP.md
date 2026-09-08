@@ -96,6 +96,12 @@ Current diagnostic evidence identifies the next product gaps:
   25M/50M milestones. A 2,176-game evaluation follows. No strength improvement
   or promotion is established. Super Human and Frame Perfect retain exact
   parent outputs.
+  Before the large continuation, exact event batching, shared frozen-core
+  inference, cost-only feasibility and asynchronous planning improved a matched
+  strict-FP32 64-game rollout from 2,934 to 29,856 frames/s on tf3090.
+  Full-game comparisons at all trained paces
+  preserve input trajectories and outcomes. The independent frame runner stays
+  in evaluation; throughput changes do not constitute strength evidence.
   In 64 fresh opening checks, Sloth at 14 HI always had choices (6.1 mean
   candidates), while every 20 HI opening locked during its reaction window.
   This limits useful Sloth training pressure; it does not justify bypassing

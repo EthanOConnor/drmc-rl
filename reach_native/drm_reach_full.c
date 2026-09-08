@@ -3016,18 +3016,13 @@ int drm_reach_bfs_paced(
     free(simple);
     if (found_wanted == wanted_count) return 0;
 
-    // The independent unrestricted oracle cheaply proves some geometric
-    // targets impossible under gravity. Its scripts are NEVER executed here;
-    // only its superset feasibility mask prunes impossible search goals.
-    uint16_t upper_costs[512], upper_offsets[512], upper_lengths[512];
-    int upper_used = 0, upper_capacity = max_frames * 512;
-    uint8_t* upper_scripts = malloc((size_t)upper_capacity);
-    if (!upper_scripts) return -2;
-    int upper_rc = drm_reach_bfs_full(cols, initial.x, initial.y, initial.rot,
+    // Only unrestricted feasibility is needed here. The exact cost-only v4
+    // solver avoids building thousands of unused controller frames. Full BFS
+    // remains the independent test oracle; neither solver supplies paced input.
+    uint16_t upper_costs[512];
+    int upper_rc = drm_reach_bfs_v4(cols, initial.x, initial.y, initial.rot,
         initial.sc, initial.hv, initial.hd, initial.p, initial.rh,
-        speed_threshold, max_frames - prefix, upper_costs, upper_offsets,
-        upper_lengths, upper_scripts, upper_capacity, &upper_used);
-    free(upper_scripts);
+        speed_threshold, max_frames - prefix, upper_costs);
     if (upper_rc) return upper_rc;
     for (int p = 0; p < 512; ++p) {
         if (wanted[p] && upper_costs[p] == 0xFFFFu) {
@@ -3051,6 +3046,7 @@ int drm_reach_bfs_paced(
           for (int rd = 0; rd < 4 && length < 0; ++rd)
             for (int distance = 0; distance < 8 && length < 0; ++distance)
               for (int sign = -1; sign <= 1 && length < 0; sign += 2) {
+                if (distance == 0 && sign == 1) continue; // identical waypoint
                 int wx = px + sign * distance, wr = (prot + rd) & 3;
                 if (wx < 0 || wx > 7 || !fits_masked(fit, wx, ry, wr)) continue;
                 for (int tap = 0; tap < 2 && length < 0; ++tap)

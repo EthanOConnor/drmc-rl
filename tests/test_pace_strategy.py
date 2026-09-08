@@ -4,7 +4,7 @@ import torch
 import pytest
 
 from drmc_rl.execution.pace import PACES, strategy_context
-from drmc_rl.models.policy.pace_adapter import PaceAdapter
+from drmc_rl.models.policy.pace_adapter import PaceAdapter, PacePolicy
 from tools.train_pace_strategy import (
     add_game_totals, restore_game_journal, terminal_samples,
     training_target_met, update_adapter,
@@ -65,6 +65,55 @@ def test_outcome_update_is_finite_and_changes_only_adapter():
     result=update_adapter(SimpleNamespace(adapter=model,device="cpu"),torch.optim.AdamW(model.parameters(),lr=.001),rows,{"minibatch":2,"epochs":2},5)
     assert all(np.isfinite(v) for v in result.values())
     assert not torch.equal(original,model.actor[-1].weight)
+
+
+def test_mixed_scoring_preserves_parent_and_records_only_sampled_learner_rows():
+    from types import SimpleNamespace
+    torch.manual_seed(91702)
+    actor = PacePolicy.__new__(PacePolicy)
+    actor.adapter = PaceAdapter(width=8,hidden=8)
+    with torch.no_grad():
+        actor.adapter.actor[-1].weight.normal_(std=.1)
+    actor.training, actor.rng = True, torch.Generator().manual_seed(51)
+    actor.core = SimpleNamespace(motor=None,features=None)
+    candidates, context = torch.randn(3,3,8), torch.randn(3,8)
+    mask = torch.tensor([[True,True,False],[True,True,True],[True,True,True]])
+    base = torch.randn(3,3).masked_fill(~mask,-1e9)
+    values = torch.randn(3)
+
+    class PackedPolicy:
+        def score_and_value(self, observations, _infos):
+            index = torch.as_tensor(observations[:,0],dtype=torch.long)
+            actor.core.features = (candidates[index],context[index],actor.core.motor,
+                                   base[index],values[index],mask[index])
+            with torch.no_grad():
+                logits, value = actor.adapter(*actor.core.features)
+            return (np.broadcast_to(np.arange(3),logits.shape),mask[index].numpy(),
+                    logits.numpy().copy(),value.numpy())
+
+    actor.plain = PackedPolicy()
+    observations = np.arange(3)[:,None]
+    infos = [{"pace/context":np.ones(8,np.float32)} for _ in range(3)]
+    _, _, logits = actor.score_mixed(observations,infos,[True,False,True])
+    mixed = actor.learning_records
+    np.testing.assert_array_equal(logits[1],base[1].numpy())
+    assert mixed[1] is None and all(i["pace/context"][-1] == 1 for i in infos)
+    saved = mixed[0]["candidate"].copy()
+    for i in (0,2):
+        record = mixed[i]
+        n = len(record["base_logits"])
+        inputs = tuple(torch.as_tensor(value)[None] for value in (
+            record["candidate"],record["context"],record["motor"],record["base_logits"],
+            record["base_value"],np.ones(n,bool)))
+        with torch.no_grad():
+            actual, value = actor.adapter(*inputs)
+        assert actual.log_softmax(-1)[0,record["slot"]].item() == pytest.approx(record["old_logprob"],abs=1e-6)
+        assert value.item() == pytest.approx(record["old_value"],abs=1e-6)
+        assert logits[i].argmax() == record["action"]
+    actor.rng.manual_seed(51)
+    actor.score_mixed(observations[[0,2]],[infos[0],infos[2]],[True,True])
+    assert [r["action"] for r in actor.learning_records] == [mixed[i]["action"] for i in (0,2)]
+    np.testing.assert_array_equal(saved,mixed[0]["candidate"])
 
 
 def test_explicit_evaluation_bank_stays_disjoint_and_side_balanced():

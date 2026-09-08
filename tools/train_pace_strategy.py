@@ -1,7 +1,7 @@
 """Bounded full-game PPO for a motor-conditioned residual on the public core.
 
-Uses the same controller-frame runner as evaluation. Frozen features make the
-small adapter cheap to update. Every transition receives its natural terminal
+Uses exact controller execution, optionally batched at causal decisions.
+Frozen features make the small adapter cheap to update. Every transition receives its natural terminal
 W/D/L return (gamma=1); games receive equal weight regardless of duration.
 No shaped reward, search label, hidden opponent field or time-limit draw trains
 the policy. Run through the trainer-pace-strategy program recipe.
@@ -161,11 +161,23 @@ def main():
     output.mkdir(parents=True,exist_ok=True)
     torch.set_num_threads(config.get("threads",1))
     torch.set_num_interop_threads(1)
+    if config.get("strict_fp32",False):
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(config["seed"])
     actor = PacePolicy(config["checkpoint"],config["device"],training=True,
                        adapter_path=config.get("resume"),seed=config["seed"])
     parent = PlainPolicy(Path(config["checkpoint"]),config["device"],public_only=True)
-    planner = MemoPlanner(NativeReachabilityRunner())
+    rollout = run_batch
+    if config.get("rollout_backend", "frames") == "events":
+        from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
+        planner = ParallelPlanning(config.get("planner_workers",4))
+        rollout = run_event_batch
+        config["mixed_core_actor"] = "learner"
+    else:
+        if config.get("rollout_backend", "frames") != "frames":
+            raise ValueError("rollout_backend must be frames or events")
+        planner = MemoPlanner(NativeReachabilityRunner())
     optimizer = torch.optim.AdamW(actor.adapter.parameters(),lr=config.get("lr",2e-4),weight_decay=.001)
     initial = {k:v.detach().clone() for k,v in actor.adapter.state_dict().items()}
     start_update = 0
@@ -228,32 +240,49 @@ def main():
             progress.update(current_pace=pace,current_level=level,collecting_update=update,
                 collecting_games=0,collecting_target=count,updated_at=datetime.now(UTC).isoformat())
             dump(output/"training.json",progress)
-            batch, elapsed = [], 0.0
+            update_started = time.perf_counter()
+            batch, elapsed, breakdown = [], 0.0, defaultdict(float)
             chunk_size = config.get("rollout_games",count)
             if chunk_size < 2 or chunk_size%2:
                 raise ValueError("rollout chunks require complete paired seeds")
             for start in range(0,len(jobs),chunk_size):
-                part, seconds = run_batch(config,match,jobs[start:start+chunk_size],None,planner,None,
-                    policies={"learner":actor,"parent":parent})
+                metrics = {}
+                part, seconds = rollout(config,match,jobs[start:start+chunk_size],None,planner,None,
+                    policies={"learner":actor,"parent":parent},
+                    **({"metrics":metrics} if rollout is not run_batch else {}))
                 batch.extend(part)
                 elapsed += seconds
+                for key,value in metrics.items():
+                    breakdown[key] += value
                 progress.update(collecting_games=len(batch),collecting_target=count,
                     updated_at=datetime.now(UTC).isoformat())
                 dump(output/"training.json",progress)
             records = terminal_samples(batch)
+            optimizing = time.perf_counter()
             losses = update_adapter(actor,optimizer,records,config,config["seed"]+update)
+            breakdown["optimizer_seconds"] = time.perf_counter()-optimizing
             rows = [r for r,_,_ in batch]
             stats = progress["paces"].setdefault(pace,{})
-            for row in rows:
-                add_game_totals(stats,row)
-                with (output/"training-games.jsonl").open("a") as stream:
+            journaling = time.perf_counter()
+            with (output/"training-games.jsonl").open("a") as stream:
+                for row in rows:
+                    add_game_totals(stats,row)
                     stream.write(json.dumps({**row,"update":update,"pace":pace,"level":level})+"\n")
+            breakdown["journal_seconds"] = time.perf_counter()-journaling
             progress.update(updates=update, games=progress["games"]+len(rows),
                 frames=progress["frames"]+sum(r["frames"] for r in rows),
                 decisions=progress["decisions"]+len(records), losses=losses,
                 batch_seconds=elapsed, wall_seconds=time.perf_counter()-started,
                 max_parameter_change=max((v-initial[k]).abs().max().item() for k,v in actor.adapter.state_dict().items()),
                 updated_at=datetime.now(UTC).isoformat())
+            frames = sum(r["frames"] for r in rows)
+            update_seconds = time.perf_counter()-update_started
+            progress["throughput"] = dict(backend=config.get("rollout_backend","frames"),
+                async_planning=config.get("async_planning",False), strict_fp32=config.get("strict_fp32",False),
+                frames_per_second=frames/update_seconds,
+                rollout_frames_per_second=frames/elapsed,
+                learning_decisions_per_second=len(records)/update_seconds,
+                breakdown=dict(breakdown))
             checkpoint = output/f"adapter-u{update:03d}.pt"
             progress["checkpoints"].append(checkpoint.name)
             actor.save(checkpoint,update=update,optimizer=optimizer.state_dict(),sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
@@ -262,7 +291,7 @@ def main():
                 if progress["frames"] >= milestone and not path.exists():
                     actor.save(path,update=update,progress=progress,training_config=config)
             dump(output/"training.json",progress)
-            print(json.dumps({k:progress[k] for k in ("updates","games","frames","decisions","current_pace","batch_seconds","losses")}),flush=True)
+            print(json.dumps({k:progress[k] for k in ("updates","games","frames","decisions","current_pace","batch_seconds","throughput","losses")}),flush=True)
             del records, batch
         if not training_target_met(progress,config):
             raise RuntimeError("update safety limit reached before the frame and per-pace learning targets")

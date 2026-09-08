@@ -302,6 +302,30 @@ as well as a global frame target. Reaction-locked falls and unfinished games
 cannot satisfy that floor. Chunk collection without updating between chunks
 so every batch retains one behavior policy.
 
+For throughput, the event rollout parks each independent VS pair at its next
+policy boundary, then batches ready public observations across pairs. The two
+players in a pair always share a clock. The native loop executes every console
+frame in the original player order, validates both controller microstates
+before applying either input, and preserves garbage and reveal timing. This
+changes host scheduling without changing simulated timing or adding fall warps.
+The one-frame runner remains the independent evaluation/replay reference.
+With asynchronous planning, ready decisions from other pairs continue while a
+difficult root is pending. Each pending pair stays parked at its own boundary;
+its two players and the public snapshot supplied to its planner cannot advance.
+Completed requests form short inference batches while CPU workers plan ahead.
+
+Worker threads own native planner buffers and share a bounded cache of complete
+exact results, coalescing identical concurrent requests. Paced search uses the
+exact cost-only v4 solver for its unrestricted feasibility upper bound; the
+full BFS remains the independent oracle. Unrestricted witnesses never execute
+as paced input. The frozen core scores learner and parent rows in one forward
+pass, with the residual disabled for parent rows. Only learner rows sample
+actions or retain PPO features and likelihoods. No feasible candidates are
+dropped. Explicit strict FP32 disables TF32 convolution as well as matrix
+multiplication: otherwise nearly tied scores can change with inference batch
+shape even though tensors have float32 dtype. This is a compute setting, not a
+different checkpoint or a decision tie-breaking rule.
+
 Live inference selects an available accelerator and warms its kernels before
 readiness. Metal candidate shapes are padded to bounded buckets; first-use
 shape compilation must not consume a gameplay deadline. Padding changes

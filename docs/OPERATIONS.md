@@ -302,6 +302,47 @@ pressure exposure. Keep complete natural games and exclude time-capped games
 from the update. Training win rates include exploration and are not ratings.
 Checkpoints contain only the adapter, optimizer, sampling RNG and resume
 metadata; the parent remains a separate frozen artifact.
+Set `rollout_backend: "events"`, `async_planning: true`, `strict_fp32: true`,
+and `planner_workers: 4` for tf3090 training.
+This uses exact native controller execution, concurrent planning, and a shared
+frozen-core inference batch. `rollout_games: 128` bounds collection; 64 or more
+games amortize inference much better than small batches. `frames` retains the
+one-frame runner. Disable `async_planning` to measure a barrier after each
+batch of planner requests. Keep `strict_fp32` in held-out arena configs too;
+it disables TF32 convolution, whose rounding can flip close decisions when
+batch sizes differ. Check `training.json`'s `throughput` for actual learner
+decisions/s, rollout frames/s, and frames/s including the optimizer and journal,
+with phase timings. Checkpoint writes are included in cumulative wall time.
+
+Use `trainer-pace-throughput --set trainer_throughput_config=PATH` through
+`tools.program launch` to compare `reference` and `events` modes on a schedule.
+The `async` mode measures planning without the batch barrier. It records
+actual frames, decisions, every chosen placement and controller
+sequence, and fails on a trajectory/outcome difference. Preserve an old
+planner binary and set `reference_planner_library` to compare algorithm changes
+too. `planner_roots` captures up to 4,096 real roots; `planner_corpus` plus
+`planner_libraries` compares all costs, offsets, lengths, and script bytes
+against the first library. Retain benchmark outputs on overflow storage.
+
+On tf3090, a matched strict-FP32 64-game Normal/14-HI benchmark measured:
+
+| Runner | Console frames/s | Relative throughput |
+| --- | ---: | ---: |
+| Original frame runner and planner | 2,934 | 1.0x |
+| Event batches and cost-only feasibility | 21,716 | 7.4x |
+| Asynchronous planning and inference batches | 29,856 | 10.2x |
+
+All three produced identical 570,334-frame trajectories, 9,716 decisions and
+247,949 validated controller inputs. The planner-only comparison preserved
+every output across 4,096 roots and improved from 399 to 898 roots/s. Forty-eight
+additional full games across all five trained paces and Normal/20-HI matched
+the old runner and planner under the same inference precision. These are
+rollout measurements, not strength gains. Five real PPO validation updates
+retained another 3,608,269 frames and 32,008 learner decisions with finite
+losses; the continuation resumes that optimizer and journal at update 184.
+Manual CUDA graphs were slower at the larger batch size; compiled FP32 changed
+some decisions and brought no useful warm speedup. Neither prototype is enabled.
+
 Set `resume` to a completed adapter checkpoint to restore optimizer and
 sampling state. Resume discards game-journal rows beyond that checkpoint,
 including an interrupted final write, while rejecting corrupt completed rows.
@@ -324,8 +365,9 @@ outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
 completed 997,430 console frames and 9,763 learner decisions. The original
 1,600-game budget was too small and allocated only hundreds of decisions to
 Sloth. The continuation now targets 100M frames and at least 100,000 actual
-learning decisions per pace, using 256/64/16/16/16 games per update from Sloth
-through Top Humans, collected in chunks of 32. It retains the existing weights
+learning decisions per pace. After throughput validation, it uses
+1,024/256/64/64/64 games per update from Sloth through Top Humans, collected in
+chunks of 128 with the event runner. It retains the existing weights
 and optimizer and saves 25M, 50M and 100M milestones. Pilot and scaled evaluation
 use separate slices of a 2,048-seed bank
 excluded from this adapter training. Historical parent pretraining exposure

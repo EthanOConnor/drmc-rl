@@ -161,19 +161,21 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
     )
     speed = int(state.get("speed", 2))
     speed_ups = int(state.get("speed_ups", 0))
+    columns = _columns(planes)
+    speed_threshold = compute_speed_threshold(speed, speed_ups)
     for _ in range(execution_delay_frames):
         frame = simulate_frame(
-            _columns(planes),
+            columns,
             frame,
             0,
-            speed_threshold=compute_speed_threshold(speed, speed_ups),
+            speed_threshold=speed_threshold,
         )
         if frame.locked:
             raise NoReachablePlacement("pill locks before scheduled execution")
     reach = planner.bfs_full(
-        _columns(planes),
+        columns,
         frame,
-        speed_threshold=compute_speed_threshold(speed, speed_ups),
+        speed_threshold=speed_threshold,
         **({} if pace is None else pace.planner_args(execution_delay_frames)),
     ).copy()
     costs = np.full(512, 0xFFFF, dtype=np.uint16)

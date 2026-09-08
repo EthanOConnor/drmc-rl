@@ -98,6 +98,17 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-pace-throughput:
+    status: active
+    stage: 3
+    purpose: Compare causal batched pace rollouts with the frame reference using identical game inputs and measured wall time.
+    requires_paths: [tools/benchmark_pace_throughput.py, '{trainer_throughput_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.benchmark_pace_throughput, --config, '{trainer_throughput_config}']
+    produces: [Throughput measurements, exact trajectory and outcome comparisons]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
   trainer-pace-study:
     status: active
     stage: 3
