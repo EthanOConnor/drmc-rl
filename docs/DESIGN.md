@@ -293,6 +293,15 @@ side-swapped seeds and reports every pace separately. Adapter checkpoints are
 bound to their parent hash and context schema; they are experimental artifacts,
 not an automatic replacement for the installed core.
 
+Budget this experiment in both simulated console frames and actual learner
+placement decisions, reported separately for every pace. Earlier PPO `steps`
+also count elapsed frames, but equal frame or game counts do not provide equal
+learning coverage: slow-pace games can end after very few controllable moves.
+Use larger game batches for those paces and require a per-pace decision floor
+as well as a global frame target. Reaction-locked falls and unfinished games
+cannot satisfy that floor. Chunk collection without updating between chunks
+so every batch retains one behavior policy.
+
 Live inference selects an available accelerator and warms its kernels before
 readiness. Metal candidate shapes are padded to bounded buckets; first-use
 shape compilation must not consume a gameplay deadline. Padding changes

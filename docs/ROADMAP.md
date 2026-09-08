@@ -89,9 +89,13 @@ Current diagnostic evidence identifies the next product gaps:
 - The September 8 pace-strategy diagnostic implements that intervention as
   a small conditional adapter on the frozen public core. Its 160-game natural
   outcome pilot completed 9,763 learner decisions with finite updates and
-  checked controller execution. A five-pace held-out round robin and bounded
-  1,600-game continuation are running; no strength improvement or promotion
-  is established. Super Human and Frame Perfect retain exact parent outputs.
+  checked controller execution, but only 997,430 simulated frames. Its 960-game
+  held-out round robin is inconclusive. Equal game counts severely undersampled
+  slow-pace decisions, so the continuation now targets 100M frames plus at least
+  100,000 learning decisions at every pace, with larger slow-pace batches and
+  25M/50M milestones. A 2,176-game evaluation follows. No strength improvement
+  or promotion is established. Super Human and Frame Perfect retain exact
+  parent outputs.
   In 64 fresh opening checks, Sloth at 14 HI always had choices (6.1 mean
   candidates), while every 20 HI opening locked during its reaction window.
   This limits useful Sloth training pressure; it does not justify bypassing

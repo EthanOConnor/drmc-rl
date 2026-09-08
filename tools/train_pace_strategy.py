@@ -13,6 +13,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import shutil
 import time
 
 import numpy as np
@@ -59,6 +60,29 @@ def restore_game_journal(path, committed_update):
             if row["update"] <= committed_update:
                 target.write(json.dumps(row)+"\n")
     temporary.replace(path)
+
+
+def add_game_totals(stats, row):
+    """Separate simulated time, attempted spawns and actual learning decisions."""
+    stats["games"] = stats.get("games",0)+1
+    stats["frames"] = stats.get("frames",0)+row["frames"]
+    for key in ("decisions", "no_reachable_after_delay", "forced_placements", "feasible_candidates", "validated_input_frames"):
+        stats[key] = stats.get(key,0)+row["a_stats"].get(key,0)
+    timeout = row["reason"] == "timeout"
+    stats["timeouts"] = stats.get("timeouts",0)+int(timeout)
+    if not timeout:
+        key = {1.0:"wins",0.0:"losses",.5:"draws"}[row["score"]]
+        stats[key] = stats.get(key,0)+1
+        learned = row["a_stats"].get("decisions",0)-row["a_stats"].get("no_reachable_after_delay",0)
+        stats["learning_decisions"] = stats.get("learning_decisions",0)+learned
+
+
+def training_target_met(progress, config):
+    if config.get("target_frames") is None:
+        return progress["updates"] >= config["updates"]
+    return (progress["frames"] >= config["target_frames"] and
+            all(progress["paces"].get(p,{}).get("learning_decisions",0) >= config.get("minimum_decisions_per_pace",0)
+                for p in config["paces"]))
 
 
 def tensor_batch(records, device):
@@ -159,7 +183,22 @@ def main():
         actor.rng.set_state(previous["sampling_rng"].cpu())
         progress.update(previous["progress"])
         progress.update(status="Running",target_updates=config["updates"])
+        if not (output/"training-games.jsonl").exists() and config.get("resume_journal"):
+            shutil.copyfile(config["resume_journal"],output/"training-games.jsonl")
         restore_game_journal(output/"training-games.jsonl", start_update)
+        if (output/"training-games.jsonl").exists():
+            progress["paces"] = {}
+            with (output/"training-games.jsonl").open() as journal:
+                for line in journal:
+                    row = json.loads(line)
+                    add_game_totals(progress["paces"].setdefault(row["pace"],{}),row)
+            if sum(s.get("learning_decisions",0) for s in progress["paces"].values()) != progress["decisions"]:
+                raise RuntimeError("restored game journal differs from checkpoint learning total")
+        elif config.get("minimum_decisions_per_pace",0):
+            raise ValueError("per-pace training budgets require the resume game journal")
+    progress.update(target_frames=config.get("target_frames"),
+        minimum_decisions_per_pace=config.get("minimum_decisions_per_pace",0),
+        games_per_pace=config.get("games_per_pace",{}))
     available = np.setdiff1d(np.arange(1,65536),config["holdout_seeds"])
     config["variants"] = {"learner":{"delay":4},"parent":{"delay":4}}
     config["replay_games"] = 0
@@ -173,31 +212,40 @@ def main():
     started = time.perf_counter()
     try:
         for update in range(start_update+1,config["updates"]+1):
+            if training_target_met(progress,config):
+                break
             pace = config["paces"][(update-1)%len(config["paces"])]
             if pace not in BY_ID or pace in ("super_human","frame_perfect"):
                 raise ValueError("this isolated pilot trains Sloth through Top Humans only")
             rng = np.random.default_rng(config["seed"]+update)
             level = 20 if pace != "sloth" and rng.random()<config.get("level20_fraction",.15) else 14
-            count = config.get("games_per_update",16)
+            count = config.get("games_per_pace",{}).get(pace,config.get("games_per_update",16))
             if count < 2 or count%2:
                 raise ValueError("training batches require complete paired seeds")
             seeds = rng.choice(available,count//2,replace=False)
             jobs = [(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
             match = {"id":f"train-{update}","a":"learner","b":"parent","games":count,"pace":pace,"level":level}
-            progress.update(current_pace=pace,current_level=level,collecting_update=update,updated_at=datetime.now(UTC).isoformat())
+            progress.update(current_pace=pace,current_level=level,collecting_update=update,
+                collecting_games=0,collecting_target=count,updated_at=datetime.now(UTC).isoformat())
             dump(output/"training.json",progress)
-            batch, elapsed = run_batch(config,match,jobs,None,planner,None,policies={"learner":actor,"parent":parent})
+            batch, elapsed = [], 0.0
+            chunk_size = config.get("rollout_games",count)
+            if chunk_size < 2 or chunk_size%2:
+                raise ValueError("rollout chunks require complete paired seeds")
+            for start in range(0,len(jobs),chunk_size):
+                part, seconds = run_batch(config,match,jobs[start:start+chunk_size],None,planner,None,
+                    policies={"learner":actor,"parent":parent})
+                batch.extend(part)
+                elapsed += seconds
+                progress.update(collecting_games=len(batch),collecting_target=count,
+                    updated_at=datetime.now(UTC).isoformat())
+                dump(output/"training.json",progress)
             records = terminal_samples(batch)
             losses = update_adapter(actor,optimizer,records,config,config["seed"]+update)
             rows = [r for r,_,_ in batch]
-            stats = progress["paces"].setdefault(pace,{"games":0,"wins":0,"losses":0,"draws":0,"timeouts":0})
+            stats = progress["paces"].setdefault(pace,{})
             for row in rows:
-                stats["games"]+=1
-                for key in ("decisions", "no_reachable_after_delay", "forced_placements", "feasible_candidates", "validated_input_frames"):
-                    stats[key] = stats.get(key,0) + row["a_stats"].get(key,0)
-                stats["timeouts"]+=int(row["reason"]=="timeout")
-                if row["reason"]!="timeout":
-                    stats[{1.0:"wins",0.0:"losses",.5:"draws"}[row["score"]]]+=1
+                add_game_totals(stats,row)
                 with (output/"training-games.jsonl").open("a") as stream:
                     stream.write(json.dumps({**row,"update":update,"pace":pace,"level":level})+"\n")
             progress.update(updates=update, games=progress["games"]+len(rows),
@@ -209,10 +257,18 @@ def main():
             checkpoint = output/f"adapter-u{update:03d}.pt"
             progress["checkpoints"].append(checkpoint.name)
             actor.save(checkpoint,update=update,optimizer=optimizer.state_dict(),sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
+            for milestone in config.get("milestone_frames",[]):
+                path = output/f"adapter-f{milestone:09d}.pt"
+                if progress["frames"] >= milestone and not path.exists():
+                    actor.save(path,update=update,progress=progress,training_config=config)
             dump(output/"training.json",progress)
             print(json.dumps({k:progress[k] for k in ("updates","games","frames","decisions","current_pace","batch_seconds","losses")}),flush=True)
             del records, batch
-        progress.update(status="Training complete",updated_at=datetime.now(UTC).isoformat())
+        if not training_target_met(progress,config):
+            raise RuntimeError("update safety limit reached before the frame and per-pace learning targets")
+        progress.update(status="Training complete",final_checkpoint="adapter-final.pt",updated_at=datetime.now(UTC).isoformat())
+        actor.save(output/"adapter-final.pt",update=progress["updates"],optimizer=optimizer.state_dict(),
+            sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
     except BaseException as error:
         progress.update(status="Failed",error=str(error),updated_at=datetime.now(UTC).isoformat())
         raise

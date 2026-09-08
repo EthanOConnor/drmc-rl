@@ -290,6 +290,13 @@ The pace-conditioned strategy experiment uses
 Its JSON names the frozen `checkpoint`, `output`, local `working_db`, native
 library, device, seed, `holdout_seeds`, `paces`, `updates`, and even
 `games_per_update`. The initial five paces are Sloth through Top Humans.
+For frame-budgeted runs, set `target_frames` and
+`minimum_decisions_per_pace`; both must be satisfied. `updates` then acts only
+as a safety ceiling, and reaching it too early fails the study. Set even
+`games_per_pace` counts to balance actual learning coverage, and even
+`rollout_games` to limit simultaneous game collection without changing weights
+inside an update. `milestone_frames` saves evaluation snapshots as
+`adapter-fNNNNNNNNN.pt`; successful completion also writes `adapter-final.pt`.
 Sloth training stays at 14 HI; the other paces may use `level20_fraction` for
 pressure exposure. Keep complete natural games and exclude time-capped games
 from the update. Training win rates include exploration and are not ratings.
@@ -298,6 +305,9 @@ metadata; the parent remains a separate frozen artifact.
 Set `resume` to a completed adapter checkpoint to restore optimizer and
 sampling state. Resume discards game-journal rows beyond that checkpoint,
 including an interrupted final write, while rejecting corrupt completed rows.
+Per-pace totals are rebuilt from that journal and checked against the restored
+decision total. When resuming into a new output directory, supply
+`resume_journal` alongside the checkpoint.
 
 `trainer-pace-study` takes `trainer_pace_study`, a JSON containing `output`,
 `training_config`, `evaluation_configs`, and `evaluation_workers`. It launches
@@ -311,11 +321,18 @@ preparation remains the separately validated single-policy path.
 
 The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
 outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
-completed 9,763 learner decisions, then launched a bounded continuation to
-1,600 games. Pilot and continuation use separate slices of a 2,048-seed bank
+completed 997,430 console frames and 9,763 learner decisions. The original
+1,600-game budget was too small and allocated only hundreds of decisions to
+Sloth. The continuation now targets 100M frames and at least 100,000 actual
+learning decisions per pace, using 256/64/16/16/16 games per update from Sloth
+through Top Humans, collected in chunks of 32. It retains the existing weights
+and optimizer and saves 25M, 50M and 100M milestones. Pilot and scaled evaluation
+use separate slices of a 2,048-seed bank
 excluded from this adapter training. Historical parent pretraining exposure
-is shared by all candidates. The continuation queues 14 HI round robins and
-separate 20 HI pressure games. Read live results before drawing a strength
+is shared by all candidates. The scaled study queues a 1,920-game 14 HI round
+robin among the parent, 25M, 50M and final adapters, plus 256 separate 20 HI
+pressure games. The 960-game pilot evaluation was inconclusive. Read live
+results before drawing a strength
 conclusion; no adapter has been adopted. The dashboard plan can set
 `training_file`, `pipeline_file`, and `rating_anchor`; sync excludes checkpoints
 and leaves full move archives on the overflow mount.

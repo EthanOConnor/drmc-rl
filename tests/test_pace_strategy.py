@@ -5,7 +5,10 @@ import pytest
 
 from drmc_rl.execution.pace import PACES, strategy_context
 from drmc_rl.models.policy.pace_adapter import PaceAdapter
-from tools.train_pace_strategy import restore_game_journal, terminal_samples, update_adapter
+from tools.train_pace_strategy import (
+    add_game_totals, restore_game_journal, terminal_samples,
+    training_target_met, update_adapter,
+)
 from tools.trainer_planning_arena import paired_jobs, run_batch
 
 
@@ -95,3 +98,19 @@ def test_resume_keeps_only_games_in_the_optimizer_checkpoint(tmp_path):
     path.write_text('{"update":1}\ncorrupt completed row\n')
     with pytest.raises(json.JSONDecodeError):
         restore_game_journal(path,1)
+
+
+def test_frame_budget_also_requires_real_learning_coverage_at_every_pace():
+    stats = {}
+    add_game_totals(stats,{"frames":1000,"reason":"topout","score":0,
+        "a_stats":{"decisions":10,"no_reachable_after_delay":7}})
+    assert stats["learning_decisions"] == 3 and stats["frames"] == 1000
+    config = {"target_frames":1000,"minimum_decisions_per_pace":4,"paces":["sloth","fast"]}
+    progress = {"frames":1000,"paces":{"sloth":stats,"fast":{"learning_decisions":4000}}}
+    assert not training_target_met(progress,config)
+    add_game_totals(stats,{"frames":200,"reason":"clear","score":1,
+        "a_stats":{"decisions":1}})
+    assert training_target_met(progress,config)
+    add_game_totals(stats,{"frames":9999,"reason":"timeout","score":.5,
+        "a_stats":{"decisions":100}})
+    assert stats["learning_decisions"] == 4
