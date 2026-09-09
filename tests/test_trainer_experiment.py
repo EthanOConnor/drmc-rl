@@ -1,4 +1,43 @@
-from drmc_rl.arena.experiment import relative_ratings
+from datetime import datetime, timedelta, timezone
+import json
+
+import pytest
+
+from drmc_rl.arena.experiment import experiment_health, read_experiment, relative_ratings
+
+
+def test_failed_training_overrides_optimistic_plan(tmp_path):
+    plan = tmp_path/"experiment.json"
+    plan.write_text(json.dumps({"status":"Training · faster execution", "title":"Pace study"}))
+    (tmp_path/"training.json").write_text(json.dumps({
+        "status":"Failed", "frames":23130802, "error":"[Errno 5] Input/output error"}))
+    (tmp_path/"pipeline.json").write_text(json.dumps({"status":"Failed", "error":"training failed"}))
+    data = read_experiment(plan)
+    assert data["health"] == {"status":"Training stopped", "severity":"failed",
+                              "message":"[Errno 5] Input/output error"}
+    assert data["training"]["frames"] == 23130802
+
+
+@pytest.mark.parametrize("status,age,batch,expected", [
+    ("Running",30,50,"ok"),
+    ("Running",300,50,"stale"),
+    ("Running",300,120,"ok"),
+    ("Training complete",3600,50,"ok"),
+])
+def test_training_freshness_distinguishes_silence_from_completion(status, age, batch, expected):
+    now = datetime(2026,9,9,tzinfo=timezone.utc)
+    training = {"status":status,"updated_at":(now-timedelta(seconds=age)).isoformat(),
+                "batch_seconds":batch}
+    health = experiment_health(training, {}, now)
+    assert health["severity"] == expected
+    assert health["training_age_seconds"] == age
+
+
+def test_pipeline_failure_is_visible_after_training_completed():
+    health = experiment_health({"status":"Training complete"},
+        {"status":"Failed","error":"evaluation worker failed"}, datetime.now(timezone.utc))
+    assert health["status"] == "Study stopped"
+    assert health["message"] == "evaluation worker failed"
 
 
 def test_relative_ratings_anchor_connected_fields_and_complete_seed_pairs():

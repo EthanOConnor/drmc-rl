@@ -101,6 +101,31 @@ def relative_ratings(comparisons, records, anchor="baseline8"):
     return result
 
 
+def experiment_health(training, pipeline, now):
+    """Reported failures outrank the plan; silence is uncertainty, not success."""
+    health = {"status":pipeline.get("status") or training.get("status"), "severity":"ok"}
+    try:
+        updated = datetime.fromisoformat(training["updated_at"])
+        health["training_age_seconds"] = max(0, int((now-updated).total_seconds()))
+    except (KeyError, TypeError, ValueError):
+        pass
+    if training.get("status") == "Failed":
+        health.update(status="Training stopped", severity="failed",
+                      message=training.get("error") or "The training worker reported a failure.")
+    elif pipeline.get("status") == "Failed":
+        health.update(status="Study stopped", severity="failed",
+                      message=pipeline.get("error") or "The study supervisor reported a failure.")
+    elif training.get("status") == "Running":
+        age = health.get("training_age_seconds")
+        # Allow normal long batches; do not equate a connected web server with
+        # a healthy trainer or remote synchronization feed.
+        threshold = max(180, 3*float(training.get("batch_seconds") or 0))
+        if age is None or age > threshold:
+            health.update(status="Training update overdue", severity="stale",
+                          message="Training or its remote feed may have stalled. Displayed counts are the last reported progress.")
+    return health
+
+
 def read_experiment(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {"active": False}
@@ -115,6 +140,7 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
     training = json.loads(training_path.read_text()) if training_path.is_file() else {}
     pipeline_path = path.parent / plan.get("pipeline_file", "pipeline.json")
     pipeline = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else {}
+    now = datetime.now(timezone.utc)
     # Results cannot overwrite the operator's task, goals, or stage descriptions.
     return {
         **plan,
@@ -122,5 +148,6 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
         "results": results,
         "training": training,
         "pipeline": pipeline,
-        "served_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "health": experiment_health(training, pipeline, now),
+        "served_at": now.isoformat(timespec="seconds"),
     }

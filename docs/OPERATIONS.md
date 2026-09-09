@@ -353,12 +353,23 @@ decision total. When resuming into a new output directory, supply
 `trainer-pace-study` takes `trainer_pace_study`, a JSON containing `output`,
 `training_config`, `evaluation_configs`, and `evaluation_workers`. It launches
 the bounded training recipe, then the fixed held-out arena schedules. Failure
-status and logs are published alongside training metrics; success requires
+status is published alongside training metrics; success requires
 every evaluation worker to finish. It never promotes a checkpoint. The arena
 accepts variant `adapter_checkpoint` paths on the common frozen parent and
 explicit per-comparison `seeds` for reserved evaluation banks. Mixed-policy
 evaluation currently requires reaction-covered computation; speculative
 preparation remains the separately validated single-policy path.
+
+When using network overflow storage, set the study's `log_directory` to a
+local directory on the training host, and redirect the supervisor's own
+stdout/stderr there as well. SSHFS reconnects can invalidate long-lived open
+log handles while newly opened checkpoint and telemetry files still work.
+Logs append across restarts; `pipeline.json` records their directory. Copy
+closed logs to overflow storage after the run. Failure telemetry retains the
+traceback even if stderr is unavailable. The dashboard prioritizes reported
+training/study failures over the plan and warns if running training has no
+update for the greater of three minutes or three previous rollout durations.
+Completed training is not marked stale while evaluation continues.
 
 The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
 outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot

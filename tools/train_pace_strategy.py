@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import shutil
 import time
+import traceback
 
 import numpy as np
 import torch
@@ -299,7 +300,8 @@ def main():
         actor.save(output/"adapter-final.pt",update=progress["updates"],optimizer=optimizer.state_dict(),
             sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
     except BaseException as error:
-        progress.update(status="Failed",error=str(error),updated_at=datetime.now(UTC).isoformat())
+        progress.update(status="Failed",error=str(error),traceback=traceback.format_exc(),
+                        updated_at=datetime.now(UTC).isoformat())
         raise
     finally:
         dump(output/"training.json",progress)
