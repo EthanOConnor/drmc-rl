@@ -61,3 +61,22 @@ def test_relative_ratings_anchor_connected_fields_and_complete_seed_pairs():
         assert ratings["faster"]["games"] == 80
         assert ratings["faster"]["low"] < ratings["faster"]["elo"] < ratings["faster"]["high"]
         assert (ratings["faster"]["elo"] > 0) == (group["level"] == 14)
+
+
+def test_unified_standings_connect_phases_and_keep_joint_difference_intervals():
+    comparisons = {
+        "pilot":{"id":"pilot","a":"old","b":"parent","level":14,"pace":"normal","rating_group":"Pilot"},
+        "live":{"id":"live","a":"new","b":"old","level":14,"pace":"normal","rating_group":"Milestones"},
+    }
+    records = {(id,i):{"comparison":id,"index":i,"seed":i//2,"side":i%2,"score":float(i<48)}
+               for id in comparisons for i in range(64)}
+    groups = relative_ratings(comparisons,records,anchor="parent",unified=True)
+    assert len(groups) == 1
+    ratings = {r["id"]:r for r in groups[0]["ratings"]}
+    assert set(ratings) == {"parent","old","new"}
+    assert ratings["old"]["games"] == 128
+    gap = ratings["new"]["differences"]["old"]
+    reverse = ratings["old"]["differences"]["new"]
+    assert gap["elo"] > 0
+    assert (gap["elo"],gap["low"],gap["high"]) == (-reverse["elo"],-reverse["high"],-reverse["low"])
+    assert ratings["new"]["differences"]["new"] == {"elo":0,"low":0,"high":0}

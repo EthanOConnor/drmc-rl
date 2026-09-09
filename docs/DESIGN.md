@@ -293,6 +293,14 @@ side-swapped seeds and reports every pace separately. Adapter checkpoints are
 bound to their parent hash and context schema; they are experimental artifacts,
 not an automatic replacement for the installed core.
 
+Frozen milestones may enter a concurrent controller-frame tournament as soon
+as their atomic checkpoint is available. This evaluation consumes its reserved
+seed schedule independently of the continuing optimizer. Historical public
+cores and earlier adapters remain in the connected field. Live ratings combine
+compatible experiment phases within each level and pace, with complete
+side-swapped seeds as the observation unit; they do not collapse the motor
+settings into an uncalibrated single strength score.
+
 Budget this experiment in both simulated console frames and actual learner
 placement decisions, reported separately for every pace. Earlier PPO `steps`
 also count elapsed frames, but equal frame or game counts do not provide equal

@@ -61,10 +61,16 @@ def sync(source: Path, target: Path, feed: str = "screen"):
     feeds = target / "feeds"
     feeds.mkdir(exist_ok=True)
     dump(feeds / f"{feed}.json", {"report": report, "games": games})
-    comparisons, records, updated = {}, {}, []
+    comparisons, records, updated, workers, entrants = {}, {}, [], [], {}
     for path in sorted(feeds.glob("*.json")):
         component = json.loads(path.read_text())
         updated.append(component["report"]["updated_at"])
+        if component["report"].get("worker"):
+            workers.append({**component["report"]["worker"],"feed":path.stem,
+                            "updated_at":component["report"]["updated_at"]})
+        for entrant in component["report"].get("entrants",[]):
+            previous = entrants.get(entrant["id"],{})
+            entrants[entrant["id"]] = {**entrant,"ready":entrant["ready"] or previous.get("ready",False)}
         for match in component["report"]["tournaments"]:
             comparisons[match["id"]] = {**match, "compute_model": component["report"].get("compute_model")}
         for game in component["games"]:
@@ -74,7 +80,7 @@ def sync(source: Path, target: Path, feed: str = "screen"):
         rows = [r for (comparison, _), r in records.items() if comparison == id]
         match.update(played=len(rows), wins=sum(r["score"] == 1 for r in rows),
             losses=sum(r["score"] == 0 for r in rows), draws=sum(r["score"] == .5 for r in rows),
-            score_ci=score_interval(rows), status="Complete" if len(rows) >= match["target"] else "Running" if rows else "Pending")
+            score_ci=score_interval(rows), status="Complete" if len(rows) >= match["target"] else match.get("status","Queued"))
         for row in rows:
             for side in ("a", "b"):
                 totals.setdefault(match[side], Counter()).update(row[side+"_stats"])
@@ -85,7 +91,9 @@ def sync(source: Path, target: Path, feed: str = "screen"):
     anchor = json.loads(plan_path.read_text()).get("rating_anchor", "baseline8") if plan_path.is_file() else "baseline8"
     dump(target / "results.json", {"updated_at": max(updated), "tournaments": list(comparisons.values()),
         "metrics": metrics, "execution_totals": totals,
-        "rating_groups": relative_ratings(comparisons, records, anchor=anchor)})
+        "workers":workers,"entrants":list(entrants.values()),
+        "rating_groups": relative_ratings(comparisons, records, anchor=anchor),
+        "unified_rating_groups":relative_ratings(comparisons,records,anchor=anchor,unified=True)})
     return count
 
 

@@ -371,6 +371,20 @@ training/study failures over the plan and warns if running training has no
 update for the greater of three minutes or three previous rollout durations.
 Completed training is not marked stale while evaluation continues.
 
+For evaluation during training, `trainer-planning-arena` accepts `watch: true`.
+Predeclare frozen milestone paths in `variants`; the worker skips missing
+checkpoints and admits them after their atomic save. It plays one complete
+side-swapped batch per matchup, prioritizing the least-covered ready matchup,
+then deepens the same reserved-seed schedule. It exits when every scheduled
+game is complete. Use separate outputs and local working databases per worker;
+split the schedule, not the sides of a seed pair. A variant's `checkpoint`
+selects an older public core; `adapter_checkpoint` selects a residual on that
+variant's parent. Historical cores with privileged auxiliary contracts are
+rejected. Worker state and checkpoint readiness accompany every closed snapshot.
+The live leaderboard combines tournament phases at the same level and pace;
+Elo-reference changes use differences of joint posterior samples, preserving
+their covariance. Levels and paces retain separate rating fields.
+
 The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
 outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
 completed 997,430 console frames and 9,763 learner decisions. The original

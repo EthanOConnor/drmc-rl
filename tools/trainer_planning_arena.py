@@ -19,6 +19,7 @@ from pathlib import Path
 import socket
 import sqlite3
 import time
+import traceback
 
 import numpy as np
 import torch
@@ -203,7 +204,9 @@ def publish(config, results, output, store):
         tournaments.append({**match, "target": match["games"], "played": len(rows),
             "wins": sum(r["score"] == 1 for r in rows), "losses": sum(r["score"] == 0 for r in rows),
             "draws": sum(r["score"] == .5 for r in rows), "score_ci": score_interval(rows),
-            "status": "Complete" if len(rows) >= match["games"] else "Running" if rows else "Pending"})
+            "status": "Complete" if len(rows) >= match["games"] else
+                "Waiting for checkpoint" if not match_ready(config,match) else
+                "Playing" if match["id"] == config.get("_current_match") else "Queued"})
         for row in rows:
             for label in ("a", "b"):
                 aggregates.setdefault(match[label], Counter()).update(row[label+"_stats"])
@@ -214,7 +217,12 @@ def publish(config, results, output, store):
             "detail": f"{decisions:,} decisions · {stats['cache_hit']:,} exact preparation hits · {stats['cache_stale_opponent']:,} older opponent contexts"})
     dump(output / "results.json", {"updated_at": datetime.now(UTC).isoformat(), "tournaments": tournaments,
         "metrics": metrics, "execution_totals": {k: dict(v) for k,v in aggregates.items()},
-        "compute_model": {k: config[k] for k in ("reactive_compute_frames", "preparation_compute_frames")}})
+        "compute_model": {k: config[k] for k in ("reactive_compute_frames", "preparation_compute_frames")},
+        "worker": {"host":socket.gethostname(),"status":config.get("_worker_status","Running"),
+                   "current_match":config.get("_current_match"),"error":config.get("_error"),
+                   "traceback":config.get("_traceback"),"device":config.get("device","cuda")},
+        "entrants": [{"id":id,"name":p["name"],"ready":variant_ready(config,p)}
+                     for id,p in config["variants"].items()]})
     # Publish a closed, transactionally consistent database for the viewer.
     destination = output / "arena.next.sqlite"
     with sqlite3.connect(destination) as snapshot:
@@ -239,6 +247,43 @@ def paired_jobs(config, match):
     return [(int(seed), side, 2*i+side) for i, seed in enumerate(seeds) for side in (0, 1)]
 
 
+def variant_ready(config, params):
+    paths = [params.get("checkpoint",config["checkpoint"])]
+    if "adapter_checkpoint" in params:
+        paths.append(params["adapter_checkpoint"])
+    return all(Path(path).is_file() for path in paths)
+
+
+def match_ready(config, match):
+    return all(variant_ready(config,config["variants"][match[side]]) for side in ("a","b"))
+
+
+def next_live_match(config, results):
+    """Give every ready matchup an initial batch before deepening coverage."""
+    pending = [match for match in config["schedule"]
+               if len(results.get(match["id"],[])) < match["games"] and match_ready(config,match)]
+    return min(pending,key=lambda m:len(results.get(m["id"],[])),default=None)
+
+
+def variant_policy(config, params, parent):
+    """A frozen core override is a different player, not another parent alias."""
+    device = config.get("device","cuda")
+    checkpoint = params.get("checkpoint",config["checkpoint"])
+    if "adapter_checkpoint" in params:
+        from drmc_rl.models.policy.pace_adapter import PacePolicy
+        actor = PacePolicy(checkpoint,device,adapter_path=params["adapter_checkpoint"])
+    elif checkpoint != config["checkpoint"]:
+        actor = PlainPolicy(Path(checkpoint),device,public_only=True)
+        if actor.aux_dim and actor.aux_spec != "zero_v1_vs":
+            raise ValueError("historical public opponents must have a public auxiliary-input contract")
+    else:
+        return parent
+    if config.get("memoize",False):
+        from tools.trainer_arena_cache import MemoPolicy
+        actor = MemoPolicy(actor)
+    return actor
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -256,38 +301,56 @@ def main():
     if config.get("memoize", False):
         from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
         policy, planner = MemoPolicy(policy), MemoPlanner(planner)
-    policies = None
-    if any("adapter_checkpoint" in p for p in config["variants"].values()):
-        from drmc_rl.models.policy.pace_adapter import PacePolicy
-        policies = {}
-        for id, params in config["variants"].items():
-            if params.get("anticipation"):
-                raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
-            actor = (PacePolicy(config["checkpoint"], config.get("device", "cuda"),
-                     adapter_path=params["adapter_checkpoint"]) if "adapter_checkpoint" in params else policy)
-            if config.get("memoize", False) and "adapter_checkpoint" in params:
-                actor = MemoPolicy(actor)
-            policies[id] = actor
+    mixed = any("adapter_checkpoint" in p or "checkpoint" in p for p in config["variants"].values())
+    if mixed and any(p.get("anticipation") for p in config["variants"].values()):
+        raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
+    policies = {} if mixed else None
     preparer = None if policies is not None else NextTurnPreparer(policy, planner, lib_path=config.get("native_library"))
     store = ArenaStore(config["working_db"], replay_dir=output / "replays")
     for id, params in config["variants"].items():
         store.register(agent_id=id, name=params["name"], family="trainer planning", generation=1,
-            checkpoint=params.get("adapter_checkpoint", config["checkpoint"]),
-            params={"parent_checkpoint":config["checkpoint"], **params}, status="active")
+            checkpoint=params.get("adapter_checkpoint", params.get("checkpoint",config["checkpoint"])),
+            params={"parent_checkpoint":params.get("checkpoint",config["checkpoint"]), **params}, status="active")
     records = output / "games.jsonl"
     results = {}
     if records.exists():
         for line in records.read_text().splitlines():
             row = json.loads(line)
             results.setdefault(row["comparison"], []).append(row)
+    records.touch(exist_ok=True)
     publish(config, results, output, store)
     try:
-        for match in config["schedule"]:
+        schedule = iter(config["schedule"])
+        while True:
+            if config.get("watch",False):
+                match = next_live_match(config,results)
+                if match is None:
+                    complete = all(len(results.get(m["id"],[])) >= m["games"] for m in config["schedule"])
+                    config.update(_worker_status="Complete" if complete else "Waiting for checkpoints",_current_match=None)
+                    publish(config,results,output,store)
+                    if complete:
+                        break
+                    time.sleep(min(60,max(5,config.get("poll_seconds",20))))
+                    continue
+            else:
+                match = next(schedule,None)
+                if match is None:
+                    break
+            if policies is not None:
+                for id in (match["a"],match["b"]):
+                    if id not in policies:
+                        policies[id] = variant_policy(config,config["variants"][id],policy)
             jobs = paired_jobs(config, match)
             completed = {row["index"] for row in results.get(match["id"], [])}
             jobs = [job for job in jobs if job[2] not in completed]
             batch_size = config.get("pairs", 16)
+            if batch_size < 2 or batch_size%2:
+                raise ValueError("evaluation batches require complete side-swapped pairs")
+            if config.get("watch",False):
+                jobs = jobs[:batch_size]
             for start in range(0, len(jobs), batch_size):
+                config.update(_worker_status="Playing",_current_match=match["id"])
+                publish(config,results,output,store)
                 profile = cProfile.Profile() if config.get("profile") else None
                 if profile:
                     profile.enable()
@@ -320,6 +383,12 @@ def main():
                 print(json.dumps({"comparison": match["id"], "games": len(rows), "target": match["games"],
                     "score": float(np.mean([r["score"] for r in rows])), "paired_ci": score_interval(rows),
                     "batch_seconds": round(elapsed, 2)}), flush=True)
+        config.update(_worker_status="Complete",_current_match=None)
+        publish(config,results,output,store)
+    except BaseException as error:
+        config.update(_worker_status="Failed",_error=str(error),_traceback=traceback.format_exc())
+        publish(config,results,output,store)
+        raise
     finally:
         store.close()
         if preparer is not None:

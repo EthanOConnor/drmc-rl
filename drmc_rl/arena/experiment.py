@@ -40,7 +40,7 @@ def score_interval(records):
     return [float(min(low, max(0, centre-half))), float(max(high, min(1, centre+half)))]
 
 
-def relative_ratings(comparisons, records, anchor="baseline8"):
+def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False):
     """Estimate each connected field without mixing levels or pace settings.
 
     Each complete, side-swapped seed contributes one effective observation:
@@ -50,7 +50,8 @@ def relative_ratings(comparisons, records, anchor="baseline8"):
     """
     groups = {}
     for match in comparisons.values():
-        key = (match.get("rating_group", "Screening"), match["level"], match.get("pace", "frame_perfect"))
+        key = ("Live tournament" if unified else match.get("rating_group", "Screening"),
+               match["level"], match.get("pace", "frame_perfect"))
         seeds = {}
         for row in records.values():
             if row["comparison"] == match["id"]:
@@ -91,8 +92,13 @@ def relative_ratings(comparisons, records, anchor="baseline8"):
         ratings = []
         for i,id in enumerate(agents):
             low, median, high = np.quantile(relative[:,i], [.025,.5,.975])
+            differences = {}
+            for j,reference in enumerate(agents):
+                gap = (draws[:,i]-draws[:,j])*ELO_SCALE
+                lo,mid,hi = np.quantile(gap,[.025,.5,.975])
+                differences[reference] = {"elo":round(float(mid)),"low":round(float(lo)),"high":round(float(hi))}
             ratings.append({"id": id, "elo": round(float(median)), "low": round(float(low)),
-                            "high": round(float(high)), "games": games[id]})
+                            "high": round(float(high)), "games": games[id],"differences":differences})
         result.append({"label": label, "level": level, "pace": pace, "anchor": anchor,
             "ratings": sorted(ratings, key=lambda r: -r["elo"]),
             "matchups": [{"a": agents[i], "b": agents[j], "games": sum(wdl),
