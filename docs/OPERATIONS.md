@@ -656,19 +656,35 @@ contract and retains those games. Its public-bottle factoring passed exhaustive
 posterior comparisons on the Mac and tf3090; a 192-query Mac microbenchmark
 measured 23x faster matching, which is not an overall training-throughput claim.
 
-`teacher-data-slot-v2` runs this collection followed by
-`terminal-batch-single-v1` and `terminal-batch-eight-v1`, with corresponding
-JSON configurations under `review-20260909/configs/`. The two labeling jobs
-compare one versus eight roots in flight on identical eight-root 14-HI panels,
-covering all legal actions, nine continuation pairs and the full public reserve
-posterior. `teacher-data-slot-v2/benchmark.json` reports throughput and label
-agreement separately. Its supervisor preserves the next saved main-core update,
-uses at most 60 GPU minutes and resumes that same checkpoint/optimizer through
-`controller-core-live-v4-after-teacher-data-v2.json`. Read the slot's progress
-and supervisor PID plus the main run's PID before recovery. The earlier v1 slot
-is explicitly superseded; its interruption record preserves the reason and
-completed work. This is data/throughput work, not a completed larger-teacher
-study or model promotion.
+The completed `teacher-data-slot-v2` compared one versus eight roots in flight
+on the same eight-root 14-HI panels, with all legal actions, nine continuation
+pairs and the complete public reserve posterior. It measured 1.032x overall
+throughput; all 2,340 terminal outcomes and 260 candidate WDL estimates agreed.
+The subsequent v3 comparison increased rollout slots from 64 to 256 and measured
+1.174x overall throughput, again with complete label agreement. These three
+benchmark label sets predate native reveal-order correction `e0162ed` and are
+quarantined by `label-validity.json`; agreement between them does not establish
+validity for training. The source corpus and main controller training use
+different native paths and are unaffected.
+
+`teacher-data-slot-v4` now compares corrected uncached and cached 256-slot
+labeling in `terminal-fixed-256-v1` and `terminal-fixed-cache-256-v1`. Both use
+immutable `teacher-label-d2cce23-source`, native `e0162ed`, the same eight roots,
+four native workers and two Torch threads; the second enables an 8,192-entry
+public-input policy cache. Its `benchmark.json` records actual neural rows,
+cache hits, throughput and label agreement separately. The supervisor preserves
+the next saved main-core update, uses at most 30 GPU minutes and resumes that
+same checkpoint and optimizer via
+`controller-core-live-v4-after-teacher-data-v4.json`. It preserved update 113
+at 140,132,420 console frames and 1,372,391 learner decisions. Read the latest
+slot progress, resume configuration and actual supervisor PIDs before recovery;
+never rewind a newer main checkpoint to an older slot's saved update.
+
+After this comparison, broaden corrected terminal labeling to roughly 1,024
+independent fit-source games; preserve the 256 confirmation games for final
+assessment. New quality fitting must include the quarantine guard in `6d7e05a`
+or later. These bounded data/throughput studies do not complete the independent
+larger-teacher and student-distillation program or promote a model.
 
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
