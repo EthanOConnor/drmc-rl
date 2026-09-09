@@ -40,3 +40,31 @@ def test_training_checkpoint_restores_weights_and_public_contract(tmp_path, comp
     adapter._maybe_checkpoint()
     assert not path.exists()
     assert len(list(tmp_path.iterdir())) == 1
+
+
+def test_causal_migration_requires_fresh_run_and_uses_effective_inference_weights(tmp_path):
+    adapter = SMDPPPOAdapter.__new__(SMDPPPOAdapter)
+    adapter.device = "cpu"
+    adapter.env = SimpleNamespace(public_observations=True)
+    adapter.net = torch.nn.Linear(2, 1)
+    state = adapter.net.state_dict()
+    ema = {key: value + 0.5 for key, value in state.items()}
+    path = tmp_path / "legacy.pt"
+    torch.save(
+        dict(cfg={"env": {"public_observations": False}}, state_dict=state, ema_state_dict=ema),
+        path,
+    )
+    for resume_optimizer, resume_step in ((True, False), (False, True)):
+        with pytest.raises(ValueError, match="fresh weights-only"):
+            adapter._load_checkpoint(
+                path,
+                resume_optimizer=resume_optimizer,
+                resume_step=resume_step,
+                override_optimizer_lr=False,
+                strict=True,
+            )
+    adapter._load_checkpoint(
+        path, resume_optimizer=False, resume_step=False, override_optimizer_lr=False, strict=True
+    )
+    for name, value in adapter.net.state_dict().items():
+        torch.testing.assert_close(value, ema[name])

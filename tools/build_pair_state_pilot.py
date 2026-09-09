@@ -43,6 +43,35 @@ _OUTCOME_NAME = {
 }
 
 
+def failure_predecessors(game_rows, offsets=(4, 8, 16)):
+    """Preserve exact full-pair states before a naturally observed loss.
+
+    Offsets count this side's placements, not asynchronous pair events. These
+    are curriculum samples; they never replace clean-start promotion games.
+    """
+    result = []
+    for side in (0, 1):
+        rows = [r for r in game_rows if r["root_side"] == side]
+        if (
+            not rows
+            or rows[-1].get("outcome") != "loss"
+            or not rows[-1].get("natural_outcome_available")
+        ):
+            continue
+        for offset in offsets:
+            if offset < 1:
+                raise ValueError("predecessor offsets must be positive")
+            if len(rows) >= offset:
+                result.append(
+                    {
+                        **rows[-offset],
+                        "sampling_reason": "failure-predecessor",
+                        "placements_before_failure": offset,
+                    }
+                )
+    return result
+
+
 def _candidate_bin(count: int) -> str:
     if count <= 16:
         return "01-16"
@@ -148,7 +177,15 @@ def main() -> None:
     parser.add_argument("--mixture-manifest", type=Path)
     parser.add_argument("--wdl-calibration", type=Path)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument("--threads", type=int, default=2)
+    parser.add_argument("--public-checkpoint", type=Path)
+    parser.add_argument("--failure-predecessors", action="store_true")
     args = parser.parse_args()
+    import torch
+
+    torch.set_num_threads(args.threads)
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     if (
         args.states < 1
         or args.max_decisions_per_game < 1
@@ -158,6 +195,10 @@ def main() -> None:
         parser.error("state, game, and decision counts must be positive")
     if (args.mixture_manifest is None) != (args.wdl_calibration is None):
         parser.error("--mixture-manifest and --wdl-calibration must be supplied together")
+    if args.public_checkpoint and args.mixture_manifest:
+        parser.error("choose one frozen public actor or the historical teacher mixture")
+    if args.output.exists():
+        raise FileExistsError("state collection requires a fresh output identity")
     levels = tuple(args.level or (5, 10, 15, 20))
     speeds = tuple(args.speed or (0, 1, 2))
     if any(not 0 <= value <= 20 for value in levels):
@@ -174,6 +215,12 @@ def main() -> None:
         mixture = FrozenStrongLeagueMixture(members, calibration, device=args.device)
         rollout_policy = "frozen-strong-league-mixture-argmax"
         rollout_manifest_sha256 = sha256_file(args.mixture_manifest)
+    elif args.public_checkpoint:
+        from drmc_rl.search.public_policy import PublicPolicyContinuation
+
+        mixture = PublicPolicyContinuation(args.public_checkpoint, device=args.device)
+        rollout_policy = "frozen-public-core-argmax"
+        rollout_manifest_sha256 = sha256_file(args.public_checkpoint)
 
     rng = np.random.default_rng(args.seed)
     runner = DrMarioVsPoolRunner(num_pairs=1)
@@ -211,6 +258,7 @@ def main() -> None:
                 board=initial_board,
             )
             game_candidates: list[dict[str, object]] = []
+            state = None
             for decision in range(args.max_decisions_per_game):
                 reserve_belief = _condition_visible_reserve(reserve_belief, runner)
                 initial_viruses = min(84, 4 * (level + 1))
@@ -219,6 +267,8 @@ def main() -> None:
                     level=level,
                     speed_setting=speed,
                     viruses_initial=(initial_viruses, initial_viruses),
+                    previous=state,
+                    causal_public=bool(args.public_checkpoint),
                 )
                 if state.privileged.decision_boundary.value == "terminal":
                     break
@@ -297,15 +347,44 @@ def main() -> None:
                 )
 
             remaining = args.states - len(rows)
-            selected = select_game_rows(
-                game_candidates,
-                limit=min(args.states_per_game, remaining),
-                global_tactical_counts=tactical_counts,
-                seed=args.seed + game_index,
+            predecessor_rows = (
+                failure_predecessors(game_candidates) if args.failure_predecessors else []
+            )
+            predecessor_rows = predecessor_rows[: min(args.states_per_game, remaining)]
+            predecessor_ids = {r["id"] for r in predecessor_rows}
+            remainder = max(0, min(args.states_per_game, remaining) - len(predecessor_rows))
+            for row in predecessor_rows:
+                tactical_counts[row["tactical_stratum"]] = (
+                    tactical_counts.get(row["tactical_stratum"], 0) + 1
+                )
+            selected = (
+                predecessor_rows
+                + list(
+                    select_game_rows(
+                        [r for r in game_candidates if r["id"] not in predecessor_ids],
+                        limit=remainder,
+                        global_tactical_counts=tactical_counts,
+                        seed=args.seed + game_index,
+                    )
+                )
+                if remainder
+                else predecessor_rows
             )
             rows.extend(selected)
             posterior_seed_counts.extend(int(row["reserve_seed_count"]) for row in selected)
             game_index += 1
+            print(
+                json.dumps(
+                    dict(
+                        games=game_index,
+                        states=len(rows),
+                        target=args.states,
+                        natural_terminal_games=natural_terminal_games,
+                        censored_games=horizon_incomplete_games,
+                    )
+                ),
+                flush=True,
+            )
     finally:
         runner.close()
 
@@ -327,6 +406,9 @@ def main() -> None:
         "levels": list(levels),
         "speeds": list(speeds),
         "pair_state_schema": "drmc-pair-state-v2",
+        "public_observation_schema": "causal-settled-pair-v1"
+        if args.public_checkpoint
+        else "legacy-warp-buffer-v1",
         "native_checkpoint_schema": "drm-vspool-snapshot-v1",
         "chance_model": CHANCE_MODEL_ID,
         "reserve_belief_history": (
@@ -335,6 +417,7 @@ def main() -> None:
         ),
         "reserve_initial_board_conditioned": True,
         "per_game_selection": "whole-game-global-tactical-round-robin-v1",
+        "failure_predecessor_offsets": [4, 8, 16] if args.failure_predecessors else [],
         "posterior_seed_count": {
             "min": int(seed_counts.min()) if seed_counts.size else 0,
             "median": float(np.median(seed_counts)) if seed_counts.size else 0.0,
@@ -343,6 +426,7 @@ def main() -> None:
         "tactical_counts": dict(sorted(tactical_counts.items())),
         "rollout_policy": rollout_policy,
         "rollout_policy_manifest_sha256": rollout_manifest_sha256,
+        "strict_fp32": True,
         "diagnostic_only": mixture is None,
     }
     manifest_path = Path(str(args.output) + ".manifest.json")

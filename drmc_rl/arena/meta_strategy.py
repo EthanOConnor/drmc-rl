@@ -23,6 +23,7 @@ class MetaStrategyResult:
     column_best_response_value: float
     iterations: int
     temperature: float
+    regularized_gap: float
 
     def to_dict(self, agents: Sequence[str] | None = None) -> dict[str, object]:
         payload = asdict(self)
@@ -36,7 +37,8 @@ class MetaStrategyResult:
                 str(agent): float(weight)
                 for agent, weight in zip(agents, self.population_strategy, strict=True)
             }
-        payload["schema"] = "drmc-psro-meta-strategy-v1"
+        payload["schema"] = "drmc-psro-meta-strategy-v2"
+        payload["solver"] = "entropy-mirror-prox-v1"
         return payload
 
 
@@ -53,8 +55,19 @@ def _floor_distribution(probability: np.ndarray, floor: float) -> np.ndarray:
         raise ValueError("floor must be non-negative and leave positive free mass")
     if floor == 0:
         return p / p.sum()
-    p = (1.0 - floor * len(p)) * (p / p.sum()) + floor
-    return p / p.sum()
+    # KL projection onto the lower-bounded simplex, not repeated mixing with
+    # uniform mass (which would change the intended regularized objective).
+    p = p / p.sum()
+    fixed = np.zeros(len(p), dtype=bool)
+    for _ in range(len(p)):
+        free = ~fixed
+        result = np.full_like(p, floor)
+        result[free] = p[free] / p[free].sum() * (1 - floor * fixed.sum())
+        violated = free & (result < floor)
+        if not violated.any():
+            return result
+        fixed |= violated
+    raise RuntimeError("lower-bound probability projection failed")
 
 
 def solve_entropy_regularized_zero_sum(
@@ -65,7 +78,7 @@ def solve_entropy_regularized_zero_sum(
     floor: float = 0.002,
     burn_in_fraction: float = 0.2,
 ) -> MetaStrategyResult:
-    """Solve a finite zero-sum empirical game by averaged multiplicative weights.
+    """Solve a finite entropy-regularized zero-sum game by mirror-prox.
 
     Rows maximize the supplied payoff; columns minimize it. The returned
     saddle gap is the unregularized best-response gap, so a small value remains
@@ -79,8 +92,12 @@ def solve_entropy_regularized_zero_sum(
         raise ValueError("payoff contains non-finite values")
     if iterations < 10:
         raise ValueError("iterations must be at least 10")
-    if temperature <= 0:
-        raise ValueError("temperature must be positive")
+    if not np.isfinite(temperature) or temperature <= 0:
+        raise ValueError("temperature must be finite and positive")
+    if not np.isfinite(floor) or floor < 0 or floor * max(matrix.shape) >= 1:
+        raise ValueError("floor must leave positive free mass on both sides")
+    if not np.isfinite(burn_in_fraction) or not 0 <= burn_in_fraction < 1:
+        raise ValueError("burn-in fraction must be in [0,1)")
     rows, columns = matrix.shape
     row_score = np.zeros(rows, dtype=np.float64)
     col_score = np.zeros(columns, dtype=np.float64)
@@ -88,12 +105,27 @@ def solve_entropy_regularized_zero_sum(
     col_average = np.zeros(columns, dtype=np.float64)
     burn_in = int(np.clip(round(iterations * burn_in_fraction), 0, iterations - 1))
     averaged = 0
+    # Entropy must remain in the objective throughout the optimization. In the
+    # historical cumulative-score softmax, temperature only slowed convergence
+    # to an effectively unregularized best response.
+    eta = 0.5 / max(float(np.linalg.norm(matrix, ord=2)), float(temperature), 1e-6)
     for step in range(1, int(iterations) + 1):
-        row = _floor_distribution(_softmax(row_score, temperature), floor)
-        column = _floor_distribution(_softmax(col_score, temperature), floor)
-        eta = 1.0 / np.sqrt(float(step))
-        row_score += eta * (matrix @ column)
-        col_score += eta * (-(matrix.T @ row))
+        row = _floor_distribution(_softmax(row_score, 1.0), floor)
+        column = _floor_distribution(_softmax(col_score, 1.0), floor)
+        row_log = np.log(np.maximum(row, 1e-300))
+        col_log = np.log(np.maximum(column, 1e-300))
+        row_mid = _floor_distribution(
+            _softmax(row_log + eta * (matrix @ column - temperature * row_log), 1.0), floor
+        )
+        col_mid = _floor_distribution(
+            _softmax(col_log + eta * (-matrix.T @ row - temperature * col_log), 1.0), floor
+        )
+        row_score = row_log + eta * (
+            matrix @ col_mid - temperature * np.log(np.maximum(row_mid, 1e-300))
+        )
+        col_score = col_log + eta * (
+            -matrix.T @ row_mid - temperature * np.log(np.maximum(col_mid, 1e-300))
+        )
         if step > burn_in:
             row_average += row
             col_average += column
@@ -107,6 +139,18 @@ def solve_entropy_regularized_zero_sum(
     upper = float(row_values[row_br])
     lower = float(column_values[col_br])
     value = float(row_strategy @ matrix @ column_strategy)
+
+    def logsumexp(values):
+        peak = values.max()
+        return float(peak + np.log(np.exp(values - peak).sum()))
+
+    entropy = lambda p: -float(np.sum(p * np.log(np.maximum(p, 1e-300))))
+    regularized_gap = temperature * (
+        logsumexp(row_values / temperature)
+        + logsumexp(-column_values / temperature)
+        - entropy(row_strategy)
+        - entropy(column_strategy)
+    )
     if rows == columns:
         population = 0.5 * (row_strategy + column_strategy)
         population = _floor_distribution(population, floor)
@@ -124,6 +168,7 @@ def solve_entropy_regularized_zero_sum(
         column_best_response_value=lower,
         iterations=int(iterations),
         temperature=float(temperature),
+        regularized_gap=max(0.0, float(regularized_gap)),
     )
 
 

@@ -45,6 +45,13 @@ target skill range or a human operation profile.
 
 Current diagnostic evidence identifies the next product gaps:
 
+Historical native-SMDP comparisons below retain their original observation
+contract. The September review found that its raw opponent buffer could expose
+a future lock. New public native runs require strict causal advancement and
+separate visible snapshots; the historical scores cannot certify that corrected
+contract. Controller-frame tournaments and human play tests use a different
+observation path and remain separate evidence.
+
 - The corrected 960-game level-14 HI round robin separates Maximum strongly
   from the V3 rating settings (306 wins in 320 games). The five rating settings
   are ordered overall, but every adjacent pair still has an overlapping 95%
@@ -91,10 +98,11 @@ Current diagnostic evidence identifies the next product gaps:
   outcome pilot completed 9,763 learner decisions with finite updates and
   checked controller execution, but only 997,430 simulated frames. Its 960-game
   held-out round robin is inconclusive. Equal game counts severely undersampled
-  slow-pace decisions, so the continuation now targets 100M frames plus at least
-  100,000 learning decisions at every pace, with larger slow-pace batches and
-  25M/50M milestones. A 2,176-game evaluation follows. No strength improvement
-  or promotion is established. Super Human and Frame Perfect retain exact
+  slow-pace decisions. The larger continuation completed 101,229,824 console
+  frames and the 100,000-learning-decision floor at every pace, with larger
+  slow-pace batches and 25M/50M milestones. Its 2,176-game scaled evaluation
+  completed; the ongoing larger field supplies further evidence. No promotion
+  is established. Super Human and Frame Perfect retain exact
   parent outputs.
   Before the large continuation, exact event batching, shared frozen-core
   inference, cost-only feasibility and asynchronous planning improved a matched
@@ -106,6 +114,60 @@ Current diagnostic evidence identifies the next product gaps:
   candidates), while every 20 HI opening locked during its reaction window.
   This limits useful Sloth training pressure; it does not justify bypassing
   the declared motor limits.
+
+## September 2026 review: implementation and evidence sequence
+
+The external review was checked against source, the exact gradient
+counterexample, native transitions and instrumented experiments. Its proposed
+directions are hypotheses, not reproduced strength gains. The implemented
+actor objective removes per-game inverse-length credit; the toy's true
+gradient is +0.1 while the historical normalized update is negative.
+This proves a possible failure, not its size in Dr. Mario. A further native
+audit found the future warped-opponent observation leak described in DESIGN;
+the first new state collection was stopped and regenerated with causal views.
+
+| Experiment | Implemented foundation | Evidence and next decision |
+| --- | --- | --- |
+| E0: objectives and public inputs | Exact gradient/finite-difference tests; separately named losses; hidden-commitment input test; causal native observations and complete placement collection across pair events; full frontier and bond preservation | Native PPO updates pass in dictionary and direct-array modes without waiting-event samples. Preserve historical artifacts. Never reinterpret a masked private input as a fully public timeline. |
+| E1: episodic actor credit | Same frozen 25M adapter, parent, seeds, pace exposure and full categorical KL budget; 50M additional frames per arm; 16,384 reserved arena games | Both arms completed: historical 50,369,235 frames / 446,868 learning decisions; corrected 50,201,899 / 445,535. Each collected 22,080 natural games over 75 updates; repeated seed experiences are counted separately. Held-out evaluation is running. Realized median KL is comparable across paces, not identical. One training seed is screening; finalists need independent seeds. |
+| E2: critic and public context | Candidate-attending value query; separate terminal/candidate WDL heads; versioned per-side public conditioning; baseline/critic/context/combined fitting modes | All four three-epoch integration fits completed on the same three training games and one held-out game, with finite losses and policy KL below 0.00005. This tiny bank cannot select an architecture. New-schema live history/motor emission remains required before paced deployment. No larger model is the default. |
+| E3: paired candidate improvement | Full-root, complete-reserve panel with two public continuations; chance variance and continuation sensitivity separated; reference-relative KL-bounded targets; supervised gap/WDL fitting | Four 14-HI roots cover 130 candidates and 520 natural continuations with no unknown mass. Serial CPU and batched GPU results match exactly. Two roots distinguish moves and two lose under every continuation. Auxiliary-to-policy phase continuation preserves learned heads. Prediction, ranking and real-game improvement still require larger prospective evidence; the failed V3 gate remains failed. |
+| E4: diverse experience | Frozen public opponent pool in pace training; empirical regularized mixture; exact states 4/8/16 own placements before natural losses | New bank has 16 states from four natural 14-HI games. Expand source diversity and mix openings/midgame/finishes with predecessors. No curriculum or league change enters the E1 arms. Clean-start population results govern adoption. |
+| E5: effects, memory and scale | Existing exact-effect and public-event modules audited; supervised auxiliary phase with policy KL; layer updates and representation-rank diagnostics | Integrate observed event history and exact effects before spatial wave/support/access labels and next-known-pill motor opportunity maps. Compare current 320×8 with 384×12 and 512×12 only after target quality; equal GPU time and equal exposure are separate reports. Distill a successful large teacher into the fast student. |
+| E6: search and anticipation | Cooperative frontier batching with exact requested-side inference, complete cache identities, fail-closed reserve-history cache, full-root output and unknown exhausted labels | Synthetic and real neural/native parity pass. CPU/Metal timing is workload-dependent, so batching remains opt-in. Adaptive/Gumbel allocation waits for useful Q ranking; mixed simultaneous matrices, tactical extensions and a late-conditioned anticipation trunk are separate experiments. Charge their measured computation delay. |
+| E7: expression and calibration | Whole-game paired noninferiority analysis with a declared margin, seed design, comparison family and fixed confirmation set; censoring blocks certification | Persistent 2–6-placement proposals still need replay-aligned human setups, held-out local-regret calibration and blind clip preferences. No permanent horizontal/combo reward, independent random blunders or uncalibrated Elo claim. |
+
+The review's commentator excerpts identify replay windows and qualities such
+as efficient low-drop clears, connected structures, delayed payoff, access,
+resourceful cleanup and finishing. They do not establish board geometry or VS
+attack timing. Mine and replay-align those windows before labeling motifs;
+include earlier construction states, not only the final flashy clear. Test the
+actual persistent style continuation, including replanning after garbage, and
+report losing tails and the strength/preference tradeoff. Local tolerated
+regret does not prove whole-game noninferiority.
+
+Other research choices remain deliberate ablations: spatial/row pair
+attention, longer public-event memory, independently trained uncertainty
+members, long skips/curvature-aware optimizers, conditional geometry caching,
+and hierarchical timing around material event boundaries. None is justified
+as a default by a literature result alone. Unsearched actions remain unknown;
+do not duplicate deterministic trajectories to simulate sample size. The
+placement SMDP and timing-action gate remain authoritative.
+
+The review artifacts live under `trainer-output/review-20260909` on mombox,
+with compact local reports in `runs/review-20260909`. The 520-rollout panel took
+3,876.5 seconds on mombox CPU and 263.0 seconds on tf3090 with CUDA inference
+and two native workers. This compares complete execution paths on different
+hosts, not an isolated native-threading speedup. Optional parallel native
+stepping also passes deterministic serial parity tests. Neither throughput
+nor the four fitting smoke tests establishes a stronger player.
+
+Primary methodological references: [episodic policy gradients](https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html),
+[PPG](https://arxiv.org/abs/2009.04416), [population responses](https://arxiv.org/abs/1711.00832),
+[targeted archive-state search](https://arxiv.org/abs/2302.12359),
+[Gumbel planning](https://davidstarsilver.wordpress.com/wp-content/uploads/2025/04/gumbel-alphazero.pdf),
+[gradient stability](https://arxiv.org/abs/2506.15544), and
+[joint model/data/compute scaling](https://arxiv.org/abs/2508.14881).
 - The immutable 54,819-decision input sample passed byte/window checks but is
   **not validated profile data**. The producer zero-filled unrecorded input
   spans. Its FBNeo snapshot/input convention also differs from the live host's

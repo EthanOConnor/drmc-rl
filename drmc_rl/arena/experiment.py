@@ -21,6 +21,10 @@ def dump(path, value):
 
 
 def score_interval(records):
+    # Complete-case intervals hide potentially outcome-dependent censoring.
+    # Retain the attempted games and report their identification bounds instead.
+    if any(row.get("reason") == "timeout" or row.get("score") is None for row in records):
+        return None
     grouped = {}
     for row in records:
         grouped.setdefault(row["seed"], []).append(row["score"])
@@ -40,6 +44,21 @@ def score_interval(records):
     return [float(min(low, max(0, centre-half))), float(max(high, min(1, centre+half)))]
 
 
+def outcome_summary(records, *, include_interval=True):
+    completed = [r for r in records if r.get("reason") != "timeout" and r.get("score") is not None]
+    n, censored = len(records), len(records) - len(completed)
+    total = sum(r["score"] for r in completed)
+    return dict(
+        wins=sum(r["score"] == 1 for r in completed),
+        losses=sum(r["score"] == 0 for r in completed),
+        draws=sum(r["score"] == 0.5 for r in completed),
+        censored=censored,
+        observed_score=total / len(completed) if completed else None,
+        score_bounds=[total / n, (total + censored) / n] if n else None,
+        score_ci=score_interval(records) if include_interval else None,
+    )
+
+
 def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False):
     """Estimate each connected field without mixing levels or pace settings.
 
@@ -50,12 +69,14 @@ def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False)
     """
     groups = {}
     for match in comparisons.values():
+        match_rows = [r for r in records.values() if r["comparison"] == match["id"]]
+        if any(r.get("reason") == "timeout" or r.get("score") is None for r in match_rows):
+            continue  # No strength inference from an outcome-censored edge.
         key = ("Live tournament" if unified else match.get("rating_group", "Screening"),
                match["level"], match.get("pace", "frame_perfect"))
         seeds = {}
-        for row in records.values():
-            if row["comparison"] == match["id"]:
-                seeds.setdefault(row["seed"], {})[row["side"]] = row["score"]
+        for row in match_rows:
+            seeds.setdefault(row["seed"], {})[row["side"]] = row["score"]
         for sides in seeds.values():
             if set(sides) == {0, 1}:
                 groups.setdefault(key, []).append((match["a"], match["b"], list(sides.values())))
@@ -144,6 +165,16 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
         raise ValueError("results must be an object")
     training_path = path.parent / plan.get("training_file", "training.json")
     training = json.loads(training_path.read_text()) if training_path.is_file() else {}
+    training_runs = []
+    for run in plan.get("training_runs", []):
+        run_path = path.parent / run["path"]
+        state = json.loads(run_path.read_text()) if run_path.is_file() else {"status": "Queued"}
+        training_runs.append({**run, **state})
+    if training_runs:
+        training = next(
+            (r for r in training_runs if r.get("status") in ("Running", "Failed")),
+            next((r for r in training_runs if r.get("status") == "Queued"), training_runs[-1]),
+        )
     pipeline_path = path.parent / plan.get("pipeline_file", "pipeline.json")
     pipeline = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else {}
     now = datetime.now(timezone.utc)
@@ -153,6 +184,7 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
         "active": True,
         "results": results,
         "training": training,
+        "training_runs": training_runs,
         "pipeline": pipeline,
         "health": experiment_health(training, pipeline, now),
         "served_at": now.isoformat(timespec="seconds"),

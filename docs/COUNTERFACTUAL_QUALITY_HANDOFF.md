@@ -73,6 +73,46 @@ measure outcome-defined candidate quality without a poorly predictive shallow
 critic. This experiment does not waive or replace any threshold below; its
 results remain diagnostic until a coherent promotion protocol is established.
 
+### Causal public observations and the new paired panel
+
+The September review found a further, independently reproduced input leak:
+the native placement warp writes the opponent's eventual lock into its board
+and advances its private clock before that time is public. Legacy zero-aux
+continuations could therefore see future opponent placements. This does not
+affect the frame/event controller used by the pace-objective experiment.
+Historical banks and calibration results retain their original meaning and
+cannot be relabeled as public-information evidence.
+
+New public collection and continuation require `causal-settled-pair-v1`.
+Capture carries the prior visible bottle through warped intervals and exposes
+its age, while hiding future clocks and active pose. Public inference rejects
+old warped snapshots, even with the old zero-aux checkpoint. Start a new bank
+from clean joint decisions; a restored old root lacks the observation history
+needed to repair this after the fact. The first corrected 14-HI bank has 16
+states, four natural games, no capped outcomes and two compatible seed
+hypotheses per selected state. It is a mechanics/teacher pilot, not sufficient
+population diversity for promotion.
+
+`paired-terminal-quality` continues every legal root over identical distinct
+complete reserves and a named actor/opponent panel. The initial panel crosses
+the installed 10M public core and frozen public bootstrap, under native SMDP
+execution. It exports WDL, chance variance, continuation sensitivity and paired
+gaps. The source game and complete continuation contract remain attached.
+Censored branches keep unknown labels and suppress policy improvement. A
+reference-relative, sensitivity-shrunk target has a measured KL budget; its
+penalty is not a calibrated confidence interval. Exhaustive reserve enumeration
+has no reserve Monte Carlo standard error, and two related checkpoints are
+not three independently trained uncertainty models.
+
+`paired-quality-fit` provides baseline/critic/context/combined diagnostic
+fits with game-disjoint validation. It trains WDL and paired action gaps;
+auxiliary phases preserve policy with full-dataset KL and optimizer rollback.
+Teacher targets never become unchanged on-policy PPO likelihoods. Small pilot
+fits validate the pipeline only. Scaling or adoption still requires coherent
+held-out prediction, prospective action-ranking benefit, and same-execution,
+same-latency whole-game improvement. None of these steps opens the failed
+historical `v3-counterfactual-quality` gate by assertion.
+
 ## Frozen inputs
 
 - `drmario-native` reveal/snapshot implementation:

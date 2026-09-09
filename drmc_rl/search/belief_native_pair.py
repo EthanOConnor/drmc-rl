@@ -40,6 +40,7 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
         super().__init__(*args, **kwargs)
         self.belief_cache_size = max(1, int(belief_cache_size))
         self._belief_by_checkpoint: OrderedDict[str, PillReserveBelief] = OrderedDict()
+        self._full_history_required = False
 
     @staticmethod
     def _checkpoint_key(state: NativePairSearchState) -> str:
@@ -49,6 +50,12 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
         self, state: NativePairSearchState, belief: PillReserveBelief
     ) -> None:
         key = self._checkpoint_key(state)
+        old = self._belief_by_checkpoint.get(key)
+        if old is not None and old.stable_hash() != belief.stable_hash():
+            raise ValueError(
+                "convergent native states have different public reserve histories; explicit belief-state identity required"
+            )
+        self._full_history_required |= belief.initial_board is not None
         self._belief_by_checkpoint[key] = belief
         self._belief_by_checkpoint.move_to_end(key)
         if len(self._belief_by_checkpoint) > self.belief_cache_size:
@@ -60,6 +67,10 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
         if cached is not None:
             self._belief_by_checkpoint.move_to_end(key)
             return cached
+        if self._full_history_required:
+            raise ValueError(
+                "public reserve history was evicted or never registered; cannot reconstruct a quality posterior from current pills alone"
+            )
         self.runner.restore(0, state.privileged.engine_checkpoint)
         belief = self._condition_visible(PillReserveBelief())
         self.register_belief(state, belief)
@@ -155,6 +166,7 @@ class BeliefNativePairSearchModel(NativePairSearchModel):
                 level=state.level,
                 speed_setting=state.speed_setting,
                 viruses_initial=state.viruses_initial,
+                previous=state,
             )
             child_belief = belief.condition(reserve_index, pill_id)
             try:

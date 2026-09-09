@@ -127,6 +127,7 @@ class DrMarioVsPoolVecEnv:
         start_bank_cfg: Optional[Dict[str, Any]] = None,
         gpu_planner: bool = False,
         direct_policy_batch: bool = False,
+        public_observations: bool = False,
     ) -> None:
         self.num_pairs = int(max(1, int(num_pairs)))
         self.num_sides = 2 * self.num_pairs
@@ -147,6 +148,7 @@ class DrMarioVsPoolVecEnv:
         self.seed_provider = seed_provider
         self.frame_counter_provider = frame_counter_provider
         self.direct_policy_batch = bool(direct_policy_batch)
+        self.public_observations = bool(public_observations)
 
         state_repr_norm = str(state_repr or "").strip().lower().replace("-", "_")
         if state_repr_norm not in {"bitplane_bottle_conn_mask", "bitplane_bottle_conn_mask_vs"}:
@@ -218,6 +220,17 @@ class DrMarioVsPoolVecEnv:
         self._obs = np.zeros((self.num_sides, obs_channels, GRID_H, GRID_W), dtype=np.float32)
         # Side index of each side's opponent (pair partner).
         self._opp_idx = np.arange(self.num_sides, dtype=np.int64) ^ 1
+        # Native fall warps write a future lock into the side's private buffer.
+        # Keep a separate settled public view until the shared timeline reaches
+        # that side. Raw buffers remain unchanged for transitions and teachers.
+        self._public_planes = np.zeros((self.num_sides, 8, GRID_H, GRID_W), np.float32)
+        self._public_boards = np.zeros((self.num_sides, 128), np.uint8)
+        self._public_pills = np.zeros((self.num_sides, 2), np.int64)
+        self._public_previews = np.zeros((self.num_sides, 2), np.int64)
+        self._public_viruses = np.zeros(self.num_sides, np.int32)
+        self._public_snapshot_frames = np.zeros(self.num_sides, np.int64)
+        self._public_frames = np.zeros(self.num_sides, np.int64)
+        self.causal_frames_total = 0
 
         # Persistent per-env infos (updated in-place).
         self._infos: List[Dict[str, Any]] = [dict() for _ in range(self.num_sides)]
@@ -367,6 +380,7 @@ class DrMarioVsPoolVecEnv:
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
+        self._refresh_public_views(np.ones(self.num_pairs, dtype=bool))
         if self.opponent_obs:
             self._fill_opponent_planes_in_place()
         if self.direct_policy_batch:
@@ -404,7 +418,8 @@ class DrMarioVsPoolVecEnv:
         if bool(reset_mask.any()):
             reset_specs = self._build_reset_specs(reset_mask=reset_mask)
 
-        self._runner.step(send, reset_mask if reset_specs is not None else None, reset_specs)
+        advance = self._runner.step_strict if self.public_observations else self._runner.step
+        advance(send, reset_mask if reset_specs is not None else None, reset_specs)
 
         buf = self._runner.buffers
         tau_raw = buf.tau_frames.astype(np.uint32, copy=False)
@@ -537,6 +552,7 @@ class DrMarioVsPoolVecEnv:
 
         self._build_obs_in_place()
         self._apply_symmetry_reduction_in_place()
+        self._refresh_public_views(reset_mask.astype(bool))
         if self.opponent_obs:
             self._fill_opponent_planes_in_place()
         if self.direct_policy_batch:
@@ -916,7 +932,11 @@ class DrMarioVsPoolVecEnv:
                 rating_sd=float(entry.rating_sd),
                 opponent_rating=rating,
                 opponent_rating_sd=float(entry.rating_sd),
-                opponent_state_age_frames=0,
+                opponent_state_age_frames=int(
+                    self._public_frames[int(side)] - self._public_snapshot_frames[int(side) ^ 1]
+                )
+                if self.public_observations
+                else 0,
                 game_phase=min(float(self._ep_pills[int(side)]) / 100.0, 1.0),
                 recent_decisions=recent,
             )
@@ -1019,9 +1039,15 @@ class DrMarioVsPoolVecEnv:
                         self._runner.buffers.board_bytes[int(side)]
                     ),
                     "opponent_board_planes": board_bytes_to_semantic_planes(
-                        self._runner.buffers.board_bytes[int(side) ^ 1]
+                        self._public_boards[int(side) ^ 1]
+                        if self.public_observations
+                        else self._runner.buffers.board_bytes[int(side) ^ 1]
                     ),
-                    "opponent_state_age_frames": 0,
+                    "opponent_state_age_frames": int(
+                        self._public_frames[int(side)] - self._public_snapshot_frames[int(side) ^ 1]
+                    )
+                    if self.public_observations
+                    else 0,
                     "rating_sd": float(entry.rating_sd),
                     "opponent_rating": rating,
                     "opponent_rating_sd": float(entry.rating_sd),
@@ -1377,13 +1403,52 @@ class DrMarioVsPoolVecEnv:
     def _fill_opponent_planes_in_place(self) -> None:
         """Copy each side's opponent bottle planes into channels 8..15.
 
-        Called after `_apply_symmetry_reduction_in_place`, so side i's
-        opponent planes are exactly side i^1's own-board planes as that side
-        observes them (including the channel-6/7 zeroing quirk for same-color
-        pills).
+        Legacy mode reproduces the partner's raw planes after symmetry
+        reduction. Public mode uses the causally observed settled snapshot,
+        retaining the frozen model's same-color bond-mask convention.
         """
 
-        self._obs[:, 8:16] = self._obs[self._opp_idx, 0:8]
+        self._obs[:, 8:16] = (
+            self._public_planes[self._opp_idx]
+            if self.public_observations
+            else self._obs[self._opp_idx, 0:8]
+        )
+
+    def _refresh_public_views(self, reset_pairs: np.ndarray) -> None:
+        if not self.public_observations:
+            return
+        buf = self._runner.buffers
+        clocks = buf.side_frames.astype(np.int64)
+        now = np.repeat(clocks.reshape(-1, 2).min(1), 2)
+        reset = np.repeat(reset_pairs, 2)
+        ready = buf.need_action.astype(bool)
+        if np.any(ready & (clocks > now + 1)):
+            raise RuntimeError("an actionable side is ahead of the causal public timeline")
+        if np.any((now < self._public_frames) & ~reset):
+            raise RuntimeError("causal public time moved backwards without a reset")
+        elapsed = np.where(reset, now, now - self._public_frames)
+        self.causal_frames_total += int(elapsed[0::2].sum())
+        visible = reset | ready | (clocks == now)
+        self._public_planes[visible] = self._obs[visible, :8]
+        self._public_boards[visible] = buf.board_bytes[visible]
+        self._public_pills[visible] = buf.pill_colors[visible]
+        self._public_previews[visible] = buf.preview_colors[visible]
+        self._public_viruses[visible] = buf.viruses_rem[visible]
+        self._public_snapshot_frames[visible] = now[visible]
+        self._public_frames[:] = now
+
+    def decision_ready(self) -> np.ndarray:
+        """Learner choices on the causal timeline, excluding reset/forced states."""
+        ready = (
+            self._need_action.astype(bool)
+            & self._mask.reshape(self.num_sides, -1).any(1)
+            & ~np.repeat(self._pending_reset, 2)
+        )
+        return ready[0::2].copy() if self._opp_pool is not None else ready
+
+    def decision_frame_ids(self) -> np.ndarray:
+        frames = self._public_frames
+        return frames[0::2].copy() if self._opp_pool is not None else frames.copy()
 
     def _apply_symmetry_reduction_in_place(self) -> None:
         """Same-color pills: drop H-/V- duplicate orientations (o=2,3).
@@ -1432,6 +1497,9 @@ class DrMarioVsPoolVecEnv:
             info["placements/cost_to_lock"] = self._cost[i]
             info["placements/options"] = int(options_count[i])
             info["placements/reach_backend"] = "cpp-vs-pool"
+            info["vs/observation_timeline"] = (
+                "causal-settled-pair-v1" if self.public_observations else "legacy-warp-buffer-v1"
+            )
             info["placements/needs_action"] = bool(need_action[i])
             info["placements/spawn_id"] = int(spawn_ids[i])
             info["pill/spawn_id"] = int(spawn_ids[i])
@@ -1470,6 +1538,14 @@ class DrMarioVsPoolVecEnv:
             # Opponent NES tile bytes (view, like info["board"]) — consumed at
             # decision time by search_distill's opponent_model=self.
             info["vs/opponent_board"] = buf.board_bytes[opp]
+            if self.public_observations:
+                info["vs/opponent_board"] = self._public_boards[opp]
+                info["vs/opponent_viruses_remaining"] = int(self._public_viruses[opp])
+                info["vs/opponent_pill_colors"] = self._public_pills[opp]
+                info["vs/opponent_preview_colors"] = self._public_previews[opp]
+                info["vs/opponent_state_age_frames"] = int(
+                    self._public_frames[i] - self._public_snapshot_frames[opp]
+                )
 
             tau_i_raw = int(step_tau_raw[i]) if i < int(step_tau_raw.shape[0]) else 0
             info["placements/tau"] = int(max(1, tau_i_raw))

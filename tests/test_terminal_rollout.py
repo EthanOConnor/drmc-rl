@@ -20,11 +20,14 @@ class FirstLegal:
 
 
 @pytest.mark.skipif(not is_library_present(), reason="native pool library missing")
+@pytest.mark.parametrize("native_workers", [1, 2])
 @pytest.mark.parametrize("level,speed,root_side,seed", [
     (0, 2, 0, (3, 7)), (0, 0, 1, (19, 22)),
     (14, 0, 0, (11, 193)), (20, 2, 1, (43, 177)),
 ])
-def test_reveal_override_rollouts_match_strict_natural_games_and_refill_slots(level, speed, root_side, seed):
+def test_reveal_override_rollouts_match_strict_natural_games_and_refill_slots(
+    level, speed, root_side, seed, native_workers
+):
     runner = DrMarioVsPoolRunner(num_pairs=1)
     try:
         runner.reset(None, [build_vs_reset_spec(level=(level, level), speed_setting=(speed, speed),
@@ -46,12 +49,28 @@ def test_reveal_override_rollouts_match_strict_natural_games_and_refill_slots(le
                 break
         assert outcome in (1, 2, 3)
         task = RolloutTask(0, initial, root_side, root_action, reserve_for_seed(*seed).tobytes(), 1.)
-        results = rollout_tasks([replace(task, id=i) for i in range(3)], FirstLegal(),
-                                batch_size=2, max_events=2048)
+        results = rollout_tasks(
+            [replace(task, id=i) for i in range(3)],
+            FirstLegal(),
+            batch_size=2,
+            max_events=2048,
+            native_workers=native_workers,
+        )
         assert {r["id"] for r in results} == {0, 1, 2}
         assert all(r["outcome"] == outcome for r in results)
         assert all(r["reveals"] > 0 for r in results)
-        incomplete = rollout_tasks([task], FirstLegal(), batch_size=1, max_events=1)
+        named = rollout_tasks(
+            [replace(task, continuation_id="own", opponent_id="opponent")],
+            {"own": FirstLegal(), "opponent": FirstLegal()},
+            batch_size=1,
+            max_events=2048,
+            native_workers=native_workers,
+        )
+        assert named[0]["outcome"] == outcome
+        assert named[0]["continuation_id"] == "own" and named[0]["opponent_id"] == "opponent"
+        incomplete = rollout_tasks(
+            [task], FirstLegal(), batch_size=1, max_events=1, native_workers=native_workers
+        )
         assert incomplete[0]["outcome"] is None
     finally:
         runner.close()

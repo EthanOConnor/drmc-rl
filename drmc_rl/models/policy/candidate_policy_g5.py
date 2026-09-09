@@ -151,6 +151,10 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         cross_ff_mult: int = 2,
         bottle_block: str = "dense",
         compact_candidate_features: bool = False,
+        critic_context: str = "global",
+        terminal_wdl: bool = False,
+        candidate_wdl: bool = False,
+        public_context_schema: str | None = None,
     ) -> None:
         super().__init__()
         if board_channels != 16:
@@ -167,6 +171,25 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         self.value_atoms = int(value_atoms)
         self.conditioned_trunk = bool(conditioned_trunk)
         self.opponent_features = bool(opponent_features)
+        if critic_context not in ("global", "candidate_attention"):
+            raise ValueError("critic_context must be global or candidate_attention")
+        self.critic_context = critic_context
+        self.public_context_schema = public_context_schema
+        if public_context_schema is not None:
+            from drmc_rl.game.public_context import (
+                PUBLIC_CONTEXT_SCHEMA,
+                PUBLIC_CONTEXT_DIM,
+                SIDE_FEATURE_DIM,
+            )
+
+            if public_context_schema != PUBLIC_CONTEXT_SCHEMA or aux_dim != PUBLIC_CONTEXT_DIM:
+                raise ValueError("public context schema and auxiliary width must match")
+            self.public_side_dim = SIDE_FEATURE_DIM
+            self.side_condition = nn.Sequential(
+                nn.Linear(2 * pill_embed_dim + SIDE_FEATURE_DIM, d_model),
+                nn.SiLU(),
+                nn.Linear(d_model, d_model),
+            )
 
         embed_cls = (
             OrderedPairEmbedding
@@ -238,6 +261,15 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         self.value_head = nn.Sequential(
             nn.LayerNorm(d_model), nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, value_atoms)
         )
+        if critic_context == "candidate_attention":
+            self.value_query = nn.MultiheadAttention(d_model, transformer_heads, batch_first=True)
+            self.value_projection = nn.Linear(d_model, d_model)
+            # Warm-starting the existing value function preserves its output;
+            # the new pathway learns from real outcomes immediately.
+            nn.init.zeros_(self.value_projection.weight)
+            nn.init.zeros_(self.value_projection.bias)
+        self.state_wdl_head = nn.Linear(d_model, 3) if terminal_wdl else None
+        self.candidate_wdl_head = nn.Linear(d_model, 3) if candidate_wdl else None
         self.register_buffer("value_support", torch.linspace(-1.0, 1.0, value_atoms), persistent=False)
         self.register_buffer("_dr", torch.tensor([0, 1, 0, -1], dtype=torch.int64), persistent=False)
         self.register_buffer("_dc", torch.tensor([1, 0, -1, 0], dtype=torch.int64), persistent=False)
@@ -294,9 +326,35 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         cond = self.condition(torch.cat(pieces, dim=-1))
 
         bottle_cond = cond if self.conditioned_trunk else torch.zeros_like(cond)
+        opponent_cond = bottle_cond
+        if self.public_context_schema is not None and self.conditioned_trunk:
+            own_public = aux[:, : self.public_side_dim].to(obs.dtype)
+            opp_public = aux[:, self.public_side_dim : 2 * self.public_side_dim].to(obs.dtype)
+            opp_pill = opp_public[:, :6].reshape(-1, 2, 3).argmax(-1)
+            opp_preview = opp_public[:, 6:12].reshape(-1, 2, 3).argmax(-1)
+            bottle_cond = self.side_condition(
+                torch.cat(
+                    (
+                        self.pill_embedding(pill_colors),
+                        self.preview_embedding(preview_pill_colors),
+                        own_public,
+                    ),
+                    -1,
+                )
+            )
+            opponent_cond = self.side_condition(
+                torch.cat(
+                    (
+                        self.pill_embedding(opp_pill),
+                        self.preview_embedding(opp_preview),
+                        opp_public,
+                    ),
+                    -1,
+                )
+            )
         own = self.bottle(obs[:, :8], bottle_cond)
         opponent_obs = obs[:, 8:16] if self.opponent_features else torch.zeros_like(obs[:, 8:16])
-        opponent = self.bottle(opponent_obs, bottle_cond)
+        opponent = self.bottle(opponent_obs, opponent_cond)
         columns = torch.stack(
             (own.mean(dim=2).transpose(1, 2), opponent.mean(dim=2).transpose(1, 2)), dim=1
         )
@@ -361,13 +419,36 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         query = self.policy(candidate)
         logits = (query * global_context.unsqueeze(1)).sum(dim=-1) * self.logit_scale
         logits = logits.masked_fill(~valid, -1e9)
-        value_logits = self.value_head(global_context)
+        value_context = global_context
+        if self.critic_context == "candidate_attention":
+            # Interaction tokens also provide valid memory at a no-action
+            # boundary; padding never becomes evidence about candidate quality.
+            memory = torch.cat((candidate, tokens), dim=1)
+            memory_padding = F.pad(padding, (0, tokens.shape[1]), value=False)
+            summary, _ = self.value_query(
+                global_context.unsqueeze(1),
+                memory,
+                memory,
+                key_padding_mask=memory_padding,
+                need_weights=False,
+            )
+            value_context = value_context + self.value_projection(summary.squeeze(1))
+        value_logits = self.value_head(value_context)
         value = (value_logits.softmax(dim=-1) * self.value_support.to(value_logits.dtype)).sum(
             dim=-1, keepdim=True
         )
         if return_aux:
-            return logits, value, {"value_logits": value_logits,
-                                   "candidate_context": candidate, "global_context": global_context}
+            extra = {
+                "value_logits": value_logits,
+                "value_context": value_context,
+                "candidate_context": candidate,
+                "global_context": global_context,
+            }
+            if self.state_wdl_head is not None:
+                extra["state_wdl_logits"] = self.state_wdl_head(value_context)
+            if self.candidate_wdl_head is not None:
+                extra["candidate_wdl_logits"] = self.candidate_wdl_head(candidate)
+            return logits, value, extra
         return logits, value
 
     def distributional_value_loss(

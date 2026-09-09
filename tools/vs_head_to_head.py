@@ -84,6 +84,9 @@ class PlainPolicy:
         self.aux_spec = sp.get("aux_spec")
         self.aux_dim = int(aux_dim)
         self.public_only = bool(public_only)
+        self.requires_causal_observations = bool(
+            cfg.get("env", {}).get("public_observations", False)
+        )
         self.device = device
 
     def score(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
@@ -91,6 +94,16 @@ class PlainPolicy:
         return ca, cm, logits
 
     def score_and_value(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
+        if getattr(self, "requires_causal_observations", False) and any(
+            info.get("vs/observation_timeline") != "causal-settled-pair-v1" for info in infos
+        ):
+            raise ValueError("this checkpoint requires an explicit causal observation timeline")
+        if (self.public_only or getattr(self, "requires_causal_observations", False)) and any(
+            info.get("vs/observation_timeline") == "legacy-warp-buffer-v1" for info in infos
+        ):
+            raise ValueError(
+                "public-only inference requires a causal opponent view, not native future-lock buffers"
+            )
         C = int(obs.shape[1])
         if C != self.in_channels:
             if C == 20 and self.in_channels == 12:
@@ -134,7 +147,13 @@ class PlainPolicy:
                         _CANON_TO_RAW[int(pv["second_color"])])
         aux = None
         if self.aux_shim is not None:
-            if self.public_only:
+            from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+
+            if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+                # V3 must be explicitly supplied; zero filling would silently
+                # turn a new public-context checkpoint into a different actor.
+                aux = self.aux_shim._build_aux_batch(obs.astype(np.float32), infos)
+            elif self.public_only:
                 # The corpus-distilled V5 was trained with zero auxiliary
                 # context. In particular, never read the legacy pending-attack
                 # scalars when using it as a public-information opponent.

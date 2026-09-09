@@ -9,7 +9,7 @@ import time
 from collections import Counter
 
 from drmc_rl.arena.store import ArenaStore
-from drmc_rl.arena.experiment import dump, relative_ratings, score_interval
+from drmc_rl.arena.experiment import dump, relative_ratings, outcome_summary
 
 
 def sync(source: Path, target: Path, feed: str = "screen"):
@@ -78,9 +78,11 @@ def sync(source: Path, target: Path, feed: str = "screen"):
     totals = {}
     for id, match in comparisons.items():
         rows = [r for (comparison, _), r in records.items() if comparison == id]
-        match.update(played=len(rows), wins=sum(r["score"] == 1 for r in rows),
-            losses=sum(r["score"] == 0 for r in rows), draws=sum(r["score"] == .5 for r in rows),
-            score_ci=score_interval(rows), status="Complete" if len(rows) >= match["target"] else match.get("status","Queued"))
+        match.update(
+            played=len(rows),
+            **outcome_summary(rows),
+            status="Complete" if len(rows) >= match["target"] else match.get("status", "Queued"),
+        )
         for row in rows:
             for side in ("a", "b"):
                 totals.setdefault(match[side], Counter()).update(row[side+"_stats"])

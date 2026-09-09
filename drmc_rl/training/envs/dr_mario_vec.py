@@ -41,6 +41,7 @@ class VecEnvConfig:
     horizon_penalty: float = 0.0  # symmetric penalty at an unresolved horizon
     gpu_planner: bool = False  # cpp-vs-pool: defer reachability batches to CUDA
     direct_policy_batch: bool = False  # cpp-vs-pool: typed trainer hot path
+    public_observations: bool = False  # opt-in causal timeline; legacy defaults reproduce old runs
     level: int = 0
     speed_setting: int = 2
     risk_tau: float = 1.0
@@ -248,9 +249,8 @@ def make_vec_env(cfg: VecEnvConfig | Dict[str, object] | object) -> DummyVecEnv:
             match_horizon_pills=int(getattr(env_cfg, "match_horizon_pills", 0) or 0),
             horizon_penalty=float(getattr(env_cfg, "horizon_penalty", 0.0) or 0.0),
             gpu_planner=bool(getattr(env_cfg, "gpu_planner", False) or False),
-            direct_policy_batch=bool(
-                getattr(env_cfg, "direct_policy_batch", False) or False
-            ),
+            direct_policy_batch=bool(getattr(env_cfg, "direct_policy_batch", False) or False),
+            public_observations=bool(getattr(env_cfg, "public_observations", False)),
         )
 
     real_ids = {

@@ -61,6 +61,13 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
         patch_kernel=int(g("candidate_patch_kernel", 9)),
     )
     architecture = str(g("candidate_architecture", "g4")).strip().lower()
+    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+
+    public_schema = (
+        PUBLIC_CONTEXT_SCHEMA if g("aux_spec", "none") == PUBLIC_CONTEXT_SCHEMA else None
+    )
+    if public_schema and architecture != "g5":
+        raise ValueError("public_pair_context_v3 requires its G5 architecture contract")
     if architecture == "g5":
         from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 
@@ -73,6 +80,10 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
             cross_ff_mult=int(g("candidate_cross_ff_mult", 2)),
             bottle_block=str(g("candidate_bottle_block", "dense")),
             compact_candidate_features=bool(g("candidate_compact_features", False)),
+            critic_context=str(g("candidate_critic_context", "global")),
+            terminal_wdl=bool(g("candidate_terminal_wdl", False)),
+            candidate_wdl=bool(g("candidate_wdl", False)),
+            public_context_schema=public_schema,
         ).to(device)
     elif architecture == "g4":
         net = CandidatePlacementPolicyNet(

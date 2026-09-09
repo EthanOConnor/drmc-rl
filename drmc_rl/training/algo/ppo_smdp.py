@@ -30,6 +30,7 @@ except ImportError:
     get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.game.public_context import PUBLIC_CONTEXT_DIM, PUBLIC_CONTEXT_SCHEMA, context_from_info
 from drmc_rl.models.policy.candidate_packing import (
     candidate_bucket_width,
     pack_feasible_candidates_tensor_batch,
@@ -83,6 +84,7 @@ _AUX_V1_VS_DIM = _AUX_V1_DIM + _AUX_V1_VS_EXTRA  # 72
 _AUX_GARBAGE_PENDING_NORM = 4.0
 
 _AUX_DIM_BY_SPEC = {
+    PUBLIC_CONTEXT_SCHEMA: PUBLIC_CONTEXT_DIM,
     _AUX_SPEC_V1: _AUX_V1_DIM,
     _AUX_SPEC_V1_VS: _AUX_V1_VS_DIM,
     # Preserve the corpus-distilled network's width without exposing private
@@ -258,6 +260,9 @@ class SMDPPPOConfig:
     candidate_cross_ff_mult: int = 2
     candidate_bottle_block: str = "dense"
     candidate_compact_features: bool = False
+    candidate_critic_context: str = "global"
+    candidate_terminal_wdl: bool = False
+    candidate_wdl: bool = False
     candidate_patch_kernel: int = 3
 
     # Optional auxiliary vector inputs (derived from obs + info).
@@ -429,24 +434,19 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_transformer_ff_mult=int(ppo_cfg_dict.get("candidate_transformer_ff_mult", 4)),
             candidate_interaction_layers=int(ppo_cfg_dict.get("candidate_interaction_layers", 2)),
             candidate_value_atoms=int(ppo_cfg_dict.get("candidate_value_atoms", 51)),
-            candidate_conditioned_trunk=bool(
-                ppo_cfg_dict.get("candidate_conditioned_trunk", True)
-            ),
-            candidate_opponent_features=bool(
-                ppo_cfg_dict.get("candidate_opponent_features", True)
-            ),
+            candidate_conditioned_trunk=bool(ppo_cfg_dict.get("candidate_conditioned_trunk", True)),
+            candidate_opponent_features=bool(ppo_cfg_dict.get("candidate_opponent_features", True)),
             candidate_cross_ff_mult=int(ppo_cfg_dict.get("candidate_cross_ff_mult", 2)),
             candidate_bottle_block=str(ppo_cfg_dict.get("candidate_bottle_block", "dense")),
-            candidate_compact_features=bool(
-                ppo_cfg_dict.get("candidate_compact_features", False)
-            ),
+            candidate_compact_features=bool(ppo_cfg_dict.get("candidate_compact_features", False)),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
+            candidate_critic_context=str(ppo_cfg_dict.get("candidate_critic_context", "global")),
+            candidate_terminal_wdl=bool(ppo_cfg_dict.get("candidate_terminal_wdl", False)),
+            candidate_wdl=bool(ppo_cfg_dict.get("candidate_wdl", False)),
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
             entropy_schedule_steps=int(ppo_cfg_dict.get("entropy_schedule_steps", 1000000)),
-            entropy_schedule_start_step=int(
-                ppo_cfg_dict.get("entropy_schedule_start_step", 0)
-            ),
+            entropy_schedule_start_step=int(ppo_cfg_dict.get("entropy_schedule_start_step", 0)),
             use_gumbel_topk=bool(ppo_cfg_dict.get("use_gumbel_topk", False)),
             gumbel_k=int(ppo_cfg_dict.get("gumbel_k", 2)),
             value_loss_type=str(ppo_cfg_dict.get("value_loss_type", "mse")),
@@ -497,6 +497,14 @@ class SMDPPPOAdapter(AlgoAdapter):
             raise ValueError(f"Unknown smdp_ppo.aux_spec: {self.hparams.aux_spec!r}")
         self.aux_spec = aux_spec_norm
         self.aux_dim = int(_AUX_DIM_BY_SPEC.get(self.aux_spec, 0))
+        if (
+            self.aux_spec in {_AUX_SPEC_ZERO_V1_VS, PUBLIC_CONTEXT_SCHEMA}
+            and getattr(self.env, "opponent_obs", False)
+            and not getattr(self.env, "public_observations", False)
+        ):
+            raise ValueError(
+                "public native VS training requires env.public_observations=true; legacy buffers contain future opponent locks"
+            )
 
         self.candidate_max = int(max(1, int(self.hparams.candidate_max_candidates)))
 
@@ -601,6 +609,12 @@ class SMDPPPOAdapter(AlgoAdapter):
                     cross_ff_mult=self.hparams.candidate_cross_ff_mult,
                     bottle_block=self.hparams.candidate_bottle_block,
                     compact_candidate_features=self.hparams.candidate_compact_features,
+                    critic_context=self.hparams.candidate_critic_context,
+                    terminal_wdl=self.hparams.candidate_terminal_wdl,
+                    candidate_wdl=self.hparams.candidate_wdl,
+                    public_context_schema=PUBLIC_CONTEXT_SCHEMA
+                    if self.aux_spec == PUBLIC_CONTEXT_SCHEMA
+                    else None,
                 ).to(self.device)
             elif architecture == "g4":
                 self.net = CandidatePlacementPolicyNet(
@@ -663,7 +677,9 @@ class SMDPPPOAdapter(AlgoAdapter):
                 capacity=self.hparams.decisions_per_update,
                 device=torch.device(self.device),
             )
-            if self.policy_type == "candidate" and torch.device(self.device).type == "cuda"
+            if self.policy_type == "candidate"
+            and torch.device(self.device).type == "cuda"
+            and not getattr(self.env, "public_observations", False)
             else None
         )
 
@@ -815,7 +831,91 @@ class SMDPPPOAdapter(AlgoAdapter):
 
     # ---------------------------------------------------------------- training
     def train_forever(self) -> None:
-        self._train_sequential()
+        if getattr(self.env, "public_observations", False):
+            self._train_causal()
+        else:
+            self._train_sequential()
+
+    def _train_causal(self) -> None:
+        """Keep the placement SMDP when native advancement exposes pair events."""
+        from drmc_rl.training.rollout.causal_decisions import CausalDecisionCollector
+
+        if self._sd_runner is not None or self._teacher_net is not None:
+            raise ValueError("causal native PPO requires separately aligned distillation targets")
+        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+            raise ValueError(
+                "native PPO public context requires a complete live history/motor emitter"
+            )
+        obs, info = self.env.reset(seed=getattr(self.cfg, "seed", None))
+        observations = self._ensure_batched_obs(self._unwrap_obs(obs)).astype(np.float32).copy()
+        infos = self._normalize_infos(info)
+        started = time.perf_counter()
+        start_step, start_decision = self.global_step, self.decision_step
+        while self.global_step < self.total_steps:
+            collector = CausalDecisionCollector(self.buffer)
+            event_steps = 0
+            while not collector.full:
+                selected = self._select_actions_batch(observations, infos, deterministic=False)
+                ready, frames = self.env.decision_ready(), self.env.decision_frame_ids()
+                collector.arrive(observations, ready, frames, selected[2])
+                if collector.full:
+                    break
+                collector.begin(observations, selected, ready, frames)
+                before_frames = self.env.causal_frames_total
+                obs, rewards, terminated, truncated, info = self.env.step(selected[0])
+                observations = (
+                    self._ensure_batched_obs(self._unwrap_obs(obs)).astype(np.float32).copy()
+                )
+                infos = self._normalize_infos(info)
+                if np.any(truncated):
+                    raise RuntimeError("censored native games cannot supply terminal PPO labels")
+                dones = np.asarray(terminated) | np.asarray(truncated)
+                collector.advance(rewards, dones, observations, self.env.decision_frame_ids())
+                self.global_step += int(self.env.causal_frames_total - before_frames)
+                self._episodes_total += int(dones.sum())
+                for side in np.flatnonzero(dones):
+                    episode = infos[side].get("episode", {})
+                    self.batch_returns.append(float(episode.get("r", rewards[side])))
+                    self.batch_lengths.append(int(episode.get("l", 0)))
+                    self.batch_decisions.append(int(episode.get("decisions", 0)))
+                    self.event_bus.emit(
+                        "episode_end",
+                        step=self.global_step,
+                        env_index=int(side),
+                        ret=float(episode.get("r", rewards[side])),
+                        len=int(episode.get("l", 0)),
+                        decisions=int(episode.get("decisions", 0)),
+                    )
+                event_steps += 1
+                if event_steps > max(100000, self.buffer.capacity * 1000):
+                    raise RuntimeError(
+                        "causal rollout could not complete its per-learner decision quota"
+                    )
+            self.decision_step += self.buffer.size
+            batch = self.buffer.get_batch(bootstrap_value=collector.bootstrap)
+            if not np.all(batch.masks.reshape(len(batch.actions), -1).any(1)):
+                raise RuntimeError("a waiting event entered the placement PPO batch")
+            update_start = time.perf_counter()
+            metrics = self._update_policy(batch)
+            update_seconds = time.perf_counter() - update_start
+            feasible = batch.masks.reshape(len(batch.actions), -1).sum(1)
+            elapsed = max(time.perf_counter() - started, 1e-6)
+            metrics.update(
+                {
+                    "candidate/truncation_frac": float(np.mean(feasible > self.candidate_max)),
+                    "candidate/feasible_mean": float(feasible.mean()),
+                    "rollout/placement_decisions": len(batch.actions),
+                    "rollout/pair_event_steps": event_steps,
+                    "perf/update_sec": update_seconds,
+                    "perf/sps_frames_total": (self.global_step - start_step) / elapsed,
+                    "perf/dps_decisions_total": (self.decision_step - start_decision) / elapsed,
+                }
+            )
+            self.buffer.clear()
+            self._log_metrics(metrics)
+            self.event_bus.emit("update_end", step=self.global_step, **metrics)
+            self._maybe_checkpoint()
+            self.logger.flush()
 
     def _train_sequential(self) -> None:
         """Main training loop."""
@@ -1898,6 +1998,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             return None
 
     def _build_aux(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
+        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+            return context_from_info(info)
         if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
             return np.zeros((self.aux_dim,), dtype=np.float32)
         if self.aux_spec in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
@@ -1931,6 +2033,8 @@ class SMDPPPOAdapter(AlgoAdapter):
         Must stay output-identical to per-env `_build_aux_v1` (covered by
         tests); scalar info lookups remain per-env, plane math is batched.
         """
+        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+            return np.stack([context_from_info(info) for info in infos])
         if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
             return np.zeros((len(obs_arr), self.aux_dim), dtype=np.float32)
         if self.aux_spec not in {_AUX_SPEC_V1, _AUX_SPEC_V1_VS}:
@@ -2489,7 +2593,20 @@ class SMDPPPOAdapter(AlgoAdapter):
             if "PytorchStreamReader" in str(exc) or "central directory" in str(exc):
                 msg = f"{msg}. The checkpoint may be incomplete or corrupted; try an earlier file."
             raise RuntimeError(msg) from exc
-        state_dict = payload.get("state_dict") or payload.get("model_state_dict")
+        previous_public = bool(
+            ((payload.get("cfg") or {}).get("env") or {}).get("public_observations", False)
+        )
+        current_public = bool(getattr(self.env, "public_observations", False))
+        resuming = resume_optimizer or resume_step
+        if current_public != previous_public and resuming:
+            raise ValueError(
+                "changing the causal observation/placement contract requires a fresh weights-only run"
+            )
+        state_dict = (
+            (payload.get("ema_state_dict") if current_public and not resuming else None)
+            or payload.get("state_dict")
+            or payload.get("model_state_dict")
+        )
         if state_dict is None:
             raise KeyError("Checkpoint missing state_dict")
         self.net.load_state_dict(state_dict, strict=bool(strict))

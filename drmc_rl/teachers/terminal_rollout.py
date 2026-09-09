@@ -10,6 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
+from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor, wait
+from functools import lru_cache
+import time
 
 import numpy as np
 
@@ -38,6 +42,8 @@ class RolloutTask:
     action: int
     reserve: bytes
     weight: float
+    continuation_id: str = ""
+    opponent_id: str = ""
 
     def __post_init__(self):
         if self.root_side not in (0, 1) or not self.state.privileged.need_action[self.root_side]:
@@ -50,18 +56,41 @@ class RolloutTask:
             raise ValueError("rollout hypothesis weight must be in (0,1]")
 
 
-def rollout_tasks(tasks, continuation, *, batch_size=32, max_events=2048, progress=None):
+@lru_cache(maxsize=None)
+def _native_executor(workers):
+    # Reuse threads across roots, including the native thread-local reachability
+    # workspace. Neural inference remains on the calling thread and batched.
+    return ThreadPoolExecutor(max_workers=workers, thread_name_prefix="terminal-native")
+
+
+def _advance_native(slot):
+    runner, task = slot["runner"], slot["task"]
+    if slot["reveal"] is None:
+        runner.step_search(slot["action"])
+        if np.any(runner.buffers.invalid_action >= 0):
+            raise RuntimeError("terminal rollout rejected a complete-frontier action")
+    else:
+        side, reserve_index = slot["reveal"]
+        runner.search_reveal(0, side, pill_id_to_raw_pair(task.reserve[reserve_index % 128]))
+        slot["reveals"] += 1
+
+
+def rollout_tasks(
+    tasks, continuation, *, batch_size=32, max_events=2048, progress=None, native_workers=1
+):
     """Return natural outcomes for all tasks; incomplete results retain None.
 
     Slots refill immediately after termination so short candidate failures do
     not leave most of a GPU batch idle while one long game finishes.
     """
-    if batch_size < 1 or max_events < 1:
-        raise ValueError("batch size and maximum events must be positive")
+    if batch_size < 1 or max_events < 1 or native_workers < 1:
+        raise ValueError("batch size, native workers and maximum events must be positive")
+    executor = _native_executor(min(native_workers, batch_size, 32)) if native_workers > 1 else None
     tasks = iter(tasks)
     slots: list[dict[str, Any]] = []
     results = []
     exhausted = False
+    last_progress = time.monotonic()
 
     def fill(runner):
         nonlocal exhausted
@@ -108,43 +137,75 @@ def rollout_tasks(tasks, continuation, *, batch_size=32, max_events=2048, progre
                         destinations.append((index, side))
                     else:
                         action[side] = -1
-            predictions = continuation.infer_batch(requests)
+            if isinstance(continuation, Mapping):
+                groups = {}
+                for i, (index, side) in enumerate(destinations):
+                    task = slots[index]["task"]
+                    member = task.continuation_id if side == task.root_side else task.opponent_id
+                    groups.setdefault(member, []).append(i)
+                predictions = [None] * len(requests)
+                for member, indices in groups.items():
+                    answers = continuation[member].infer_batch([requests[i] for i in indices])
+                    for i, answer in zip(indices, answers, strict=True):
+                        predictions[i] = answer
+            else:
+                predictions = continuation.infer_batch(requests)
             for (index, side), (probability, _unused_value) in zip(destinations, predictions, strict=True):
                 legal = slots[index]["state"].legal_actions_by_side[side]
                 slots[index]["action"][side] = max(
                     legal, key=lambda action: probability.get(action, 1e-8))
             active = []
+            # Distinct runners have independent physics and native workspaces.
+            # Preserve request and completion order while releasing the GIL
+            # inside each ctypes native call. The serial path is the reference.
+            if executor is None:
+                for slot in slots:
+                    _advance_native(slot)
+            else:
+                pending = [executor.submit(_advance_native, slot) for slot in slots]
+                try:
+                    for future in pending:
+                        future.result()
+                finally:
+                    # A failed slot must not close other native runners while
+                    # their worker calls are still using those handles.
+                    wait(pending)
             for slot in slots:
                 runner, task = slot["runner"], slot["task"]
-                if slot["reveal"] is None:
-                    runner.step_search(slot["action"])
-                    if np.any(runner.buffers.invalid_action >= 0):
-                        raise RuntimeError("terminal rollout rejected a complete-frontier action")
-                else:
-                    side, reserve_index = slot["reveal"]
-                    runner.search_reveal(0, side, pill_id_to_raw_pair(task.reserve[reserve_index % 128]))
-                    slot["reveals"] += 1
                 slot["events"] += 1
                 state = capture_native_state(
-                    runner, level=task.state.level, speed_setting=task.state.speed_setting,
-                    viruses_initial=task.state.viruses_initial)
+                    runner,
+                    level=task.state.level,
+                    speed_setting=task.state.speed_setting,
+                    viruses_initial=task.state.viruses_initial,
+                    previous=slot["state"],
+                )
                 slot["state"] = state
                 outcome = state.privileged.terminal_outcome[task.root_side]
                 terminal = outcome in (1, 2, 3)
                 if terminal or runner.buffers.truncated[0] or slot["events"] >= max_events:
                     if not slot["root_forced"]:
                         raise RuntimeError("rollout terminated before forcing its root action")
-                    results.append({"id": task.id, "outcome": outcome if terminal else None,
-                                    "events": slot["events"], "reveals": slot["reveals"],
-                                    "weight": task.weight})
-                    if progress is not None and len(results) % 128 == 0:
-                        progress(len(results))
+                    results.append(
+                        {
+                            "id": task.id,
+                            "outcome": outcome if terminal else None,
+                            "events": slot["events"],
+                            "reveals": slot["reveals"],
+                            "weight": task.weight,
+                            "continuation_id": task.continuation_id,
+                            "opponent_id": task.opponent_id,
+                        }
+                    )
                     replacement = None if exhausted else fill(runner)
                     if replacement is not None:
                         active.append(replacement)
                 else:
                     active.append(slot)
             slots = active
+            if progress is not None and (not slots or time.monotonic() - last_progress >= 5.0):
+                progress(len(results))
+                last_progress = time.monotonic()
     finally:
         for runner in runners:
             runner.close()

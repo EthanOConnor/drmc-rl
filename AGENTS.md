@@ -29,6 +29,9 @@ gate that must be completed first.
 - Deployed actors consume `PublicPairState` only. `PrivilegedPairState` is
   restricted to critics, search teachers, counterfactual labels, and parity.
   Hidden RNG or internal attack state must never leak into a public actor.
+  The old native SMDP buffers can also contain a future opponent lock after a
+  fall warp. New offline public data must carry `causal-settled-pair-v1`;
+  zeroing auxiliary fields alone does not establish a causal observation.
 - The target competitive model is the asynchronous **full pair game**. New
   search work implements `drmc_rl.search.joint_event.PairSearchModel`; do not
   extend the own-board depth-2 approximation into another permanent stack.
@@ -68,6 +71,12 @@ gate that must be completed first.
   regressions. The current counterfactual teacher failed its held-out V3
   comparison; none of those labels or legacy hidden auxiliary inputs enter
   this run. This does not open a search-quality or product gate.
+- The September review sequence in `docs/ROADMAP.md` runs independent objective,
+  public-context/critic and paired-terminal diagnostics. The E1 arms preserve
+  one frozen initialization and separate loss reductions. New paired quality
+  fitting uses causal banks, full candidate coverage and whole-game holdouts;
+  it does not reuse the failed V3 teacher or certify a product model. Continue
+  through the named program recipes and preserve each running source snapshot.
 
 ## Counterfactual quality rules
 

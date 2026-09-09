@@ -69,6 +69,7 @@ env:
   backend: cpp-vs-pool
   gpu_planner: true
   direct_policy_batch: true
+  public_observations: true
   state_repr: bitplane_bottle_conn_mask_vs
   num_pairs: 64
   frame_stack: 1

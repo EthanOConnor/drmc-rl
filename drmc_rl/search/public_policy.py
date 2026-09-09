@@ -19,41 +19,74 @@ from drmc_rl.search.joint_event import WDL
 from drmc_rl.search.strong_league import DavidsonCalibration
 
 
-def policy_request(public: PublicPairState, side: int, legal, action_costs):
+def policy_request(
+    public: PublicPairState,
+    side: int,
+    legal,
+    action_costs,
+    *,
+    context_schema="zero_v1_vs",
+    execution=None,
+):
     """Construct the same input contract used by the live competitive opponent."""
     if not legal or len(legal) != len(action_costs):
         raise ValueError("public continuation requires a nonempty complete frontier")
+    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+
+    if context_schema not in ("zero_v1_vs", PUBLIC_CONTEXT_SCHEMA):
+        raise ValueError("unknown public policy input schema")
+    if len(set(legal)) != len(legal) or any(not 0 <= a < 512 for a in legal):
+        raise ValueError("public frontier must contain unique valid actions")
     own, opponent = public.sides[side], public.sides[1-side]
     feasible = np.zeros(512, dtype=bool)
     costs = np.full(512, 0xFFFF, dtype=np.uint16)
     feasible[list(legal)] = True
     costs[list(legal)] = action_costs
-    if own.pill[0] == own.pill[1]:
+    if context_schema == "zero_v1_vs" and own.pill[0] == own.pill[1]:
         feasible[256:] = False
         costs[256:] = 0xFFFF
     feasible = feasible.reshape(4, 16, 8)
-    boards = legacy_vs_policy_boards(
-        board_bytes_to_semantic_planes(own.board),
-        board_bytes_to_semantic_planes(opponent.board), own.pill, opponent.pill)
+    own_planes = board_bytes_to_semantic_planes(own.board)
+    opponent_planes = board_bytes_to_semantic_planes(opponent.board)
+    boards = (
+        legacy_vs_policy_boards(own_planes, opponent_planes, own.pill, opponent.pill)
+        if context_schema == "zero_v1_vs"
+        else np.concatenate((own_planes, opponent_planes))
+    )
     # PlainPolicy's preview dictionary uses raw NES colors. Reuse its exact
     # canonical/raw involution while preserving canonical board planes.
     from tools.vs_head_to_head import _CANON_TO_RAW
     raw_color = _CANON_TO_RAW
-    return np.concatenate((boards, feasible.astype(np.float32))), {
+    info = {
         "placements/feasible_mask": feasible,
         "placements/cost_to_lock": costs.reshape(4, 16, 8),
         "next_pill_colors": np.asarray(own.pill, dtype=np.int64),
-        "preview_pill": {"first_color": int(raw_color[own.preview[0]]),
-                         "second_color": int(raw_color[own.preview[1]])},
+        "preview_pill": {
+            "first_color": int(raw_color[own.preview[0]]),
+            "second_color": int(raw_color[own.preview[1]]),
+        },
     }
+    if context_schema == PUBLIC_CONTEXT_SCHEMA:
+        info.update(
+            public_context_schema=PUBLIC_CONTEXT_SCHEMA,
+            public_pair_state=public,
+            public_acting_side=side,
+            public_execution=execution,
+        )
+    return np.concatenate((boards, feasible.astype(np.float32))), info
 
 
 class PublicPolicyContinuation:
     def __init__(self, checkpoint: Path, calibration: DavidsonCalibration | None = None, *, device="cpu"):
         from tools.vs_head_to_head import PlainPolicy
         self.policy = PlainPolicy(checkpoint, device=device, public_only=True)
-        if self.policy.in_channels != 20 or self.policy.aux_spec != "zero_v1_vs":
-            raise ValueError("public continuation requires the frozen full-pair zero-aux actor")
+        from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+
+        if self.policy.in_channels != 20 or self.policy.aux_spec not in (
+            "zero_v1_vs",
+            PUBLIC_CONTEXT_SCHEMA,
+        ):
+            raise ValueError("public continuation requires an explicitly public full-pair actor")
         self.calibration = calibration
         self._cache = OrderedDict()
 
@@ -63,11 +96,24 @@ class PublicPolicyContinuation:
             return []
         observations, infos = [], []
         for state, side in requests:
+            from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+
+            if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+                raise ValueError(
+                    "public continuation requires a causal public timeline; legacy warped buffers expose future locks"
+                )
             if not state.privileged.need_action[side]:
                 raise ValueError("public continuation requires an acting side")
             obs, info = policy_request(
-                state.privileged.public, side, state.legal_actions_by_side[side],
-                state.action_costs_by_side[side])
+                state.privileged.public,
+                side,
+                state.legal_actions_by_side[side],
+                state.action_costs_by_side[side],
+                context_schema=self.policy.aux_spec,
+            )
+            # Attach this only after validating the native source contract.
+            # A bare PublicPairState cannot prove how its producer observed it.
+            info["vs/observation_timeline"] = state.public_observation_schema
             observations.append(obs)
             infos.append(info)
         actions, masks, logits, values = self.policy.score_and_value(np.stack(observations), infos)
@@ -84,27 +130,48 @@ class PublicPolicyContinuation:
                             float(value)))
         return results
 
+    @staticmethod
+    def _request_key(state, side):
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+
+        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+            raise ValueError(
+                "public continuation requires a causal public timeline; legacy warped buffers expose future locks"
+            )
+        return (
+            state.privileged.public.stable_hash(),
+            side,
+            state.legal_actions_by_side[side],
+            state.action_costs_by_side[side],
+            state.public_observation_schema,
+        )
+
+    def prefetch(self, requests, *, batch_size=64):
+        """Prime independent public requests without changing search backups."""
+        if batch_size < 1:
+            raise ValueError("frontier batch size must be positive")
+        missing = {}
+        for state, side in requests:
+            key = self._request_key(state, side)
+            if key not in self._cache:
+                missing.setdefault(key, (state, side))
+        pending = list(missing.items())
+        for start in range(0, len(pending), batch_size):
+            chunk = pending[start : start + batch_size]
+            values = self.infer_batch([request for _, request in chunk])
+            for (key, _), value in zip(chunk, values, strict=True):
+                self._cache[key] = value
+            while len(self._cache) > 8192:
+                self._cache.popitem(last=False)
+
     def _infer(self, state, side):
         if not state.privileged.need_action[side]:
             raise ValueError("public continuation requires an acting side")
-        public = state.privileged.public
-        legal, costs = state.legal_actions_by_side[side], state.action_costs_by_side[side]
-        key = (public.stable_hash(), side, legal, costs)
+        key = self._request_key(state, side)
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
-        obs, info = policy_request(public, side, legal, costs)
-        actions, mask, logits, values = self.policy.score_and_value(obs[None], [info])
-        valid = mask[0]
-        if int(valid.sum()) != int(info["placements/feasible_mask"].sum()):
-            raise RuntimeError("public continuation truncated a candidate")
-        scores = logits[0, valid].astype(np.float64)
-        weights = np.exp(np.clip(scores - scores.max(), -60, 0))
-        weights /= weights.sum()
-        result = (dict(zip(map(int, actions[0, valid]), map(float, weights), strict=True)),
-                  float(values[0]))
-        if not np.isfinite(result[1]):
-            raise ValueError("non-finite public continuation value")
+        result = self.infer_batch([(state, side)])[0]
         self._cache[key] = result
         if len(self._cache) > 8192:
             self._cache.popitem(last=False)

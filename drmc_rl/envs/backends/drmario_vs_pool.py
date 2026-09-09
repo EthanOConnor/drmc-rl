@@ -443,11 +443,17 @@ class DrMarioVsPoolRunner:
         _ = specs_arr, mask_u8, acts  # keep alive until after call
         self._solve_deferred()
 
-    def step_strict(self, actions: np.ndarray) -> None:
+    def step_strict(
+        self,
+        actions: np.ndarray,
+        reset_mask: Optional[np.ndarray] = None,
+        reset_specs: Optional[object] = None,
+    ) -> None:
         """Advance exactly to the next causal pair event.
 
-        A parked opponent is never bypassed. This API is for parity and
-        offline teachers; rollout environments continue to use :meth:`step`.
+        A parked opponent is never bypassed. Public rollout environments and
+        offline teachers use this API; :meth:`step` preserves legacy scheduling.
+        Optional pair resets have the same NEXT_STEP semantics as :meth:`step`.
         """
 
         if self._step_strict_fn is None:
@@ -455,12 +461,20 @@ class DrMarioVsPoolRunner:
                 "native library predates strict VS stepping; rebuild vendor/drmario_native"
             )
         acts = np.asarray(actions, dtype=np.int32).reshape(self.num_sides)
+        mask_u8 = (
+            None
+            if reset_mask is None
+            else np.asarray(reset_mask, dtype=np.uint8).reshape(self.num_pairs)
+        )
+        specs_arr = (
+            None if reset_specs is None else _build_vs_reset_spec_array(reset_specs, self.num_pairs)
+        )
         rc = int(
             self._step_strict_fn(
                 self._handle,
                 acts.ctypes.data_as(C.POINTER(C.c_int32)),
-                None,
-                None,
+                None if mask_u8 is None else mask_u8.ctypes.data_as(C.POINTER(C.c_uint8)),
+                None if specs_arr is None else C.cast(specs_arr, C.POINTER(_DrmVsResetSpec)),
                 C.byref(self._out),
             )
         )

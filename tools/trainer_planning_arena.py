@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from drmc_rl.arena.store import ArenaStore
-from drmc_rl.arena.experiment import dump, score_interval
+from drmc_rl.arena.experiment import dump, outcome_summary
 from drmc_rl.envs.backends.vs_frames import FrameVsPool
 from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import (
@@ -187,12 +187,28 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
         for pair, (seed, assignment, job_index) in enumerate(jobs):
             a, b = 2*pair+assignment, 2*pair+1-assignment
             end = pool.states[a]
-            outcome = end.outcome if end.terminal else 3
-            score = 1.0 if outcome == 1 else 0.0 if outcome == 2 else 0.5
+            outcome = end.outcome if end.terminal else None
+            score = (
+                None if outcome is None else 1.0 if outcome == 1 else 0.0 if outcome == 2 else 0.5
+            )
             reason = "timeout" if not end.terminal else "clear" if any(pool.states[s].event_type == 1 for s in (a,b)) else "topout"
-            row = {"seed": seed, "side": assignment, "index": job_index, "score": score,
-                "winner": "a" if score == 1 else "b" if score == 0 else "draw", "reason": reason,
-                "frames": int(end.frame), "a_stats": dict(statistics[a]), "b_stats": dict(statistics[b])}
+            row = {
+                "seed": seed,
+                "side": assignment,
+                "index": job_index,
+                "score": score,
+                "winner": None
+                if score is None
+                else "a"
+                if score == 1
+                else "b"
+                if score == 0
+                else "draw",
+                "reason": reason,
+                "frames": int(end.frame),
+                "a_stats": dict(statistics[a]),
+                "b_stats": dict(statistics[b]),
+            }
             output.append((row, moves[pair], replays[pair]))
     return output, time.perf_counter() - begun
 
@@ -201,12 +217,21 @@ def publish(config, results, output, store):
     tournaments, aggregates = [], {}
     for match in config["schedule"]:
         rows = results.get(match["id"], [])
-        tournaments.append({**match, "target": match["games"], "played": len(rows),
-            "wins": sum(r["score"] == 1 for r in rows), "losses": sum(r["score"] == 0 for r in rows),
-            "draws": sum(r["score"] == .5 for r in rows), "score_ci": score_interval(rows),
-            "status": "Complete" if len(rows) >= match["games"] else
-                "Waiting for checkpoint" if not match_ready(config,match) else
-                "Playing" if match["id"] == config.get("_current_match") else "Queued"})
+        tournaments.append(
+            {
+                **match,
+                "target": match["games"],
+                "played": len(rows),
+                **outcome_summary(rows),
+                "status": "Complete"
+                if len(rows) >= match["games"]
+                else "Waiting for checkpoint"
+                if not match_ready(config, match)
+                else "Playing"
+                if match["id"] == config.get("_current_match")
+                else "Queued",
+            }
+        )
         for row in rows:
             for label in ("a", "b"):
                 aggregates.setdefault(match[label], Counter()).update(row[label+"_stats"])
@@ -367,6 +392,7 @@ def main():
                 if profile:
                     profile.disable()
                     profile.dump_stats(output / "profile.pstats")
+                censored_seeds = {r["seed"] for r, _, _ in batch if r["reason"] == "timeout"}
                 for row, moves, replay in batch:
                     row.update(comparison=match["id"], level=match["level"], pace=match.get("pace", "frame_perfect"))
                     results.setdefault(match["id"], []).append(row)
@@ -374,12 +400,24 @@ def main():
                     trace.parent.mkdir(exist_ok=True)
                     with gzip.open(trace, "wt") as stream:
                         json.dump({"game": row, "moves": moves}, stream)
-                    store.record(match["a"], match["b"], seed=row["seed"], side=row["side"],
-                        winner=row["winner"], match_len_sec=row["frames"]/FPS,
-                        decisions=row["a_stats"].get("decisions",0)+row["b_stats"].get("decisions",0),
-                        terminal_reason=row["reason"], replay=replay,
-                        match_key=f"{match['id']}-{row['index']}", level=match["level"], speed_setting=2,
-                        provenance={"controller_frames": True, "move_trace": str(trace.name)}, commit=False)
+                    if row["seed"] not in censored_seeds:
+                        store.record(
+                            match["a"],
+                            match["b"],
+                            seed=row["seed"],
+                            side=row["side"],
+                            winner=row["winner"],
+                            match_len_sec=row["frames"] / FPS,
+                            decisions=row["a_stats"].get("decisions", 0)
+                            + row["b_stats"].get("decisions", 0),
+                            terminal_reason=row["reason"],
+                            replay=replay,
+                            match_key=f"{match['id']}-{row['index']}",
+                            level=match["level"],
+                            speed_setting=2,
+                            provenance={"controller_frames": True, "move_trace": str(trace.name)},
+                            commit=False,
+                        )
                     with records.open("a") as stream:
                         stream.write(json.dumps(row)+"\n")
                 store.record_worker_sample(worker_id=f"{socket.gethostname()}-trainer-frames-{Path(config['working_db']).stem}", device=config.get("device", "cuda"),
@@ -389,9 +427,18 @@ def main():
                     wall_seconds=elapsed)
                 publish(config, results, output, store)
                 rows = results[match["id"]]
-                print(json.dumps({"comparison": match["id"], "games": len(rows), "target": match["games"],
-                    "score": float(np.mean([r["score"] for r in rows])), "paired_ci": score_interval(rows),
-                    "batch_seconds": round(elapsed, 2)}), flush=True)
+                print(
+                    json.dumps(
+                        {
+                            "comparison": match["id"],
+                            "games": len(rows),
+                            "target": match["games"],
+                            **outcome_summary(rows),
+                            "batch_seconds": round(elapsed, 2),
+                        }
+                    ),
+                    flush=True,
+                )
         config.update(_worker_status="Complete",_current_match=None)
         publish(config,results,output,store)
     except BaseException as error:

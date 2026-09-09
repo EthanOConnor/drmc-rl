@@ -88,6 +88,44 @@ def test_g5_requires_full_vs_observation():
         _net(board_channels=8)
 
 
+def test_candidate_critic_preserves_warm_start_then_learns_cost_and_frontier_context():
+    torch.manual_seed(91)
+    net = _net(critic_context="candidate_attention", terminal_wdl=True, candidate_wdl=True).eval()
+    inputs = _inputs(batch=2, width=16)
+    with torch.no_grad():
+        logits, original, extra = net(**inputs, return_aux=True)
+        torch.testing.assert_close(extra["value_context"], extra["global_context"])
+        net.value_projection.weight.copy_(torch.eye(net.d_model))
+        _, informed, extra = net(**inputs, return_aux=True)
+        changed = dict(inputs, cand_cost=inputs["cand_cost"] + 80)
+        same_logits, changed_value = net(**changed)
+        assert not torch.allclose(informed, changed_value, atol=1e-7, rtol=0)
+        # Adding padding with arbitrary feature values cannot alter the critic.
+        changed = dict(
+            inputs,
+            cand_actions=torch.nn.functional.pad(inputs["cand_actions"], (0, 16), value=333),
+            cand_cost=torch.nn.functional.pad(inputs["cand_cost"], (0, 16), value=999),
+            cand_mask=torch.nn.functional.pad(inputs["cand_mask"], (0, 16), value=False),
+        )
+        padded_logits, padded_value = net(**changed)
+        torch.testing.assert_close(informed, padded_value, atol=1e-6, rtol=1e-5)
+        assert extra["state_wdl_logits"].shape == (2, 3)
+        assert extra["candidate_wdl_logits"].shape == (2, 16, 3)
+        empty = dict(inputs, cand_mask=torch.zeros_like(inputs["cand_mask"]))
+        _, terminal_value, terminal_extra = net(**empty, return_aux=True)
+        assert (
+            torch.isfinite(terminal_value).all()
+            and torch.isfinite(terminal_extra["state_wdl_logits"]).all()
+        )
+
+
+def test_candidate_critic_changes_checkpoint_structure_without_changing_legacy_default():
+    old = _net()
+    assert not any(key.startswith("value_query") for key in old.state_dict())
+    with pytest.raises(RuntimeError, match="Missing key"):
+        _net(critic_context="candidate_attention").load_state_dict(old.state_dict())
+
+
 def test_g5_distributional_loss_accepts_bfloat16_logits():
     net = _net()
     logits = torch.randn(4, 21, dtype=torch.bfloat16, requires_grad=True)

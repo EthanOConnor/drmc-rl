@@ -14,6 +14,12 @@ function save(key,value) { try { localStorage.setItem(`pp-tournament-${key}`,val
 let experiment = null, snapshot = null, reference = saved('reference','parent'), condition = saved('condition','14:normal');
 let feedError = '';
 const entrantName = id => experiment?.variants?.find(v=>v.id===id)?.name || snapshot?.agents?.find(v=>v.id===id)?.name || id;
+function readyEntrants() {
+  const ready = new Set((experiment.results?.entrants || []).filter(v=>v.ready).map(v=>v.id));
+  for (const match of experiment.results?.tournaments || []) if (match.played) {ready.add(match.a);ready.add(match.b);}
+  for (const run of experiment.training_runs || []) if(run.variant_id && run.status==='Training complete' && run.final_checkpoint) ready.add(run.variant_id);
+  return ready;
+}
 const conditionKey = item => `${item.level}:${item.pace || 'frame_perfect'}`;
 const conditionName = item => `${item.level} HI · ${paceNames[item.pace] || item.pace}`;
 const replayCondition = item => {
@@ -44,8 +50,7 @@ function renderStandings() {
   const variants = experiment.variants || [];
   if (!rated.has(reference)) reference = rated.has(experiment.rating_anchor) ? experiment.rating_anchor : ratings[0]?.id || experiment.rating_anchor || 'parent';
   setOptions($('#reference'),variants.map(v=>({value:v.id,label:entrantName(v.id),disabled:ratings.length > 0 && !rated.has(v.id)})),reference);
-  const ready = new Set((results.entrants || []).filter(v=>v.ready).map(v=>v.id));
-  for (const t of results.tournaments || []) if (t.played) { ready.add(t.a); ready.add(t.b); }
+  const ready = readyEntrants();
   const ids = [...ratings.map(r=>r.id),...variants.map(v=>v.id).filter(id=>!rated.has(id))];
   $('#ranking').innerHTML = ids.map((id,i)=>{
     const rating = rated.get(id), delta = rating?.differences?.[reference] || (reference === group?.anchor ? rating : null);
@@ -65,8 +70,7 @@ function renderStandings() {
 
 function renderOperations() {
   const t = experiment.training || {}, r = experiment.results || {}, workers = r.workers || [];
-  const ready = new Set((r.entrants || []).filter(v=>v.ready).map(v=>v.id));
-  for(const match of r.tournaments || []) if(match.played) {ready.add(match.a);ready.add(match.b);}
+  const ready = readyEntrants();
   const total = (r.tournaments || []).reduce((n,m)=>n+num(m.played),0);
   const active = workers.filter(w=>w.status==='Playing');
   $('#summary').innerHTML = `<div><span>Checkpoints ready</span><strong>${ready.size}</strong><small>/ ${(experiment.variants||[]).length}</small></div><div><span>Tournament games</span><strong>${count(total)}</strong></div><div><span>Training frames</span><strong>${compact(t.frames)}</strong><small>/ ${compact(t.target_frames)}</small></div><div><span>Evaluators playing</span><strong>${active.length}</strong><small>/ ${workers.length}</small></div>`;
@@ -80,6 +84,9 @@ function renderOperations() {
   $('#training-status').textContent = t.status==='Running'?'Running':t.status || 'Waiting';
   $('#training-status').className = `tag ${t.status==='Failed'?'bad':t.status==='Running'?'good':''}`;
   $('#training').innerHTML = `<div class="training-body"><div class="training-head"><strong>${compact(t.frames)}</strong><span>/ ${compact(t.target_frames)} frames</span></div>${bar(t.frames,t.target_frames)}<div class="training-detail"><span>${compact(t.throughput?.frames_per_second)} frames/s</span><span>${count(t.updates)} updates</span></div>${Object.entries(t.paces || {}).map(([pace,c])=>`<div class="pace-budget"><span>${esc(paceNames[pace] || pace)}</span>${bar(c.learning_decisions,t.minimum_decisions_per_pace)}<strong>${compact(c.learning_decisions)}</strong></div>`).join('')}<p class="budget-note">${compact(t.minimum_decisions_per_pace)} learned placements required at every pace.<br>${ago(age(t.updated_at))}${t.status==='Running'?` · ${esc(paceNames[t.current_pace] || t.current_pace)} ${count(t.collecting_games)}/${count(t.collecting_target)} games`:''}</p></div>`;
+  if(experiment.training_runs?.length){
+    $('#training').insertAdjacentHTML('afterbegin',`<div class="training-body">${experiment.training_runs.map(run=>`<div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)} · ${compact(run.frames)} / ${compact(run.target_frames)}</span></div>${bar(run.frames,run.target_frames)}`).join('')}<p class="budget-note">Details below: ${esc(t.label)}. Last update KL: ${t.losses?.update_kl==null?'—':Number(t.losses.update_kl).toFixed(4)}.</p></div>`);
+  }
   $('#milestones').innerHTML = (experiment.variants || []).map(v=>{
     const games=(r.tournaments || []).filter(m=>m.a===v.id||m.b===v.id).reduce((n,m)=>n+num(m.played),0);
     const label=ready.has(v.id)?'Ready':v.status==='Training'?'Training':'Pending';
@@ -101,7 +108,7 @@ function renderSchedule() {
       (mode==='all'||mode==='complete'&&complete||mode==='waiting'&&waiting||mode==='active'&&!complete&&!waiting);
   }).sort((a,b)=>(a.status==='Playing'?-1:0)-(b.status==='Playing'?-1:0)||num(b.played)-num(a.played));
   $('#schedule-count').textContent=`${count(all.reduce((n,m)=>n+num(m.played),0))} / ${count(all.reduce((n,m)=>n+num(m.target),0))} games`;
-  $('#matchups').innerHTML=matches.map(m=>`<tr><td class="matchup-name">${esc(entrantName(m.a))}<br><span>vs ${esc(entrantName(m.b))}</span></td><td>${esc(conditionName(m))}</td><td class="mini-progress"><span class="progress-text">${count(m.played)} / ${count(m.target)}</span>${bar(m.played,m.target)}<small>${esc(m.status || 'Queued')}</small></td><td class="number">${count(m.wins)} / ${count(m.losses)} / ${count(m.draws)}</td><td class="number">${m.played?`${(100*(num(m.wins)+.5*num(m.draws))/m.played).toFixed(1)}%`:'—'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No matchups in this view.</td></tr>';
+  $('#matchups').innerHTML=matches.map(m=>`<tr><td class="matchup-name">${esc(entrantName(m.a))}<br><span>vs ${esc(entrantName(m.b))}</span></td><td>${esc(conditionName(m))}</td><td class="mini-progress"><span class="progress-text">${count(m.played)} / ${count(m.target)}</span>${bar(m.played,m.target)}<small>${esc(m.status || 'Queued')}</small></td><td class="number">${count(m.wins)} / ${count(m.losses)} / ${count(m.draws)}</td><td class="number">${m.censored?`Incomplete · ${count(m.censored)} capped`:m.played?`${(100*(num(m.wins)+.5*num(m.draws))/m.played).toFixed(1)}%`:'—'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No matchups in this view.</td></tr>';
 }
 
 function render() {

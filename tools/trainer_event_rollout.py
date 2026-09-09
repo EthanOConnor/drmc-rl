@@ -226,12 +226,28 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
             moves[pair].sort(key=lambda move:(move["frame"],move["side"]))
             a, b = 2*pair+assignment, 2*pair+1-assignment
             end = pool.states[a]
-            outcome = end.outcome if end.terminal else 3
-            score = 1.0 if outcome == 1 else 0.0 if outcome == 2 else .5
+            outcome = end.outcome if end.terminal else None
+            score = (
+                None if outcome is None else 1.0 if outcome == 1 else 0.0 if outcome == 2 else 0.5
+            )
             reason = "timeout" if not end.terminal else "clear" if any(pool.states[s].event_type == 1 for s in (a,b)) else "topout"
-            row = {"seed":seed, "side":assignment, "index":index, "score":score,
-                "winner":"a" if score == 1 else "b" if score == 0 else "draw", "reason":reason,
-                "frames":int(end.frame), "a_stats":dict(statistics[a]), "b_stats":dict(statistics[b])}
+            row = {
+                "seed": seed,
+                "side": assignment,
+                "index": index,
+                "score": score,
+                "winner": None
+                if score is None
+                else "a"
+                if score == 1
+                else "b"
+                if score == 0
+                else "draw",
+                "reason": reason,
+                "frames": int(end.frame),
+                "a_stats": dict(statistics[a]),
+                "b_stats": dict(statistics[b]),
+            }
             output.append((row, moves[pair], []))
     elapsed = time.perf_counter()-started
     if metrics is not None:

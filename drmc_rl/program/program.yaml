@@ -98,6 +98,70 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  search-frontier-benchmark:
+    status: active
+    stage: 4
+    purpose: Measure queued versus recursive neural search on identical complete native roots without claiming calibrated value or strength.
+    requires_paths: [tools/benchmark_search_frontiers.py, '{search_frontier_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.benchmark_search_frontiers, --config, '{search_frontier_config}']
+    produces: [Per-root wall time, actual neural batch counts, full action utilities and parity]
+    resources:
+      accelerator: cpu
+  paired-quality-fit:
+    status: staged
+    stage: 4
+    purpose: Diagnostic critic-only, public-context-only and combined fits from complete paired terminal panels, with source-game holdout and measured policy preservation KL.
+    requires_paths: [tools/fit_paired_quality.py, '{paired_quality_fit_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.fit_paired_quality, --config, '{paired_quality_fit_config}']
+    produces: [Diagnostic checkpoint, source-game heldout WDL and paired-gap errors, layer update and representation diagnostics]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Auxiliary and supervised policy-improvement phases are separate from on-policy PPO. All candidate outcomes must be complete.
+      - Public-context inputs require the causal observation timeline; historical warped buffers cannot initialize it.
+      - This fitting diagnostic does not certify WDL calibration, decision improvement or a product promotion.
+  public-predecessor-bank:
+    status: active
+    stage: 4
+    purpose: Collect exact 14-HI public-core trajectories and full-pair states 4, 8 and 16 own placements before natural losses.
+    requires_paths: [tools/build_pair_state_pilot.py, '{competitive_checkpoint}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.build_pair_state_pilot, --public-checkpoint, '{competitive_checkpoint}', --device, '{bank_device}', --level, '14', --speed, '2', --states, '{bank_states}', --states-per-game, '4', --max-decisions-per-game, '2048', --max-games, '128', --failure-predecessors, --output, '{public_predecessor_bank}']
+    produces: [Exact pair-state curriculum, public reserve histories, complete natural outcomes and failure offsets]
+    resources:
+      accelerator: cpu
+  paired-terminal-quality:
+    status: active
+    stage: 4
+    purpose: Generate full-root paired natural-terminal outcomes under a named public continuation/opponent panel and the complete public reserve posterior.
+    requires_paths: [tools/build_paired_terminal_quality.py, '{paired_terminal_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.build_paired_terminal_quality, --config, '{paired_terminal_config}']
+    produces: [Paired rollout inventory, candidate WDL, separate chance and continuation sensitivity, bounded policy targets]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Native SMDP execution is explicit; paced controller continuations require their own tested restore/execution adapter.
+      - Complete-case candidate selection cannot hide censored branches. Missing labels remain unknown and suppress policy targets.
+      - This prospective teacher does not open or replace the failed historical v3-counterfactual-quality gate.
+  trainer-objective-study:
+    status: active
+    stage: 3
+    purpose: Compare episodic and historical length-normalized actor credit with common initialization, pace exposure and measured categorical update KL.
+    requires_paths: [tools/run_pace_objective_study.py, '{trainer_objective_study}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.run_pace_objective_study, --config, '{trainer_objective_study}']
+    produces: [Separate bounded training arms, update diagnostics, held-out natural-game evaluation]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - This prospective outcome-only ablation does not open counterfactual-quality, search, calibration or release gates.
+      - Actor, value, entropy, parent KL and advantage normalization have separate explicit reductions. Changed objectives require a fresh run, optionally initialized from frozen adapter weights.
   trainer-pace-throughput:
     status: active
     stage: 3

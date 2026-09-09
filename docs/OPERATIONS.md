@@ -314,6 +314,116 @@ batch sizes differ. Check `training.json`'s `throughput` for actual learner
 decisions/s, rollout frames/s, and frames/s including the optimizer and journal,
 with phase timings. Checkpoint writes are included in cumulative wall time.
 
+Pace objectives are now explicit config fields: `actor_reduction`,
+`value_reduction`, `entropy_reduction`, `parent_kl_reduction` and
+`advantage_normalization`. New runs default to `decision_mean` actor credit
+(one common batch scale), with the other reductions `episode_mean` and
+`episode_center_scale` advantage normalization. The historical actor uses
+`episode_mean`. Old checkpoints resume their historical objective; changing it
+requires `init_adapter` in a fresh output directory, without `resume`.
+`max_update_kl` checks the full categorical behavior distribution after each
+epoch, including unchosen actions. Backtracking restores parameters and Adam
+state; `max_kl_backtracks` bounds retries. Inspect realized `update_kl`,
+`first_step_kl`, `completed_learning_games` and trajectory lengths, not just the
+cap. `tools.report_pace_objective_study --config PATH --output PATH` combines
+each arm's training directory and stdout log. It separates repeated seed
+experiences from distinct seeds, reports realized KL and critic error, and
+keeps level/pace outcomes separate. Training curves have no confidence
+intervals: the policy changes during collection. The old `independent_games`
+log field counted completed learning trajectories, not independent seed pairs.
+
+Launch a two-arm controlled study with `trainer-objective-study` and
+`trainer_objective_study=PATH`. Its JSON names two training configs, evaluation
+configs, and an output directory. It validates common initialization/exposure
+and permits only actor reduction and artifact paths to differ. Training arms
+run sequentially; frozen evaluation shards start after both complete.
+The September review study is under `trainer-output/review-20260909` on the
+mombox overflow mount, with an isolated tf3090 source and 50M additional frames
+per arm. Both completed (50,369,235 and 50,201,899 frames) and frozen evaluation
+has started. A 2,048-seed exclusion bank supplies 16,384 reserved side-swapped
+games. These screen the two objectives; independent-seed finalists still need
+new confirmation games. The dashboard at `http://127.0.0.1:8098/` reads both arms.
+
+New public native PPO runs set `env.public_observations: true`. This selects
+`step_strict` and maintains separate causal opponent snapshots through partial
+resets and the direct policy batch path. The historical scheduler is available
+for reproduction, but public zero-aux/context training rejects it. Start a new
+experiment when changing this observation and scheduling contract; do not
+resume an old run as if its data distribution were unchanged.
+The loader rejects optimizer/step resumption across this contract change;
+weights-only initialization uses the checkpoint's effective EMA actor when
+available.
+The strict collector counts completed placement transitions separately from
+pair-event steps, retains terminal reward through waits, and bootstraps at each
+learner's own successor decision. Real native tests exercise a PPO update in
+both dictionary and direct-array observation modes, with self-play and a frozen
+opponent. Gamma-one outcome training
+is supported; censored games, unaligned distillation targets and incomplete
+live public-context inputs fail explicitly. Profile its host-side transition
+storage before a large CUDA run; the existing pace frame/event trainer keeps
+its already measured collection path.
+
+An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
+optional `adapter_checkpoint`. A member is sampled per collection update and
+recorded in every training journal entry. Frozen member checkpoint/adapter
+hashes are saved and checked on resume. The default single parent preserves
+the existing sampling RNG sequence. `public_league.empirical_mixture` builds
+an entropy-regularized mixture from complete measured paired edges at one
+level/speed/pace, rejecting missing, duplicated/conflicting or censored evidence.
+Its solver is `entropy-mirror-prox-v1`; old cumulative-softmax temperature was
+not a persistent entropy regularizer. A training mixture is not a strength
+certificate. Keep population changes outside objective-only comparisons.
+
+For the review's offline diagnostics, launch through these recipes:
+
+- `public-predecessor-bank`: set `competitive_checkpoint`, `bank_device`,
+  `bank_states` and `public_predecessor_bank`. It collects clean 14-HI games,
+  retaining full causal public views, native restore state, complete reserve
+  history and positions 4/8/16 own placements before natural losses.
+- `paired-terminal-quality`: set `paired_terminal_config`. The JSON names
+  `state_bank`, frozen `members`, weighted `continuations` (actor/opponent),
+  `reference`, `states`, `seed`, `device`, `output`, `batch_size`, `max_events`
+  and optional level/speed filters and `native_workers` (default 1). Neural
+  inference remains ordered and batched; additional workers step independent
+  native handles. Progress refreshes after each loop once five seconds have
+  elapsed, even when no trajectory has finished. Every root candidate uses the same exact
+  reserve/policy panel. Inspect `progress.json`, `targets.jsonl` and
+  `rollouts.jsonl`. A capped branch is unknown, not a draw.
+- `paired-quality-fit --allow-staged`: set `paired_quality_fit_config` with
+  `state_bank`, `targets`, parent `checkpoint`, `mode` (baseline/critic/context/
+  combined), `phase` (auxiliary/policy_improvement), `seed`, `device`, `epochs`,
+  `batch_size`, `lr`, `max_policy_kl` and fresh `output`. Source-game validation
+  is mandatory. A fitted checkpoint may initialize the next phase with the
+  same mode/schema; learned heads and effective EMA weights are preserved.
+  Architecture changes require a new migration from the frozen core. The
+  output is a diagnostic checkpoint, never automatically installed or declared
+  calibrated.
+- `search-frontier-benchmark`: set `search_frontier_config` with `state_bank`,
+  `checkpoint`, `states`, `device`, `output`, depth/beams and batching limit.
+  This uses an explicitly uncalibrated leaf link to compare exact searches,
+  not to generate quality labels. Both utilities and actual neural call counts
+  are retained. Queued search remains opt-in with `--frontier-batch-size` in
+  `joint_search_teacher`; no budget-exhausted result supplies training targets.
+
+The corrected bank is `review-20260909/causal-public-bank/states.jsonl.gz`.
+The earlier `public-bank` collection was stopped after its observation audit
+exposed future warped locks; preserve its audit-status file and do not use it
+as public evidence. Historical full-pair banks remain useful privileged
+teacher artifacts, but cannot reconstruct missing causal public history.
+
+Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
+PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
+`opponents`, `conditions` (level/speed/pace), `confirmation_seeds`, `score_margin`,
+`alpha`, and `seed_design`. Each JSONL game names agent/opponent, level, speed,
+pace, seed, side and natural `score` (0/0.5/1 or null). All four games per
+reference/candidate seed comparison must be present. The comparison family
+adjusts confidence; missing/censored games prevent certification. This is a
+fixed, predeclared confirmation analysis, not an anytime-valid live ranking.
+The independent-seed bound follows [Maurer–Pontil, Theorem 4](https://arxiv.org/pdf/0907.3740);
+uniform sampling without replacement uses the conservative range bound in
+[Bardenet–Maillard, Proposition 1.2](https://arxiv.org/html/1309.4029v2).
+Do not select styles/checkpoints on this set and then call it confirmation.
+
 Use `trainer-pace-throughput --set trainer_throughput_config=PATH` through
 `tools.program launch` to compare `reference` and `events` modes on a schedule.
 The `async` mode measures planning without the batch barrier. It records
@@ -397,14 +507,14 @@ disjoint from both the pilot and the scaled confirmation bank. This schedule
 runs alongside training, split into whole matchups across two mombox CPU
 workers and two MacBook workers (Metal and CPU); tf3090 keeps training. The
 earlier 960 pilot games remain in the connected standings. The 25M and 50M
-milestones have joined; final admission waits for completed training.
+milestones and completed final adapter have joined.
 
 The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
 outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
 completed 997,430 console frames and 9,763 learner decisions. The original
 1,600-game budget was too small and allocated only hundreds of decisions to
-Sloth. The continuation now targets 100M frames and at least 100,000 actual
-learning decisions per pace. After throughput validation, it uses
+Sloth. The continuation completed 101,229,824 console frames and at least
+100,000 actual learning decisions per pace. After throughput validation, it used
 1,024/256/64/64/64 games per update from Sloth through Top Humans, collected in
 chunks of 128 with the event runner. It retains the existing weights
 and optimizer and saves 25M, 50M and 100M milestones. Pilot and scaled evaluation

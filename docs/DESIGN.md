@@ -62,6 +62,43 @@ reconstructible information:
 `audit_public_mapping` rejects known hidden-state keys recursively. A future
 native adapter must document how every field is observed or inferred.
 
+The native placement simulator's raw output is **not a simultaneous public
+snapshot**. `warp_fall` can write the committed opponent lock and advance its
+clock before the other side reaches that time. The September 2026 audit
+reproduced two hidden opponent commitments with different future bottle cells
+and endpoint clocks while the viewer was still parked at the same decision.
+Removing pending-attack scalars alone did not prevent this leak.
+
+New offline public continuations require `causal-settled-pair-v1`. Starting at
+a fresh joint decision, capture carries the previous public view through exact
+branches. An ahead-of-time warped side retains its last observed bottle and
+pill context, with explicit snapshot age and unknown active phase. It refreshes
+when the causal timeline catches up. Future endpoint clocks remain private.
+This is a conservative public observation of settled bottles, not a rendering
+of the falling animation. Native physics and restore bytes are unchanged.
+For new native PPO runs, `env.public_observations: true` also selects strict
+causal advancement. The legacy vector scheduler could request actions from
+both sides at different simulated times; filtering its buffers after that
+would not be sufficient. The public mode retains separate visible boards,
+pills and ages through partial resets and the direct array-input path.
+This is a new experiment contract, not a silent continuation of an old run.
+Public zero-aux PPO rejects the legacy mode; the historical scheduler remains
+available for its original privileged experiments and source reproduction.
+The causal PPO collector joins intervening pair events into one placement
+transition, including wait rewards and exact public elapsed time. It closes
+only at the learner's next feasible choice or natural termination. Fixed
+per-learner quotas drain under one unchanged behavior policy; each last
+transition keeps its own successor-boundary bootstrap. Waiting and forced
+states are not actor samples, and pending samples never cross an optimizer
+update. Censored terminations abort instead of becoming draw targets. This
+initial collector supports gamma-one outcome training and uses host-side
+transition storage; accelerator retention and complete live public-context
+emission need separate throughput/information validation.
+Historical `legacy-warp-buffer-v1` rows cannot initialize this timeline and
+are rejected by `PublicPolicyContinuation`. Preserve them as historical
+teacher evidence, never relabel them as fair public observations. Frame/event
+controller rollouts use actual per-frame state and do not use this warp path.
+
 ### PrivilegedPairState
 
 Training-only state for centralized critics, counterfactual teachers, parity,
@@ -135,6 +172,31 @@ supplies missing outcomes. This bounded experiment is motivated by the failed
 shallow values and changed historical trajectories; it does not replace the
 existing gate or authorize distillation from unvalidated labels.
 
+`paired_terminal` generalizes this diagnostic to a named frozen
+continuation/opponent panel. Every feasible root action uses exactly the same
+distinct complete reserves and panel members. Utilities use W−L, an affine
+transform of the arena score W+0.5D, so their scale is explicit. Chance variance,
+continuation sensitivity and paired action differences are separate outputs.
+Exact finite-panel enumeration has no Monte Carlo reserve standard error;
+continuation sensitivity is not a confidence bound on optimal play. Paced
+rollouts require a separately verified execution adapter; the initial panel
+explicitly uses native SMDP execution.
+
+Complete panels produce a conservative reference-relative policy target:
+`pi_ref * exp(shrunk_advantage / eta)`, with eta chosen for a declared KL cap.
+The sensitivity penalty is a risk preference, not a calibrated lower bound.
+A missing/censored candidate suppresses the policy target. Supervised fitting
+uses candidate WDL, state WDL under the reference root policy, paired gaps,
+ranking and optional policy improvement. It splits and weights by source game,
+rejects mixed reanalysis contracts and never treats teacher choices as PPO
+behavior likelihoods. An auxiliary phase preserves the current policy with
+measured full-dataset KL and rollback. These are fitting diagnostics; predictive
+accuracy, action-ranking improvement and equal-latency game improvement remain
+three different evidence requirements.
+Successive supervised phases retain the learned heads and effective inference
+weights. A mode/schema change is rejected; new architecture ablations migrate
+from the same frozen core instead of silently discarding learned tensors.
+
 Decision-trained critics are evaluated only at actionable boundaries. Search
 finishes forced deterministic and reserve-reveal events after the nominal
 depth expires, then evaluates an acting side and reverses calibrated W/L if
@@ -169,6 +231,25 @@ context. Natural full-game outcome learning may improve this public bootstrap
 while search-quality evidence remains staged; failed search labels never enter
 that run. Such a checkpoint still requires paired arena evidence before use and
 does not establish calibrated candidate regret or human ratings.
+
+Opt-in G5 critic context `candidate_attention` adds a value query over all
+valid candidate and pair-interaction tokens. Its residual projection starts at
+zero, preserving the old value on migration. Padding and no-action boundaries
+are covered explicitly. Separate three-class state and candidate WDL heads
+are fitted by `quality_supervision`; the legacy 51-atom scalar is not renamed
+or assumed calibrated.
+
+`public_pair_context_v3` is a separate checkpoint/input contract. It preserves
+all bonds and feasible poses and encodes both visible current/preview pills,
+active-pose availability, public phases, observation age, bounded public event
+history and the viewer's own motor/gravity/compute envelope. Each bottle gets
+its own pill/context conditioning. Unknown fields have masks; hidden native
+bytes are not model tensors. The controlled migration copies compatible
+weights and zero-initializes new conditioning columns. Ordinary checkpoint
+loading stays strict. Critic-only, context-only and combined ablations precede
+increasing model size. The live event emitter still needs complete temporal
+context integration before a new-schema policy can be used for paced games;
+it must not fabricate empty history or motor features as if they were known.
 
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that
@@ -285,8 +366,16 @@ after training. Sloth through Top Humans share one conditional adapter.
 Training uses categorical exploration over the complete paced feasible set
 and executes the selected script in the controller-frame VS runner. Frozen
 features and the actual behavior likelihood are retained only for that update.
-PPO uses full natural-terminal W/D/L returns, gamma one, and equal total weight
-per game, with a small KL penalty to the parent. Unfinished games supply no
+PPO uses full natural-terminal W/D/L returns and gamma one. Actor credit sums
+decision score terms along each game, with one common collection scale.
+Historical per-trajectory `1/T` actor weighting can reverse the objective's
+gradient and remains an explicit comparison option. Actor, value, entropy,
+parent-KL reductions and advantage normalization are separately named; the
+last four retain historical settings in the isolated actor experiment.
+Actual categorical KL is checked on all collected actions after optimization,
+with parameter and optimizer rollback when the update budget is exceeded.
+Changing objective on resume is rejected; use a weights-only initialization
+in a new run. A small KL penalty anchors the parent. Unfinished games supply no
 targets. Planner failures abort; only explicitly unreachable physics states
 become uncontrolled falls. Evaluation uses deterministic argmax on disjoint
 side-swapped seeds and reports every pace separately. Adapter checkpoints are

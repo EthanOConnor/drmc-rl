@@ -211,7 +211,7 @@ def test_search_uses_live_public_policy_value_and_color_contract(native_bottles)
     from tools.vs_head_to_head import PlainPolicy
 
     env, obs, _infos = native_bottles
-    state = capture_native_state(env._runner, level=0, speed_setting=2)
+    state = capture_native_state(env._runner, level=0, speed_setting=2, causal_public=True)
     captured = []
 
     def net(boards, pills, previews, actions, costs, masks, *, aux):
@@ -221,6 +221,7 @@ def test_search_uses_live_public_policy_value_and_color_contract(native_bottles)
     policy = object.__new__(PlainPolicy)
     policy.net, policy.device, policy.in_channels = net, "cpu", 20
     policy.public_only, policy.aux_dim, policy.aux_shim = True, 72, object()
+    policy.aux_spec = "zero_v1_vs"
     continuation = object.__new__(PublicPolicyContinuation)
     continuation.policy = policy
     continuation.calibration = DavidsonCalibration(1.0, 0.0, -3.0, "test")
