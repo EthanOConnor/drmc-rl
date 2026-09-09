@@ -410,6 +410,14 @@ The earlier `public-bank` collection was stopped after its observation audit
 exposed future warped locks; preserve its audit-status file and do not use it
 as public evidence. Historical full-pair banks remain useful privileged
 teacher artifacts, but cannot reconstruct missing causal public history.
+The expanded review study is `review-20260909/quality64-study` on the mombox
+overflow mount, executed on tf3090 from `d5c7c54`. Its `study.json` sequences
+registered collection, paired-panel and four fitting recipes; `pipeline.json`
+and `stage-0.log` through `stage-5.log` record progress. The local sync mirrors
+these small files into `runs/trainer-pace-v1/incoming-quality64`, without copying
+the model checkpoints. The plan uses 64 source games, a common 25% holdout and
+up to 100 auxiliary epochs per mode, with a 0.02 policy-KL limit. All outputs
+are prospective diagnostics and leave promotion gates unchanged.
 
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,

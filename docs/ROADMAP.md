@@ -162,6 +162,14 @@ hosts, not an isolated native-threading speedup. Optional parallel native
 stepping also passes deterministic serial parity tests. Neither throughput
 nor the four fitting smoke tests establishes a stronger player.
 
+The next bounded study is running on tf3090 from committed source `d5c7c54`:
+collect 384 causal predecessor/tactical states, select 64 distinct natural
+source games, complete the two-policy candidate panel, then fit all four
+same-size architectures with a common 48-game/16-game split. Minibatch order and
+the shared new critic initialization match across variants. Outputs remain
+diagnostic; censored panels cannot proceed into fitting. The objective arena
+continues independently, and no checkpoint is installed automatically.
+
 Primary methodological references: [episodic policy gradients](https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html),
 [PPG](https://arxiv.org/abs/2009.04416), [population responses](https://arxiv.org/abs/1711.00832),
 [targeted archive-state search](https://arxiv.org/abs/2302.12359),
