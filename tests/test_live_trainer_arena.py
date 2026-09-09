@@ -2,7 +2,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tools.trainer_planning_arena import next_live_match, variant_policy
+from tools.trainer_planning_arena import next_live_match, variant_policy, variant_ready
+import json
 
 
 def test_live_round_robin_admits_new_checkpoint_and_deepens_all_ready_pairs(tmp_path):
@@ -37,3 +38,15 @@ def test_historical_checkpoint_loads_its_own_public_core(monkeypatch):
     historical.aux_spec = "v1"
     with pytest.raises(ValueError,match="public auxiliary-input contract"):
         variant_policy(config,{"checkpoint":"privileged.pt"},parent)
+
+
+def test_final_checkpoint_from_previous_run_is_not_admitted_before_completion(tmp_path):
+    parent, final, progress = (tmp_path/n for n in ["parent.pt","final.pt","training.json"])
+    parent.touch();final.touch()
+    params = {"adapter_checkpoint":str(final),"ready_when":{
+        "path":str(progress),"field":"status","equals":"Training complete"}}
+    config = {"checkpoint":str(parent)}
+    progress.write_text(json.dumps({"status":"Running"}))
+    assert not variant_ready(config,params)
+    progress.write_text(json.dumps({"status":"Training complete"}))
+    assert variant_ready(config,params)

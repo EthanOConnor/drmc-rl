@@ -381,6 +381,9 @@ split the schedule, not the sides of a seed pair. A variant's `checkpoint`
 selects an older public core; `adapter_checkpoint` selects a residual on that
 variant's parent. Historical cores with privileged auxiliary contracts are
 rejected. Worker state and checkpoint readiness accompany every closed snapshot.
+For a reused final-checkpoint filename, add `ready_when` with `path` pointing to
+training telemetry, `field: status`, and `equals: Training complete`; an older
+file at that path must not be mistaken for the new final model.
 The live leaderboard combines tournament phases at the same level and pace;
 Elo-reference changes use differences of joint posterior samples, preserving
 their covariance. Levels and paces retain separate rating fields.

@@ -251,7 +251,16 @@ def variant_ready(config, params):
     paths = [params.get("checkpoint",config["checkpoint"])]
     if "adapter_checkpoint" in params:
         paths.append(params["adapter_checkpoint"])
-    return all(Path(path).is_file() for path in paths)
+    if not all(Path(path).is_file() for path in paths):
+        return False
+    gate = params.get("ready_when")
+    if gate:
+        try:
+            state = json.loads(Path(gate["path"]).read_text())
+        except (OSError,ValueError):
+            return False
+        return state.get(gate["field"]) == gate["equals"]
+    return True
 
 
 def match_ready(config, match):
