@@ -109,4 +109,15 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
         context_schema=PUBLIC_CONTEXT_SCHEMA, execution=execution,
     )
     info["vs/observation_timeline"] = state["vs/observation_timeline"]
+    # Preserve the exact own controller boundary for later deterministic motor
+    # labels. This is archival metadata, not another network input or a native
+    # restore snapshot. Candidate costs alone cannot recover DAS/parity/counter.
+    info["public_controller_geometry"] = {
+        **{key: int(state[key]) for key in ("speed", "speed_ups", "pill_counter_total")},
+        "decision_delay_frames": int(delay), "compute_frames": int(compute_frames),
+        **{key: int(state["falling"][key]) for key in (
+            "x", "y", "rotation", "speed_counter", "horizontal_velocity",
+            "hold_dir", "rotation_hold", "frame_parity",
+        )},
+    }
     return observation[None], [info]

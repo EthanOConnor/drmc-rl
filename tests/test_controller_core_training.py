@@ -103,6 +103,7 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
     write_public_replay(path, rows, games, update=3, pace="normal", level=14)
     with np.load(path, allow_pickle=False) as replay:
         metadata = json.loads(str(replay["metadata"]))
+        assert metadata["schema"] == "drmc-public-controller-replay-v2"
         assert metadata["observation_schema"] == actor.aux_spec
         assert "return" not in metadata["actor_inputs"]
         assert not {"seed", "raw_ram", "pending_attack", "restore"}.intersection(metadata["actor_inputs"])
@@ -113,6 +114,10 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
             np.testing.assert_array_equal(replay["public_context"][i], row["public_context"])
             assert replay["actions"][lo + replay["slot"][i]] == replay["action"][i]
             assert replay["game_seed"][i] == games[i]["seed"]
+            from drmc_rl.human.motor_opportunity import state_from_controller_replay
+            restored = state_from_controller_replay(replay, i)
+            np.testing.assert_array_equal(restored["board_planes"], row["observation"][:8])
+            assert restored["falling"]["frame_parity"] == infos[i]["public_controller_geometry"]["frame_parity"]
 
 
 def test_collection_audit_preserves_behavior_and_detects_real_distribution_drift(parent):
@@ -139,6 +144,46 @@ def test_collection_audit_preserves_behavior_and_detects_real_distribution_drift
     row["old_logprob"] = float(row["behavior_logp"][row["slot"]])
     with pytest.raises(RuntimeError, match="total variation"):
         _policy_snapshot(actor, rows, 2)
+
+
+def test_motor_opportunity_bank_uses_committed_complete_controller_replay(parent, tmp_path):
+    from tools.build_motor_opportunity_bank import run
+    from drmc_rl.human.motor_opportunity import state_from_controller_replay
+
+    actor = ControllerCorePolicy(parent, seed=21)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    row = actor.learning_records[1]  # Actual Normal profile, seed 17291 / P2.
+    row.update({"return": 1., "game_id": 0})
+    replay_dir = tmp_path / "public-replay"
+    path = replay_dir / "update-00001.npz"
+    write_public_replay(path, [row], [dict(seed=17291, side=1)], update=1, pace="normal", level=14)
+    progress = tmp_path / "training.json"
+    progress.write_text(json.dumps(dict(updates=0)))
+    config = dict(replay_directory=str(replay_dir), output=str(tmp_path / "labels"),
+                  native_library=os.environ.get("DRMC_FRAME_LIBRARY"), seed=927,
+                  holdout_seeds=[61183], max_roots=1, per_game=1, per_update=1)
+    result = run(config)
+    assert result["roots"] == 0  # Uncommitted replay is not a training source.
+    progress.write_text(json.dumps(dict(updates=1)))
+    result = run(config)
+    assert result["status"] == "Complete" and result["roots"] == 1
+    journal = tmp_path / "labels" / "roots.jsonl"
+    record = json.loads(journal.read_text())
+    with np.load(tmp_path / "labels" / record["path"], allow_pickle=False) as data:
+        np.testing.assert_array_equal(data["actions"], np.sort(row["actions"]))
+        assert data["next_costs"].shape == (len(row["actions"]), 2, 512)
+        assert int(data["observed_action"]) == row["action"]
+    original = journal.read_text()
+    assert run(config)["roots"] == 1
+    assert journal.read_text() == original
+    with np.load(path, allow_pickle=False) as data:
+        old = {key: data[key] for key in data.files}
+    old_metadata = json.loads(str(old["metadata"]))
+    old_metadata["schema"] = "drmc-public-controller-replay-v1"
+    old["metadata"] = np.asarray(json.dumps(old_metadata))
+    with pytest.raises(ValueError, match="exact v2"):
+        state_from_controller_replay(old, 0)
 
 
 def test_mixed_public_context_and_frozen_actors_have_frame_event_parity(parent):

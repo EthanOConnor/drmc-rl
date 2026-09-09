@@ -22,6 +22,11 @@ from tools.vs_head_to_head import PlainPolicy
 
 CORE_SCHEMA = "drmc-public-controller-core-v1"
 INPUT_FIELDS = ("observation", "pill", "preview", "actions", "costs", "mask", "public_context")
+CONTROLLER_GEOMETRY_FIELDS = (
+    "speed", "speed_ups", "pill_counter_total", "decision_delay_frames", "compute_frames",
+    "x", "y", "rotation", "speed_counter", "horizontal_velocity", "hold_dir",
+    "rotation_hold", "frame_parity",
+)
 
 
 class ControllerCorePolicy(PlainPolicy):
@@ -112,6 +117,10 @@ class ControllerCorePolicy(PlainPolicy):
                 observed_frame=int(infos[i]["public_pair_state"].frame_id),
                 viewer_side=int(infos[i]["public_acting_side"]),
                 collection_id=self._collection_id,
+                controller_geometry=np.asarray([
+                    infos[i]["public_controller_geometry"][key]
+                    for key in CONTROLLER_GEOMETRY_FIELDS
+                ], dtype=np.int32),
             )
             self.learning_records.append(row)
             scores[i, slot] = scores[i, masks[i]].max() + 1
@@ -184,10 +193,13 @@ def write_public_replay(path, records, games, *, update, pace, level):
         payload[key] = np.asarray([r[key] for r in records])
     payload["game_seed"] = np.asarray([games[r["game_id"]]["seed"] for r in records], np.int32)
     payload["learner_port"] = np.asarray([games[r["game_id"]]["side"] for r in records], np.int8)
+    payload["controller_geometry"] = np.stack([r["controller_geometry"] for r in records])
     payload["metadata"] = np.asarray(json.dumps(dict(
-        schema="drmc-public-controller-replay-v1", update=update, behavior_update=update - 1,
+        schema="drmc-public-controller-replay-v2", update=update, behavior_update=update - 1,
         pace=pace, level=level,
         observation_schema=PUBLIC_CONTEXT_SCHEMA, actor_inputs=INPUT_FIELDS,
+        controller_geometry_fields=CONTROLLER_GEOMETRY_FIELDS,
+        controller_geometry_scope="observed-own-controller-boundary-for-conditional-labels",
         outcome_scope="natural-terminal-observed-policy-continuation",
         reference_scope="fixed-post-migration-initial-policy",
     )))

@@ -399,8 +399,10 @@ and numerical bound. They are not evidence of learning or permission to
 substitute a newly computed behavior policy.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
-the tf3090 trainer-output mount. Its `config.json` records the current immutable
-source snapshot; native code is `19f292c`. It continues the valid updates in `controller-core-live-v2`;
+the tf3090 trainer-output mount. Its launch configuration is under the sibling
+`configs/` directory, currently `controller-core-live-v4-progress.json`; each
+checkpoint also carries that configuration. Native code is `19f292c`.
+It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
 and 1B console frames, with at least 500k learner decisions at each pace.
 Console frames and learner decisions are distinct counters. Local tf3090 logs
@@ -415,6 +417,26 @@ run after real work on the training thread; a timer alone cannot refresh a
 stalled worker's timestamp. Budget counters still include completed updates
 only. The dashboard shows current activity separately and retains its overdue
 and explicit-failure alerts when worker activity or the remote feed stops.
+
+New `drmc-public-controller-replay-v2` shards also retain the exact observed own
+controller microstate, BCD pill counter, gravity setting and charged delay as
+archival geometry. The actor tensor contract is unchanged. V1 shards cannot
+recover this information and are explicitly skipped by
+`trainer-motor-opportunity-bank --set motor_opportunity_config=PATH`.
+That CPU recipe consumes only replay updates whose checkpoint is complete. Its
+JSON names `replay_directory`, `output`, `native_library`, reserved arena
+`holdout_seeds`, `seed`, and optional `max_roots`, `per_game`, `per_update` and
+`watch`. It samples opening, intermediate and late decisions from whole games,
+retains every feasible root move and assigns all occurrences of a reset seed
+to one fitting split. `roots.jsonl` and compressed root arrays retain both
+spawn-parity branches, exact afterstates/clear effects, next-pill full action
+costs, and reachable/clear-enabling cell maps. Costs include the next reaction
+and compute delay; they describe valid witnesses, not guaranteed shortest paths
+or the frame when the clear animation begins. Incoming garbage is explicitly
+excluded. Terminal success is kept separate from losing future access. These
+are deterministic auxiliary labels, not all-action match outcomes. Fitting,
+independent held-out prediction checks, and controller strength evaluation are
+still required before a model uses them in the trainer.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the

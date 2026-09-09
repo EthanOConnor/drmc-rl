@@ -280,8 +280,16 @@ indefinitely staged.
   view from native effects or passive cartridge instruction hooks. Context-aware
   cores consume it in the source backend; frozen players retain their existing
   inputs. Native/WASM parity covers 64,800 frames including exact effects, and
-  neural live-backend tests cover Sloth and Top Humans. Future motor-opportunity
-  features and representative device/strength evaluation remain outstanding;
+  neural live-backend tests cover Sloth and Top Humans. Exact conditional
+  motor-opportunity labeling now resolves every current candidate, carries its
+  horizontal controller state into the visible next pill, applies the next
+  gravity speed-up and actual reaction/compute delay, and retains both spawn
+  parities. Two-placement native controller tests cover Sloth, Top Humans and
+  Frame Perfect, including clear effects and terminal success. The CPU bank
+  recipe uses exact v2 public controller replay, excludes reserved arena seeds
+  and holds out whole reset seeds. Incoming garbage remains an explicit
+  condition; these are auxiliary geometry targets, not match-value labels.
+  Motor-opportunity model fitting and representative device/strength evaluation remain outstanding;
   no new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and

@@ -98,6 +98,21 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-motor-opportunity-bank:
+    status: active
+    stage: 4
+    purpose: Generate complete conditional next-known-pill movement and clear targets from exact public controller replay, with whole-seed holdouts.
+    requires_paths: [tools/build_motor_opportunity_bank.py, '{motor_opportunity_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.build_motor_opportunity_bank, --config, '{motor_opportunity_config}']
+    produces: [Exact own-board effects, next-pill frontiers and region maps for both spawn parities, whole-seed train/validation splits]
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
+    notes:
+      - Inputs require v2 controller replay with observed own DAS, parity, counters and charged delay. Old missing microstates are not fabricated.
+      - Every root candidate is retained. Incoming garbage is explicitly excluded and the two spawn parities are separate conditions, not samples.
+      - These deterministic geometry labels are auxiliary targets, not counterfactual match values, a style reward, or promotion evidence.
   trainer-controller-core:
     status: active
     stage: 3
