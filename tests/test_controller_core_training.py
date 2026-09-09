@@ -66,9 +66,13 @@ def test_outcome_gradients_reach_the_full_core_and_saved_policy_reloads(parent, 
         row.update({"return": 1.0 if i % 2 else -1.0, "weight": 1.0, "game_id": i})
     before = {name: p.detach().clone() for name, p in actor.net.named_parameters()}
     optimizer = torch.optim.AdamW(actor.net.parameters(), lr=2e-4)
+    activity = []
     metrics = update_adapter(actor, optimizer, records,
-                             {"minibatch": 2, "epochs": 2, "max_update_kl": .05}, 71)
+                             {"minibatch": 2, "epochs": 2, "max_update_kl": .05}, 71,
+                             activity=lambda phase, **work: activity.append(dict(phase=phase, **work)))
     assert metrics["optimizer_steps"] > 0 and metrics["update_kl"] <= .05
+    assert {"auditing_collection", "optimizing", "checking_update"} <= {w["phase"] for w in activity}
+    assert max(w.get("step", 0) for w in activity) == 2
     assert not torch.equal(before["bottle.stem.weight"], actor.net.bottle.stem.weight)
     assert not torch.equal(before["condition.0.weight"], actor.net.condition[0].weight)
     assert all(p.grad is None for p in actor.reference.parameters())
@@ -151,7 +155,12 @@ def test_mixed_public_context_and_frozen_actors_have_frame_event_parity(parent):
     reference, parallel = NativeReachabilityRunner(), ParallelPlanning(2)
     try:
         expected, _ = run_batch(config, match, jobs, None, reference, None, policies=actors)
-        actual, _ = run_event_batch(config, match, jobs, None, parallel, None, policies=actors)
+        activity = []
+        actual, _ = run_event_batch(config, match, jobs, None, parallel, None,
+                                    policies=actors, activity=activity.append)
+        assert activity[-1]["games"] == len(jobs)
+        assert activity[-1]["frames"] == sum(row["frames"] for row, _, _ in actual)
+        assert activity[-1]["decision_requests"] == sum(row["a_stats"]["decisions"] for row, _, _ in actual)
         for left, right in zip(expected, actual):
             for key in ("seed", "side", "index", "score", "winner", "reason", "frames"):
                 assert left[0][key] == right[0][key]
@@ -219,3 +228,52 @@ def test_collection_versions_cannot_mix_updates(parent):
     actor.score(obs, infos)
     with pytest.raises(RuntimeError, match="versions were mixed"):
         actor.finish_collection(old + actor.learning_records)
+
+
+def test_activity_reports_real_work_without_inflating_completed_counters(tmp_path, monkeypatch):
+    from tools.train_pace_strategy import TrainingActivity
+
+    clock = [0.]
+    monkeypatch.setattr("tools.train_pace_strategy.time.monotonic", lambda: clock[0])
+    path = tmp_path / "training.json"
+    completed = dict(updates=2, frames=4000, decisions=100)
+    progress = dict(status="Running", **completed)
+    report = TrainingActivity(path, progress)
+    report("collecting", games=0, frames=10)
+    before = path.read_bytes()
+    clock[0] = 300.
+    report("collecting", games=0, frames=10)
+    assert path.read_bytes() == before  # No fresh timestamp from idle polling.
+    report("collecting", games=2, frames=300)
+    saved = json.loads(path.read_text())
+    assert {k: saved[k] for k in completed} == completed
+    assert saved["activity"]["frames"] == 300
+    clock[0] += 1.
+    report("optimizing", epoch=1, step=1)
+    assert json.loads(path.read_text())["phase"] == "optimizing"
+
+
+def test_controller_training_command_finishes_with_activity_reporting(parent, tmp_path):
+    import subprocess
+    import sys
+
+    output = tmp_path / "run"
+    config = dict(checkpoint=str(parent), output=str(output),
+                  working_db=str(tmp_path / "working.sqlite"),
+                  native_library=os.environ.get("DRMC_FRAME_LIBRARY"), device="cpu",
+                  threads=1, seed=6153, updates=1, games_per_update=2, paces=["normal"],
+                  holdout_seeds=[], level20_fraction=0, max_game_frames=12000,
+                  training_model="public_core", public_replay=True,
+                  rollout_backend="events", async_planning=False, planner_workers=1,
+                  epochs=1, minibatch=32, lr=3e-6, checkpoint_keep_last=1)
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(config))
+    result = subprocess.run([sys.executable, "-m", "tools.train_pace_strategy", "--config", str(path)],
+                            capture_output=True, text=True, timeout=40)
+    assert result.returncode == 0, result.stderr
+    state = json.loads((output / "training.json").read_text())
+    assert state["status"] == "Training complete"
+    assert state["updates"] == 1 and state["decisions"] > 0
+    assert state["activity"] is None
+    assert (output / "core-final.pt").is_file()
+    assert (output / "public-replay/update-00001.npz").is_file()

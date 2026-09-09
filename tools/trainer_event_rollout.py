@@ -90,12 +90,13 @@ class ParallelPlanning:
             Path(self.planner.capture_path).write_text(json.dumps(list(self.planner.roots.values())))
 
 
-def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None):
+def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None):
     if preparer is not None or any(p.get("anticipation") for p in config["variants"].values()):
         raise ValueError("event rollout currently requires reaction-covered computation")
     if config.get("replay_games", 0):
         raise ValueError("use the reference frame runner for full-frame replay capture")
     started = time.perf_counter()
+    next_activity = started
     measured = Counter()
     pace = resolve_pace(match.get("pace", "frame_perfect"))
     limit = config.get("max_game_frames", 60000)
@@ -117,6 +118,14 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     statistics[side][field] += getattr(value, field)
                 if value.needs_action and side not in pending:
                     ready.append(side)
+            if activity and (time.perf_counter() >= next_activity or (not ready and not pending)):
+                activity(dict(
+                    games=sum(s.terminal or s.frame >= limit for s in pool.states[::2]),
+                    frames=sum(int(s.frame) for s in pool.states[::2]),
+                    decision_requests=sum(statistics[2*p+side]["decisions"]
+                                          for p, (_, side, _) in enumerate(jobs)),
+                ))
+                next_activity = time.perf_counter() + 5
             if not ready and not pending:
                 break
             requests, actors = [], []

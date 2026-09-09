@@ -9,6 +9,18 @@ const paceNames = {sloth:'Sloth',relaxed:'Relaxed',normal:'Normal',fast:'Fast',t
 const age = value => value ? Math.max(0,(Date.now()-Date.parse(value))/1000) : Infinity;
 const ago = value => !Number.isFinite(value) ? 'No update yet' : value < 60 ? 'Updated just now' : value < 3600 ? `${Math.floor(value/60)}m since update` : `${Math.floor(value/3600)}h since update`;
 const bar = (value,target) => `<div class="bar"><i style="width:${Math.max(0,Math.min(100,100*num(value)/Math.max(1,num(target))))}%"></i></div>`;
+function trainingPhase(t) {
+  if(t.status!=='Running') return t.status || 'Waiting';
+  return {collecting:'Collecting games',auditing_collection:'Checking collection',optimizing:'Updating network',checking_update:'Checking update',saving_replay:'Saving public replay',saving_checkpoint:'Saving checkpoint',between_updates:'Between updates'}[t.phase] || 'Running';
+}
+function trainingActivity(t) {
+  const w=t.activity;
+  if(t.status!=='Running' || !w) return '';
+  if(w.phase==='collecting') return `${count(w.games)} / ${count(w.target)} games finished · ${compact(w.frames)} frames simulated · ${compact(w.decision_requests)} decision requests in this update`;
+  if(w.phase==='optimizing') return `Epoch ${count(w.epoch)} / ${count(w.epochs)} · step ${count(w.step)} / ${count(w.steps)}${w.attempt>1?` · retry ${count(w.attempt-1)}`:''}`;
+  if(w.phase==='auditing_collection' || w.phase==='checking_update') return `${compact(w.checked)} / ${compact(w.total)} decisions checked`;
+  return trainingPhase(t);
+}
 function saved(key,fallback) { try { return localStorage.getItem(`pp-tournament-${key}`) || fallback; } catch { return fallback; } }
 function save(key,value) { try { localStorage.setItem(`pp-tournament-${key}`,value); } catch {} }
 let experiment = null, snapshot = null, reference = saved('reference','parent'), condition = saved('condition','14:normal');
@@ -83,9 +95,9 @@ function renderOperations() {
   }).join('') || '<p class="empty">Evaluation workers are starting.</p>';
   $('#training-status').textContent = t.status==='Running'?'Running':t.status || 'Waiting';
   $('#training-status').className = `tag ${t.status==='Failed'?'bad':t.status==='Running'?'good':''}`;
-  $('#training').innerHTML = `<div class="training-body"><div class="training-head"><strong>${compact(t.frames)}</strong><span>/ ${compact(t.target_frames)} frames</span></div>${bar(t.frames,t.target_frames)}<div class="training-detail"><span>${compact(t.throughput?.frames_per_second)} frames/s</span><span>${count(t.updates)} updates</span></div>${Object.entries(t.paces || {}).map(([pace,c])=>`<div class="pace-budget"><span>${esc(paceNames[pace] || pace)}</span>${bar(c.learning_decisions,t.minimum_decisions_per_pace)}<strong>${compact(c.learning_decisions)}</strong></div>`).join('')}<p class="budget-note">${compact(t.minimum_decisions_per_pace)} learned placements required at every pace.<br>${ago(age(t.updated_at))}${t.status==='Running'?` · ${esc(paceNames[t.current_pace] || t.current_pace)} ${count(t.collecting_games)}/${count(t.collecting_target)} games`:''}</p></div>`;
+  $('#training').innerHTML = `<div class="training-body"><div class="training-head"><strong>${compact(t.frames)}</strong><span>/ ${compact(t.target_frames)} frames</span></div>${bar(t.frames,t.target_frames)}<div class="training-detail"><span>${compact(t.throughput?.frames_per_second)} frames/s</span><span>${count(t.updates)} updates</span></div>${Object.entries(t.paces || {}).map(([pace,c])=>`<div class="pace-budget"><span>${esc(paceNames[pace] || pace)}</span>${bar(c.learning_decisions,t.minimum_decisions_per_pace)}<strong>${compact(c.learning_decisions)}</strong></div>`).join('')}<p class="budget-note">${compact(t.minimum_decisions_per_pace)} learned placements required at every pace.<br>${ago(age(t.updated_at))}${t.status==='Running'?` · ${esc(paceNames[t.current_pace] || t.current_pace)} ${count(t.activity?.phase==='collecting'?t.activity.games:t.collecting_games)}/${count(t.collecting_target)} games`:''}</p></div>`;
   if (t.target_decisions) {
-    $('#training').insertAdjacentHTML('afterbegin', `<div class="training-body"><div class="training-head"><strong>${compact(t.decisions)}</strong><span>/ ${compact(t.target_decisions)} learner decisions</span></div>${bar(t.decisions,t.target_decisions)}<div class="training-detail"><span>${compact(t.throughput?.learning_decisions_per_second)} decisions/s</span><span>${t.status==='Running'?(t.phase==='optimizing'?'Updating network':'Collecting games'):esc(t.status)}</span></div><p class="budget-note">Both the decision and console-frame budgets must be met.</p></div>`);
+    $('#training').insertAdjacentHTML('afterbegin', `<div class="training-body"><div class="training-head"><strong>${compact(t.decisions)}</strong><span>/ ${compact(t.target_decisions)} learner decisions</span></div>${bar(t.decisions,t.target_decisions)}<div class="training-detail"><span>${compact(t.throughput?.learning_decisions_per_second)} decisions/s</span><span>${esc(trainingPhase(t))}</span></div><p class="budget-note">Budgets count completed updates. Both targets must be met.</p>${trainingActivity(t)?`<p class="budget-note">${esc(trainingActivity(t))}</p>`:''}</div>`);
   }
   if(experiment.training_runs?.length){
     $('#training').insertAdjacentHTML('afterbegin',`<div class="training-body">${experiment.training_runs.map(run=>`<div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)} · ${compact(run.frames)} / ${compact(run.target_frames)}</span></div>${bar(run.frames,run.target_frames)}`).join('')}<p class="budget-note">Details below: ${esc(t.label)}. Last update KL: ${t.losses?.update_kl==null?'—':Number(t.losses.update_kl).toFixed(4)}.</p></div>`);

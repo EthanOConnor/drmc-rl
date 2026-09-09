@@ -44,6 +44,25 @@ from tools.trainer_planning_arena import run_batch
 from tools.vs_head_to_head import PlainPolicy
 
 
+class TrainingActivity:
+    """Report real work, keeping completed-update counters unchanged."""
+    def __init__(self, path, progress):
+        self.path, self.progress = path, progress
+        self.next_write = 0.0
+
+    def __call__(self, phase, **work):
+        activity = dict(phase=phase, **work)
+        if activity == self.progress.get("activity"):
+            return  # A timer alone must not make a stalled worker look healthy.
+        changed_phase = self.progress.get("phase") != phase
+        self.progress.update(phase=phase, activity=activity)
+        now = time.monotonic()
+        if changed_phase or now >= self.next_write:
+            self.progress["updated_at"] = datetime.now(UTC).isoformat()
+            dump(self.path, self.progress)
+            self.next_write = now + 5
+
+
 def terminal_samples(batch):
     """Exclude censored games; retain length metadata without choosing a loss."""
     samples = []
@@ -153,7 +172,7 @@ def _training_forward(actor, features):
 
 
 @torch.no_grad()
-def _policy_snapshot(actor, records, size, *, reference=None):
+def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
     """Exact categorical KL on all decisions, including unchosen moves."""
     distributions, divergences, errors = [], [], []
     agreement = {}
@@ -210,13 +229,16 @@ def _policy_snapshot(actor, records, size, *, reference=None):
             for i, row in enumerate(rows):
                 old[i, : len(row["base_logits"])]=reference[start + i].numpy()
             divergences.extend(categorical_kl(torch.as_tensor(old, device=logs.device), logs).cpu().tolist())
+        if activity:
+            activity("auditing_collection" if reference is None else "checking_update",
+                     checked=min(start + size, len(records)), total=len(records))
     if reference is None:
         return distributions, agreement
     kl = float(np.mean(divergences))
     return (max(0.0, kl) if np.isfinite(kl) else kl), float(np.mean(errors))
 
 
-def update_adapter(actor, optimizer, records, config, seed):
+def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
     if not records:
         raise RuntimeError("no natural-terminal learner decisions; cannot train")
     if hasattr(actor, "finish_collection"):
@@ -236,7 +258,7 @@ def update_adapter(actor, optimizer, records, config, seed):
         record["advantage"] = float(advantages[i])
         record.update({key + "_weight": float(weights[i]) for key, weights in reductions.items()})
     size = config.get("minibatch", 128)
-    old_distributions, collection_agreement = _policy_snapshot(actor, records, size)
+    old_distributions, collection_agreement = _policy_snapshot(actor, records, size, activity=activity)
     rng, totals = np.random.default_rng(seed), defaultdict(list)
     max_kl = float(config.get("max_update_kl", 0.06))
     if not np.isfinite(max_kl) or max_kl <= 0:
@@ -295,6 +317,10 @@ def update_adapter(actor, optimizer, records, config, seed):
                     raise RuntimeError("non-finite pace adapter gradient")
                 optimizer.step()
                 attempt_steps += 1
+                if activity:
+                    activity("optimizing", epoch=_epoch+1, epochs=config.get("epochs", 2),
+                             step=attempt_steps, steps=(len(indices)+size-1)//size,
+                             attempt=attempt+1)
                 if steps == 0 and attempt_steps == 1:
                     with torch.no_grad():
                         after = _training_forward(actor, features)[0].log_softmax(-1)
@@ -308,7 +334,7 @@ def update_adapter(actor, optimizer, records, config, seed):
                 ).items():
                     attempt_totals[key].append((value, len(rows)))
             measured_kl, measured_mse = _policy_snapshot(
-                actor, records, size, reference=old_distributions
+                actor, records, size, reference=old_distributions, activity=activity
             )
             if np.isfinite(measured_kl) and measured_kl <= max_kl:
                 accepted_kl, value_mse = measured_kl, measured_mse
@@ -477,6 +503,7 @@ def main():
     if full_core and not config.get("resume"):
         actor.save(output / "core-initial.pt", update=0, training_config=config)
     started = time.perf_counter()
+    activity = TrainingActivity(output / "training.json", progress)
     try:
         for update in range(start_update+1,config["updates"]+1):
             if training_target_met(progress,config):
@@ -512,7 +539,10 @@ def main():
                 collecting_update=update,
                 collecting_games=0,
                 collecting_target=count,
+                collecting_decisions=0,
+                collecting_frames=0,
                 phase="collecting",
+                activity=None,
                 updated_at=datetime.now(UTC).isoformat(),
             )
             dump(output/"training.json",progress)
@@ -523,6 +553,15 @@ def main():
                 raise ValueError("rollout chunks require complete paired seeds")
             for start in range(0,len(jobs),chunk_size):
                 metrics = {}
+                completed_games = len(batch)
+                completed_frames = sum(row["frames"] for row, _, _ in batch)
+                completed_requests = sum(row["a_stats"].get("decisions", 0) for row, _, _ in batch)
+
+                def collection_activity(work):
+                    activity("collecting", games=completed_games+work["games"], target=count,
+                             frames=completed_frames+work["frames"],
+                             decision_requests=completed_requests+work["decision_requests"])
+
                 part, seconds = rollout(
                     config,
                     match,
@@ -531,6 +570,7 @@ def main():
                     planner,
                     None,
                     policies={"learner": actor, opponent_id: opponent},
+                    activity=collection_activity,
                     **({"metrics": metrics} if rollout is not run_batch else {}),
                 )
                 batch.extend(part)
@@ -543,6 +583,7 @@ def main():
             records = terminal_samples(batch)
             rows = [r for r,_,_ in batch]
             if full_core and config.get("public_replay", False):
+                activity("saving_replay", decisions=len(records))
                 from drmc_rl.models.policy.controller_core import write_public_replay
                 # Preserve complete natural experience even if the subsequent
                 # optimizer audit fails. Resume atomically replaces a repeated
@@ -554,9 +595,10 @@ def main():
                             updated_at=datetime.now(UTC).isoformat())
             dump(output/"training.json", progress)
             optimizing = time.perf_counter()
-            losses = update_adapter(actor,optimizer,records,config,config["seed"]+update)
+            losses = update_adapter(actor,optimizer,records,config,config["seed"]+update,activity=activity)
             breakdown["optimizer_seconds"] = time.perf_counter()-optimizing
             stats = progress["paces"].setdefault(pace,{})
+            activity("saving_checkpoint", update=update)
             journaling = time.perf_counter()
             with (output/"training-games.jsonl").open("a") as stream:
                 for row in rows:
@@ -607,6 +649,8 @@ def main():
                 path = output/f"{checkpoint_prefix}-f{milestone:09d}.pt"
                 if progress["frames"] >= milestone and not path.exists():
                     actor.save(path,update=update,progress=progress,training_config=config)
+            progress.update(phase="between_updates", activity=None,
+                            updated_at=datetime.now(UTC).isoformat())
             dump(output/"training.json",progress)
             print(json.dumps({k:progress[k] for k in ("updates","games","frames","decisions","current_pace","batch_seconds","throughput","losses")}),flush=True)
             del records, batch

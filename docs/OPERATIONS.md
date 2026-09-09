@@ -339,10 +339,11 @@ and permits only actor reduction and artifact paths to differ. Training arms
 run sequentially; frozen evaluation shards start after both complete.
 The September review study is under `trainer-output/review-20260909` on the
 mombox overflow mount, with an isolated tf3090 source and 50M additional frames
-per arm. Both completed (50,369,235 and 50,201,899 frames) and frozen evaluation
-has started. A 2,048-seed exclusion bank supplies 16,384 reserved side-swapped
-games. These screen the two objectives; independent-seed finalists still need
-new confirmation games. The dashboard at `http://127.0.0.1:8098/` reads both arms.
+per arm. Both completed (50,369,235 and 50,201,899 frames), followed by all 16,384
+reserved side-swapped games with no censoring. The assessment is in
+`runs/review-20260909/objective-arena-assessment.json` and the roadmap.
+Independent training-seed finalists still need fresh confirmation games.
+The dashboard at `http://127.0.0.1:8098/` retains both arms and their evaluation.
 
 New public native PPO runs set `env.public_observations: true`. This selects
 `step_strict` and maintains separate causal opponent snapshots through partial
@@ -396,6 +397,35 @@ paths agreed within that bound. A fresh 16,435-decision collection reached
 identity test. These audits motivate the separate structural identity check
 and numerical bound. They are not evidence of learning or permission to
 substitute a newly computed behavior policy.
+
+The active full-core run is `review-20260909/controller-core-live-v4` under
+the tf3090 trainer-output mount. Its `config.json` records the current immutable
+source snapshot; native code is `19f292c`. It continues the valid updates in `controller-core-live-v2`;
+failed collection attempts remain intact. The budget is 10M learner decisions
+and 1B console frames, with at least 500k learner decisions at each pace.
+Console frames and learner decisions are distinct counters. Local tf3090 logs
+are at `/home/ethan/.cache/drmc-rl/logs/controller-core-live-v4.log` so a storage
+reconnection cannot invalidate the open log handle. Progress and checkpoints
+remain on mombox. `runs/trainer-pace-v1/sync.json` mirrors only named milestones
+and progress, keeping public replay shards on overflow storage.
+
+Training publishes actual in-flight collection frames/decision requests and
+optimizer/audit steps every five seconds, plus phase changes. These callbacks
+run after real work on the training thread; a timer alone cannot refresh a
+stalled worker's timestamp. Budget counters still include completed updates
+only. The dashboard shows current activity separately and retains its overdue
+and explicit-failure alerts when worker activity or the remote feed stops.
+
+The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
+under `runs/review-20260909/` launch through `trainer-planning-arena` from the
+isolated `controller-arena-0c76c0e-source` snapshot. Their 32,768 scheduled games
+compare the initial migration with the frozen parent and the 25M-frame core
+with initial, parent and corrected E1 adapter. Each 14-HI edge gets 1,024 games
+at each of seven paces; separate 20-HI Normal/Top Humans edges get 512 games.
+All seeds come from the training exclusion bank. Workers wait for the mirrored
+milestone, preserve move traces and use the exact batched event runner.
+The four-frame compute charge is an evaluation assumption to be verified on
+deployment hardware; this tournament does not certify latency by itself.
 
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and

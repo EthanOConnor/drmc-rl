@@ -40,7 +40,7 @@ from tools.vs_head_to_head import PlainPolicy
 FPS = 60.0988
 
 
-def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
+def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, activity=None):
     pace = resolve_pace(match.get("pace", "frame_perfect"))
     variants = config["variants"]
     count = len(jobs)
@@ -53,6 +53,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
     replays = [[] for _ in jobs]
     was_falling = [False] * len(controllers)
     begun = time.perf_counter()
+    next_activity = begun
     budget = config.get("reactive_compute_frames", 3)
     preparation_budget = config.get("preparation_compute_frames", 6)
     max_frames = config.get("max_game_frames", 60000)
@@ -62,6 +63,14 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
         pool.reset([job[0] for job in jobs], level=match["level"])
         for frame in range(max_frames):
             states = pool.states
+            if activity and (time.perf_counter() >= next_activity or all(s.terminal for s in states[::2])):
+                activity(dict(
+                    games=sum(s.terminal for s in states[::2]),
+                    frames=sum(int(s.frame) for s in states[::2]),
+                    decision_requests=sum(statistics[2*p+side]["decisions"]
+                                          for p, (_, side, _) in enumerate(jobs)),
+                ))
+                next_activity = time.perf_counter() + 5
             if all(states[2*p].terminal for p in range(count)):
                 break
             fresh, observations, infos, policy_ids = [], [], [], []

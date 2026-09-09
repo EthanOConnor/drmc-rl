@@ -280,13 +280,19 @@ indefinitely staged.
   view from native effects or passive cartridge instruction hooks. Context-aware
   cores consume it in the source backend; frozen players retain their existing
   inputs. Native/WASM parity covers 64,800 frames including exact effects, and
-  neural live-backend tests cover Sloth and Top Humans. Full-core learning,
-  future motor-opportunity features and device/strength evaluation remain
-  outstanding; no new core has been installed. Full-network controller outcome
+  neural live-backend tests cover Sloth and Top Humans. Future motor-opportunity
+  features and representative device/strength evaluation remain outstanding;
+  no new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and
-  complete public replay shards. Representative training and strength evidence
-  are the next step, not implied by those implementation checks.
+  complete public replay shards. The full 320×8 core run now targets 10M learner
+  decisions and 1B console frames, including at least 500k learner decisions
+  at each pace. Two Mac workers are running the 32,768-game initial/milestone
+  study described in `OPERATIONS.md`; the 25M-frame entries wait for training.
+  Representative training and strength evidence remain pending. Sloth's many
+  natural simultaneous top-outs and loss of reachable actions require explicit
+  attention to earlier preparation and curriculum support; merely accumulating
+  forced or unplayable frames does not demonstrate strategic learning.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public
