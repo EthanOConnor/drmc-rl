@@ -307,6 +307,12 @@ indefinitely staged.
   0.0150; validation policy KL was 0.00101. These comparisons with the initial
   predictor are preliminary; the independent prevalence baseline, fresh-seed
   confirmation, device latency and full-game strength remain outstanding.
+  The first fresh Frame Perfect and Sloth confirmations both find reach/clear
+  prediction worse than the training-only pace/cell prevalence baseline. The
+  random-initialization comparison therefore does not establish useful motor
+  prediction. Complete the remaining conditions and strength study, and make a
+  bounded revision of initialization and auxiliary fitting using training data
+  before another independent confirmation; do not promote this first fit.
   No new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and
@@ -330,9 +336,11 @@ indefinitely staged.
   seeds, bounded whole-game temporal/tactical sampling and durable per-game
   resume. Terminal labeling can batch complete panels across multiple roots
   and retain each finished root through interruption. Serial/batched native
-  source parity and recovery checks cover these paths. Useful held-out ranking,
-  broader fitting with separate policy anchors, the larger architectures and
-  distillation remain to be established.
+  source parity and recovery checks cover these paths. Broader fitting now
+  requires independent policy-anchor games, groups repeated reset seeds, uses
+  bounded device batches and retains held-out complete-frontier predictions.
+  Only training and anchor KL govern rollback. Useful held-out ranking, the
+  larger architectures and distillation remain to be established.
 - [ ] **Adaptive search and anticipation (E6).** Complete the public full-pair
   search experiments: candidate-dependent allocation, simultaneous-action mixed
   strategies, tactical extensions, and shared geometry with late preview
@@ -340,6 +348,12 @@ indefinitely staged.
   measured compute delay and test opponent-context ablations. Integrate the
   successful approach into live planning and run substantial controller
   tournaments. Frontier batching alone does not complete this item.
+  Make public observation updates independent of internal search polling
+  cadence before collapsing complete-reserve rollouts into strict transitions.
+  The initial bulk-reserve prototype changed the retained opponent bottle on
+  some decisions and was rejected; its reproduction is retained under
+  `runs/review-20260909/prefilled-reserve-audit`. The separate native reveal
+  ordering fix prevents chance nodes from bypassing an earlier parked input.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the

@@ -579,6 +579,13 @@ For the review's offline diagnostics, launch through these recipes:
   resume under the same `contract.json`; partial roots are recomputed and
   aggregate exports rebuilt. Legacy outputs cannot acquire this contract
   after the fact. A capped branch is unknown, not a draw.
+  The native reveal query must obey the same P1-before-P2 frame ordering as
+  strict stepping. An available reserve entry is not a runnable chance node
+  when the other player still owes an earlier input. The regression in
+  `test_search_reveal_order.py` catches this on the old library. The original
+  one/eight-root and 256-slot benchmark labels predate this fix and are not
+  eligible for quality training; retain them as throughput measurements. The
+  broad source corpus uses strict stepping and remains usable.
 - `paired-quality-fit --allow-staged`: set `paired_quality_fit_config` with
   `state_bank`, `targets`, parent `checkpoint`, `mode` (baseline/critic/context/
   combined), `phase` (auxiliary/policy_improvement), `seed`, `device`, `epochs`,
