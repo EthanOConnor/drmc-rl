@@ -492,6 +492,19 @@ cells or repeated deterministic parity branches from masquerading as evidence
 of useful movement prediction. These are prediction diagnostics; full controller
 tournaments and actual deployment latency still determine adoption.
 
+Mombox now runs `motor-confirmation-v1` from immutable source
+`motor-confirmation-83591c3-source`, using the corresponding JSON in `configs/`.
+It reserves the last 64 seeds of the outcome-training exclusion bank for 1,152
+natural source games, with up to 1,728 exact labeled roots across seven 14-HI
+paces and separate Normal/Top Humans 20-HI conditions. Its `progress.json` and
+final `assessment.json` are mirrored to the dashboard. A separate
+`motor-auxiliary-arena-v1` uses that same source and compares the immutable
+fitted core with the 25M parent: 1,024 games per 14-HI pace and 512 per 20-HI
+condition, 8,192 total. Its complete journals, move traces and closed viewer
+database feed the common tournament. Both jobs use registered recipes and
+have their own `supervisor.pid` and `supervisor.log`; inspect these before any
+recovery. The older mombox and Mac evaluators continue their existing schedules.
+
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the
 isolated `controller-arena-0c76c0e-source` snapshot. Their 32,768 scheduled games
