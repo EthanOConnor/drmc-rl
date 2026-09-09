@@ -175,6 +175,8 @@ def test_fit_measures_heldout_policy_drift_against_the_initial_distribution(tmp_
     )
     bank_path.write_text("\n".join(map(json.dumps, sources)) + "\n")
     target_path.write_text("\n".join(map(json.dumps, targets)) + "\n")
+    anchor_path = tmp_path / "anchors.jsonl"
+    anchor_path.write_text(json.dumps(dict(source, id="anchor", game_id="g3")) + "\n")
     torch.save(parent, parent_path)
     output = tmp_path / "fit"
     progress = fit(
@@ -183,6 +185,8 @@ def test_fit_measures_heldout_policy_drift_against_the_initial_distribution(tmp_
             checkpoint=str(parent_path),
             state_bank=str(bank_path),
             targets=str(target_path),
+            anchor_bank=str(anchor_path),
+            minimum_anchor_games=1,
             device="cpu",
             threads=1,
             seed=47,
@@ -209,4 +213,5 @@ def test_fit_measures_heldout_policy_drift_against_the_initial_distribution(tmp_
     assert progress["initial_validation"]["anchor_kl"] == pytest.approx(0.0, abs=1e-7)
     assert progress["epochs"][-1]["validation"]["anchor_kl"] == pytest.approx(actual, abs=1e-7)
     assert progress["policy_kl_reference"] == "post-migration-initial-policy"
-    assert progress["policy_kl_measured_splits"] == ["train", "validation"]
+    assert progress["policy_kl_measured_splits"] == ["train", "anchor", "validation"]
+    assert progress["policy_kl_rollback_splits"] == ["train", "anchor"]

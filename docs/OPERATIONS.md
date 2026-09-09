@@ -574,8 +574,32 @@ For the review's offline diagnostics, launch through these recipes:
 - `paired-quality-fit --allow-staged`: set `paired_quality_fit_config` with
   `state_bank`, `targets`, parent `checkpoint`, `mode` (baseline/critic/context/
   combined), `phase` (auxiliary/policy_improvement), `seed`, `device`, `epochs`,
-  `batch_size`, `lr`, `max_policy_kl` and fresh `output`. Source-game validation
-  is mandatory. A fitted checkpoint may initialize the next phase with the
+  `batch_size`, `lr`, `max_policy_kl`, a separate `anchor_bank` and fresh
+  `output`. New fits require at least 256 independent anchor games by default
+  (`minimum_anchor_games` is explicit for small mechanical tests). An optional
+  `confirmation_bank` is read only to check partition isolation. Position ids,
+  game ids and reset-seed byte pairs must be disjoint across the complete source,
+  anchor and confirmation banks, including source positions without labels.
+  Training/validation splitting and loss weighting group repeated reset seeds;
+  older banks without seed metadata use whole game ids. Each group's retained
+  roots share one unit of weight. Both the labeled training split and independent
+  policy anchors constrain epoch acceptance; held-out drift cannot trigger
+  rollback, early stopping or a learning-rate change.
+
+  Prepared inputs, initial policy distributions and rollback copies remain in
+  host memory. `evaluation_batch_size` bounds reference and validation forwards
+  independently of the training batch size. Reports aggregate per-root sufficient
+  statistics before normalizing whole-game metrics. They include complete-frontier
+  pairwise accuracy, greedy regret/gain and the number of informative roots and
+  games; flat outcome panels do not dilute informative-only denominators, and
+  predicted ties receive their mean utility. These values describe the frozen
+  continuation panel, not optimal game values. Initial and final held-out
+  candidate predictions are retained for whole-game comparisons. Layer diagnostics
+  use at most `representation_samples` (default 4096) fixed training candidates;
+  this sampling does not affect any loss or feasible frontier. `accepted_examples`
+  and `examples_processed` distinguish retained updates from rollback attempts.
+
+  A fitted checkpoint may initialize the next phase with the
   same mode/schema; learned heads and effective EMA weights are preserved.
   Architecture changes require a new migration from the frozen core. The
   output is a diagnostic checkpoint, never automatically installed or declared
@@ -601,9 +625,10 @@ the model checkpoints. The plan uses 64 source games, a common 25% holdout and
 up to 100 auxiliary epochs per mode, with a 0.02 policy-KL limit. All outputs
 are prospective diagnostics and leave promotion gates unchanged.
 
-The broader `review-20260909/public-quality-bank-v1` corpus targets 2,048
+The broader `review-20260909/public-quality-bank-v1` corpus completed 2,048
 independent games: 1,280 fit, 512 policy-anchor and 256 confirmation games, with
-eight retained positions per game. Three frozen public checkpoints (bootstrap,
+up to eight retained positions per game. All games ended naturally, producing
+10,232 fit, 4,096 anchor and 2,044 untouched confirmation positions. Three frozen public checkpoints (bootstrap,
 2M and 10M) supply all nine matchups. Seven-eighths of games are 14 HI; the
 remainder are 20 HI. The 2M input is an inference export of existing weights,
 not new training. The initial source `97ea22b` committed 271 games before a

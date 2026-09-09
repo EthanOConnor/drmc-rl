@@ -174,7 +174,7 @@ recipes:
   paired-quality-fit:
     status: staged
     stage: 4
-    purpose: Diagnostic critic-only, public-context-only and combined fits from complete paired terminal panels, with source-game holdout and measured policy preservation KL.
+    purpose: Diagnostic critic-only, public-context-only and combined fits from complete paired terminal panels, with whole-game holdout, independent policy anchors and bounded evaluation batches.
     requires_paths: [tools/fit_paired_quality.py, '{paired_quality_fit_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.fit_paired_quality, --config, '{paired_quality_fit_config}']
@@ -184,6 +184,9 @@ recipes:
       accelerator: cuda
     notes:
       - Auxiliary and supervised policy-improvement phases are separate from on-policy PPO. All candidate outcomes must be complete.
+      - Separate policy-anchor games are mandatory; all source/anchor/confirmation position, game and reset-seed identities must be disjoint.
+      - Whole-reset-seed weighting and streamed complete-frontier metrics preserve independent-game denominators. Only training and anchor KL can control optimizer rollback.
+      - Initial and final held-out predictions retain per-candidate WDL and policy probabilities for paired whole-game ranking and regret comparisons.
       - Public-context inputs require the causal observation timeline; historical warped buffers cannot initialize it.
       - This fitting diagnostic does not certify WDL calibration, decision improvement or a product promotion.
   public-quality-bank:

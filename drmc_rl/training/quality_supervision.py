@@ -20,6 +20,55 @@ from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA, state_from_payload
 from drmc_rl.search.public_policy import policy_request
 
 
+def source_group(row):
+    """A replayed reset stays in one split even if its game id changes."""
+    seed = row.get("reset_seed")
+    if seed is None:
+        return ("game", row["game_id"])
+    if len(seed) != 2 or any(type(x) is not int or not 0 <= x <= 255 for x in seed):
+        raise ValueError("reset seed must be an explicit byte pair")
+    return ("seed", *seed)
+
+
+def assert_disjoint_sources(*partitions):
+    """Check all source rows, not just positions which received labels."""
+    seen_ids, seen_games, seen_seeds = set(), set(), set()
+    for rows in partitions:
+        ids = {r.get("source_id", r.get("id")) for r in rows}
+        games = {r["game_id"] for r in rows}
+        seeds = {source_group(r) for r in rows if r.get("reset_seed") is not None}
+        if None in ids or len(ids) != len(rows):
+            raise ValueError("missing or duplicate public source identity")
+        if ids & seen_ids or games & seen_games or seeds & seen_seeds:
+            raise ValueError("source partitions overlap in position, game or reset seed")
+        seen_ids.update(ids)
+        seen_games.update(games)
+        seen_seeds.update(seeds)
+
+
+def policy_rows(sources):
+    """Prepare public policy anchors without inventing any outcome targets."""
+    assert_disjoint_sources(sources)
+    rows = []
+    for source in sources:
+        state = state_from_payload(source)
+        side = int(source["root_side"])
+        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+            raise ValueError("policy anchors require causal public observations")
+        if side not in (0, 1) or not state.legal_actions_by_side[side]:
+            raise ValueError("policy anchor must contain a nonempty feasible frontier")
+        rows.append(
+            dict(
+                state=state,
+                side=side,
+                game_id=source["game_id"],
+                source_id=source["id"],
+                reset_seed=source.get("reset_seed"),
+            )
+        )
+    return rows
+
+
 def join_quality_rows(sources, targets):
     source_by_id = {row["id"]: row for row in sources}
     if len(source_by_id) != len(sources):
@@ -89,6 +138,7 @@ def join_quality_rows(sources, targets):
                 side=side,
                 game_id=source["game_id"],
                 source_id=source_id,
+                reset_seed=source.get("reset_seed"),
                 wdl=wdl,
                 prior=prior,
                 improved=improved,
@@ -101,20 +151,20 @@ def join_quality_rows(sources, targets):
 
 
 def split_games(rows, *, seed, validation_fraction=0.25):
-    games = sorted({row["game_id"] for row in rows})
+    games = sorted({source_group(row) for row in rows})
     if len(games) < 2 or not 0 < validation_fraction < 1:
         raise ValueError("quality validation requires at least two independent source games")
     rng = np.random.default_rng(seed)
-    rng.shuffle(games)
+    games = [games[i] for i in rng.permutation(len(games))]
     n = max(1, min(len(games) - 1, round(len(games) * validation_fraction)))
     validation = set(games[:n])
     return (
-        [r for r in rows if r["game_id"] not in validation],
-        [r for r in rows if r["game_id"] in validation],
+        [r for r in rows if source_group(r) not in validation],
+        [r for r in rows if source_group(r) in validation],
     )
 
 
-def make_batch(rows, *, schema, device):
+def make_batch(rows, *, schema, device, targets=True):
     if schema not in (PUBLIC_CONTEXT_SCHEMA, "zero_v1_vs"):
         raise ValueError("quality actor must use an explicit public schema")
     # Pack directly from the complete inventory, including equivalent poses.
@@ -130,7 +180,7 @@ def make_batch(rows, *, schema, device):
         )
         for r in rows
     ]
-    width = max(len(r["prior"]) for r in rows)
+    width = max(len(r["state"].legal_actions_by_side[r["side"]]) for r in rows)
     batch = len(rows)
     actions = np.zeros((batch, width), np.int64)
     costs = np.zeros((batch, width), np.float32)
@@ -139,17 +189,18 @@ def make_batch(rows, *, schema, device):
     prior = np.zeros((batch, width), np.float32)
     improved = np.zeros_like(prior)
     for i, row in enumerate(rows):
-        n = len(row["prior"])
         side = row["side"]
         state = row["state"]
+        n = len(state.legal_actions_by_side[side])
         actions[i, :n] = state.legal_actions_by_side[side]
         costs[i, :n] = state.action_costs_by_side[side]
         mask[i, :n] = True
-        wdl[i, :n] = row["wdl"]
-        prior[i, :n] = row["prior"]
-        improved[i, :n] = row["improved"]
-    counts = Counter(row["game_id"] for row in rows)
-    weights = np.asarray([1 / counts[row["game_id"]] for row in rows], np.float32)
+        if targets:
+            wdl[i, :n] = row["wdl"]
+            prior[i, :n] = row["prior"]
+            improved[i, :n] = row["improved"]
+    counts = Counter(source_group(row) for row in rows)
+    weights = np.asarray([1 / counts[source_group(row)] for row in rows], np.float32)
     weights /= weights.mean()
     values = dict(
         obs=np.stack([r[0] for r in requests]),
@@ -161,16 +212,19 @@ def make_batch(rows, *, schema, device):
         aux=np.stack([context_from_info(r[1]) for r in requests])
         if schema == PUBLIC_CONTEXT_SCHEMA
         else np.zeros((batch, 72), np.float32),
-        wdl=wdl,
-        prior=prior,
-        improved=improved,
         weights=weights,
-        incumbent=np.asarray([r["incumbent"] for r in rows]),
     )
+    if targets:
+        values.update(
+            wdl=wdl,
+            prior=prior,
+            improved=improved,
+            incumbent=np.asarray([r["incumbent"] for r in rows]),
+        )
     return {key: torch.as_tensor(value, device=device) for key, value in values.items()}
 
 
-def forward(net, batch):
+def forward(net, batch, *, return_aux=True):
     return net(
         batch["obs"],
         batch["pills"],
@@ -179,12 +233,58 @@ def forward(net, batch):
         batch["costs"],
         batch["mask"],
         aux=batch["aux"],
-        return_aux=True,
+        return_aux=return_aux,
+    )
+
+
+def policy_kl(logits, reference, mask):
+    logp = logits.float().log_softmax(-1)
+    # The actor uses finite masked logits; mask explicitly so padding never
+    # contributes to the diagnostic or gradient.
+    return (reference.exp() * (reference - logp)).masked_fill(~mask, 0).sum(-1)
+
+
+def ranking_diagnostics(predicted, target, valid, logp, prior):
+    """Tie-aware complete-frontier ranking and regret under the frozen panel.
+
+    Flat roots contribute zero to informative numerators. Divide by the
+    informative fraction only after whole-game aggregation, never per batch.
+    These are diagnostic metrics, not additional training rewards.
+    """
+    target_delta = target.unsqueeze(2) - target.unsqueeze(1)
+    predicted_delta = predicted.unsqueeze(2) - predicted.unsqueeze(1)
+    pairs = (valid.unsqueeze(2) & valid.unsqueeze(1)).triu(1) & (target_delta.abs() > 1e-5)
+    pair_count = pairs.sum((1, 2))
+    informative = pair_count > 0
+    correct = (target_delta * predicted_delta > 0).float()
+    correct = torch.where(predicted_delta.abs() <= 1e-7, 0.5, correct)
+    accuracy = (correct * pairs).sum((1, 2)) / pair_count.clamp_min(1)
+    best = predicted.masked_fill(~valid, -torch.inf).amax(-1, keepdim=True)
+    tied = valid & ((predicted - best).abs() <= 1e-7)
+    selected_utility = (target * tied).sum(-1) / tied.sum(-1)
+    reference_utility = (target * prior).sum(-1)
+    regret = target.masked_fill(~valid, -torch.inf).amax(-1) - selected_utility
+    return dict(
+        informative_fraction=informative.float(),
+        informative_rank_accuracy_numerator=accuracy,
+        informative_greedy_regret_numerator=regret * informative,
+        informative_greedy_gain_numerator=(selected_utility - reference_utility) * informative,
+        policy_utility_gain=(target * logp.exp()).sum(-1) - reference_utility,
+        greedy_regret=regret,
+        greedy_gain=selected_utility - reference_utility,
     )
 
 
 def quality_loss(
-    output, batch, *, anchor_logp=None, policy_weight=0.0, anchor_weight=1.0, gap_weight=0.25
+    output,
+    batch,
+    *,
+    anchor_logp=None,
+    policy_weight=0.0,
+    anchor_weight=1.0,
+    gap_weight=0.25,
+    row_metrics=False,
+    measure_ranking=False,
 ):
     logits, value, extra = output
     valid = batch["mask"]
@@ -210,7 +310,7 @@ def quality_loss(
     anchor_kl = (
         torch.zeros_like(policy_ce)
         if anchor_logp is None
-        else (anchor_logp.exp() * (anchor_logp - logp)).sum(-1)
+        else policy_kl(logits, anchor_logp, valid)
     )
     expected_utility = state_target[:, 0] - state_target[:, 2]
     value_mse = (value.flatten() - expected_utility).square()
@@ -223,23 +323,24 @@ def quality_loss(
         + anchor_weight * anchor_kl
     )
     mean = lambda x: (x * batch["weights"]).mean()
-    metrics = {
-        k: mean(v)
-        for k, v in dict(
-            state_ce=state_ce,
-            candidate_ce=candidate_ce,
-            gap_mse=gap,
-            ranking_loss=ranking,
-            policy_ce=policy_ce,
-            anchor_kl=anchor_kl,
-            value_mse=value_mse,
-            state_brier=(state_logp.exp() - state_target).square().sum(-1),
-            candidate_brier=((candidate_probability - batch["wdl"]).square().sum(-1) * valid).sum(
-                -1
-            )
-            / counts,
-        ).items()
-    }
+    metrics = dict(
+        state_ce=state_ce,
+        candidate_ce=candidate_ce,
+        gap_mse=gap,
+        ranking_loss=ranking,
+        policy_ce=policy_ce,
+        anchor_kl=anchor_kl,
+        value_mse=value_mse,
+        state_brier=(state_logp.exp() - state_target).square().sum(-1),
+        candidate_brier=((candidate_probability - batch["wdl"]).square().sum(-1) * valid).sum(-1)
+        / counts,
+    )
+    if measure_ranking:
+        metrics.update(
+            ranking_diagnostics(predicted_utility, target_utility, valid, logp, batch["prior"])
+        )
+    if not row_metrics:
+        metrics = {k: mean(v) for k, v in metrics.items()}
     return mean(loss), metrics
 
 
@@ -335,7 +436,9 @@ def layer_diagnostics(net, before, representation, gradient_norms=None):
             layer, dict(weight_squared=0.0, update_squared=0.0, gradient_squared=0.0)
         )
         row["weight_squared"] += float(before[name].float().square().sum())
-        row["update_squared"] += float((param.detach() - before[name]).float().square().sum())
+        row["update_squared"] += float(
+            (param.detach().cpu() - before[name].cpu()).float().square().sum()
+        )
         if gradient_norms is not None:
             row["gradient_squared"] += gradient_norms.get(name, 0.0) ** 2
         elif param.grad is not None:
