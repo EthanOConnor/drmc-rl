@@ -58,9 +58,12 @@ def fit(config):
     schema = cfg.get("smdp_ppo", cfg)["aux_spec"]
     data = make_batch(train, schema=schema, device=device)
     heldout = make_batch(validation, schema=schema, device=device)
+    net.eval()
     with torch.no_grad():
         anchor = forward(net, data)[0].float().log_softmax(-1).detach()
-        _, initial = quality_loss(forward(net, heldout), heldout)
+        initial_heldout = forward(net, heldout)
+        heldout_anchor = initial_heldout[0].float().log_softmax(-1).detach()
+        _, initial = quality_loss(initial_heldout, heldout, anchor_logp=heldout_anchor)
     optimizer = torch.optim.AdamW(
         net.parameters(), lr=float(config.get("lr", 1e-5)), weight_decay=0.0
     )
@@ -88,6 +91,8 @@ def fit(config):
         candidate_truncation=0,
         calibrated=False,
         product_gates_passed=False,
+        policy_kl_reference="post-migration-initial-policy",
+        policy_kl_measured_splits=["train", "validation"],
         initial_validation={k: float(v) for k, v in initial.items()},
         epochs=[],
     )
@@ -145,7 +150,9 @@ def fit(config):
                 progress["stop_reason"] = "full-dataset policy KL budget reached"
                 break
             with torch.no_grad():
-                _, validation_metrics = quality_loss(forward(net, heldout), heldout)
+                _, validation_metrics = quality_loss(
+                    forward(net, heldout), heldout, anchor_logp=heldout_anchor
+                )
             if not all(np.isfinite(float(value)) for value in validation_metrics.values()):
                 raise FloatingPointError("non-finite held-out quality metrics")
             report = dict(

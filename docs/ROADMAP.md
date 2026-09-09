@@ -130,9 +130,9 @@ the first new state collection was stopped and regenerated with causal views.
 | --- | --- | --- |
 | E0: objectives and public inputs | Exact gradient/finite-difference tests; separately named losses; hidden-commitment input test; causal native observations and complete placement collection across pair events; full frontier and bond preservation | Native PPO updates pass in dictionary and direct-array modes without waiting-event samples. Preserve historical artifacts. Never reinterpret a masked private input as a fully public timeline. |
 | E1: episodic actor credit | Same frozen 25M adapter, parent, seeds, pace exposure and full categorical KL budget; 50M additional frames per arm; 16,384 reserved arena games | Both arms completed: historical 50,369,235 frames / 446,868 learning decisions; corrected 50,201,899 / 445,535. Each collected 22,080 natural games over 75 updates; repeated seed experiences are counted separately. Held-out evaluation is running. Realized median KL is comparable across paces, not identical. One training seed is screening; finalists need independent seeds. |
-| E2: critic and public context | Candidate-attending value query; separate terminal/candidate WDL heads; versioned per-side public conditioning; baseline/critic/context/combined fitting modes | All four three-epoch integration fits completed on the same three training games and one held-out game, with finite losses and policy KL below 0.00005. This tiny bank cannot select an architecture. New-schema live history/motor emission remains required before paced deployment. No larger model is the default. |
-| E3: paired candidate improvement | Full-root, complete-reserve panel with two public continuations; chance variance and continuation sensitivity separated; reference-relative KL-bounded targets; supervised gap/WDL fitting | Four 14-HI roots cover 130 candidates and 520 natural continuations with no unknown mass. Serial CPU and batched GPU results match exactly. Two roots distinguish moves and two lose under every continuation. Auxiliary-to-policy phase continuation preserves learned heads. Prediction, ranking and real-game improvement still require larger prospective evidence; the failed V3 gate remains failed. |
-| E4: diverse experience | Frozen public opponent pool in pace training; empirical regularized mixture; exact states 4/8/16 own placements before natural losses | New bank has 16 states from four natural 14-HI games. Expand source diversity and mix openings/midgame/finishes with predecessors. No curriculum or league change enters the E1 arms. Clean-start population results govern adoption. |
+| E2: critic and public context | Candidate-attending value query; separate terminal/candidate WDL heads; versioned per-side public conditioning; baseline/critic/context/combined fitting modes | The expanded 64-game study completed all four 100-epoch fits on the same 48 training / 16 validation games. Aggregate outcome errors improved, but held-out gap/ranking losses worsened; details below. No architecture is selected. New-schema live history/motor emission remains required before paced deployment. |
+| E3: paired candidate improvement | Full-root, complete-reserve panel with two public continuations; chance variance and continuation sensitivity separated; reference-relative KL-bounded targets; supervised gap/WDL fitting | The 520-continuation pilot has exact serial CPU/batched GPU parity. The expanded study completed 2,090 candidates and 8,360 natural continuations across 64 independent 14-HI roots, with no unknown mass. Only 32 roots distinguish moves under this panel. Learned ranking and real-game improvement need substantially more prospective evidence; the failed V3 gate remains failed. |
+| E4: diverse experience | Frozen public opponent pool in pace training; empirical regularized mixture; exact states 4/8/16 own placements before natural losses | Initial bank had 16 states from four natural 14-HI games; the expanded study uses 64 independent source games. Expand source diversity and mix openings/midgame/finishes with predecessors. No curriculum or league change enters the E1 arms. Clean-start population results govern adoption. |
 | E5: effects, memory and scale | Existing exact-effect and public-event modules audited; supervised auxiliary phase with policy KL; layer updates and representation-rank diagnostics | Integrate observed event history and exact effects before spatial wave/support/access labels and next-known-pill motor opportunity maps. Compare current 320×8 with 384×12 and 512×12 only after target quality; equal GPU time and equal exposure are separate reports. Distill a successful large teacher into the fast student. |
 | E6: search and anticipation | Cooperative frontier batching with exact requested-side inference, complete cache identities, fail-closed reserve-history cache, full-root output and unknown exhausted labels | Synthetic and real neural/native parity pass. CPU/Metal timing is workload-dependent, so batching remains opt-in. Adaptive/Gumbel allocation waits for useful Q ranking; mixed simultaneous matrices, tactical extensions and a late-conditioned anticipation trunk are separate experiments. Charge their measured computation delay. |
 | E7: expression and calibration | Whole-game paired noninferiority analysis with a declared margin, seed design, comparison family and fixed confirmation set; censoring blocks certification | Persistent 2–6-placement proposals still need replay-aligned human setups, held-out local-regret calibration and blind clip preferences. No permanent horizontal/combo reward, independent random blunders or uncalibrated Elo claim. |
@@ -162,13 +162,54 @@ hosts, not an isolated native-threading speedup. Optional parallel native
 stepping also passes deterministic serial parity tests. Neither throughput
 nor the four fitting smoke tests establishes a stronger player.
 
-The next bounded study is running on tf3090 from committed source `d5c7c54`:
-collect 384 causal predecessor/tactical states, select 64 distinct natural
-source games, complete the two-policy candidate panel, then fit all four
-same-size architectures with a common 48-game/16-game split. Minibatch order and
-the shared new critic initialization match across variants. Outputs remain
-diagnostic; censored panels cannot proceed into fitting. The objective arena
-continues independently, and no checkpoint is installed automatically.
+The expanded study completed on tf3090 from committed source `d5c7c54` at
+09:22 UTC on September 9. It collected causal predecessor/tactical states,
+selected 64 distinct natural source games and completed all 8,360 continuations
+in 3,639 seconds. All four same-size architectures completed their predeclared
+100 auxiliary epochs with the same 48-game/16-game split, matching minibatch
+order and matching shared critic initialization. The 16 validation games are
+development evidence, not a fresh confirmation set for the next iteration.
+
+| Architecture at epoch 100 | Candidate Brier | Candidate gap MSE | Ranking loss | Validation policy KL |
+| --- | ---: | ---: | ---: | ---: |
+| Initial neutral WDL heads | 0.5797 | 0.2126 | 0.3033 | 0 |
+| Baseline | 0.2089 | 0.2896 | 0.6414 | 0.1462 |
+| Candidate-attending critic | 0.1944 | 0.2881 | 0.6965 | 0.1042 |
+| Public context | 0.2186 | 0.2645 | 0.5863 | 0.2358 |
+| Critic and context | 0.2017 | 0.2585 | 0.6221 | 0.1258 |
+
+Lower is better in the error columns. Every fit improves average outcome
+prediction but has worse held-out action-gap and ranking point estimates than
+the initial equal-valued candidates. Training gap MSE is 0.0184–0.0366, versus
+0.2585–0.2896 on validation: this small fit overfits rather than establishing a
+useful search-quality head. The final training-policy preservation KL is
+0.0040–0.0060. A reporting bug left validation `anchor_kl` at an unmeasured zero
+in the original fit reports. A separate inference-only audit measured the
+validation values above against each model's post-migration initial policy:
+0.1042–0.2358, with a maximum individual-state KL of 1.1984. The training-only
+anchor does not preserve the policy on unseen states. Future fitting reports
+now measure both splits against explicit fixed reference distributions; a
+focused end-to-end fit test verifies the held-out KL against the saved model.
+Original study artifacts remain unchanged.
+
+Exactly 32 of 64 roots give every candidate the same outcome utility under the
+panel (30 all losing, two all winning). Nine of the 16 validation roots are
+flat, so only seven contribute move-ranking information. Across all roots,
+27 incumbents have a better alternative under the frozen panel. The learned
+Q heads also show an unconfirmed top-choice signal: mean validation panel regret
+is 0.3438–0.4063, versus 0.6563 for the initial actor. Descriptive paired-bootstrap
+intervals for that improvement touch or cross zero; these are development-set
+comparisons, not optimal-play or real-game strength claims. The next quality
+iteration must substantially expand independent source games and tactical/
+temporal coverage, add broad public-policy anchor replay disjoint from
+validation, and retain a representative prospective confirmation set. Do not
+optimize against validation drift measurements. Demonstrate useful within-state
+ranking and policy preservation before search allocation or quality distillation.
+Assessment and original reports are in
+`runs/review-20260909/quality64-review/assessment.json`; remote originals remain
+under `trainer-output/review-20260909/quality64-study`. The separate
+`policy-drift.json` retains the retrospective inference audit. The objective arena
+continues independently. No diagnostic checkpoint is installed or promoted.
 
 ### Required continuation after the strength evaluation
 

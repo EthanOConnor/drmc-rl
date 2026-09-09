@@ -1,4 +1,5 @@
 from copy import deepcopy
+import json
 import pytest
 import torch
 
@@ -158,3 +159,54 @@ def test_shared_new_critic_initialization_is_identical_across_ablations():
         torch.testing.assert_close(
             parameter, combined.value_query.state_dict()[name], rtol=0, atol=0
         )
+
+
+def test_fit_measures_heldout_policy_drift_against_the_initial_distribution(tmp_path):
+    from drmc_rl.training.utils.checkpoint_io import load_checkpoint
+    from tools.fit_paired_quality import fit
+
+    torch.manual_seed(17)
+    parent, old = checkpoint()
+    source, target = data()
+    sources = [source, dict(source, id="b", game_id="g2")]
+    targets = [target, dict(target, source_id="b", game_id="g2")]
+    bank_path, target_path, parent_path = (
+        tmp_path / name for name in ("states.jsonl", "targets.jsonl", "parent.pt")
+    )
+    bank_path.write_text("\n".join(map(json.dumps, sources)) + "\n")
+    target_path.write_text("\n".join(map(json.dumps, targets)) + "\n")
+    torch.save(parent, parent_path)
+    output = tmp_path / "fit"
+    progress = fit(
+        dict(
+            output=str(output),
+            checkpoint=str(parent_path),
+            state_bank=str(bank_path),
+            targets=str(target_path),
+            device="cpu",
+            threads=1,
+            seed=47,
+            mode="baseline",
+            epochs=3,
+            batch_size=1,
+            lr=0.01,
+            max_policy_kl=1.0,
+        )
+    )
+    rows = join_quality_rows(sources, targets)
+    heldout = [row for row in rows if row["game_id"] in progress["validation_games"]]
+    batch = make_batch(heldout, schema="zero_v1_vs", device="cpu")
+    fitted, _ = upgrade_public_model(
+        load_checkpoint(output / "diagnostic.pt"), mode="baseline", device="cpu"
+    )
+    old.eval()
+    fitted.eval()
+    with torch.no_grad():
+        initial_logp = forward(old, batch)[0].log_softmax(-1)
+        final_logp = forward(fitted, batch)[0].log_softmax(-1)
+        actual = float((initial_logp.exp() * (initial_logp - final_logp)).sum(-1).mean())
+    assert actual > 1e-6
+    assert progress["initial_validation"]["anchor_kl"] == pytest.approx(0.0, abs=1e-7)
+    assert progress["epochs"][-1]["validation"]["anchor_kl"] == pytest.approx(actual, abs=1e-7)
+    assert progress["policy_kl_reference"] == "post-migration-initial-policy"
+    assert progress["policy_kl_measured_splits"] == ["train", "validation"]
