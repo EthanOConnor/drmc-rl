@@ -77,6 +77,15 @@ gate that must be completed first.
   fitting uses causal banks, full candidate coverage and whole-game holdouts;
   it does not reuse the failed V3 teacher or certify a product model. Continue
   through the named program recipes and preserve each running source snapshot.
+- The user explicitly requires the September review program to continue after
+  the current held-out strength evaluation: finish live public history/motor
+  integration, larger teachers and student distillation, adaptive search and
+  anticipation, and persistent expressive play. Follow the completion criteria
+  in `docs/ROADMAP.md#required-continuation-after-the-strength-evaluation`.
+  A neutral or negative evaluation changes the selected baseline; it does not
+  cancel these stages. Resolve missing prerequisites and continue implementation,
+  training and evaluation. Staged status is not a reason to stop at another plan;
+  promotion still requires the applicable evidence gates.
 
 ## Counterfactual quality rules
 

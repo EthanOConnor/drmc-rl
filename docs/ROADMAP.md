@@ -170,6 +170,59 @@ the shared new critic initialization match across variants. Outputs remain
 diagnostic; censored panels cannot proceed into fitting. The objective arena
 continues independently, and no checkpoint is installed automatically.
 
+### Required continuation after the strength evaluation
+
+The user's September 9 instruction makes the remaining review work an explicit
+continuation of this program. Once the current 16,384-game strength evaluation
+is complete and analyzed, proceed through all four items below. Do not wait for
+a positive objective result: retain the best evidenced baseline if the result
+is neutral or negative, and continue the program. Additional independent-seed
+confirmation needed for promotion can proceed alongside subsequent engineering.
+The 64-source-game quality study supplies the next architecture evidence; repair
+or replace an unsuccessful experiment rather than leaving its dependent work
+indefinitely staged.
+
+- [ ] **Live history and motor integration (E2/E5).** Emit and consume the same
+  versioned causal public history, observed effects, phase/age and motor context
+  in training, evaluation and the live trainer. Integrate exact effects and
+  future constrained-movement opportunities. Verify information boundaries,
+  execution parity and device latency, then train and compare the integrated
+  policy at every supported pace. A schema and an offline fitting smoke test
+  alone do not complete this item.
+- [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
+  candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
+  and equal-GPU-time analyses, independent teacher members and diverse public
+  opponents/source games. Train at a scale capable of showing learning, measured
+  in learner decisions and console frames. Distill useful larger-teacher gains
+  into the deployment student and test actual strength and inference latency.
+  Implemented configuration switches or a tiny pilot do not complete the study.
+- [ ] **Adaptive search and anticipation (E6).** Complete the public full-pair
+  search experiments: candidate-dependent allocation, simultaneous-action mixed
+  strategies, tactical extensions, and shared geometry with late preview
+  conditioning. Use useful Q ranking and the correct reserve posterior; charge
+  measured compute delay and test opponent-context ablations. Integrate the
+  successful approach into live planning and run substantial controller
+  tournaments. Frontier batching alone does not complete this item.
+- [ ] **Persistent expressive play (E7).** Replay-align commentator windows
+  and earlier construction states, then implement persistent 2–6-placement
+  proposals with event termination and replanning after garbage. Train the
+  proposer and evaluate actual persistent play using calibrated local regret,
+  whole-game strength noninferiority and blind same-root clip preferences.
+  Include horizontal, connected and delayed-payoff play without making a motif
+  reward compensate for losses. A clip bank or a noninferiority calculator alone
+  does not complete this item.
+
+This task owns the continuation; its hourly follow-up checks the active studies
+and resumes the first unfinished item. Keep the dashboard and this existing
+roadmap current with the concrete next action and evidence. Use tf3090 for large
+training, the Mac and mombox for suitable evaluation, and mombox for overflow
+storage. Level 14 HI remains primary, with level 20 HI reported separately.
+Use focused checks during development and full applicable checks before release.
+Finish implementation, representative training and evaluation; promote only
+supported changes. An unsuccessful variant needs an explicit result and a next
+approach, not a silent deletion of the requested capability. None of these boxes
+is complete merely because the work is documented or scheduled.
+
 Primary methodological references: [episodic policy gradients](https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html),
 [PPG](https://arxiv.org/abs/2009.04416), [population responses](https://arxiv.org/abs/1711.00832),
 [targeted archive-state search](https://arxiv.org/abs/2302.12359),
