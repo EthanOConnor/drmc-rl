@@ -176,12 +176,27 @@ def _policy_snapshot(actor, records, size, *, reference=None):
                     if abs(float(old[i, row["slot"]]) - row["old_logprob"]) > 1e-6:
                         raise RuntimeError("stored behavior likelihood differs from the sampled action")
                     distributions.append(torch.from_numpy(row["behavior_logp"].copy()))
-                tv = float(np.max(np.abs(np.exp(old.astype(np.float64)) - np.exp(current.astype(np.float64))).sum(-1) / 2))
+                variations = np.abs(np.exp(old.astype(np.float64)) - np.exp(current.astype(np.float64))).sum(-1) / 2
+                tv = float(np.max(variations))
                 error = float(np.max(np.abs(old - current)))
                 agreement["collection_max_total_variation"] = max(agreement.get("collection_max_total_variation", 0), tv)
                 agreement["collection_max_logp_error"] = max(agreement.get("collection_max_logp_error", 0), error)
-                if not np.isfinite(tv) or tv > 1e-5:
+                if not np.isfinite(tv):
                     raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={tv:.9g}, max logp error={error:.9g}")
+                # Large padded CUDA batches can exceed this strict numerical
+                # tolerance even with identical weights and public inputs.
+                # Recheck only outliers at the canonical single-row shape;
+                # retain the SAME bound and the actual sampling distribution.
+                # A changed policy/input still fails the independent recheck.
+                for i in np.flatnonzero(variations > 1e-5):
+                    if len(rows) == 1:
+                        raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={variations[i]:.9g}, max logp error={error:.9g}")
+                    _, recheck = _policy_snapshot(actor, [rows[i]], 1)
+                    agreement["collection_rechecked_decisions"] = agreement.get("collection_rechecked_decisions", 0) + 1
+                    agreement["collection_max_rechecked_total_variation"] = max(
+                        agreement.get("collection_max_rechecked_total_variation", 0),
+                        recheck["collection_max_total_variation"],
+                    )
             else:
                 if not torch.allclose(chosen, data["old_logprob"], atol=3e-5, rtol=0):
                     difference = float((chosen - data["old_logprob"]).abs().max())

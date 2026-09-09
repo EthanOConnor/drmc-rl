@@ -164,3 +164,34 @@ def test_mixed_public_context_and_frozen_actors_have_frame_event_parity(parent):
     finally:
         reference.close()
         parallel.close()
+
+
+def test_collection_audit_rechecks_batch_shape_outliers_without_weakening_bound(parent, monkeypatch):
+    actor = ControllerCorePolicy(parent, seed=53)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for row in rows:
+        row.update({"return": 1., "advantage": 1., "weight": 1.})
+    original = actor.training_forward
+
+    def batch_rounding(features):
+        logits, values = original(features)
+        if len(features[0]) > 1:
+            logits = logits + torch.linspace(-.001, .001, logits.shape[1])
+        return logits, values
+
+    monkeypatch.setattr(actor, "training_forward", batch_rounding)
+    actual, agreement = _policy_snapshot(actor, rows, 4)
+    assert agreement["collection_max_total_variation"] > 1e-5
+    assert agreement["collection_rechecked_decisions"] > 0
+    assert agreement["collection_max_rechecked_total_variation"] <= 1e-5
+    for row, logs in zip(rows, actual):
+        np.testing.assert_array_equal(row["behavior_logp"], logs)
+    # The single-row fallback must not turn into permission to accept actual
+    # changed distributions, even when the first forward was batched.
+    shifted = torch.tensor(rows[-1]["behavior_logp"]) + torch.linspace(-.1, .1, len(rows[-1]["actions"]))
+    rows[-1]["behavior_logp"] = shifted.log_softmax(-1).numpy()
+    rows[-1]["old_logprob"] = float(rows[-1]["behavior_logp"][rows[-1]["slot"]])
+    with pytest.raises(RuntimeError, match="total variation"):
+        _policy_snapshot(actor, rows, 4)

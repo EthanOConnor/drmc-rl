@@ -379,6 +379,17 @@ checkpoints without deleting milestones. Keep outputs on mombox and SQLite on
 local storage. New core training does not certify candidate WDL heads, a human
 execution profile, device latency, or model promotion.
 
+Full-core PPO preserves every candidate's actual collection log probability.
+The pre-update audit compares the full distribution at a total-variation bound
+of `1e-5`; a batched outlier is independently recomputed at the canonical
+single-row shape with the same bound. A failing single-row check stops before
+optimization. Both original discrepancies and recheck counts are recorded.
+The 17,980-row Top Humans collection audit on tf3090 found a batched maximum of
+`1.3623e-5` (99th percentile `1.1819e-6`), versus at most `5.7154e-6` when its
+worst 32 rows were independently evaluated. Inference and gradient-enabled
+paths agreed within that bound. This is numerical validation, not evidence of
+learning or permission to substitute a newly computed behavior policy.
+
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
 recorded in every training journal entry. Frozen member checkpoint/adapter
