@@ -49,13 +49,21 @@ def test_reveal_override_rollouts_match_strict_natural_games_and_refill_slots(
                 break
         assert outcome in (1, 2, 3)
         task = RolloutTask(0, initial, root_side, root_action, reserve_for_seed(*seed).tobytes(), 1.)
+        delivered, measured = [], {}
         results = rollout_tasks(
             [replace(task, id=i) for i in range(3)],
             FirstLegal(),
             batch_size=2,
             max_events=2048,
             native_workers=native_workers,
+            on_result=delivered.append,
+            metrics=measured,
         )
+        assert delivered == results
+        assert measured["completed_rollouts"] == 3
+        assert measured["policy_decisions"] == sum(
+            size * count for size, count in measured["inference_batch_rows"].items())
+        assert measured["live_slot_iterations"] >= measured["scheduler_iterations"]
         assert {r["id"] for r in results} == {0, 1, 2}
         assert all(r["outcome"] == outcome for r in results)
         assert all(r["reveals"] > 0 for r in results)

@@ -9,6 +9,7 @@ critic, heuristic, or horizon-as-draw fallback.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import Counter
 from typing import Any
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -76,7 +77,8 @@ def _advance_native(slot):
 
 
 def rollout_tasks(
-    tasks, continuation, *, batch_size=32, max_events=2048, progress=None, native_workers=1
+    tasks, continuation, *, batch_size=32, max_events=2048, progress=None, native_workers=1,
+    on_result=None, metrics=None,
 ):
     """Return natural outcomes for all tasks; incomplete results retain None.
 
@@ -89,6 +91,9 @@ def rollout_tasks(
     tasks = iter(tasks)
     slots: list[dict[str, Any]] = []
     results = []
+    measured = Counter()
+    inference_rows = Counter()
+    started = time.perf_counter()
     exhausted = False
     last_progress = time.monotonic()
 
@@ -115,6 +120,8 @@ def rollout_tasks(
                 break
             slots.append(slot)
         while slots:
+            measured['scheduler_iterations'] += 1
+            measured['live_slot_iterations'] += len(slots)
             requests, destinations = [], []
             for index, slot in enumerate(slots):
                 state = slot["state"]
@@ -137,6 +144,7 @@ def rollout_tasks(
                         destinations.append((index, side))
                     else:
                         action[side] = -1
+            inference_started = time.perf_counter()
             if isinstance(continuation, Mapping):
                 groups = {}
                 for i, (index, side) in enumerate(destinations):
@@ -146,10 +154,15 @@ def rollout_tasks(
                 predictions = [None] * len(requests)
                 for member, indices in groups.items():
                     answers = continuation[member].infer_batch([requests[i] for i in indices])
+                    inference_rows[len(indices)] += 1
                     for i, answer in zip(indices, answers, strict=True):
                         predictions[i] = answer
             else:
                 predictions = continuation.infer_batch(requests)
+                if requests:
+                    inference_rows[len(requests)] += 1
+            measured['inference_seconds'] += time.perf_counter() - inference_started
+            measured['policy_decisions'] += len(requests)
             for (index, side), (probability, _unused_value) in zip(destinations, predictions, strict=True):
                 legal = slots[index]["state"].legal_actions_by_side[side]
                 slots[index]["action"][side] = max(
@@ -158,6 +171,7 @@ def rollout_tasks(
             # Distinct runners have independent physics and native workspaces.
             # Preserve request and completion order while releasing the GIL
             # inside each ctypes native call. The serial path is the reference.
+            native_started = time.perf_counter()
             if executor is None:
                 for slot in slots:
                     _advance_native(slot)
@@ -170,6 +184,7 @@ def rollout_tasks(
                     # A failed slot must not close other native runners while
                     # their worker calls are still using those handles.
                     wait(pending)
+            measured['native_seconds'] += time.perf_counter() - native_started
             for slot in slots:
                 runner, task = slot["runner"], slot["task"]
                 slot["events"] += 1
@@ -197,6 +212,10 @@ def rollout_tasks(
                             "opponent_id": task.opponent_id,
                         }
                     )
+                    if on_result is not None:
+                        # Synchronous delivery lets a multi-root teacher commit
+                        # one complete root without draining unrelated slots.
+                        on_result(dict(results[-1]))
                     replacement = None if exhausted else fill(runner)
                     if replacement is not None:
                         active.append(replacement)
@@ -209,6 +228,11 @@ def rollout_tasks(
     finally:
         for runner in runners:
             runner.close()
+        if metrics is not None:
+            metrics.update(measured)
+            metrics.update(wall_seconds=time.perf_counter()-started,
+                           completed_rollouts=len(results),
+                           inference_batch_rows=dict(sorted(inference_rows.items())))
     return results
 
 

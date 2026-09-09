@@ -177,6 +177,11 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
         )
     pipeline_path = path.parent / plan.get("pipeline_file", "pipeline.json")
     pipeline = json.loads(pipeline_path.read_text()) if pipeline_path.is_file() else {}
+    research_runs = []
+    for run in plan.get("research_runs", []):
+        run_path = path.parent / run["path"]
+        state = json.loads(run_path.read_text()) if run_path.is_file() else {"status": "Queued"}
+        research_runs.append({**run, **state})
     now = datetime.now(timezone.utc)
     # Results cannot overwrite the operator's task, goals, or stage descriptions.
     return {
@@ -186,6 +191,7 @@ def read_experiment(path: Path | None) -> dict[str, Any]:
         "training": training,
         "training_runs": training_runs,
         "pipeline": pipeline,
+        "research_runs": research_runs,
         "health": experiment_health(training, pipeline, now),
         "served_at": now.isoformat(timespec="seconds"),
     }

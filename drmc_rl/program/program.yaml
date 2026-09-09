@@ -186,6 +186,22 @@ recipes:
       - Auxiliary and supervised policy-improvement phases are separate from on-policy PPO. All candidate outcomes must be complete.
       - Public-context inputs require the causal observation timeline; historical warped buffers cannot initialize it.
       - This fitting diagnostic does not certify WDL calibration, decision improvement or a product promotion.
+  public-quality-bank:
+    status: active
+    stage: 4
+    purpose: Collect broad complete public source games with batched frozen actors and disjoint fit, policy-anchor and confirmation seed partitions.
+    requires_paths: [tools/build_public_quality_bank.py, '{public_quality_bank_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.build_public_quality_bank, --config, '{public_quality_bank_config}']
+    produces: [Causal public roots with full native restore and reserve history, source-game outcomes, independent partition manifests, measured throughput]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Native SMDP execution is explicit. Frame-trained history/motor cores require the controller replay collector instead.
+      - Cold pairs and a frozen unique reset-seed catalog make games independent of slot reuse. Native round reset otherwise retains cartridge attack-color history.
+      - Bounded reservoirs sample opening, middle and late play with tactical coverage and at most one loss predecessor per game.
+      - Complete games commit atomically. Resume preserves their identities; capped games remain censored and cannot supply natural labels.
   public-predecessor-bank:
     status: active
     stage: 4
@@ -209,6 +225,7 @@ recipes:
       accelerator: cuda
     notes:
       - Native SMDP execution is explicit; paced controller continuations require their own tested restore/execution adapter.
+      - root_batch_size batches independent complete-root panels; durable per-root inventories permit exact-contract resume without discarding completed roots.
       - Complete-case candidate selection cannot hide censored branches. Missing labels remain unknown and suppress policy targets.
       - This prospective teacher does not open or replace the failed historical v3-counterfactual-quality gate.
   trainer-objective-study:

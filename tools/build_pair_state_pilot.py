@@ -103,14 +103,26 @@ def _tactical_stratum(state, root_side: int) -> str:
 
 
 def _condition_visible_reserve(
-    belief: PillReserveBelief, runner: DrMarioVsPoolRunner
+    belief: PillReserveBelief, runner: DrMarioVsPoolRunner, *, state=None
 ) -> PillReserveBelief:
+    # The causal collector conditions only at observed decision reveals. An
+    # ahead-of-time private side buffer cannot add a future preview to belief.
+    if state is not None:
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+
+        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+            raise ValueError("public reserve conditioning requires a causal state")
     result = belief
     for side in range(2):
+        if state is not None and not state.privileged.need_action[side]:
+            continue
+        visible = state.privileged.public.sides[side] if state is not None else None
         result = result.condition_visible(
             reserve_counter=int(runner.buffers.spawn_id[side]),
-            falling_colors=tuple(int(value) for value in runner.buffers.pill_colors[side]),
-            preview_colors=tuple(int(value) for value in runner.buffers.preview_colors[side]),
+            falling_colors=visible.pill if visible is not None else
+                tuple(int(value) for value in runner.buffers.pill_colors[side]),
+            preview_colors=visible.preview if visible is not None else
+                tuple(int(value) for value in runner.buffers.preview_colors[side]),
         )
     return result
 
@@ -260,7 +272,6 @@ def main() -> None:
             game_candidates: list[dict[str, object]] = []
             state = None
             for decision in range(args.max_decisions_per_game):
-                reserve_belief = _condition_visible_reserve(reserve_belief, runner)
                 initial_viruses = min(84, 4 * (level + 1))
                 state = capture_native_state(
                     runner,
@@ -270,6 +281,8 @@ def main() -> None:
                     previous=state,
                     causal_public=bool(args.public_checkpoint),
                 )
+                reserve_belief = _condition_visible_reserve(
+                    reserve_belief, runner, state=state if args.public_checkpoint else None)
                 if state.privileged.decision_boundary.value == "terminal":
                     break
                 acting = [side for side, flag in enumerate(state.privileged.need_action) if flag]

@@ -110,6 +110,13 @@ function renderOperations() {
   } else if(pipeline.schema==='drmc-motor-confirmation-v1'){
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
+  for(const run of experiment.research_runs || []){
+    const source=run.schema==='drmc-public-quality-bank-job-v1';
+    const done=source?run.games:run.states, target=source?run.target_games:run.target_states;
+    const detail=source?`${count(run.natural_games)} natural games · ${count(run.censored_games)} capped games`:
+      `${count(run.rollouts)} terminal continuations · ${count(run.censored_rollouts)} capped continuations`;
+    $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${target?bar(done,target):''}<div class="training-detail"><span>${target?`${count(done)} / ${count(target)} ${source?'source games':'complete positions'}`:'Waiting for the GPU slot'}</span><span>${esc(run.phase || '')}</span></div><p class="budget-note">${target?esc(detail):''}<br>Offline native SMDP data; excluded from training and tournament counts. ${ago(age(run.updated_at))}</p></div>`);
+  }
   $('#milestones').innerHTML = (experiment.variants || []).map(v=>{
     const games=(r.tournaments || []).filter(m=>m.a===v.id||m.b===v.id).reduce((n,m)=>n+num(m.played),0);
     const label=ready.has(v.id)?'Ready':v.status==='Training'?'Training':'Pending';
@@ -119,6 +126,7 @@ function renderOperations() {
   if(feedError)errors.push(feedError);
   if(['failed','stale'].includes(experiment.health?.severity))errors.push(`${experiment.health.status}: ${experiment.health.message}`);
   for(const worker of workers) if(worker.status==='Failed')errors.push(`${worker.host}: ${worker.error || 'Evaluation failed'}`);
+  for(const run of experiment.research_runs || []) if(run.status==='Failed')errors.push(`${run.label}: ${run.error || 'Study failed'}`);
   $('#alert').hidden=!errors.length;
   $('#alert').innerHTML=errors.length?`<strong>Attention needed</strong>${errors.map(esc).join('<br>')}`:'';
 }

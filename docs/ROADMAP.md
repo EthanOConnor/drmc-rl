@@ -325,6 +325,14 @@ indefinitely staged.
   in learner decisions and console frames. Distill useful larger-teacher gains
   into the deployment student and test actual strength and inference latency.
   Implemented configuration switches or a tiny pilot do not complete the study.
+  The broader source collector now batches causal public inference across
+  independent cold-start games, with distinct fit/anchor/confirmation reset
+  seeds, bounded whole-game temporal/tactical sampling and durable per-game
+  resume. Terminal labeling can batch complete panels across multiple roots
+  and retain each finished root through interruption. Serial/batched native
+  source parity and recovery checks cover these paths. Useful held-out ranking,
+  broader fitting with separate policy anchors, the larger architectures and
+  distillation remain to be established.
 - [ ] **Adaptive search and anticipation (E6).** Complete the public full-pair
   search experiments: candidate-dependent allocation, simultaneous-action mixed
   strategies, tactical extensions, and shared geometry with late preview

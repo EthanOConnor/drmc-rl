@@ -5,6 +5,32 @@ from types import SimpleNamespace
 from tools.build_pair_state_pilot import _tactical_stratum
 
 
+def test_public_reserve_conditioning_ignores_ahead_private_reveals():
+    from dataclasses import dataclass
+    from tools.build_pair_state_pilot import _condition_visible_reserve
+    from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+
+    @dataclass(frozen=True)
+    class Observations:
+        calls: tuple = ()
+
+        def condition_visible(self, **values):
+            return Observations(self.calls + (values,))
+
+    state = SimpleNamespace(public_observation_schema=CAUSAL_PUBLIC_SCHEMA,
+        privileged=SimpleNamespace(need_action=(True, False), public=SimpleNamespace(sides=(
+            SimpleNamespace(pill=(0, 1), preview=(2, 0)),
+            SimpleNamespace(pill=(1, 1), preview=(0, 2))))))
+    runner = SimpleNamespace(buffers=SimpleNamespace(spawn_id=[7, 99],
+        pill_colors=[(2, 2), (2, 1)], preview_colors=[(2, 2), (2, 2)]))
+    observed = _condition_visible_reserve(Observations(), runner, state=state)
+    assert observed.calls == ({"reserve_counter": 7, "falling_colors": (0, 1),
+                               "preview_colors": (2, 0)},)
+    runner.buffers.spawn_id[1] = 100
+    runner.buffers.preview_colors[1] = (0, 0)
+    assert _condition_visible_reserve(Observations(), runner, state=state) == observed
+
+
 def _state(
     board: list[int],
     *,

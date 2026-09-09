@@ -529,6 +529,23 @@ certificate. Keep population changes outside objective-only comparisons.
 
 For the review's offline diagnostics, launch through these recipes:
 
+- `public-quality-bank`: set `public_quality_bank_config`. The JSON declares
+  frozen `members`, two-sided `matchups`, weighted level/speed `conditions`,
+  game-count `partitions` (fit/anchor/confirmation), `excluded_reset_seeds`,
+  `seed`, `states_per_game`, `max_events`, `batch_size`, `native_workers`,
+  `device` and `output`. The catalog assigns distinct reset seeds before play.
+  Each game starts from a cold native pair: ordinary cartridge round reset
+  preserves attack-color history and is unsuitable for independent source
+  games when slot order changes. Causal public inference is batched across
+  games. Bounded per-game reservoirs retain opening/middle/late positions and
+  tactical diversity, with at most one 4/8/16-placement loss predecessor.
+  Every completed game is committed in `games/`; an identical-contract resume
+  reuses it. Partition JSONL banks and manifests export on completion or
+  failure. Censored games stay explicit and are ineligible for natural-outcome
+  labels. This collector accepts legacy public input cores only; motor/history
+  cores use controller replay rather than fabricated missing inputs. These
+  source-policy lineages provide experience diversity, not independently
+  trained uncertainty members.
 - `public-predecessor-bank`: set `competitive_checkpoint`, `bank_device`,
   `bank_states` and `public_predecessor_bank`. It collects clean 14-HI games,
   retaining full causal public views, native restore state, complete reserve
@@ -536,12 +553,19 @@ For the review's offline diagnostics, launch through these recipes:
 - `paired-terminal-quality`: set `paired_terminal_config`. The JSON names
   `state_bank`, frozen `members`, weighted `continuations` (actor/opponent),
   `reference`, `states`, `seed`, `device`, `output`, `batch_size`, `max_events`
-  and optional level/speed filters and `native_workers` (default 1). Neural
+  and optional level/speed filters, `stratum_fields`, `root_batch_size`
+  (default 1) and `native_workers` (default 1). Neural
   inference remains ordered and batched; additional workers step independent
   native handles. Progress refreshes after each loop once five seconds have
   elapsed, even when no trajectory has finished. Every root candidate uses the same exact
-  reserve/policy panel. Inspect `progress.json`, `targets.jsonl` and
-  `rollouts.jsonl`. A capped branch is unknown, not a draw.
+  reserve/policy panel. Batching across roots keeps long continuations from
+  leaving the accelerator with a nearly empty last batch at every root.
+  Inspect `progress.json`, `targets.jsonl` and `rollouts.jsonl`; utilization
+  includes actual neural batch rows, decisions and native/inference time.
+  Complete per-root inventory/result files in `roots/` are authoritative for
+  resume under the same `contract.json`; partial roots are recomputed and
+  aggregate exports rebuilt. Legacy outputs cannot acquire this contract
+  after the fact. A capped branch is unknown, not a draw.
 - `paired-quality-fit --allow-staged`: set `paired_quality_fit_config` with
   `state_bank`, `targets`, parent `checkpoint`, `mode` (baseline/critic/context/
   combined), `phase` (auxiliary/policy_improvement), `seed`, `device`, `epochs`,
