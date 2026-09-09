@@ -601,6 +601,31 @@ the model checkpoints. The plan uses 64 source games, a common 25% holdout and
 up to 100 auxiliary epochs per mode, with a 0.02 policy-KL limit. All outputs
 are prospective diagnostics and leave promotion gates unchanged.
 
+The broader `review-20260909/public-quality-bank-v1` corpus targets 2,048
+independent games: 1,280 fit, 512 policy-anchor and 256 confirmation games, with
+eight retained positions per game. Three frozen public checkpoints (bootstrap,
+2M and 10M) supply all nine matchups. Seven-eighths of games are 14 HI; the
+remainder are 20 HI. The 2M input is an inference export of existing weights,
+not new training. The initial source `97ea22b` committed 271 games before a
+posterior-throughput upgrade. Source `6dfaf54` resumes the identical corpus
+contract and retains those games. Its public-bottle factoring passed exhaustive
+posterior comparisons on the Mac and tf3090; a 192-query Mac microbenchmark
+measured 23x faster matching, which is not an overall training-throughput claim.
+
+`teacher-data-slot-v2` runs this collection followed by
+`terminal-batch-single-v1` and `terminal-batch-eight-v1`, with corresponding
+JSON configurations under `review-20260909/configs/`. The two labeling jobs
+compare one versus eight roots in flight on identical eight-root 14-HI panels,
+covering all legal actions, nine continuation pairs and the full public reserve
+posterior. `teacher-data-slot-v2/benchmark.json` reports throughput and label
+agreement separately. Its supervisor preserves the next saved main-core update,
+uses at most 60 GPU minutes and resumes that same checkpoint/optimizer through
+`controller-core-live-v4-after-teacher-data-v2.json`. Read the slot's progress
+and supervisor PID plus the main run's PID before recovery. The earlier v1 slot
+is explicitly superseded; its interruption record preserves the reason and
+completed work. This is data/throughput work, not a completed larger-teacher
+study or model promotion.
+
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
 `opponents`, `conditions` (level/speed/pace), `confirmation_seeds`, `score_margin`,
