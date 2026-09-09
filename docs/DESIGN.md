@@ -252,9 +252,15 @@ the same native in-tick event emitter and charged motor context. New-context
 policies retain all planner poses, including same-color rotations; frozen
 actors retain historical deduplication. Policy memoization includes public
 history and execution. Legacy speculative answers and opponent ablations
-cannot be reused by a context actor. App/browser emission, full-core learning
-and device evaluation still require integration; missing history or motor
-features must not be fabricated as known inputs.
+cannot be reused by a context actor. The shared desktop/browser scheduler now
+emits `public-controller-history-v1`: a fixed 32-event history collected from
+exact native effects or passive verified cartridge instruction hooks, with
+round-relative active time, both visible previews/poses and decimal virus counts.
+The source backend validates and converts that wire view to the same public
+model input used in controller arenas. Gravity names the actual counter period
+(ROM threshold plus one), including the one-frame limit. Full-core learning,
+future motor-opportunity features and device/strength evaluation remain pending;
+missing history or motor features must not be fabricated as known inputs.
 
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that

@@ -64,6 +64,9 @@ class NextTurnPreparer:
     """
 
     def __init__(self, policy, planner, *, lib_path=None):
+        from drmc_rl.human.controller_context import uses_public_context
+        if uses_public_context(policy):
+            raise ValueError("context actors require geometry preparation with fresh late context; legacy scored branches are incompatible")
         from drmc_rl.human.afterstate_sim import NativeAfterstateSimulator
         self.policy, self.planner = policy, planner
         self.sim = NativeAfterstateSimulator(num_envs=1, lib_path=lib_path)

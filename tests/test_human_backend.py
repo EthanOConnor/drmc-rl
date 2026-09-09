@@ -10,6 +10,56 @@ from drmc_rl.human.search import blend_human_and_search, semantic_planes_to_nes_
 from drmc_rl.planning.native_reach import is_library_present
 
 
+@pytest.mark.parametrize("pace", ["sloth", "top_humans"])
+def test_context_competitive_core_warms_and_executes_live_history(tmp_path, pace):
+    import os
+    import torch
+    from drmc_rl.envs.backends.vs_frames import FrameVsPool
+    from drmc_rl.execution.pace import resolve_pace
+    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+    from drmc_rl.human.backend import HumanBackend, PROTOCOL_SCHEMA
+    from tools.eval_policy import _build_net_from_cfg
+
+    human = tmp_path / "human.pt.gz"
+    _afterstate_checkpoint(human)
+    cfg = dict(candidate_architecture="g5", candidate_board_channels=16,
+               candidate_d_model=16, encoder_blocks=1, pill_embed_dim=8,
+               candidate_hidden_dim=24, candidate_cross_layers=1,
+               candidate_interaction_layers=1, candidate_transformer_heads=2,
+               candidate_patch_kernel=3, aux_spec=PUBLIC_CONTEXT_SCHEMA,
+               env={"public_observations": True})
+    net, _, _ = _build_net_from_cfg(cfg, 20, "cpu")
+    core = tmp_path / "core.pt"
+    torch.save({"cfg": cfg, "state_dict": net.state_dict()}, core)
+    backend = HumanBackend(str(human), competitive_checkpoint=str(core), seed=3)
+    try:
+        assert not backend.capabilities()["anticipation"]["available"]
+        with FrameVsPool(lib_path=os.environ.get("DRMARIO_POOL_LIB")) as pool:
+            pool.reset([17291])
+            while not pool.states[1].falling:
+                pool.step()
+            public = pool.public_state(1).to_dict()
+            for side in public["sides"]:
+                del side["board_b64"]
+            public.update(schema="public-controller-history-v1", compute_frames=4)
+            request = {"schema": PROTOCOL_SCHEMA, "type": "decide", "request_id": 1,
+                       "frame_id": 10, "deadline_ms": 10000, "target_rating": 1600,
+                       "temperature": 0, "strength_control": "quality", "pace": pace,
+                       "execution_delay_frames": max(4, resolve_pace(pace).reaction_frames),
+                       "state": pool.semantic(1) | {"public_live_context": public}}
+            response = backend.handle(request)
+            assert response["type"] == "result", response
+            assert response["result"]["timing"]["movement"]["validated"]
+            request["request_id"] = 2
+            request["frame_id"] = 11
+            request["state"].pop("public_live_context")
+            response = backend.handle(request)
+            assert response["type"] == "error"
+            assert "live public history" in str(response)
+    finally:
+        backend.close()
+
+
 @pytest.mark.parametrize("cuda,mps,expected", [(True, True, "cuda"),
     (False, True, "mps"), (False, False, "cpu")])
 def test_live_device_uses_available_acceleration_and_honors_override(monkeypatch, cuda, mps, expected):

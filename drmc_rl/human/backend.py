@@ -286,6 +286,7 @@ class HumanBackend:
             speed=speed, speed_ups=speed_ups, candidate_count=packed.count,
         )
         if self.competitive is not None:
+            from drmc_rl.human.controller_context import uses_public_context
             feasible = (costs != 0xFFFF).reshape(4, GRID_H, GRID_W)
             masks = [feasible]
             if str(self.competitive.device).startswith("mps"):
@@ -306,14 +307,27 @@ class HumanBackend:
                     "next_pill_colors": pill,
                     "preview_pill": {"first_color": 2, "second_color": 1},
                 }
+                if uses_public_context(self.competitive):
+                    from drmc_rl.game.pair_state import DecisionBoundary, PublicPairState, VisibleSideState
+                    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+                    from drmc_rl.search.public_policy import policy_request
+
+                    # Synthetic kernel warmup, never a recorded live observation.
+                    side = VisibleSideState(bytes([255] * 128), tuple(pill), tuple(preview), None)
+                    public = PublicPairState(0, 0, (side, side), DecisionBoundary.BOTH)
+                    legal = np.flatnonzero(mask.reshape(512)).tolist()
+                    observation, info = policy_request(public, 0, legal, [32] * len(legal),
+                                                       context_schema=PUBLIC_CONTEXT_SCHEMA)
+                info["vs/observation_timeline"] = "causal-settled-pair-v1"
                 for batch in (1, 18):
                     self.competitive.score(np.repeat(observation[None], batch, axis=0), [info] * batch)
 
     def capabilities(self) -> dict[str, Any]:
+        from drmc_rl.human.controller_context import uses_public_context
         return {
             "schema": PROTOCOL_SCHEMA,
             "request_types": ["hello", "health", "decide", "coach", "prepare_next", "cancel", "shutdown"],
-            "anticipation": {"version": 1, "available": self.competitive is not None,
+            "anticipation": {"version": 1, "available": self.competitive is not None and not uses_public_context(self.competitive),
                              "preview_branches": 9, "frame_parities": 2,
                              "public_information_only": True, "opponent_ablation": True},
             "modes": ["play", "coach"],
@@ -405,6 +419,12 @@ class HumanBackend:
 
     def _infer(self, request: Mapping[str, Any], *, remaining_ms: float) -> dict[str, Any]:
         state = request["state"]
+        from drmc_rl.human.controller_context import (
+            controller_policy_inputs, live_controller_state, uses_public_context,
+        )
+        if (self.competitive is not None and uses_public_context(self.competitive)
+                and request.get("strength_control") == "quality"):
+            state = live_controller_state(state)
         rating = float(request["target_rating"])
         temperature = float(request.get("temperature", 1.0))
         execution_delay = int(request.get("execution_delay_frames", 0))
@@ -525,23 +545,13 @@ class HumanBackend:
             if control == "quality":
                 scores = details.get("competitive_score")
                 if self.competitive is not None:
-                    from drmc_rl.game.observation import legacy_vs_policy_boards
-
-                    opponent_pill = _pair(state["opponent_pill"], "opponent_pill")
-                    policy_boards = legacy_vs_policy_boards(
-                        planes, opponent_planes, pill, opponent_pill
+                    candidate = (planes, opponent_planes, pill, preview, speed, speed_ups,
+                                 frame, reach, packed, costs512)
+                    observed, infos = controller_policy_inputs(
+                        self.competitive, candidate, state, pace, execution_delay,
+                        int((state.get("public_live_context") or {}).get("compute_frames", execution_delay)),
                     )
-                    observed = np.concatenate((policy_boards,
-                        (costs512 != 0xFFFF).reshape(4, 16, 8).astype(np.float32)))
-                    raw_colors = (1, 0, 2)
-                    actions, masks, logits = self.competitive.score(observed[None], [{
-                        "placements/feasible_mask": (costs512 != 0xFFFF).reshape(4, 16, 8),
-                        "placements/cost_to_lock": costs512.reshape(4, 16, 8),
-                        "next_pill_colors": pill,
-                        "vs/opponent_pill_colors": opponent_pill,
-                        "preview_pill": {"first_color": raw_colors[int(preview[0])],
-                                         "second_color": raw_colors[int(preview[1])]},
-                    }])
+                    actions, masks, logits = self.competitive.score(observed, infos)
                     if set(actions[0, masks[0]]) != set(valid_actions):
                         raise RuntimeError("competitive policy changed candidate coverage")
                     by_action = np.full(512, -np.inf, dtype=np.float32)

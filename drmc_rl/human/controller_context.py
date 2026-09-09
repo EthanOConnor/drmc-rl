@@ -10,6 +10,66 @@ from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.search.public_policy import policy_request
 
 
+def live_controller_state(state):
+    """Decode the shared desktop/browser wire view, without accessing emulator RAM."""
+    from drmc_rl.game.pair_state import (
+        DecisionBoundary, FallingPillView, PairEvent, PairEventKind, PublicPairState,
+        VisibleSideState, audit_public_mapping,
+    )
+    from drmc_rl.human.search import semantic_planes_to_nes_board
+
+    live = state.get("public_live_context")
+    if not isinstance(live, dict) or live.get("schema") != "public-controller-history-v1":
+        raise ValueError("this competitive core requires live public history from the trainer")
+    audit_public_mapping(live)
+    if live.get("viewer_side") != 1 or len(live.get("sides", ())) != 2:
+        raise ValueError("the live controller wire view must use the scheduler's P2 perspective")
+    visible = []
+    for side, metadata in enumerate(live["sides"]):
+        active = metadata.get("active")
+        board = semantic_planes_to_nes_board(np.asarray(
+            state["board_planes" if side == 1 else "opponent_board_planes"]
+        ))
+        visible.append(VisibleSideState(
+            board=bytes(board), pill=metadata["pill"], preview=metadata["preview"],
+            active=None if active is None else FallingPillView(**active),
+            viruses_remaining=metadata["viruses_remaining"],
+            animation_phase=metadata["animation_phase"],
+            state_age_frames=metadata["state_age_frames"],
+        ))
+    if (visible[1].pill != tuple(state["pill"]) or visible[1].preview != tuple(state["preview"])
+            or visible[0].pill != tuple(state["opponent_pill"])):
+        raise ValueError("live history and the observed controller pills disagree")
+    frame = int(live["frame_id"])
+    events = []
+    for event in live["recent_events"]:
+        payload = dict(event["public_payload"])
+        if event["kind"] == "volley":
+            size = int(payload["garbage_size"])
+            if not 2 <= size <= 4:
+                raise ValueError("invalid observed garbage volley")
+            payload["columns"] = payload["columns"][:size]
+            payload["colors"] = payload["colors"][:size]
+        events.append(PairEvent(PairEventKind(event["kind"]), int(event["frame_id"]),
+                                int(event["side"]), payload))
+    if any(e.frame_id > frame for e in events) or any(a.frame_id > b.frame_id for a,b in zip(events,events[1:])):
+        raise ValueError("live event history must be causal and chronological")
+    own = visible[1].active
+    falling = state["falling"]
+    if own is None or (own.column, own.row_top, own.rotation) != (
+        falling["x"], falling["y"], falling["rotation"]
+    ):
+        raise ValueError("live history and the actual falling controller pose disagree")
+    opponent = visible[0].active
+    public = PublicPairState(
+        frame_id=frame, viewer_side=1, sides=tuple(visible), recent_events=tuple(events),
+        decision_boundary=(DecisionBoundary.BOTH if opponent and opponent.age_frames == 0 else DecisionBoundary.P2),
+        observable_clock_delta_frames=0, own_controller_state=falling,
+    )
+    return {**state, "public_pair_state": public, "public_context_schema": PUBLIC_CONTEXT_SCHEMA,
+            "vs/observation_timeline": "causal-settled-pair-v1"}
+
+
 def uses_public_context(policy):
     return getattr(policy, "aux_spec", None) == PUBLIC_CONTEXT_SCHEMA
 
@@ -21,8 +81,9 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
     after the charged delay; execution context makes that distinction explicit.
     """
     if not uses_public_context(policy):
+        from drmc_rl.human.backend import _pair
         observations, infos = public_policy_inputs(
-            candidate[0], candidate[1], candidate[2], state["opponent_pill"],
+            candidate[0], candidate[1], candidate[2], _pair(state["opponent_pill"], "opponent_pill"),
             candidate[-1], [state["preview"]],
         )
         if "vs/observation_timeline" in state:
@@ -37,7 +98,9 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
     execution = PublicExecutionContext(
         reaction_frames=pace.reaction_frames, edge_interval=pace.edge_interval,
         motion_interval=pace.motion_interval, max_buttons=pace.max_buttons,
-        gravity_frames=int(compute_speed_threshold(state["speed"], state["speed_ups"])),
+        # The ROM falls when its counter exceeds the table threshold. The
+        # public feature names the period, including the one-frame fast limit.
+        gravity_frames=int(compute_speed_threshold(state["speed"], state["speed_ups"])) + 1,
         speed_ups=int(state["speed_ups"]), decision_delay_frames=int(delay),
         compute_frames=int(compute_frames),
     )

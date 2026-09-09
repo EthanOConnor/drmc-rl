@@ -12,7 +12,7 @@ from drmc_rl.execution.pace import resolve_pace
 from drmc_rl.game.pair_state import PairEventKind
 from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, context_from_info
 from drmc_rl.human.backend import plan_candidates
-from drmc_rl.human.controller_context import controller_policy_inputs
+from drmc_rl.human.controller_context import controller_policy_inputs, live_controller_state
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import MemoPolicy
 from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
@@ -158,3 +158,50 @@ def test_memo_identity_includes_actual_history_and_motor_context():
             assert len(actor.inputs) == 3
         finally:
             planner.close()
+
+
+@pytest.mark.parametrize("speed, speed_ups, period", [(0, 0, 40), (2, 49, 1)])
+def test_motor_context_uses_the_actual_gravity_period(speed, speed_ups, period):
+    with FrameVsPool(lib_path=LIB) as pool:
+        pool.reset([17291])
+        while not pool.states[0].falling:
+            pool.step()
+        state = pool.semantic(0, public_context=True)
+        state.update(speed=speed, speed_ups=speed_ups)
+        actor, planner, pace = ContextPolicy(), NativeReachabilityRunner(), resolve_pace("normal")
+        try:
+            candidate = plan_candidates(planner, state, 0, pace)
+            _, infos = controller_policy_inputs(actor, candidate, state, pace, 0, 0)
+            assert infos[0]["public_execution"].gravity_frames == period
+        finally:
+            planner.close()
+
+
+def test_live_wire_context_matches_native_features_and_rejects_inconsistent_inputs():
+    from copy import deepcopy
+    from drmc_rl.game.public_context import encode_public_context
+
+    with FrameVsPool(lib_path=LIB) as pool:
+        pool.reset([17291])
+        while not pool.states[1].falling:
+            pool.step()
+        expected = pool.public_state(1)
+        wire = expected.to_dict()
+        for side in wire["sides"]:
+            del side["board_b64"]
+        wire.update(schema="public-controller-history-v1", compute_frames=4)
+        state = pool.semantic(1) | {"public_live_context": wire}
+        actual = live_controller_state(state)["public_pair_state"]
+        np.testing.assert_array_equal(encode_public_context(actual, 1), encode_public_context(expected, 1))
+        changed = deepcopy(state)
+        changed["public_live_context"]["sides"][1]["active"]["row_top"] += 1
+        with pytest.raises(ValueError, match="pose disagree"):
+            live_controller_state(changed)
+        changed = deepcopy(state)
+        changed["public_live_context"]["recent_events"][0]["frame_id"] = expected.frame_id + 1
+        with pytest.raises(ValueError, match="causal"):
+            live_controller_state(changed)
+        changed = deepcopy(state)
+        changed["public_live_context"]["pending_attack"] = 4
+        with pytest.raises(ValueError, match="forbidden"):
+            live_controller_state(changed)

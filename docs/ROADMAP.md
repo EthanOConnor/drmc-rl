@@ -276,8 +276,13 @@ indefinitely staged.
   motor-sensitive memoization pass; stale legacy anticipation/ablation is
   rejected for new-context actors. Exact frame/event input parity, clear/volley
   fixtures, snapshot tests and the independent NES demo transcript pass.
-  Live app/browser emission, full-core learning, future motor-opportunity
-  features and device/strength evaluation are still outstanding.
+  The shared desktop/browser scheduler now emits the same bounded public wire
+  view from native effects or passive cartridge instruction hooks. Context-aware
+  cores consume it in the source backend; frozen players retain their existing
+  inputs. Native/WASM parity covers 64,800 frames including exact effects, and
+  neural live-backend tests cover Sloth and Top Humans. Full-core learning,
+  future motor-opportunity features and device/strength evaluation remain
+  outstanding; no new core has been installed.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public
