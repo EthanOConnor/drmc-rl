@@ -125,7 +125,8 @@ def run(config):
         return progress
     remaining = [row for row in rows if row["id"] not in completed]
     try:
-        actors = {id: PublicPolicyContinuation(Path(path), device=config.get("device", "cuda"))
+        actors = {id: PublicPolicyContinuation(Path(path), device=config.get("device", "cuda"),
+                                              cache_size=config.get("policy_cache_size", 0))
                   for id, path in config["members"].items()}
         reference = actors[config["reference"]]
         for start in range(0, len(remaining), root_batch_size):

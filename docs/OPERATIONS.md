@@ -559,7 +559,15 @@ For the review's offline diagnostics, launch through these recipes:
   `state_bank`, frozen `members`, weighted `continuations` (actor/opponent),
   `reference`, `states`, `seed`, `device`, `output`, `batch_size`, `max_events`
   and optional level/speed filters, `stratum_fields`, `root_batch_size`
-  (default 1) and `native_workers` (default 1). Neural
+  (default 1), `native_workers` (default 1), and `policy_cache_size` (default 0).
+  A positive cache size enables bounded per-frozen-member inference memoization
+  and deduplication within a batch. Keys cover the actor's complete public
+  inputs: legacy zero-context models omit unused clock/age fields, while public
+  context models retain their complete history view. Hidden state never keys
+  or enters the actor. Inference counts distinguish logical policy decisions,
+  cache hits, repeated inputs and actual neural rows. This preserves the
+  mathematical frozen policy; as with other batch-shape changes, measure any
+  FP32 close-tie trajectory differences explicitly. Neural
   inference remains ordered and batched; additional workers step independent
   native handles. Progress refreshes after each loop once five seconds have
   elapsed, even when no trajectory has finished. Every root candidate uses the same exact

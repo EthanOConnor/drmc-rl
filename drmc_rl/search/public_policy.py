@@ -77,7 +77,8 @@ def policy_request(
 
 
 class PublicPolicyContinuation:
-    def __init__(self, checkpoint: Path, calibration: DavidsonCalibration | None = None, *, device="cpu"):
+    def __init__(self, checkpoint: Path, calibration: DavidsonCalibration | None = None, *,
+                 device="cpu", cache_size=0):
         from tools.vs_head_to_head import PlainPolicy
         self.policy = PlainPolicy(checkpoint, device=device, public_only=True)
         from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
@@ -89,11 +90,66 @@ class PublicPolicyContinuation:
             raise ValueError("public continuation requires an explicitly public full-pair actor")
         self.calibration = calibration
         self._cache = OrderedDict()
+        self._batch_cache = OrderedDict()
+        self.cache_size = int(cache_size)
+        if self.cache_size < 0:
+            raise ValueError("public inference cache size must be nonnegative")
+        self.last_inference_batch_rows = ()
+        self.last_cache_hits = self.last_batch_duplicates = 0
 
     def infer_batch(self, requests):
         """Score complete public frontiers for independent rollout decisions."""
+        self.last_inference_batch_rows = ()
+        self.last_cache_hits = self.last_batch_duplicates = 0
         if not requests:
             return []
+        if not getattr(self, "cache_size", 0):
+            result = self._infer_uncached(requests)
+            self.last_inference_batch_rows = (len(requests),)
+            return result
+        keys, missing, values = [], {}, {}
+        for state, side in requests:
+            key = self._policy_key(state, side)
+            keys.append(key)
+            if key in self._batch_cache:
+                values[key] = self._batch_cache[key]
+                self._batch_cache.move_to_end(key)
+                self.last_cache_hits += 1
+            elif key in missing:
+                self.last_batch_duplicates += 1
+            else:
+                missing[key] = (state, side)
+        if missing:
+            answers = self._infer_uncached(list(missing.values()))
+            self.last_inference_batch_rows = (len(missing),)
+            for key, (probability, value) in zip(missing, answers, strict=True):
+                result = dict(probability), value
+                values[key] = result
+                self._batch_cache[key] = result
+                while len(self._batch_cache) > self.cache_size:
+                    self._batch_cache.popitem(last=False)
+        # Callers cannot mutate the cached probability dictionary. Keep local
+        # answers even if this batch itself exceeds the bounded cache capacity.
+        return [(dict(values[key][0]), values[key][1]) for key in keys]
+
+    def _policy_key(self, state, side):
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+
+        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+            raise ValueError("public continuation requires a causal public timeline")
+        if not state.privileged.need_action[side]:
+            raise ValueError("public continuation requires an acting side")
+        if self.policy.aux_spec != "zero_v1_vs":
+            return self._request_key(state, side)
+        # Exactly the public fields used by legacy_vs_policy_boards and
+        # policy_request for zero_v1_vs. Clock/age and opponent preview are
+        # absent from that actor's tensors; opponent board and pill are not.
+        public = state.privileged.public
+        own, opponent = public.sides[side], public.sides[1-side]
+        return (own.board, opponent.board, own.pill, own.preview, opponent.pill,
+                state.legal_actions_by_side[side], state.action_costs_by_side[side])
+
+    def _infer_uncached(self, requests):
         observations, infos = [], []
         for state, side in requests:
             from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA

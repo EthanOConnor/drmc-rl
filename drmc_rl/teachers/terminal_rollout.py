@@ -97,6 +97,17 @@ def rollout_tasks(
     exhausted = False
     last_progress = time.monotonic()
 
+    def record_inference(actor, requested):
+        # Logical panel decisions include exact cache hits and repeated inputs.
+        # Report actual neural rows separately so caching cannot inflate batch
+        # occupancy or disguise the work performed by the accelerator.
+        for size in getattr(actor, "last_inference_batch_rows", (requested,)):
+            if size:
+                inference_rows[size] += 1
+                measured['neural_policy_rows'] += size
+        measured['policy_cache_hits'] += getattr(actor, 'last_cache_hits', 0)
+        measured['within_batch_duplicates'] += getattr(actor, 'last_batch_duplicates', 0)
+
     def fill(runner):
         nonlocal exhausted
         try:
@@ -154,13 +165,13 @@ def rollout_tasks(
                 predictions = [None] * len(requests)
                 for member, indices in groups.items():
                     answers = continuation[member].infer_batch([requests[i] for i in indices])
-                    inference_rows[len(indices)] += 1
+                    record_inference(continuation[member], len(indices))
                     for i, answer in zip(indices, answers, strict=True):
                         predictions[i] = answer
             else:
                 predictions = continuation.infer_batch(requests)
                 if requests:
-                    inference_rows[len(requests)] += 1
+                    record_inference(continuation, len(requests))
             measured['inference_seconds'] += time.perf_counter() - inference_started
             measured['policy_decisions'] += len(requests)
             for (index, side), (probability, _unused_value) in zip(destinations, predictions, strict=True):
