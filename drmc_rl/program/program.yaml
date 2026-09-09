@@ -98,6 +98,22 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-controller-core:
+    status: active
+    stage: 3
+    purpose: Train the full competitive core from natural paced controller games with live causal public history and motor inputs.
+    requires_paths: [tools/train_pace_strategy.py, '{controller_core_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.train_pace_strategy, --config, '{controller_core_config}']
+    produces: [Full public core checkpoint, complete natural-game journal, optional public input replay shards, measured episodic update KL and throughput]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Set training_model to public_core and use the causal frame/event collector. All seven authored paces are supported.
+      - Every learner transition stores public model inputs, not frozen trunk features. The whole core receives outcome gradients.
+      - The frozen post-migration initial policy is the explicit regularization reference; failed quality labels are excluded.
+      - This experiment does not promote a model, calibrate a quality head, or complete the larger-teacher and expressive-play stages.
   search-frontier-benchmark:
     status: active
     stage: 4

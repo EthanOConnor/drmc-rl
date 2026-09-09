@@ -282,7 +282,11 @@ indefinitely staged.
   inputs. Native/WASM parity covers 64,800 frames including exact effects, and
   neural live-backend tests cover Sloth and Top Humans. Full-core learning,
   future motor-opportunity features and device/strength evaluation remain
-  outstanding; no new core has been installed.
+  outstanding; no new core has been installed. Full-network controller outcome
+  learning is implemented under `trainer-controller-core`; focused tests verify
+  board/context gradients, exact collection likelihoods, checkpoint reload and
+  complete public replay shards. Representative training and strength evidence
+  are the next step, not implied by those implementation checks.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public

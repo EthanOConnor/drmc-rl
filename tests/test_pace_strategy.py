@@ -163,3 +163,6 @@ def test_frame_budget_also_requires_real_learning_coverage_at_every_pace():
     add_game_totals(stats,{"frames":9999,"reason":"timeout","score":.5,
         "a_stats":{"decisions":100}})
     assert stats["learning_decisions"] == 4
+    config["target_decisions"] = 1_000_000
+    assert not training_target_met(progress | {"decisions": 999_999}, config)
+    assert training_target_met(progress | {"decisions": 1_000_000}, config)

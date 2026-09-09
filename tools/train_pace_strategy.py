@@ -1,8 +1,9 @@
-"""Bounded full-game PPO for a motor-conditioned residual on the public core.
+"""Natural full-game PPO for the pace adapter or the live public controller core.
 
 Uses exact controller execution, optionally batched at causal decisions.
-Frozen features make the small adapter cheap to update. Every transition receives its natural terminal
-W/D/L return (gamma=1). The actor sums decision credit per game; critic and
+The adapter retains frozen features; the full core retains exact public model
+inputs and trains its board/context representations. Every transition receives
+its natural terminal W/D/L return (gamma=1). The actor sums decision credit per game; critic and
 regularization reductions are independently declared in checkpoint metadata.
 No shaped reward, search label, hidden opponent field or time-limit draw trains
 the policy. Run through the trainer-pace-strategy program recipe.
@@ -101,6 +102,7 @@ def training_target_met(progress, config):
     if config.get("target_frames") is None:
         return progress["updates"] >= config["updates"]
     return (progress["frames"] >= config["target_frames"] and
+            progress.get("decisions", 0) >= config.get("target_decisions", 0) and
             all(progress["paces"].get(p,{}).get("learning_decisions",0) >= config.get("minimum_decisions_per_pace",0)
                 for p in config["paces"]))
 
@@ -134,14 +136,30 @@ def tensor_batch(records, device):
     return features, extras
 
 
+def _training_module(actor):
+    return actor.training_module if hasattr(actor, "training_module") else actor.adapter
+
+
+def _training_batch(actor, rows):
+    if hasattr(actor, "training_batch"):
+        return actor.training_batch(rows)
+    return tensor_batch(rows, actor.device)
+
+
+def _training_forward(actor, features):
+    if hasattr(actor, "training_forward"):
+        return actor.training_forward(features)
+    return actor.adapter(*features)
+
+
 @torch.no_grad()
 def _policy_snapshot(actor, records, size, *, reference=None):
     """Exact categorical KL on all decisions, including unchosen moves."""
     distributions, divergences, errors = [], [], []
     for start in range(0, len(records), size):
         rows = records[start : start + size]
-        features, data = tensor_batch(rows, actor.device)
-        logits, values = actor.adapter(*features)
+        features, data = _training_batch(actor, rows)
+        logits, values = _training_forward(actor, features)
         logs = logits.log_softmax(-1)
         errors.extend((values - data["return"]).square().cpu().tolist())
         if reference is None:
@@ -193,7 +211,7 @@ def update_adapter(actor, optimizer, records, config, seed):
     # Rejected updates restore BOTH weights and Adam moments before retrying.
     for _epoch in range(config.get("epochs", 2)):
         indices = rng.permutation(len(records))
-        saved_model = deepcopy(actor.adapter.state_dict())
+        saved_model = deepcopy(_training_module(actor).state_dict())
         saved_optimizer = deepcopy(optimizer.state_dict())
         rates = [group["lr"] for group in optimizer.param_groups]
         for attempt in range(config.get("kl_backtracks", 4) + 1):
@@ -202,8 +220,8 @@ def update_adapter(actor, optimizer, records, config, seed):
             candidate_first_kl = None
             for start in range(0, len(indices), size):
                 rows = [records[i] for i in indices[start : start + size]]
-                features, data = tensor_batch(rows, actor.device)
-                logits, values = actor.adapter(*features)
+                features, data = _training_batch(actor, rows)
+                logits, values = _training_forward(actor, features)
                 log_probs = logits.log_softmax(-1)
                 chosen = log_probs.gather(1, data["slot"][:, None]).squeeze(1)
                 policy_loss = clipped_surrogate(
@@ -219,7 +237,10 @@ def update_adapter(actor, optimizer, records, config, seed):
                 entropy = -(data["entropy_weight"] * (log_probs.exp() * log_probs).sum(-1)).mean()
                 base_kl = (
                     data["parent_kl_weight"]
-                    * categorical_kl(features[3].log_softmax(-1), log_probs)
+                    * categorical_kl(
+                        data["parent_logp"] if "parent_logp" in data else features[3].log_softmax(-1),
+                        log_probs,
+                    )
                 ).mean()
                 loss = (
                     policy_loss
@@ -231,14 +252,14 @@ def update_adapter(actor, optimizer, records, config, seed):
                     raise RuntimeError("non-finite pace training loss")
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
-                norm = torch.nn.utils.clip_grad_norm_(actor.adapter.parameters(), 0.7)
+                norm = torch.nn.utils.clip_grad_norm_(_training_module(actor).parameters(), 0.7)
                 if not torch.isfinite(norm):
                     raise RuntimeError("non-finite pace adapter gradient")
                 optimizer.step()
                 attempt_steps += 1
                 if steps == 0 and attempt_steps == 1:
                     with torch.no_grad():
-                        after = actor.adapter(*features)[0].log_softmax(-1)
+                        after = _training_forward(actor, features)[0].log_softmax(-1)
                         candidate_first_kl = categorical_kl(log_probs.detach(), after).mean().item()
                 for key, value in dict(
                     policy_loss=policy_loss.item(),
@@ -260,7 +281,7 @@ def update_adapter(actor, optimizer, records, config, seed):
                 steps += attempt_steps
                 break
             rejected += 1
-            actor.adapter.load_state_dict(saved_model)
+            _training_module(actor).load_state_dict(saved_model)
             optimizer.load_state_dict(saved_optimizer)
             if attempt == config.get("kl_backtracks", 4):
                 stopped = True
@@ -306,13 +327,21 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
     torch.manual_seed(config["seed"])
-    actor = PacePolicy(
-        config["checkpoint"],
-        config["device"],
-        training=True,
-        adapter_path=config.get("resume") or config.get("init_adapter"),
-        seed=config["seed"],
-    )
+    full_core = config.get("training_model", "pace_adapter") == "public_core"
+    if full_core:
+        from drmc_rl.models.policy.controller_core import ControllerCorePolicy
+        if config.get("init_adapter"):
+            raise ValueError("full-core learning takes core weights; a frozen-feature adapter is not a core")
+        actor = ControllerCorePolicy(config["checkpoint"], config["device"],
+                                     resume=config.get("resume"), seed=config["seed"])
+    else:
+        if config.get("training_model", "pace_adapter") != "pace_adapter":
+            raise ValueError("training_model must be pace_adapter or public_core")
+        actor = PacePolicy(
+            config["checkpoint"], config["device"], training=True,
+            adapter_path=config.get("resume") or config.get("init_adapter"), seed=config["seed"],
+        )
+    checkpoint_prefix = "core" if full_core else "adapter"
     parent = PlainPolicy(Path(config["checkpoint"]),config["device"],public_only=True)
     opponents = PublicOpponentPool(
         config.get("opponent_pool"), parent, config["checkpoint"], config["device"]
@@ -327,13 +356,14 @@ def main():
         from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
         planner = ParallelPlanning(config.get("planner_workers",4))
         rollout = run_event_batch
-        config["mixed_core_actor"] = "learner"
+        config["mixed_core_actor"] = None if full_core else "learner"
     else:
         if config.get("rollout_backend", "frames") != "frames":
             raise ValueError("rollout_backend must be frames or events")
         planner = MemoPlanner(NativeReachabilityRunner())
-    optimizer = torch.optim.AdamW(actor.adapter.parameters(),lr=config.get("lr",2e-4),weight_decay=.001)
-    initial = {k:v.detach().clone() for k,v in actor.adapter.state_dict().items()}
+    module = _training_module(actor)
+    optimizer = torch.optim.AdamW(module.parameters(),lr=config.get("lr",2e-4),weight_decay=.001)
+    initial = {k:v.detach().clone() for k,v in module.state_dict().items()}
     start_update = 0
     progress = {
         "status": "Running",
@@ -342,7 +372,8 @@ def main():
         "games": 0,
         "frames": 0,
         "decisions": 0,
-        "trainable_parameters": sum(p.numel() for p in actor.adapter.parameters()),
+        "trainable_parameters": sum(p.numel() for p in module.parameters()),
+        "training_model": config.get("training_model", "pace_adapter"),
         "parent_sha256": actor.parent_sha256,
         "paces": {},
         "checkpoints": [],
@@ -353,6 +384,8 @@ def main():
     if config.get("resume"):
         previous = torch.load(config["resume"],map_location=config["device"],weights_only=True)
         validate_resume_objective(previous.get("training_config", {}), config)
+        if previous.get("training_config", {}).get("training_model", "pace_adapter") != config.get("training_model", "pace_adapter"):
+            raise ValueError("resume changed the trainable model contract")
         if "training_config" in previous:
             for key in ("checkpoint", "seed", "holdout_seeds", "paces"):
                 if previous["training_config"][key] != config[key]:
@@ -386,6 +419,7 @@ def main():
             raise ValueError("per-pace training budgets require the resume game journal")
     progress.update(
         target_frames=config.get("target_frames"),
+        target_decisions=config.get("target_decisions"),
         opponent_identities=opponent_identities,
         objective=config["objective"],
         minimum_decisions_per_pace=config.get("minimum_decisions_per_pace", 0),
@@ -402,20 +436,22 @@ def main():
         snapshot.execute("PRAGMA journal_mode=DELETE")
     store.close()
     dump(output/"results.json",{"updated_at":datetime.now(UTC).isoformat(),"tournaments":[]})
+    if full_core and not config.get("resume"):
+        actor.save(output / "core-initial.pt", update=0, training_config=config)
     started = time.perf_counter()
     try:
         for update in range(start_update+1,config["updates"]+1):
             if training_target_met(progress,config):
                 break
             pace = config["paces"][(update-1)%len(config["paces"])]
-            if pace not in BY_ID or pace in ("super_human","frame_perfect"):
-                raise ValueError("this isolated pilot trains Sloth through Top Humans only")
+            if pace not in BY_ID or (not full_core and pace in ("super_human","frame_perfect")):
+                raise ValueError("the frozen-feature pilot trains Sloth through Top Humans only")
             rng = np.random.default_rng(config["seed"]+update)
             opponent_id = opponents.choose(rng)
             opponent = opponents.load(opponent_id)
             if config.get("rollout_backend") == "events":
                 config["mixed_core_actor"] = (
-                    "learner" if opponent is parent and opponent_id == "parent" else None
+                    "learner" if not full_core and opponent is parent and opponent_id == "parent" else None
                 )
             level = 20 if pace != "sloth" and rng.random()<config.get("level20_fraction",.15) else 14
             count = config.get("games_per_pace",{}).get(pace,config.get("games_per_update",16))
@@ -438,6 +474,7 @@ def main():
                 collecting_update=update,
                 collecting_games=0,
                 collecting_target=count,
+                phase="collecting",
                 updated_at=datetime.now(UTC).isoformat(),
             )
             dump(output/"training.json",progress)
@@ -466,10 +503,18 @@ def main():
                     updated_at=datetime.now(UTC).isoformat())
                 dump(output/"training.json",progress)
             records = terminal_samples(batch)
+            progress.update(phase="optimizing", collecting_decisions=len(records),
+                            collecting_frames=sum(row["frames"] for row, _, _ in batch),
+                            updated_at=datetime.now(UTC).isoformat())
+            dump(output/"training.json", progress)
             optimizing = time.perf_counter()
             losses = update_adapter(actor,optimizer,records,config,config["seed"]+update)
             breakdown["optimizer_seconds"] = time.perf_counter()-optimizing
             rows = [r for r,_,_ in batch]
+            if full_core and config.get("public_replay", False):
+                from drmc_rl.models.policy.controller_core import write_public_replay
+                write_public_replay(output / "public-replay" / f"update-{update:05d}.npz",
+                                    records, rows, update=update, pace=pace, level=level)
             stats = progress["paces"].setdefault(pace,{})
             journaling = time.perf_counter()
             with (output/"training-games.jsonl").open("a") as stream:
@@ -495,7 +540,7 @@ def main():
                 frames=progress["frames"]+sum(r["frames"] for r in rows),
                 decisions=progress["decisions"]+len(records), losses=losses,
                 batch_seconds=elapsed, wall_seconds=time.perf_counter()-started,
-                max_parameter_change=max((v-initial[k]).abs().max().item() for k,v in actor.adapter.state_dict().items()),
+                max_parameter_change=max((v-initial[k]).abs().max().item() for k,v in module.state_dict().items()),
                 updated_at=datetime.now(UTC).isoformat())
             frames = sum(r["frames"] for r in rows)
             update_seconds = time.perf_counter()-update_started
@@ -505,11 +550,20 @@ def main():
                 rollout_frames_per_second=frames/elapsed,
                 learning_decisions_per_second=len(records)/update_seconds,
                 breakdown=dict(breakdown))
-            checkpoint = output/f"adapter-u{update:03d}.pt"
+            checkpoint = output/f"{checkpoint_prefix}-u{update:03d}.pt"
             progress["checkpoints"].append(checkpoint.name)
             actor.save(checkpoint,update=update,optimizer=optimizer.state_dict(),sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
+            keep = config.get("checkpoint_keep_last")
+            if keep is not None:
+                if type(keep) is not int or keep < 1:
+                    raise ValueError("checkpoint_keep_last must be a positive integer")
+                # Only superseded update checkpoints from this fresh run are
+                # removed; milestone and final artifacts are retained.
+                for old_name in progress["checkpoints"][:-keep]:
+                    (output / old_name).unlink(missing_ok=True)
+                progress["checkpoints"] = progress["checkpoints"][-keep:]
             for milestone in config.get("milestone_frames",[]):
-                path = output/f"adapter-f{milestone:09d}.pt"
+                path = output/f"{checkpoint_prefix}-f{milestone:09d}.pt"
                 if progress["frames"] >= milestone and not path.exists():
                     actor.save(path,update=update,progress=progress,training_config=config)
             dump(output/"training.json",progress)
@@ -517,8 +571,8 @@ def main():
             del records, batch
         if not training_target_met(progress,config):
             raise RuntimeError("update safety limit reached before the frame and per-pace learning targets")
-        progress.update(status="Training complete",final_checkpoint="adapter-final.pt",updated_at=datetime.now(UTC).isoformat())
-        actor.save(output/"adapter-final.pt",update=progress["updates"],optimizer=optimizer.state_dict(),
+        progress.update(status="Training complete",final_checkpoint=f"{checkpoint_prefix}-final.pt",updated_at=datetime.now(UTC).isoformat())
+        actor.save(output/f"{checkpoint_prefix}-final.pt",update=progress["updates"],optimizer=optimizer.state_dict(),
             sampling_rng=actor.rng.get_state(),progress=progress,training_config=config)
     except BaseException as error:
         progress.update(status="Failed",error=str(error),traceback=traceback.format_exc(),

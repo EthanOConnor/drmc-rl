@@ -93,7 +93,8 @@ class PlainPolicy:
         ca, cm, logits, _value = self.score_and_value(obs, infos)
         return ca, cm, logits
 
-    def score_and_value(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
+    def model_inputs(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
+        """Pack the full validated public frontier for inference or learning."""
         if getattr(self, "requires_causal_observations", False) and any(
             info.get("vs/observation_timeline") != "causal-settled-pair-v1" for info in infos
         ):
@@ -160,16 +161,16 @@ class PlainPolicy:
                 aux = np.zeros((B, self.aux_dim), dtype=np.float32)
             else:
                 aux = self.aux_shim._build_aux_batch(obs.astype(np.float32), infos)
+        inputs = tuple(torch.from_numpy(array).to(self.device) for array in (
+            obs.astype(np.float32), pills, prevs, ca, cc, cm,
+        ))
+        auxiliary = None if aux is None else torch.from_numpy(aux).to(self.device)
+        return inputs, auxiliary, ca, cm
+
+    def score_and_value(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
+        inputs, aux, ca, cm = self.model_inputs(obs, infos)
         with torch.inference_mode():
-            logits, value = self.net(
-                torch.from_numpy(obs.astype(np.float32)).to(self.device),
-                torch.from_numpy(pills).to(self.device),
-                torch.from_numpy(prevs).to(self.device),
-                torch.from_numpy(ca).to(self.device),
-                torch.from_numpy(cc).to(self.device),
-                torch.from_numpy(cm).to(self.device),
-                aux=None if aux is None else torch.from_numpy(aux).to(self.device),
-            )
+            logits, value = self.net(*inputs, aux=aux)
             lg = logits.float().cpu().numpy()
             values = value.reshape(-1).float().cpu().numpy()
         lg[~cm] = -np.inf

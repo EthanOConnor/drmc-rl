@@ -262,6 +262,16 @@ model input used in controller arenas. Gravity names the actual counter period
 future motor-opportunity features and device/strength evaluation remain pending;
 missing history or motor features must not be fabricated as known inputs.
 
+The controller outcome trainer can now update the full G5 on this input
+contract. It reuses the measured causal controller collector and episodic loss,
+but stores exact public model inputs instead of frozen trunk features. A fixed
+post-migration initial policy supplies KL regularization; no failed quality
+labels enter PPO. Outcome gradients reach the board encoder and public context.
+Optional replay shards retain the complete legal inventory and natural outcomes
+under their observed continuation, with game identities excluded from actor
+inputs. These do not label unchosen alternatives or calibrate the separate WDL
+heads. New full-core checkpoints still require held-out controller tournaments.
+
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that
 hides horizontal bonds on each side's same-color pill turns. Apply that lossy

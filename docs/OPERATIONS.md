@@ -363,6 +363,22 @@ live public-context inputs fail explicitly. Profile its host-side transition
 storage before a large CUDA run; the existing pace frame/event trainer keeps
 its already measured collection path.
 
+`trainer-controller-core --set controller_core_config=PATH` uses that exact
+frame/event path with `training_model: public_core`. It migrates the frozen public
+G5 to the live context schema and updates the full network from natural terminal
+returns using the corrected episodic actor reduction. Its fixed post-migration
+initial policy is the explicit KL reference. `public_replay: true` saves compact,
+pickle-free public input shards with the complete frontier and separately named
+observed-continuation outcome labels; seeds are split metadata, never model
+inputs. These support broader teacher data and policy anchors, not invented
+all-action quality labels. `target_frames` and `target_decisions` must both be
+met, together with `minimum_decisions_per_pace`. All seven authored paces are
+supported. `core-initial.pt`, milestone weights, and `core-final.pt` load in the
+ordinary source trainer/arena; `checkpoint_keep_last` bounds resumable update
+checkpoints without deleting milestones. Keep outputs on mombox and SQLite on
+local storage. New core training does not certify candidate WDL heads, a human
+execution profile, device latency, or model promotion.
+
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
 recorded in every training journal entry. Frozen member checkpoint/adapter
