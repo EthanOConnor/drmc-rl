@@ -344,7 +344,7 @@ def quality_loss(
     return mean(loss), metrics
 
 
-def upgrade_public_model(checkpoint, *, mode, device):
+def upgrade_public_model(checkpoint, *, mode, device, preserve_policy=True):
     """Migrate the frozen core once, then preserve a fitted model across phases."""
     from tools.eval_policy import _build_net_from_cfg
 
@@ -379,6 +379,10 @@ def upgrade_public_model(checkpoint, *, mode, device):
     )
     if mode in ("context", "combined"):
         sp["aux_spec"] = PUBLIC_CONTEXT_SCHEMA
+        if preserve_policy and sp.get("candidate_conditioned_trunk", True):
+            sp["candidate_context_residual"] = True
+        else:
+            sp.pop("candidate_context_residual", None)
     net, _, _ = _build_net_from_cfg(cfg, 20, device)
     state = net.state_dict()
     allowed = (
@@ -387,6 +391,7 @@ def upgrade_public_model(checkpoint, *, mode, device):
         "state_wdl_head.",
         "candidate_wdl_head.",
         "side_condition.",
+        "side_condition_scale",
     )
     for key, value in state.items():
         if key in old and old[key].shape == value.shape:

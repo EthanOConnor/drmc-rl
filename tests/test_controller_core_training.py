@@ -57,6 +57,10 @@ def controller_requests(actor):
 def test_outcome_gradients_reach_the_full_core_and_saved_policy_reloads(parent, tmp_path):
     actor = ControllerCorePolicy(parent, seed=491)
     observations, infos = controller_requests(actor)
+    legacy = PlainPolicy(parent, public_only=True)
+    for actual, expected in zip(actor.score_and_value(observations, infos),
+                                legacy.score_and_value(observations, infos)):
+        np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-6)
     actions, masks, selected = actor.score(observations, infos)
     records = actor.learning_records
     assert all(row["action"] == actions[i, selected[i].argmax()] for i, row in enumerate(records))
@@ -118,6 +122,31 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
             restored = state_from_controller_replay(replay, i)
             np.testing.assert_array_equal(restored["board_planes"], row["observation"][:8])
             assert restored["falling"]["frame_parity"] == infos[i]["public_controller_geometry"]["frame_parity"]
+
+
+def test_controller_resume_retains_pre_residual_architecture_and_reference(parent, tmp_path):
+    from copy import deepcopy
+    from drmc_rl.models.policy.controller_core import CORE_SCHEMA
+    from drmc_rl.training.quality_supervision import upgrade_public_model
+    from drmc_rl.training.utils.checkpoint_io import load_checkpoint
+
+    original, cfg = upgrade_public_model(load_checkpoint(parent), mode="context",
+                                         device="cpu", preserve_policy=False)
+    assert "candidate_context_residual" not in cfg["smdp_ppo"]
+    reference = deepcopy(original.state_dict())
+    with torch.no_grad():
+        original.policy[1].bias.add_(0.1)
+    current = ControllerCorePolicy(parent, training=False)
+    saved = tmp_path / "pre-residual.pt"
+    torch.save(dict(schema=CORE_SCHEMA, cfg=cfg, state_dict=original.state_dict(),
+                    parent_sha256=current.parent_sha256,
+                    observation_schema=current.aux_spec), saved)
+    resumed = ControllerCorePolicy(parent, resume=saved, training=False)
+    assert resumed.cfg == cfg
+    assert not resumed.net.context_residual
+    for key, value in original.state_dict().items():
+        torch.testing.assert_close(resumed.net.state_dict()[key], value, rtol=0, atol=0)
+        torch.testing.assert_close(resumed.reference.state_dict()[key], reference[key], rtol=0, atol=0)
 
 
 def test_collection_audit_preserves_behavior_and_detects_real_distribution_drift(parent):

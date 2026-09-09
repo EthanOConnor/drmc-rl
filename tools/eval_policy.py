@@ -85,6 +85,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
             candidate_wdl=bool(g("candidate_wdl", False)),
             motor_auxiliary=g("candidate_motor_auxiliary", None),
             public_context_schema=public_schema,
+            context_residual=bool(g("candidate_context_residual", False)),
         ).to(device)
     elif architecture == "g4":
         net = CandidatePlacementPolicyNet(

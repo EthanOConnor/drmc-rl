@@ -34,10 +34,19 @@ class ControllerCorePolicy(PlainPolicy):
         super().__init__(Path(parent), device, public_only=True)
         self.parent_sha256 = hashlib.sha256(Path(parent).read_bytes()).hexdigest()
         payload = load_checkpoint(Path(parent), map_location=device)
+        saved = load_checkpoint(Path(resume), map_location=device) if resume is not None else None
         if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
             self.cfg = deepcopy(payload["cfg"])
         else:
-            self.net, self.cfg = upgrade_public_model(payload, mode="context", device=device)
+            # Reconstruct the original regularization reference when resuming
+            # a pre-residual study; a new migration must not rewrite its run.
+            preserve_policy = True
+            if saved is not None:
+                resume_cfg = saved["cfg"].get("smdp_ppo", saved["cfg"])
+                preserve_policy = resume_cfg.get("candidate_context_residual", False)
+            self.net, self.cfg = upgrade_public_model(
+                payload, mode="context", device=device, preserve_policy=preserve_policy,
+            )
         self.cfg.setdefault("env", {})["public_observations"] = True
         self.aux_spec = PUBLIC_CONTEXT_SCHEMA
         self.aux_shim = _make_aux_builder(self.net.aux_dim, aux_spec=self.aux_spec)
@@ -45,8 +54,7 @@ class ControllerCorePolicy(PlainPolicy):
         self.requires_causal_observations = True
         self.net.eval()
         self.reference = deepcopy(self.net).requires_grad_(False).eval()
-        if resume is not None:
-            saved = load_checkpoint(Path(resume), map_location=device)
+        if saved is not None:
             if (saved.get("schema") != CORE_SCHEMA
                     or saved.get("parent_sha256") != self.parent_sha256
                     or saved.get("observation_schema") != PUBLIC_CONTEXT_SCHEMA

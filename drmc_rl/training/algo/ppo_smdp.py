@@ -264,6 +264,7 @@ class SMDPPPOConfig:
     candidate_terminal_wdl: bool = False
     candidate_wdl: bool = False
     candidate_motor_auxiliary: str | None = None
+    candidate_context_residual: bool = False
     candidate_patch_kernel: int = 3
 
     # Optional auxiliary vector inputs (derived from obs + info).
@@ -445,6 +446,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_terminal_wdl=bool(ppo_cfg_dict.get("candidate_terminal_wdl", False)),
             candidate_wdl=bool(ppo_cfg_dict.get("candidate_wdl", False)),
             candidate_motor_auxiliary=ppo_cfg_dict.get("candidate_motor_auxiliary"),
+            candidate_context_residual=bool(ppo_cfg_dict.get("candidate_context_residual", False)),
             aux_spec=str(ppo_cfg_dict.get("aux_spec", "none")),
             entropy_schedule_end=float(ppo_cfg_dict.get("entropy_schedule_end", 0.003)),
             entropy_schedule_steps=int(ppo_cfg_dict.get("entropy_schedule_steps", 1000000)),
@@ -615,6 +617,7 @@ class SMDPPPOAdapter(AlgoAdapter):
                     terminal_wdl=self.hparams.candidate_terminal_wdl,
                     candidate_wdl=self.hparams.candidate_wdl,
                     motor_auxiliary=self.hparams.candidate_motor_auxiliary,
+                    context_residual=self.hparams.candidate_context_residual,
                     public_context_schema=PUBLIC_CONTEXT_SCHEMA
                     if self.aux_spec == PUBLIC_CONTEXT_SCHEMA
                     else None,

@@ -272,6 +272,20 @@ under their observed continuation, with game identities excluded from actor
 inputs. These do not label unchosen alternatives or calibrate the separate WDL
 heads. New full-core checkpoints still require held-out controller tournaments.
 
+New public-context migrations set `candidate_context_residual: true`. Each
+bottle initially uses the legacy acting-pill conditioner; two learned scales
+introduce deviations from its own side-specific public conditioner. Zero scales
+and zero new auxiliary columns preserve the parent's policy and value on equal
+model inputs/frontiers. The original direct-side migration changed the
+opponent's FiLM input immediately despite zero new columns. On 288 recorded
+Normal/Top Humans/Frame Perfect decisions with the real 320×8 parent, it changed
+12 greedy actions and shifted a value by as much as 0.815; residual migration
+preserved every probability and value exactly on the Mac CPU. This is migration
+evidence, not full-game or deployment-latency certification. Existing context
+checkpoints without the option retain their direct-side graph, including their
+original regularization reference on resume. New side scales and context weights
+receive outcome gradients; no history input is replaced with a fabricated value.
+
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that
 hides horizontal bonds on each side's same-color pill turns. Apply that lossy

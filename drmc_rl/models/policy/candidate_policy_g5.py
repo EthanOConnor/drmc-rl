@@ -155,6 +155,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         terminal_wdl: bool = False,
         candidate_wdl: bool = False,
         public_context_schema: str | None = None,
+        context_residual: bool = False,
         motor_auxiliary: str | None = None,
     ) -> None:
         super().__init__()
@@ -176,6 +177,9 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             raise ValueError("critic_context must be global or candidate_attention")
         self.critic_context = critic_context
         self.public_context_schema = public_context_schema
+        self.context_residual = bool(context_residual)
+        if self.context_residual and (public_context_schema is None or not conditioned_trunk):
+            raise ValueError("residual side conditioning requires the conditioned public trunk")
         if public_context_schema is not None:
             from drmc_rl.game.public_context import (
                 PUBLIC_CONTEXT_SCHEMA,
@@ -191,6 +195,12 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                 nn.SiLU(),
                 nn.Linear(d_model, d_model),
             )
+            if self.context_residual:
+                # Legacy weights conditioned both bottles on the acting pill.
+                # Learn side-specific deviations without changing that policy
+                # before the first outcome update. Old checkpoints keep their
+                # direct side conditioner unless this versioned option is set.
+                self.side_condition_scale = nn.Parameter(torch.zeros(2))
 
         embed_cls = (
             OrderedPairEmbedding
@@ -340,7 +350,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             opp_public = aux[:, self.public_side_dim : 2 * self.public_side_dim].to(obs.dtype)
             opp_pill = opp_public[:, :6].reshape(-1, 2, 3).argmax(-1)
             opp_preview = opp_public[:, 6:12].reshape(-1, 2, 3).argmax(-1)
-            bottle_cond = self.side_condition(
+            own_condition = self.side_condition(
                 torch.cat(
                     (
                         self.pill_embedding(pill_colors),
@@ -350,7 +360,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                     -1,
                 )
             )
-            opponent_cond = self.side_condition(
+            opposite_condition = self.side_condition(
                 torch.cat(
                     (
                         self.pill_embedding(opp_pill),
@@ -360,6 +370,11 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                     -1,
                 )
             )
+            if self.context_residual:
+                bottle_cond = cond + self.side_condition_scale[0] * (own_condition - cond)
+                opponent_cond = cond + self.side_condition_scale[1] * (opposite_condition - cond)
+            else:
+                bottle_cond, opponent_cond = own_condition, opposite_condition
         own = self.bottle(obs[:, :8], bottle_cond)
         opponent_obs = obs[:, 8:16] if self.opponent_features else torch.zeros_like(obs[:, 8:16])
         opponent = self.bottle(opponent_obs, opponent_cond)

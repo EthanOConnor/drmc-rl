@@ -324,6 +324,14 @@ indefinitely staged.
   natural simultaneous top-outs and loss of reachable actions require explicit
   attention to earlier preparation and curriculum support; merely accumulating
   forced or unplayable frames does not demonstrate strategic learning.
+  A migration audit also exposed immediate policy/value drift from switching
+  the opponent's bottle to its own pill conditioner. New migrations introduce
+  that side-specific path through learned zero-initialized residual scales.
+  The real parent preserved all outputs on 288 unchanged controller decisions;
+  the earlier direct migration changed 12 choices. Gradient, replay and old-run
+  resume checks pass. The active billion-frame study retains its frozen source;
+  evaluate this corrected initialization in the next independent training
+  branch rather than reinterpreting or silently replacing that study.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public

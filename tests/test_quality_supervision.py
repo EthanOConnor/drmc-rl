@@ -83,10 +83,9 @@ def test_quality_heads_train_and_critic_migration_preserves_existing_policy(mode
     net, cfg = upgrade_public_model(parent, mode=mode, device="cpu")
     batch = make_batch(rows, schema=cfg["aux_spec"], device="cpu")
     output = forward(net, batch)
-    if mode in ("baseline", "critic"):
-        original = forward(old, batch)
-        torch.testing.assert_close(output[0], original[0], rtol=0, atol=0)
-        torch.testing.assert_close(output[1], original[1], rtol=0, atol=0)
+    original = forward(old, {**batch, "aux": torch.zeros(len(rows), 72)})
+    torch.testing.assert_close(output[0], original[0], rtol=0, atol=0)
+    torch.testing.assert_close(output[1], original[1], rtol=0, atol=0)
     loss, metrics = quality_loss(output, batch, anchor_logp=output[0].detach().log_softmax(-1))
     loss.backward()
     assert torch.isfinite(loss) and metrics["anchor_kl"].abs() < 1e-7
@@ -159,6 +158,54 @@ def test_shared_new_critic_initialization_is_identical_across_ablations():
         torch.testing.assert_close(
             parameter, combined.value_query.state_dict()[name], rtol=0, atol=0
         )
+
+
+@pytest.mark.parametrize("mode", ["context", "combined"])
+def test_context_migration_preserves_policy_then_learns_opponent_conditioning(mode):
+    from drmc_rl.game.public_context import SIDE_FEATURE_DIM
+
+    torch.manual_seed(513)
+    parent, old = checkpoint()
+    net, cfg = upgrade_public_model(parent, mode=mode, device="cpu")
+    assert cfg["candidate_context_residual"]
+    source, target = data()
+    rows = join_quality_rows([source], [target])
+    batch = make_batch(rows, schema=cfg["aux_spec"], device="cpu")
+    batch["obs"] = torch.rand_like(batch["obs"].float())
+    batch["pills"][:] = torch.tensor([0, 1])
+    batch["previews"][:] = torch.tensor([2, 0])
+    batch["aux"] = torch.rand_like(batch["aux"])
+    # Opponent pills intentionally differ, including from the acting preview.
+    batch["aux"][:, SIDE_FEATURE_DIM:SIDE_FEATURE_DIM + 12] = torch.tensor(
+        [0, 0, 1, 1, 0, 0, 0, 1, 0, 0, 0, 1], dtype=torch.float32,
+    )
+    original = forward(old, {**batch, "aux": torch.zeros(1, 72)})
+    output = forward(net, batch)
+    for actual, expected in zip(output[:2], original[:2]):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    output[0][0, 0].backward()
+    assert net.side_condition_scale.grad[1].abs() > 1e-8
+    assert net.condition[0].weight.grad[:, 16:].abs().sum() > 0
+
+    # Opening both residuals recovers the historical direct-side architecture,
+    # and its learned parameters remain eligible for subsequent gradients.
+    direct, _ = upgrade_public_model(parent, mode=mode, device="cpu", preserve_policy=False)
+    direct.load_state_dict({k: v for k, v in net.state_dict().items()
+                            if k != "side_condition_scale"}, strict=True)
+    with torch.no_grad():
+        net.side_condition_scale.fill_(1)
+    net.zero_grad()
+    opened = forward(net, batch)
+    expected = forward(direct, batch)
+    assert not torch.allclose(opened[0], original[0], rtol=0, atol=1e-6)
+    for actual, reference in zip(opened[:2], expected[:2]):
+        torch.testing.assert_close(actual, reference, rtol=1e-5, atol=1e-6)
+    opened[0][0, 0].backward()
+    assert net.side_condition[0].weight.grad.abs().sum() > 0
+    resumed, _ = upgrade_public_model(dict(cfg=cfg, state_dict=net.state_dict()),
+                                     mode=mode, device="cpu")
+    torch.testing.assert_close(resumed.side_condition_scale, net.side_condition_scale,
+                               rtol=0, atol=0)
 
 
 def test_fit_measures_heldout_policy_drift_against_the_initial_distribution(tmp_path):

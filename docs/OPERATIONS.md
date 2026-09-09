@@ -400,7 +400,7 @@ substitute a newly computed behavior policy.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
-`configs/` directory, currently `controller-core-live-v4-after-motor-fit.json`; each
+`configs/` directory, currently `controller-core-live-v4-after-teacher-data-v4.json`; each
 checkpoint also carries that configuration. Native code is `19f292c`.
 It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
@@ -515,6 +515,25 @@ All seeds come from the training exclusion bank. Workers wait for the mirrored
 milestone, preserve move traces and use the exact batched event runner.
 The four-frame compute charge is an evaluation assumption to be verified on
 deployment hardware; this tournament does not certify latency by itself.
+
+Mac worker 0 has completed its 18,432-game allocation. The separate
+`controller-core-100m-mac.json` study reuses its MPS capacity for 16,384 games:
+the immutable 100M checkpoint against the parent and corrected E1 adapter,
+1,024 games per 14-HI pace and 512 per 20-HI Normal/Top Humans condition. It
+uses the same reserved seeds and frozen `controller-arena-0c76c0e-source`.
+`launch_core100m_mac.py` records both frozen native libraries, including
+`DRMARIO_REACH_LIB`; its output has a supervisor PID/log and complete move
+journals. This is a fixed milestone comparison without automatic adoption.
+The dashboard includes `public_core_100m` and the `core-100m-mac` feed.
+
+New core migrations use learned zero-initialized side-conditioning residuals
+so the network preserves its parent on equal inputs before outcome updates.
+Old context checkpoints and resumed references retain their original graph.
+The real-parent audit in `review-20260909/context-migration-audit` preserved
+all probabilities and values on 288 recorded decisions; the direct migration
+changed 12 choices. The active frozen run is unchanged. The next independent
+training branch must evaluate the corrected initialization and full controller
+behavior; equal-input migration parity alone does not establish match strength.
 
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
@@ -667,24 +686,35 @@ quarantined by `label-validity.json`; agreement between them does not establish
 validity for training. The source corpus and main controller training use
 different native paths and are unaffected.
 
-`teacher-data-slot-v4` now compares corrected uncached and cached 256-slot
+The completed `teacher-data-slot-v4` compared corrected uncached and cached 256-slot
 labeling in `terminal-fixed-256-v1` and `terminal-fixed-cache-256-v1`. Both use
 immutable `teacher-label-d2cce23-source`, native `e0162ed`, the same eight roots,
 four native workers and two Torch threads; the second enables an 8,192-entry
 public-input policy cache. Its `benchmark.json` records actual neural rows,
-cache hits, throughput and label agreement separately. The supervisor preserves
-the next saved main-core update, uses at most 30 GPU minutes and resumes that
-same checkpoint and optimizer via
+cache hits, throughput and label agreement separately. Cached labeling took
+507 seconds versus 578 uncached (1.140x overall throughput), preserved all
+2,340 outcomes and 260 candidate WDL estimates, and reduced actual neural rows
+from 210,209 to 137,269. The supervisor used a 30-minute GPU cap and resumed the
+same main checkpoint and optimizer at 22:40 UTC via
 `controller-core-live-v4-after-teacher-data-v4.json`. It preserved update 113
 at 140,132,420 console frames and 1,372,391 learner decisions. Read the latest
 slot progress, resume configuration and actual supervisor PIDs before recovery;
 never rewind a newer main checkpoint to an older slot's saved update.
 
-After this comparison, broaden corrected terminal labeling to roughly 1,024
-independent fit-source games; preserve the 256 confirmation games for final
-assessment. New quality fitting must include the quarantine guard in `6d7e05a`
-or later. These bounded data/throughput studies do not complete the independent
-larger-teacher and student-distillation program or promote a model.
+`terminal-quality-broad-v1` now supervises complete corrected labels for
+`terminal-quality-14hi-v1` (1,024 independent source games), followed by
+`terminal-quality-20hi-v1` (128 separate games). It selects one temporally and
+tactically stratified root per game, retains the full frontier and correlated
+reserve panel, and uses that same immutable source with an 8,192-entry cache.
+The 256 confirmation games remain untouched. The registered jobs run alongside
+main training with one native worker, one Torch thread and nice 15, under a
+48-hour wall cap. Monitor combined progress/CPU contention before reallocating
+compute; completed root files survive an interruption. The supervisor is
+`run_broad_teacher_labels_v1.py`, with current child/PID details in its control
+directory's `progress.json`; logs remain local on tf3090. New quality fitting
+must include the quarantine guard in `6d7e05a` or later. These studies do not
+complete the independent larger-teacher and student-distillation program or
+promote a model.
 
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
