@@ -136,12 +136,6 @@ main {
   align-items:end;
   margin-bottom:24px;
 }
-.eyebrow {
-  font:600 10px var(--mono);
-  letter-spacing:.15em;
-  color:var(--blue);
-  margin:0 0 8px;
-}
 h1 {
   font-size:28px;
   font-weight:650;

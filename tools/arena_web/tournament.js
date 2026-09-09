@@ -54,13 +54,13 @@ function renderStandings() {
     return `<tr class="${id===reference?'reference-row':''}"><td class="rank">${rating?i+1:'—'}</td><td class="player-name">${esc(entrantName(id))}<span class="player-note ${id===reference?'reference-label':''}">${note}</span></td><td class="number elo ${decisive ? delta.elo>0?'positive':'negative' : 'unrated'}">${delta?signed(delta.elo):'—'}</td><td class="number interval">${delta?`${signed(delta.low)} to ${signed(delta.high)}`:'Unrated'}</td><td class="number">${rating?count(rating.games):'—'}</td></tr>`;
   }).join('') || '<tr><td colspan="5" class="empty">The first paired results will appear here.</td></tr>';
   const games = ratings.reduce((n,r)=>n+num(r.games),0)/2;
-  $('#rating-note').textContent = `${count(games)} games in this field · approximate 95% intervals · paired seeds. Ratings combine tournament phases, with each pace and level kept separate.`;
+  $('#rating-note').textContent = `${count(games)} games at these settings · approximate 95% intervals · paired seeds. Ratings combine tournament phases, with each pace and level kept separate.`;
   const matched = group?.matchups || [];
   $('#matrix').innerHTML = ratings.length ? `<table><thead><tr><th>Row vs column</th>${ratings.map((r,i)=>`<th title="${esc(entrantName(r.id))}">${i+1}</th>`).join('')}</tr></thead><tbody>${ratings.map((a,i)=>`<tr><th>${i+1}. ${esc(entrantName(a.id))}</th>${ratings.map(b=>{
     if(a.id===b.id)return '<td>—</td>';
     const m=matched.find(m=>m.a===a.id&&m.b===b.id||m.b===a.id&&m.a===b.id);
     return m?`<td>${(100*(m.a===a.id?m.score:1-m.score)).toFixed(1)}%<small>${count(m.games)} games</small></td>`:'<td>—</td>';
-  }).join('')}</tr>`).join('')}</tbody></table>`:'<p class="empty">No paired results in this field yet.</p>';
+  }).join('')}</tr>`).join('')}</tbody></table>`:'<p class="empty">No paired results at these settings.</p>';
 }
 
 function renderOperations() {
@@ -108,7 +108,7 @@ function render() {
   if(!experiment)return;
   $('#updated').textContent=ago(age(experiment.results?.updated_at));
   renderStandings();renderOperations();renderSchedule();
-  $('#study-notes').innerHTML=`<div><h3>Current work</h3><p>${esc(experiment.current_work)}</p><h3 style="margin-top:18px">Study goals</h3><ul>${(experiment.goals||[]).map(g=>`<li>${esc(g)}</li>`).join('')}</ul></div><div><h3>How to read the standings</h3><p>Zero is the selected reference player. Elo differences compare this frozen field, not human ratings. The intervals are approximate and account for side-swapped seed pairs. A small gap with a wide interval is unresolved.</p><h3 style="margin-top:18px">Evaluation</h3><p>Full controller execution, natural outcomes, and seeds reserved from pace training. Historical cores retain their earlier training exposure. Training performance does not enter the ratings.</p></div>`;
+  $('#study-notes').innerHTML=`<div><h3>Current work</h3><p>${esc(experiment.current_work)}</p><h3 style="margin-top:18px">Study goals</h3><ul>${(experiment.goals||[]).map(g=>`<li>${esc(g)}</li>`).join('')}</ul></div><div><h3>How to read the standings</h3><p>Zero is the selected reference player. Elo differences compare players in this tournament. The intervals are approximate and account for side-swapped seed pairs. A small gap with a wide interval is unresolved.</p><h3 style="margin-top:18px">Evaluation</h3><p>Full controller execution, natural outcomes, and seeds reserved from pace training. Historical cores retain their earlier training exposure. Only evaluation games contribute to these ratings; they are not calibrated to human ratings.</p></div>`;
   renderArchive();
 }
 $('#conditions').onchange=event=>{condition=event.target.value;save('condition',condition);renderStandings();};
