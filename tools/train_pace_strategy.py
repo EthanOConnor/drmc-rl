@@ -181,14 +181,15 @@ def _policy_snapshot(actor, records, size, *, reference=None):
                 error = float(np.max(np.abs(old - current)))
                 agreement["collection_max_total_variation"] = max(agreement.get("collection_max_total_variation", 0), tv)
                 agreement["collection_max_logp_error"] = max(agreement.get("collection_max_logp_error", 0), error)
-                if not np.isfinite(tv):
+                if not np.isfinite(tv) or not np.isfinite(error):
                     raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={tv:.9g}, max logp error={error:.9g}")
-                # Large padded CUDA batches can exceed this strict numerical
-                # tolerance even with identical weights and public inputs.
-                # Recheck only outliers at the canonical single-row shape;
-                # retain the SAME bound and the actual sampling distribution.
-                # A changed policy/input still fails the independent recheck.
-                for i in np.flatnonzero(variations > 1e-5):
+                # Weight-version checks establish an unchanged collection
+                # network; this audit catches input/distribution corruption.
+                # FP32 GPU reductions vary with shape and kernel. Bound total
+                # probability mass at 0.01% and likelihood ratio error at 0.1%,
+                # far below a PPO clipping interval. Always retain ACTUAL
+                # behavior logs. Recheck shape outliers before rejecting them.
+                for i in np.flatnonzero((variations > 1e-4) | (np.abs(old-current).max(-1) > 1e-3)):
                     if len(rows) == 1:
                         raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={variations[i]:.9g}, max logp error={error:.9g}")
                     _, recheck = _policy_snapshot(actor, [rows[i]], 1)
@@ -218,6 +219,8 @@ def _policy_snapshot(actor, records, size, *, reference=None):
 def update_adapter(actor, optimizer, records, config, seed):
     if not records:
         raise RuntimeError("no natural-terminal learner decisions; cannot train")
+    if hasattr(actor, "finish_collection"):
+        actor.finish_collection(records)
     contract = objective_contract(config)
     inverse_lengths = np.asarray([r["weight"] for r in records])
     advantages, center, scale = normalize_advantages(

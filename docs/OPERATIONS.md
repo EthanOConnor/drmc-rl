@@ -380,15 +380,22 @@ local storage. New core training does not certify candidate WDL heads, a human
 execution profile, device latency, or model promotion.
 
 Full-core PPO preserves every candidate's actual collection log probability.
-The pre-update audit compares the full distribution at a total-variation bound
-of `1e-5`; a batched outlier is independently recomputed at the canonical
-single-row shape with the same bound. A failing single-row check stops before
-optimization. Both original discrepancies and recheck counts are recorded.
+Parameter/buffer version checks reject network writes during collection and
+mixed-update samples before optimization. The independent input/distribution
+audit bounds FP32 total variation at `1e-4` and absolute log-probability error
+at `1e-3`; a batched outlier is recomputed at the single-row shape under the
+same bounds. A failing recheck stops before optimization. Both original
+discrepancies and recheck counts are recorded. These numerical bounds limit
+probability mass error to 0.01% and likelihood-ratio error to about 0.1%; PPO
+still uses the original recorded behavior logs, never the recomputed values.
 The 17,980-row Top Humans collection audit on tf3090 found a batched maximum of
 `1.3623e-5` (99th percentile `1.1819e-6`), versus at most `5.7154e-6` when its
 worst 32 rows were independently evaluated. Inference and gradient-enabled
-paths agreed within that bound. This is numerical validation, not evidence of
-learning or permission to substitute a newly computed behavior policy.
+paths agreed within that bound. A fresh 16,435-decision collection reached
+`1.4038e-5` even at single-row shape, showing why `1e-5` is not a reliable FP32
+identity test. These audits motivate the separate structural identity check
+and numerical bound. They are not evidence of learning or permission to
+substitute a newly computed behavior policy.
 
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and

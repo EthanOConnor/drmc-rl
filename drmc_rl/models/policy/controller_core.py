@@ -52,11 +52,34 @@ class ControllerCorePolicy(PlainPolicy):
         self.training = training
         self.rng = torch.Generator(device="cpu").manual_seed(seed)
         self.learning_records = None
+        self._collection_id = 0
+        self._collection_versions = None
+
+    def _parameter_versions(self):
+        # PyTorch increments these counters for optimizer and load_state_dict
+        # writes. Check identity directly rather than trying to infer a weight
+        # change from a numerically approximate GPU probability comparison.
+        return tuple((name, value._version) for name, value in
+                     (*self.net.named_parameters(), *self.net.named_buffers()))
+
+    def finish_collection(self, records):
+        if (self.net.training or self._collection_versions != self._parameter_versions()
+                or any(r.get("collection_id") != self._collection_id for r in records)):
+            raise RuntimeError("controller network changed or collection versions were mixed")
+        self._collection_versions = None
 
     def score(self, obs, infos):
         if not self.training:
             self.learning_records = None
             return super().score(obs, infos)
+        versions = self._parameter_versions()
+        if self.net.training:
+            raise RuntimeError("controller collection requires deterministic evaluation mode")
+        if self._collection_versions is None:
+            self._collection_versions = versions
+            self._collection_id += 1
+        elif self._collection_versions != versions:
+            raise RuntimeError("controller network changed during collection")
         inputs, aux, actions, masks = self.model_inputs(obs, infos)
         with torch.inference_mode():
             logits, values = self.net(*inputs, aux=aux)
@@ -88,6 +111,7 @@ class ControllerCorePolicy(PlainPolicy):
                 old_logprob=float(logs[i, slot]), old_value=float(values[i]),
                 observed_frame=int(infos[i]["public_pair_state"].frame_id),
                 viewer_side=int(infos[i]["public_acting_side"]),
+                collection_id=self._collection_id,
             )
             self.learning_records.append(row)
             scores[i, slot] = scores[i, masks[i]].max() + 1
