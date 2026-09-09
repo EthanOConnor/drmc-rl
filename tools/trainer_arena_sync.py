@@ -102,11 +102,29 @@ def watch(path):
     while True:
         config = json.loads(path.read_text())
         target = Path(config["target"])
+        for mirror in config.get("checkpoint_mirrors",[]):
+            destination = Path(mirror["target"])
+            destination.mkdir(parents=True,exist_ok=True)
+            names = mirror["files"]
+            if any(Path(name).name != name or name in (".","..") for name in names):
+                raise ValueError("checkpoint mirrors require explicit filenames")
+            key = f"checkpoints:{destination}"
+            try:
+                command = ["rsync","-az"]
+                for name in names:
+                    command.extend(["--include","/"+name])
+                command.extend(["--exclude","*",mirror["source"].rstrip("/")+"/",str(destination)+"/"])
+                subprocess.run(command,check=True,capture_output=True,timeout=30)
+                errors.pop(key,None)
+            except (OSError,subprocess.SubprocessError) as error:
+                if errors.get(key) != str(error):
+                    print(f"{key}: {error}",flush=True)
+                errors[key] = str(error)
         for feed, remote in config["feeds"].items():
             source = target / f"incoming-{feed}"
             source.mkdir(parents=True, exist_ok=True)
             try:
-                subprocess.run(["rsync", "-az", "--exclude", "moves", "--exclude", "*.pt*",
+                subprocess.run(["rsync", "-az", "--exclude", "moves", "--exclude", "working/", "--exclude", "*.pt*",
                                 remote.rstrip("/")+"/", str(source)+"/"],
                     check=True, capture_output=True, timeout=30)
                 if not (source / "games.jsonl").is_file():

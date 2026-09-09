@@ -1330,7 +1330,7 @@ class ArenaStore:
 
     def replay(self, match_id: int) -> dict[str, Any] | None:
         row = self.conn.execute(
-            "SELECT agent_a,agent_b,winner,match_len_sec,replay,replay_ref,"
+            "SELECT agent_a,agent_b,winner,match_len_sec,terminal_reason,match_key,replay,replay_ref,"
             "seed,side_assignment,game_index,frame_counter_base,level,speed_setting,"
             "state_repr,max_decisions_per_side,policy_run_seed,provenance "
             "FROM matches WHERE id=?",

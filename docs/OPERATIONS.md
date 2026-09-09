@@ -388,6 +388,17 @@ The live leaderboard combines tournament phases at the same level and pace;
 Elo-reference changes use differences of joint posterior samples, preserving
 their covariance. Levels and paces retain separate rating fields.
 
+The current live schedule adds 36,608 games: eight frozen entrants in a 14 HI
+round robin at Sloth, Relaxed, Normal, Fast and Top Humans, with 256 games
+(128 side-swapped seeds) per pair and pace. That is 1,792 games per entrant
+per pace when all eight are ready. Separate parent-versus-milestone checks
+at 20 HI use 128 games per pair at Normal and Top Humans. The live bank is
+disjoint from both the pilot and the scaled confirmation bank. This schedule
+runs alongside training, split into whole matchups across two mombox CPU
+workers and two MacBook workers (Metal and CPU); tf3090 keeps training. The
+earlier 960 pilot games remain in the connected standings. The 25M and 50M
+milestones have joined; final admission waits for completed training.
+
 The first study is `runs/trainer-pace-v1`, with isolated tf3090 sources and
 outputs on `trainer-output/pace-strategy-20260908`. Its 160-game health pilot
 completed 997,430 console frames and 9,763 learner decisions. The original
@@ -448,13 +459,22 @@ closed remote outputs with `python -m tools.trainer_arena_sync --source DIR
 into the live DB instead of replacing a SQLite file with active WAL readers.
 For live remote runs, launch `trainer-planning-sync` with `trainer_sync_config`:
 its JSON contains local `target`, `interval_seconds` (at least ten), and `feeds`
-mapping each feed name to an `SSH-host:/output/path`. It transfers closed
-snapshots and sampled replays; the full move archive stays on remote storage.
-The viewer exposes progress, recorded matches, playback and scrubbing, relative
-Elo and matchup coverage. Ratings use the existing Davidson/Laplace model,
-anchor the baseline at zero, count each paired seed as one effective observation,
-and separate `rating_group`, level and pace. They are experiment comparisons,
-not drmariostats ratings. Inspect the payoff matrix for matchup dependence.
+mapping each feed name to an `SSH-host:/output/path` or a local output directory.
+It transfers closed snapshots and sampled replays, excluding live `working/`
+databases and full move archives. Optional `checkpoint_mirrors` entries contain
+`source`, local `target`, and an explicit `files` allowlist; this lets local
+evaluators admit new frozen milestones without copying optimizer archives.
+
+The experiment page at `http://127.0.0.1:8098/` presents connected standings
+first, with selectable level/pace and any rated player as the Elo reference.
+It also shows the head-to-head matrix, all active workers, per-pace training
+budgets, checkpoint readiness, a searchable schedule, and paused-by-default
+controller replays with playback and scrubbing. Non-experiment arena dashboards
+retain their existing page. Ratings use the Davidson/Laplace model and count
+each paired seed as one effective observation. The primary view combines
+compatible phases; phase-specific fields remain in the data. These are
+approximate experiment comparisons, not drmariostats ratings. Small gaps with
+wide intervals remain unresolved; inspect the matrix for matchup dependence.
 
 The September 8 experiment lives under `runs/trainer-anticipation-v1/`, with
 remote outputs in `trainer-output/anticipation-20260908/`. Professor Pills'

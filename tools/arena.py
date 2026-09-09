@@ -1150,7 +1150,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(payload)
             return
-        target = STATIC / ("index.html" if path == "/" else path.lstrip("/"))
+        index = "tournament.html" if self.experiment_file else "index.html"
+        target = STATIC / (index if path == "/" else path.lstrip("/"))
         if not target.is_file() or STATIC not in target.resolve().parents:
             self.send_error(404)
             return
@@ -1313,7 +1314,7 @@ def refresh_dashboard_snapshot(db: Path, replay_dir: Path | None) -> bytes:
     try:
         snapshot = store.snapshot()
         snapshot["recorded_matches"] = [dict(row) for row in store.conn.execute(
-            "SELECT id,agent_a,agent_b,winner,seed,level,terminal_reason FROM matches "
+            "SELECT id,agent_a,agent_b,winner,seed,level,terminal_reason,match_key,side_assignment FROM matches "
             "WHERE replay IS NOT NULL OR replay_ref IS NOT NULL ORDER BY id DESC LIMIT 200"
         )]
         snapshot["scheduler"] = scheduler_snapshot(store)

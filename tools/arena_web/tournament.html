@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Professor Pills · Tournament</title>
+  <link rel="stylesheet" href="/tournament.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#standings"><span class="pill-mark" aria-hidden="true"></span><span>Professor Pills<small>Tournament control</small></span></a>
+    <nav aria-label="Page sections"><a href="#standings">Standings</a><a href="#schedule">Schedule</a><a href="#viewer">Replays</a></nav>
+    <span id="connection" class="connection">Connecting</span>
+  </header>
+  <main>
+    <div class="page-heading"><div><p class="eyebrow">VERSUS LAB</p><h1>Versus tournament</h1></div><span id="updated" class="muted">Waiting for data</span></div>
+    <div id="alert" class="alert" role="alert" hidden></div>
+    <div id="summary" class="summary" aria-live="polite"></div>
+    <div class="overview">
+      <section id="standings" class="panel standings-panel">
+        <div class="panel-heading"><h2>Standings</h2><span class="tag">Live estimates</span></div>
+        <div class="filters"><label>Conditions<select id="conditions"></select></label><label>Elo reference<select id="reference"></select></label></div>
+        <div class="table-scroll"><table class="standings"><thead><tr><th scope="col">#</th><th scope="col">Player</th><th scope="col" class="number">Δ Elo</th><th scope="col" class="number">95% interval</th><th scope="col" class="number">Games</th></tr></thead><tbody id="ranking"></tbody></table></div>
+        <p id="rating-note" class="panel-foot"></p>
+        <details class="matrix-details"><summary>Head-to-head scores</summary><div id="matrix" class="table-scroll"></div></details>
+      </section>
+      <aside class="operations">
+        <section class="panel"><div class="panel-heading"><h2>Playing now</h2><span id="worker-count" class="muted"></span></div><div id="workers" class="worker-list"></div></section>
+        <section class="panel"><div class="panel-heading"><h2>Training</h2><span id="training-status" class="tag"></span></div><div id="training"></div></section>
+      </aside>
+    </div>
+    <section class="panel milestones-panel"><div class="panel-heading"><h2>Checkpoints</h2><span class="muted">Frozen players enter when ready</span></div><div id="milestones" class="milestones"></div></section>
+    <section id="schedule" class="panel">
+      <div class="panel-heading"><h2>Schedule</h2><span id="schedule-count" class="muted"></span></div>
+      <div class="filters schedule-filters"><label class="search-label">Find a player<input id="match-search" type="search" placeholder="Player name" autocomplete="off"></label><label>Show<select id="match-state"><option value="active">Playing & queued</option><option value="all">All matchups</option><option value="complete">Complete</option><option value="waiting">Waiting for checkpoints</option></select></label></div>
+      <div class="table-scroll schedule-scroll"><table><thead><tr><th scope="col">Matchup</th><th scope="col">Conditions</th><th scope="col">Progress</th><th scope="col" class="number">W / L / D</th><th scope="col" class="number">Score</th></tr></thead><tbody id="matchups"></tbody></table></div>
+      <p class="panel-foot">256 games per main matchup. Each seed is played from both sides. Close estimates need more games.</p>
+    </section>
+    <section id="viewer" class="panel viewer-panel">
+      <div class="panel-heading"><h2>Match viewer</h2><span class="tag">Recorded controller frames</span></div>
+      <label class="replay-select">Recorded game<select id="replay-picker"><option value="">Loading recordings…</option></select></label>
+      <div id="replay-empty" class="empty">Select a game to inspect its play.</div>
+      <div id="replay-content" hidden>
+        <div class="replay-names"><strong id="replay-a"></strong><span id="replay-result" class="tag"></span><strong id="replay-b"></strong></div>
+        <canvas id="replay-canvas" width="820" height="440" aria-label="Recorded boards for both players"></canvas>
+        <div class="replay-controls"><button id="replay-toggle" type="button">Play</button><button id="replay-prev" type="button" aria-label="Previous recorded frame">←</button><button id="replay-next" type="button" aria-label="Next recorded frame">→</button><span id="replay-time" class="mono"></span><label>Speed<select id="replay-speed"><option value="1">1×</option><option value="2">2×</option><option value="4" selected>4×</option><option value="8">8×</option><option value="16">16×</option></select></label></div>
+        <input id="replay-seek" type="range" min="0" max="1" value="0" aria-label="Replay position">
+        <p id="replay-meta" class="panel-foot"></p>
+      </div>
+    </section>
+    <details class="panel study-details"><summary>Study notes & methods</summary><div id="study-notes"></div></details>
+    <footer>Professor Pills · Internal research tournament <span>Experimental checkpoints are not automatically promoted.</span></footer>
+  </main>
+  <script src="/tournament.js"></script>
+</body>
+</html>
