@@ -170,6 +170,23 @@ def test_independent_anchor_can_reject_an_epoch_and_rollback_all_weights(tmp_pat
         torch.testing.assert_close(saved["state_dict"][name], value, rtol=0, atol=0)
 
 
+def test_quarantined_execution_labels_are_rejected_before_fitting(tmp_path):
+    config, _ = fit_config(tmp_path)
+    (tmp_path / "label-validity.json").write_text(
+        json.dumps(
+            {
+                "eligible_for_quality_training": False,
+                "reason": "reveal ordering predates the strict parked-input fix",
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="quarantined terminal labels.*reveal ordering"):
+        fit(config)
+    progress = json.loads((tmp_path / "fit" / "progress.json").read_text())
+    assert progress["status"] == "Failed" and progress["optimizer_steps"] == 0
+    assert not (tmp_path / "fit" / "diagnostic.pt").exists()
+
+
 def test_heldout_drift_is_reported_but_cannot_control_optimizer_acceptance(tmp_path, monkeypatch):
     import tools.fit_paired_quality as fitter
 

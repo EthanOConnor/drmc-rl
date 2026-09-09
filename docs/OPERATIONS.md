@@ -586,6 +586,10 @@ For the review's offline diagnostics, launch through these recipes:
   one/eight-root and 256-slot benchmark labels predate this fix and are not
   eligible for quality training; retain them as throughput measurements. The
   broad source corpus uses strict stepping and remains usable.
+  A `label-validity.json` beside `targets.jsonl` records an execution audit;
+  the quality fitter refuses a present marker unless
+  `eligible_for_quality_training` is explicitly true. This quarantine does not
+  replace the held-out quality or product-promotion gates.
 - `paired-quality-fit --allow-staged`: set `paired_quality_fit_config` with
   `state_bank`, `targets`, parent `checkpoint`, `mode` (baseline/critic/context/
   combined), `phase` (auxiliary/policy_improvement), `seed`, `device`, `epochs`,

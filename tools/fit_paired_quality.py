@@ -226,6 +226,14 @@ def fit(config):
         if device.startswith("cuda"):
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
+        validity_path = Path(config["targets"]).parent / "label-validity.json"
+        if validity_path.exists():
+            validity = json.loads(validity_path.read_text())
+            if validity.get("eligible_for_quality_training") is not True:
+                raise ValueError(
+                    "quarantined terminal labels: "
+                    + validity.get("reason", "unresolved validity audit")
+                )
         sources = load_source_rows(Path(config["state_bank"]))
         anchor_sources = load_source_rows(Path(config["anchor_bank"]))
         # Read confirmation metadata only to verify isolation. Its observations
