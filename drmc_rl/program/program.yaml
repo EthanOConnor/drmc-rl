@@ -98,6 +98,22 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-motor-confirmation:
+    status: active
+    stage: 4
+    purpose: Confirm learned motor predictions on fresh reserved-seed controller play, separately from full-game strength evaluation.
+    requires_paths: [tools/audit_motor_auxiliary.py, '{motor_confirmation_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.audit_motor_auxiliary, --config, '{motor_confirmation_config}']
+    produces: [Natural public confirmation replay, complete conditional labels, seed-grouped prediction errors and policy drift]
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
+    notes:
+      - Reset seeds must be excluded from outcome training, auxiliary fitting and broad policy anchors. No gradients or model selection occur.
+      - Compare with the reconstructed original predictor and a pace/cell prevalence baseline fitted only on training labels.
+      - Sides, earlier/later roots and parity are dependent observations; uncertainty resamples whole reset seeds within each level/pace.
+      - Prediction confirmation does not establish match strength or promote the fitted core.
   trainer-motor-auxiliary-fit:
     status: active
     stage: 4

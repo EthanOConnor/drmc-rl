@@ -400,7 +400,7 @@ substitute a newly computed behavior policy.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
-`configs/` directory, currently `controller-core-live-v4-geometry.json`; each
+`configs/` directory, currently `controller-core-live-v4-after-motor-fit.json`; each
 checkpoint also carries that configuration. Native code is `19f292c`.
 It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
@@ -463,6 +463,34 @@ and policy drift are measured after accepted epochs and never choose retries.
 the full fit completes. Both are diagnostic and load through the ordinary
 source actor. Fresh prediction confirmation and large controller tournaments
 are still necessary; a small fit test is implementation evidence only.
+
+The first `motor-auxiliary-fit-v1` completed all 20 epochs from source
+`motor-auxiliary-95d4d08-source` in 414 seconds, with 33,580 accepted root
+presentations and no policy-cap rollback. Main training paused after update 56
+(66,307,994 frames; 649,637 learner decisions) and resumed its own unchanged
+checkpoint and optimizer from source `controller-core-4717a03-source`. The
+bounded handoff record is `motor-auxiliary-slot-v1/progress.json`; its preserved
+`main-resume.pt` is distinct from the fitted branch. The fitted branch's
+`core-final.pt` is the immutable evaluation candidate. Neither branch is promoted.
+
+`trainer-motor-confirmation --set motor_confirmation_config=PATH` checks a
+completed auxiliary fit on fresh controller play. Its JSON names
+`fit_directory`, the unchanged parent `checkpoint`, the original fitting
+`bank`, source `training_config`, reserved `seeds`, explicit level/pace
+`conditions`, and an `output`. Every source seed must be excluded from both
+outcome training and the fitting bank's policy anchors. The frozen stochastic
+parent plays its deterministic policy on swapped sides; full natural games
+provide earlier and later public positions, never optimizer updates. Persisted
+source replay and exact conditional labels make interrupted conditions resumable.
+
+The audit reconstructs the original auxiliary initialization and first checks
+it against the saved fitting baseline. It compares the fitted model with that
+initial predictor and a pace/cell prevalence predictor fitted only on training
+labels. Report each level/pace separately, with sides and multiple positions
+aggregated before a whole-reset-seed bootstrap. This prevents abundant empty
+cells or repeated deterministic parity branches from masquerading as evidence
+of useful movement prediction. These are prediction diagnostics; full controller
+tournaments and actual deployment latency still determine adoption.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the

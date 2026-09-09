@@ -16,6 +16,7 @@ from drmc_rl.training.motor_supervision import (
     cache_reference, forward_motor, load_bank, make_motor_batch, motor_loss, upgrade_motor_model,
 )
 from tools.build_motor_opportunity_bank import annotate_row, split_for_seed
+from tools.audit_motor_auxiliary import run as confirm_motor
 from tools.eval_policy import _build_net_from_cfg
 from tools.fit_motor_auxiliary import run
 from tools.vs_head_to_head import PlainPolicy
@@ -118,3 +119,21 @@ def test_auxiliary_fit_updates_shared_core_and_preserves_deployment_contract(tmp
     for obs, infos in observed:
         _, mask, logits = fitted.score(obs, infos)
         assert np.isfinite(logits[mask]).all()
+    # A fresh natural controller game, not the fitting holdout, supplies the
+    # independent prediction confirmation and all exact alternative labels.
+    source_config = tmp_path / 'source-config.json'
+    source_config.write_text(json.dumps(dict(holdout_seeds=[61183])))
+    confirmation = tmp_path / 'confirmation'
+    result = confirm_motor(dict(fit_directory=str(fit_output), checkpoint=str(core),
+        bank=str(bank), training_config=str(source_config), output=str(confirmation),
+        native_library=os.environ.get('DRMC_FRAME_LIBRARY'), seed=31, seeds=[61183],
+        conditions=[dict(pace='normal', level=14)], roots_per_condition=6,
+        minimum_seeds_per_condition=1, games_per_batch=2, batch_size=2))
+    assert result['status'] == 'Complete'
+    assessment = json.loads((confirmation / 'assessment.json').read_text())
+    condition = assessment['conditions'][0]
+    assert condition['games'] == 2 and condition['independent_seeds'] == 1
+    assert condition['roots'] > 0 and condition['candidates'] >= condition['roots']
+    assert condition['seed_metrics'][0]['seed'] == 61183
+    assert condition['metrics']['reach_brier']['change_ci95'] is None
+    assert condition['metrics']['reach_brier']['training_prior'] >= 0

@@ -294,8 +294,20 @@ indefinitely staged.
   preserves the policy on a separate broad replay anchor. Holdout seeds never
   enter anchor gradients or rollback decisions; ordinary inference skips the
   heads. A real native-data fit test verifies shared gradients and checkpoint
-  reload. Representative fitting and device/strength evaluation remain outstanding;
-  no new core has been installed. Full-network controller outcome
+  reload. Fresh confirmation is implemented through
+  `trainer-motor-confirmation`: reserved seeds excluded from all training and
+  anchors, natural public controller replay, complete conditional labels,
+  original-predictor and training-only prevalence comparisons, and whole-seed
+  intervals reported separately at each level/pace. Its native end-to-end test
+  covers fitting, fresh games, exact labeling and prediction assessment.
+  The first 20-epoch fit completed on tf3090 in 414 seconds: 33,580 accepted
+  root presentations from 1,679 training roots, 369 validation roots and 4,096
+  independent policy-anchor games. Validation reach Brier improved from 0.2517
+  to 0.1240, clear Brier from 0.2474 to 0.0690, and cost error from 0.1511 to
+  0.0150; validation policy KL was 0.00101. These comparisons with the initial
+  predictor are preliminary; the independent prevalence baseline, fresh-seed
+  confirmation, device latency and full-game strength remain outstanding.
+  No new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and
   complete public replay shards. The full 320×8 core run now targets 10M learner
@@ -339,6 +351,17 @@ Finish implementation, representative training and evaluation; promote only
 supported changes. An unsuccessful variant needs an explicit result and a next
 approach, not a silent deletion of the requested capability. None of these boxes
 is complete merely because the work is documented or scheduled.
+
+The user authorized this hourly continuation as a finite four-stage program,
+including training, evaluation, code changes and commit/push across these three
+machines. Judge adoption against stronger absolute Max play, stronger
+motor-constrained play, and more expressive play with competitive strength
+preserved. Do not hide a pace regression inside aggregate results. Keep
+implementation, evaluation and promotion separate: a completed, tested variant
+can fail its adoption criteria. Once all four capabilities have been implemented
+and substantively evaluated, report the three outcome assessments and pause the
+follow-up. Do not silently add further stages or keep optimizing indefinitely
+until a favorable result appears.
 
 Primary methodological references: [episodic policy gradients](https://spinningup.openai.com/en/latest/spinningup/rl_intro3.html),
 [PPG](https://arxiv.org/abs/2009.04416), [population responses](https://arxiv.org/abs/1711.00832),
