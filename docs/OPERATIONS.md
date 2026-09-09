@@ -546,6 +546,11 @@ For the review's offline diagnostics, launch through these recipes:
   cores use controller replay rather than fabricated missing inputs. These
   source-policy lineages provide experience diversity, not independently
   trained uncertainty members.
+  Reserve validation caches the seeds compatible with each public initial
+  bottle, then filters only those seeds by the reveal history. The cache is
+  bounded and preserves the exact posterior; it does not approximate or prune
+  possible reserves. Exhaustive 65,536-seed comparisons cover 14/20-HI bottles
+  and arbitrary reveal prefixes through all 128 entries.
 - `public-predecessor-bank`: set `competitive_checkpoint`, `bank_device`,
   `bank_states` and `public_predecessor_bank`. It collects clean 14-HI games,
   retaining full causal public views, native restore state, complete reserve

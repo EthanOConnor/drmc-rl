@@ -130,6 +130,22 @@ def _normalize_observations(
     return tuple(sorted(by_index.items()))
 
 
+@functools.lru_cache(maxsize=4096)
+def _initial_board_seed_indices(level: int, initial_board: bytes) -> np.ndarray:
+    """Cache the public bottle constraint once per game, before reveal history.
+
+    A mature bottle usually leaves very few compatible seeds. Repeating the
+    full 8 MiB bottle scan and all 65,536 reserve checks at every new reveal
+    wastes most of the CPU time in otherwise batched collection/search.
+    """
+    board = np.frombuffer(initial_board, dtype=np.uint8)
+    if board.shape != (128,):
+        raise ValueError("initial public bottle must contain exactly 128 bytes")
+    matches = np.flatnonzero(np.all(initial_board_table(level) == board, axis=1)).astype(np.int32)
+    matches.setflags(write=False)
+    return matches
+
+
 # A path-dependent search can create many distinct reveal histories. Each
 # cached result may hold tens of thousands of seed indices, so allowing one
 # entry per possible seed can consume gigabytes. A bounded 4k cache preserves
@@ -141,17 +157,21 @@ def _matching_seed_indices(
     initial_board: bytes | None,
 ) -> np.ndarray:
     table = reserve_table()
-    mask = np.ones(SEED_COUNT, dtype=bool)
     if (level is None) != (initial_board is None):
         raise ValueError("initial board conditioning requires both level and board")
     if initial_board is not None:
-        board = np.frombuffer(initial_board, dtype=np.uint8)
-        if board.shape != (128,):
-            raise ValueError("initial public bottle must contain exactly 128 bytes")
-        mask &= np.all(initial_board_table(int(level)) == board, axis=1)
-    for index, pill in observations:
-        mask &= table[:, index] == pill
-    matches = np.flatnonzero(mask).astype(np.int32)
+        seeds = _initial_board_seed_indices(int(level), initial_board)
+        if observations:
+            indices, pills = np.asarray(observations, dtype=np.int64).T
+            compatible = np.all(table[seeds[:, None], indices] == pills, axis=1)
+            matches = seeds[compatible]
+        else:
+            matches = seeds
+    else:
+        mask = np.ones(SEED_COUNT, dtype=bool)
+        for index, pill in observations:
+            mask &= table[:, index] == pill
+        matches = np.flatnonzero(mask).astype(np.int32)
     matches.setflags(write=False)
     return matches
 

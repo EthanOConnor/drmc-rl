@@ -89,6 +89,38 @@ def test_public_initial_virus_bottle_conditions_seed_posterior() -> None:
     assert PillReserveBelief.from_dict(payload) == posterior
 
 
+@pytest.mark.parametrize("level", [14, 20])
+def test_bottle_factored_posterior_equals_exhaustive_seed_enumeration(level):
+    from drmc_rl.search.pill_belief import (
+        _initial_board_seed_indices, _matching_seed_indices, initial_board_table,
+    )
+
+    table = reserve_table()
+    bottles = initial_board_table(level)
+    rng = np.random.default_rng(118+level)
+    _initial_board_seed_indices.cache_clear()
+    for seed in (0x8988, 0x13A9, 0x44E7):
+        bottle = bottles[seed].tobytes()
+        initial = np.all(bottles == np.frombuffer(bottle, np.uint8), axis=1)
+        order = rng.permutation(128)
+        for length in (0, 1, 4, 16, 64, 128):
+            observations = tuple(sorted((int(i), int(table[seed, i])) for i in order[:length]))
+            expected = initial.copy()
+            for index, pill in observations:
+                expected &= table[:, index] == pill
+            _matching_seed_indices.cache_clear()
+            actual = _matching_seed_indices(observations, level, bottle)
+            np.testing.assert_array_equal(actual, np.flatnonzero(expected))
+            assert not actual.flags.writeable
+            belief = PillReserveBelief(observations, level=level, initial_board=bottle)
+            np.testing.assert_allclose(belief.probabilities(117),
+                np.bincount(table[expected, 117], minlength=9)/expected.sum(), rtol=0, atol=0)
+        impossible = tuple((i, (int(table[seed, i])+1) % 9) for i in range(128))
+        with pytest.raises(ValueError, match="impossible"):
+            PillReserveBelief(impossible, level=level, initial_board=bottle)
+    assert _initial_board_seed_indices.cache_info().misses == 3
+
+
 def test_visible_pills_condition_the_two_previous_reserve_entries() -> None:
     reserve = reserve_for_seed(0x89, 0x88)
     belief = PillReserveBelief().condition_visible(
