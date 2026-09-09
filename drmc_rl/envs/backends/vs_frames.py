@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import ctypes as C
 
-import numpy as np
-
 from drmc_rl.envs.backends.drmario_pool import _load_cdll, resolve_library_path
 from drmc_rl.envs.backends.drmario_vs_pool import (
     _DrmVsPoolConfig, _DrmVsResetSpec, build_vs_reset_spec,
@@ -54,6 +52,46 @@ class FrameState(C.Structure):
         }
 
 
+class PublicFrameEvent(C.Structure):
+    _fields_ = [
+        ("frame", C.c_uint64), ("salt_frames", C.c_uint16),
+        *[(name, C.c_uint8) for name in (
+            "kind", "side", "tiles_cleared", "viruses_cleared", "lines_cleared",
+            "x", "y_top", "rotation", "garbage_size")],
+        ("cols", C.c_uint8 * 4), ("colors", C.c_uint8 * 4), ("outcome", C.c_uint8),
+    ]
+
+    def public(self):
+        from drmc_rl.game.pair_state import PairEvent, PairEventKind
+
+        kinds = (None, PairEventKind.SPAWN, PairEventKind.LOCK, PairEventKind.CLEAR,
+                 PairEventKind.VOLLEY, PairEventKind.TOP_OUT, PairEventKind.STAGE_CLEAR,
+                 PairEventKind.TERMINAL)
+        if not 1 <= self.kind < len(kinds) or self.side not in (0, 1):
+            raise ValueError("invalid native public event")
+        payload = {}
+        if self.kind in (1, 2):
+            payload.update(column=int(self.x), row_top=C.c_int8(self.y_top).value,
+                           rotation=int(self.rotation))
+        elif self.kind == 3:
+            payload.update(tiles_cleared=int(self.tiles_cleared),
+                           viruses_cleared=int(self.viruses_cleared),
+                           lines_cleared=int(self.lines_cleared))
+        elif self.kind == 4:
+            payload.update(garbage_size=int(self.garbage_size),
+                           columns=list(self.cols[:self.garbage_size]),
+                           colors=[(1, 0, 2)[c] for c in self.colors[:self.garbage_size]],
+                           salt_frames=int(self.salt_frames), sender=1 - int(self.side))
+        elif self.kind == 7:
+            payload["outcome"] = {1: 1, 2: -1, 3: 0}[self.outcome]
+        return PairEvent(kinds[self.kind], int(self.frame), int(self.side), payload)
+
+
+class FrameHistory(C.Structure):
+    _fields_ = [("spawn_frame", C.c_uint64 * 2), ("viruses_remaining", C.c_uint8 * 2),
+               ("count", C.c_uint8), ("events", PublicFrameEvent * 32)]
+
+
 class FrameVsPool:
     def __init__(self, num_pairs=1, *, lib_path=None):
         self.num_pairs = int(num_pairs)
@@ -74,6 +112,7 @@ class FrameVsPool:
             raise RuntimeError("frame VS pool creation failed")
         self.states = (FrameState * (2 * self.num_pairs))()
         self.buttons = (C.c_uint8 * (2 * self.num_pairs))()
+        self._history = None
 
     def reset(self, seeds, *, level=14, speed=2, mask=None):
         if len(seeds) != self.num_pairs:
@@ -85,6 +124,7 @@ class FrameVsPool:
         cmask = None if mask is None else (C.c_uint8 * self.num_pairs)(*mask)
         self._check(self.lib.drm_vspool_frame_reset(self.handle, cmask, specs,
                                                   self.states, C.sizeof(FrameState)))
+        self._history = None
         return self.states
 
     def step(self, buttons=None, count=1):
@@ -96,7 +136,76 @@ class FrameVsPool:
             self.buttons[:] = [0] * len(self.buttons)
         self._check(self.lib.drm_vspool_frame_step(self.handle, self.buttons, count,
                                                  self.states, C.sizeof(FrameState)))
+        self._history = None
         return self.states
+
+    def public_state(self, side):
+        """A causal full-pair view with events captured inside every native tick."""
+        from drmc_rl.game.pair_state import (
+            DecisionBoundary, FallingPillView, PublicPairState, VisibleSideState,
+        )
+
+        if not 0 <= side < len(self.states):
+            raise ValueError("invalid controller side")
+        if self._history is None:
+            if not hasattr(self.lib, "drm_vspool_frame_history"):
+                raise RuntimeError("public-context actors require the native frame-history ABI")
+            fn = self.lib.drm_vspool_frame_history
+            fn.argtypes = [C.c_void_p, C.POINTER(FrameHistory), C.c_size_t]
+            fn.restype = C.c_int
+            history = (FrameHistory * self.num_pairs)()
+            self._check(fn(self.handle, history, C.sizeof(FrameHistory)))
+            self._history = history
+        pair, viewer = divmod(side, 2)
+        history = self._history[pair]
+        states = self.states[2 * pair:2 * pair + 2]
+        if states[0].frame != states[1].frame:
+            raise ValueError("public controller observations require one console clock")
+        frame = int(states[0].frame)
+        canonical = (1, 0, 2)
+        visible, deciding = [], []
+        for i, state in enumerate(states):
+            colors = tuple(canonical[c] for c in state.pill)
+            age = frame - int(history.spawn_frame[i])
+            deciding.append(state.falling and (i == viewer or age == 0))
+            phase = ("terminal" if state.terminal else "falling" if state.falling
+                     else "clearing" if state.phase == 1 and state.subphase in (5, 6, 7)
+                     else "settling" if state.phase == 1 else "spawn" if state.phase in (3, 5, 6)
+                     else "resolving")
+            visible.append(VisibleSideState(
+                board=bytes(state.board), pill=colors,
+                preview=tuple(canonical[c] for c in state.preview),
+                active=(FallingPillView(state.x, C.c_int8(state.y_top).value,
+                                       state.rotation, colors, True, age)
+                        if state.falling else None),
+                viruses_remaining=int(history.viruses_remaining[i]),
+                animation_phase=phase, state_age_frames=0,
+            ))
+        events = tuple(event.public() for event in history.events[:history.count])
+        if any(event.frame_id > frame for event in events) or any(
+            a.frame_id > b.frame_id for a, b in zip(events, events[1:])
+        ):
+            raise ValueError("native public history is not causal and chronological")
+        boundary = (DecisionBoundary.TERMINAL if states[0].terminal else
+                    DecisionBoundary.BOTH if all(deciding) else
+                    DecisionBoundary.P1 if deciding[0] else
+                    DecisionBoundary.P2 if deciding[1] else DecisionBoundary.ADVANCE)
+        return PublicPairState(
+            frame_id=frame, viewer_side=viewer, sides=tuple(visible),
+            decision_boundary=boundary, recent_events=events,
+            observable_clock_delta_frames=0,
+            own_controller_state=self.states[side].semantic(self.states[side ^ 1])["falling"],
+        )
+
+    def semantic(self, side, *, public_context=False):
+        state = self.states[side].semantic(self.states[side ^ 1])
+        # Unlike the warp pool, both boards here are from the same executed tick.
+        state["vs/observation_timeline"] = "causal-settled-pair-v1"
+        if public_context:
+            from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+            state["public_context_schema"] = PUBLIC_CONTEXT_SCHEMA
+            state["public_pair_state"] = self.public_state(side)
+        return state
 
     @staticmethod
     def _check(rc):
@@ -171,4 +280,5 @@ class EventVsPool(FrameVsPool):
     def advance(self, frame_limit):
         self._check(self.advance_fn(self.handle, self.scripts, frame_limit,
                                    self.states, C.sizeof(FrameState), self.progress))
+        self._history = None
         return self.progress

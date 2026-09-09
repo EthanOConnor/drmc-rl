@@ -248,7 +248,7 @@ Assessment and original reports are in
 `runs/review-20260909/quality64-review/assessment.json`; remote originals remain
 under `trainer-output/review-20260909/quality64-study`. The separate
 `policy-drift.json` retains the retrospective inference audit. The objective arena
-continues independently. No diagnostic checkpoint is installed or promoted.
+has now completed as reported above. No diagnostic checkpoint is installed or promoted.
 
 ### Required continuation after the strength evaluation
 
@@ -269,6 +269,15 @@ indefinitely staged.
   execution parity and device latency, then train and compare the integrated
   policy at every supported pace. A schema and an offline fitting smoke test
   alone do not complete this item.
+  The controller-frame and batched-event runners now emit the same exact native
+  spawn/lock/clear/released-volley/terminal history, both visible previews and
+  poses, ages, and charged execution context into new-schema policies. Legacy
+  players keep their original encoding. Full frontier coverage and history/
+  motor-sensitive memoization pass; stale legacy anticipation/ablation is
+  rejected for new-context actors. Exact frame/event input parity, clear/volley
+  fixtures, snapshot tests and the independent NES demo transcript pass.
+  Live app/browser emission, full-core learning, future motor-opportunity
+  features and device/strength evaluation are still outstanding.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public

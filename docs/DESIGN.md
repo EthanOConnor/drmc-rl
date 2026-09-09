@@ -247,9 +247,14 @@ its own pill/context conditioning. Unknown fields have masks; hidden native
 bytes are not model tensors. The controlled migration copies compatible
 weights and zero-initializes new conditioning columns. Ordinary checkpoint
 loading stays strict. Critic-only, context-only and combined ablations precede
-increasing model size. The live event emitter still needs complete temporal
-context integration before a new-schema policy can be used for paced games;
-it must not fabricate empty history or motor features as if they were known.
+increasing model size. The controller-frame and batched-event arenas now use
+the same native in-tick event emitter and charged motor context. New-context
+policies retain all planner poses, including same-color rotations; frozen
+actors retain historical deduplication. Policy memoization includes public
+history and execution. Legacy speculative answers and opponent ablations
+cannot be reused by a context actor. App/browser emission, full-core learning
+and device evaluation still require integration; missing history or motor
+features must not be fabricated as known inputs.
 
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that

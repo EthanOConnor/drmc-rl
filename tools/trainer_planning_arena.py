@@ -30,8 +30,9 @@ from drmc_rl.arena.experiment import dump, outcome_summary
 from drmc_rl.envs.backends.vs_frames import FrameVsPool
 from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import (
-    NextTurnPreparer, execution_for_action, own_board_only, public_policy_inputs, score_public_inputs, select_prepared,
+    NextTurnPreparer, execution_for_action, own_board_only, score_public_inputs, select_prepared,
 )
+from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.vs_head_to_head import PlainPolicy
@@ -79,7 +80,11 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
                     continue
                 last_spawn[side] = key
                 statistics[side]["decisions"] += 1
-                state = current.semantic(states[side ^ 1])
+                actor = policy if policies is None else policies[variant]
+                contextual = uses_public_context(actor)
+                if contextual and (params.get("own_board_only") or params.get("anticipation")):
+                    raise ValueError("public-context actors require fresh complete context; legacy ablation/preparation is incompatible")
+                state = pool.semantic(side, public_context=contextual)
                 if params.get("own_board_only", False):
                     state = own_board_only(state)
                 anticipates = (params.get("anticipation", False) and pace.reaction_frames <= 6
@@ -105,8 +110,9 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None):
                         statistics[side]["no_reachable_after_delay"] += 1
                         prepared[side] = None
                         continue
-                    obs, info = public_policy_inputs(candidate[0], candidate[1], candidate[2],
-                        state["opponent_pill"], candidate[-1], [state["preview"]])
+                    obs, info = controller_policy_inputs(
+                        actor, candidate, state, pace, delay, int(params["delay"]),
+                    )
                     info[0]["pace/context"] = strategy_context(pace, state, delay)
                     legal_count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                     statistics[side]["feasible_candidates"] += legal_count
@@ -310,7 +316,8 @@ def variant_policy(config, params, parent):
         actor = PacePolicy(checkpoint,device,adapter_path=params["adapter_checkpoint"])
     elif checkpoint != config["checkpoint"]:
         actor = PlainPolicy(Path(checkpoint),device,public_only=True)
-        if actor.aux_dim and actor.aux_spec != "zero_v1_vs":
+        from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+        if actor.aux_dim and actor.aux_spec not in ("zero_v1_vs", PUBLIC_CONTEXT_SCHEMA):
             raise ValueError("historical public opponents must have a public auxiliary-input contract")
     else:
         return parent

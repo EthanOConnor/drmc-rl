@@ -4,6 +4,7 @@ Side-swapped games often ask identical questions. Reusing their full answers
 saves CPU/GPU work without changing the simulated on-device compute budget.
 """
 from collections import OrderedDict
+from dataclasses import asdict
 import json
 
 import numpy as np
@@ -60,10 +61,11 @@ class MemoPlanner:
 class MemoPolicy:
     def __init__(self, policy, limit=32*1024*1024):
         self.policy, self.cache = policy, ByteCache(limit)
+        self.aux_spec = getattr(policy, "aux_spec", None)
 
     def score(self, observations, infos):
         keys = [np.ascontiguousarray(obs, dtype=np.float32).tobytes() +
-            json.dumps(info, sort_keys=True, separators=(",", ":"), default=lambda a: a.tolist()).encode()
+            json.dumps(info, sort_keys=True, separators=(",", ":"), default=_public_json).encode()
             for obs,info in zip(observations, infos)]
         values = [self.cache.get(key) for key in keys]
         missing = {}
@@ -86,3 +88,16 @@ class MemoPolicy:
                 self.cache.put(key, scores, scores.nbytes)
         scores = np.stack([value if value is not None else computed[key] for key,value in zip(keys,values)])
         return np.broadcast_to(np.arange(512), scores.shape), np.isfinite(scores), scores
+
+
+def _public_json(value):
+    from drmc_rl.game.pair_state import PublicPairState
+    from drmc_rl.game.public_context import PublicExecutionContext
+
+    if type(value) is PublicPairState:
+        return value.to_dict()
+    if type(value) is PublicExecutionContext:
+        return asdict(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    raise TypeError(f"unsupported public memo input {type(value).__name__}")

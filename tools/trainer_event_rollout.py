@@ -16,7 +16,8 @@ import numpy as np
 
 from drmc_rl.envs.backends.vs_frames import EventVsPool
 from drmc_rl.execution.pace import resolve_pace, strategy_context
-from drmc_rl.human.anticipation import execution_for_action, public_policy_inputs, score_public_inputs
+from drmc_rl.human.anticipation import execution_for_action, score_public_inputs
+from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import ByteCache
@@ -127,7 +128,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     raise ValueError("own-board ablation is not a pace-training setting")
                 delay = max(int(params["delay"]), pace.reaction_frames)
                 statistics[side]["decisions"] += 1
-                state = pool.states[side].semantic(pool.states[side ^ 1])
+                actor = policy if policies is None else policies[id]
+                state = pool.semantic(side, public_context=uses_public_context(actor))
                 requests.append((state, delay, pace))
                 actors.append(id)
             tick = time.perf_counter()
@@ -168,8 +170,11 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     pool.install(side)
                     continue
                 state, delay, _ = requests[i]
-                obs, info = public_policy_inputs(candidate[0], candidate[1], candidate[2],
-                    state["opponent_pill"], candidate[-1], [state["preview"]])
+                actor = policy if policies is None else policies[actors[i]]
+                obs, info = controller_policy_inputs(
+                    actor, candidate, state, pace, delay,
+                    int(config["variants"][actors[i]]["delay"]),
+                )
                 info[0]["pace/context"] = strategy_context(pace, state, delay)
                 count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                 statistics[side]["feasible_candidates"] += count

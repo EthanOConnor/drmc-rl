@@ -183,7 +183,8 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
         action = int(POSE_TO_ACTION[pose])
         if action >= 0:
             costs[action] = reach.costs_u16[pose]
-    if pill[0] == pill[1]:
+    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+    if pill[0] == pill[1] and state.get("public_context_schema") != PUBLIC_CONTEXT_SCHEMA:
         costs[256:] = 0xFFFF
     packed = pack_feasible_candidates(
         (costs != 0xFFFF).reshape(4, GRID_H, GRID_W),
