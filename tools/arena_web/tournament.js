@@ -102,6 +102,12 @@ function renderOperations() {
   if(experiment.training_runs?.length){
     $('#training').insertAdjacentHTML('afterbegin',`<div class="training-body">${experiment.training_runs.map(run=>`<div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)} · ${compact(run.frames)} / ${compact(run.target_frames)}</span></div>${bar(run.frames,run.target_frames)}`).join('')}<p class="budget-note">Details below: ${esc(t.label)}. Last update KL: ${t.losses?.update_kl==null?'—':Number(t.losses.update_kl).toFixed(4)}.</p></div>`);
   }
+  const pipeline = experiment.pipeline || {};
+  if(pipeline.schema==='drmc-conditional-next-pill-opportunity-v1'){
+    $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Future movement labels</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.roots,pipeline.target_roots)}<div class="training-detail"><span>${count(pipeline.roots)} / ${count(pipeline.target_roots)} positions</span><span>${count(pipeline.candidates)} candidate placements</span></div><p class="budget-note">${count(pipeline.next_candidates)} next-pill placements checked · ${count(pipeline.splits?.validation)} validation positions.<br>Conditional on no incoming garbage. ${ago(age(pipeline.updated_at))}</p></div>`);
+  } else if(pipeline.schema==='drmc-motor-auxiliary-study-v1'){
+    $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Future movement fitting</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.epoch,pipeline.target_epochs)}<div class="training-detail"><span>${count(pipeline.epoch)} / ${count(pipeline.target_epochs)} epochs</span><span>${count(pipeline.accepted_examples)} accepted examples</span></div><p class="budget-note">${count(pipeline.train_roots)} training positions · ${count(pipeline.validation_roots)} validation positions · ${count(pipeline.anchor_games)} policy-preservation games.<br>${esc(pipeline.phase)} · ${ago(age(pipeline.updated_at))}</p></div>`);
+  }
   $('#milestones').innerHTML = (experiment.variants || []).map(v=>{
     const games=(r.tournaments || []).filter(m=>m.a===v.id||m.b===v.id).reduce((n,m)=>n+num(m.played),0);
     const label=ready.has(v.id)?'Ready':v.status==='Training'?'Training':'Pending';

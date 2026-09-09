@@ -83,6 +83,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
             critic_context=str(g("candidate_critic_context", "global")),
             terminal_wdl=bool(g("candidate_terminal_wdl", False)),
             candidate_wdl=bool(g("candidate_wdl", False)),
+            motor_auxiliary=g("candidate_motor_auxiliary", None),
             public_context_schema=public_schema,
         ).to(device)
     elif architecture == "g4":

@@ -98,6 +98,22 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-motor-auxiliary-fit:
+    status: active
+    stage: 4
+    purpose: Teach the shared public core exact effects and conditional future access with independent replay anchoring and whole-seed validation.
+    requires_paths: [tools/fit_motor_auxiliary.py, '{motor_auxiliary_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.fit_motor_auxiliary, --config, '{motor_auxiliary_config}']
+    produces: [Diagnostic public core, effect/access/cost errors, train and validation policy drift, measured fit exposure]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - Auxiliary labels do not change match rewards or supply candidate WDL values. Heads are skipped by ordinary inference.
+      - Actual own controller geometry conditions the predictor; broad policy anchors exclude validation seeds and labeled decisions.
+      - Only training and anchor policy KL govern optimizer rollback; holdout measurements are never optimized against.
+      - A fitted core still requires fresh prediction confirmation and substantial controller strength/latency evaluation.
   trainer-motor-opportunity-bank:
     status: active
     stage: 4

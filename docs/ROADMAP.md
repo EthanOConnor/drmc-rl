@@ -289,7 +289,12 @@ indefinitely staged.
   recipe uses exact v2 public controller replay, excludes reserved arena seeds
   and holds out whole reset seeds. Incoming garbage remains an explicit
   condition; these are auxiliary geometry targets, not match-value labels.
-  Motor-opportunity model fitting and representative device/strength evaluation remain outstanding;
+  The supervised fitting path now adds effect/access/cost auxiliary heads,
+  supplies observed own controller geometry, updates the shared encoder and
+  preserves the policy on a separate broad replay anchor. Holdout seeds never
+  enter anchor gradients or rollback decisions; ordinary inference skips the
+  heads. A real native-data fit test verifies shared gradients and checkpoint
+  reload. Representative fitting and device/strength evaluation remain outstanding;
   no new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and

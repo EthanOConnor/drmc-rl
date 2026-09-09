@@ -400,7 +400,7 @@ substitute a newly computed behavior policy.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
-`configs/` directory, currently `controller-core-live-v4-progress.json`; each
+`configs/` directory, currently `controller-core-live-v4-geometry.json`; each
 checkpoint also carries that configuration. Native code is `19f292c`.
 It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
@@ -437,6 +437,32 @@ excluded. Terminal success is kept separate from losing future access. These
 are deterministic auxiliary labels, not all-action match outcomes. Fitting,
 independent held-out prediction checks, and controller strength evaluation are
 still required before a model uses them in the trainer.
+
+`trainer-motor-auxiliary-fit --set motor_auxiliary_config=PATH` consumes a
+completed opportunity `bank`, a public-core `checkpoint`, an independent
+`anchor_replay_directory`, and a fresh `output`, plus `seed`, `device`, `epochs`,
+`batch_size` and `lr`. It adds versioned effect/access/cost prediction heads and
+updates the shared representation. Exact own controller geometry conditions
+these auxiliary predictions; it is not silently added to the existing actor
+tensor contract. Ordinary policy inference skips the heads entirely. This
+phase never turns clear opportunities into match rewards or candidate WDL.
+The existing exact effect tokens are targets, with unobserved attack and
+uncertainty fields masked out. Future targets keep parity conditions separate
+and exclude absorbing root terminals from access losses. Roots and candidates
+are normalized within whole-game weights.
+
+Policy preservation includes at least 256 independent unannotated public
+anchor games by default; all validation reset seeds and reserved arena seeds
+are excluded. Every epoch must satisfy `max_policy_kl` on both annotated
+training positions and the broad anchor set. A failing update restores the
+model and optimizer before retrying at lower learning rate. Validation errors
+and policy drift are measured after accepted epochs and never choose retries.
+`fit.json` records the unchanged initial predictor and every accepted epoch;
+`progress.json` separates processed examples from examples in accepted epochs.
+`core-latest.pt` is the last accepted epoch; `core-final.pt` appears only when
+the full fit completes. Both are diagnostic and load through the ordinary
+source actor. Fresh prediction confirmation and large controller tournaments
+are still necessary; a small fit test is implementation evidence only.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the

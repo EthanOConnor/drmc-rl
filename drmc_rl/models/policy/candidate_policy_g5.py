@@ -155,6 +155,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         terminal_wdl: bool = False,
         candidate_wdl: bool = False,
         public_context_schema: str | None = None,
+        motor_auxiliary: str | None = None,
     ) -> None:
         super().__init__()
         if board_channels != 16:
@@ -270,6 +271,12 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             nn.init.zeros_(self.value_projection.bias)
         self.state_wdl_head = nn.Linear(d_model, 3) if terminal_wdl else None
         self.candidate_wdl_head = nn.Linear(d_model, 3) if candidate_wdl else None
+        self.motor_auxiliary = None
+        if motor_auxiliary is not None:
+            from drmc_rl.models.policy.motor_auxiliary import MOTOR_AUXILIARY_SCHEMA, MotorAuxiliaryHead
+            if motor_auxiliary != MOTOR_AUXILIARY_SCHEMA or public_context_schema is None:
+                raise ValueError("motor auxiliaries require their public-context schema")
+            self.motor_auxiliary = MotorAuxiliaryHead(d_model)
         self.register_buffer("value_support", torch.linspace(-1.0, 1.0, value_atoms), persistent=False)
         self.register_buffer("_dr", torch.tensor([0, 1, 0, -1], dtype=torch.int64), persistent=False)
         self.register_buffer("_dc", torch.tensor([1, 0, -1, 0], dtype=torch.int64), persistent=False)
@@ -313,6 +320,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         *,
         aux: Optional[torch.Tensor] = None,
         return_aux: bool = False,
+        motor_geometry: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         if obs.ndim != 4 or obs.shape[-2:] != (GRID_H, GRID_W):
             raise ValueError(f"expected obs [B,C,16,8], got {tuple(obs.shape)}")
@@ -448,6 +456,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                 extra["state_wdl_logits"] = self.state_wdl_head(value_context)
             if self.candidate_wdl_head is not None:
                 extra["candidate_wdl_logits"] = self.candidate_wdl_head(candidate)
+            if self.motor_auxiliary is not None and motor_geometry is not None:
+                extra.update(self.motor_auxiliary(candidate, motor_geometry))
             return logits, value, extra
         return logits, value
 
