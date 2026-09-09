@@ -506,6 +506,13 @@ update for the greater of three minutes or three previous rollout durations.
 Completed training is not marked stale while evaluation continues.
 
 For evaluation during training, `trainer-planning-arena` accepts `watch: true`.
+For reactive policies, `rollout_backend: events`, `replay_games: 0` and
+`planner_workers` select the same causal batched controller runner used by
+training. Mixed context-aware and frozen actors have matching complete move
+traces, outcomes and shared execution counters against the frame reference.
+Per-placement move traces are still retained. Use the default frame runner for
+full-frame replay capture or speculative preparation; event mode rejects these
+unsupported combinations explicitly.
 Predeclare frozen milestone paths in `variants`; the worker skips missing
 checkpoints and admits them after their atomic save. It plays one complete
 side-swapped batch per matchup, prioritizing the least-covered ready matchup,

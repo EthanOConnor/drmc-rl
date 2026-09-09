@@ -135,3 +135,32 @@ def test_collection_audit_preserves_behavior_and_detects_real_distribution_drift
     row["old_logprob"] = float(row["behavior_logp"][row["slot"]])
     with pytest.raises(RuntimeError, match="total variation"):
         _policy_snapshot(actor, rows, 2)
+
+
+def test_mixed_public_context_and_frozen_actors_have_frame_event_parity(parent):
+    from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
+    from tools.trainer_planning_arena import run_batch
+
+    actors = {"core": ControllerCorePolicy(parent, training=False),
+              "parent": PlainPolicy(parent, public_only=True)}
+    config = dict(native_library=os.environ.get("DRMC_FRAME_LIBRARY"),
+                  variants={name: {"delay": 4} for name in actors},
+                  max_game_frames=1400, replay_games=0)
+    match = dict(a="core", b="parent", games=2, level=14, pace="fast")
+    jobs = [(17291, 0, 0), (17291, 1, 1)]
+    reference, parallel = NativeReachabilityRunner(), ParallelPlanning(2)
+    try:
+        expected, _ = run_batch(config, match, jobs, None, reference, None, policies=actors)
+        actual, _ = run_event_batch(config, match, jobs, None, parallel, None, policies=actors)
+        for left, right in zip(expected, actual):
+            for key in ("seed", "side", "index", "score", "winner", "reason", "frames"):
+                assert left[0][key] == right[0][key]
+            for side in ("a_stats", "b_stats"):
+                for key in ("decisions", "feasible_candidates", "forced_placements",
+                            "spawn_wait_frames", "validated_input_frames", "no_reachable_after_delay"):
+                    assert left[0][side].get(key, 0) == right[0][side].get(key, 0)
+                assert right[0][side]["unplanned_locks"] == 0
+            assert left[1] == right[1]
+    finally:
+        reference.close()
+        parallel.close()

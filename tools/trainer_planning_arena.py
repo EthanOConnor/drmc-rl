@@ -340,15 +340,29 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = False
         torch.backends.cudnn.allow_tf32 = False
     policy = PlainPolicy(Path(config["checkpoint"]), config.get("device", "cuda"), public_only=True)
-    planner = NativeReachabilityRunner()
+    backend = config.get("rollout_backend", "frames")
+    anticipation = any(p.get("anticipation") for p in config["variants"].values())
+    rollout = run_batch
+    if backend == "events":
+        if anticipation or config.get("replay_games", 0):
+            raise ValueError("event arenas require reactive decisions; use frames for full-frame replay capture")
+        from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
+        planner = ParallelPlanning(config.get("planner_workers", 4))
+        rollout = run_event_batch
+    elif backend == "frames":
+        planner = NativeReachabilityRunner()
+    else:
+        raise ValueError("rollout_backend must be frames or events")
     if config.get("memoize", False):
         from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
-        policy, planner = MemoPolicy(policy), MemoPlanner(planner)
+        policy = MemoPolicy(policy)
+        if backend == "frames":
+            planner = MemoPlanner(planner)
     mixed = any("adapter_checkpoint" in p or "checkpoint" in p for p in config["variants"].values())
-    if mixed and any(p.get("anticipation") for p in config["variants"].values()):
+    if mixed and anticipation:
         raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
     policies = {} if mixed else None
-    preparer = None if policies is not None else NextTurnPreparer(policy, planner, lib_path=config.get("native_library"))
+    preparer = NextTurnPreparer(policy, planner, lib_path=config.get("native_library")) if anticipation else None
     store = ArenaStore(config["working_db"], replay_dir=output / "replays")
     for id, params in config["variants"].items():
         store.register(agent_id=id, name=params["name"], family="trainer planning", generation=1,
@@ -397,7 +411,7 @@ def main():
                 profile = cProfile.Profile() if config.get("profile") else None
                 if profile:
                     profile.enable()
-                batch, elapsed = run_batch(config, match, jobs[start:start+batch_size], policy, planner, preparer, policies=policies)
+                batch, elapsed = rollout(config, match, jobs[start:start+batch_size], policy, planner, preparer, policies=policies)
                 if profile:
                     profile.disable()
                     profile.dump_stats(output / "profile.pstats")
