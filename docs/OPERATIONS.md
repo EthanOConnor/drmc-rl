@@ -506,6 +506,16 @@ The live leaderboard combines tournament phases at the same level and pace;
 Elo-reference changes use differences of joint posterior samples, preserving
 their covariance. Levels and paces retain separate rating fields.
 
+Controller arena records use the comparison ID as `condition_key`: the same
+players, NES seed and port assignment can occur at multiple paces or levels.
+The sync worker can recover metadata records omitted by the old unscoped key
+from complete, uncensored side-swapped journal pairs, preserving existing
+replay references where available. Original controller traces remain in each
+worker's `moves/` directory. Database migration retains old rows and IDs;
+unscoped native-arena callers retain their previous deduplication behavior.
+Published SQLite snapshots use DELETE journaling and explicitly closed handles.
+Mirrors exclude `.fuse_hidden*`, `*-wal` and `*-shm`; these are not game artifacts.
+
 The current live schedule adds 36,608 games: eight frozen entrants in a 14 HI
 round robin at Sloth, Relaxed, Normal, Fast and Top Humans, with 256 games
 (128 side-swapped seeds) per pair and pace. That is 1,792 games per entrant

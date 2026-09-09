@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+from contextlib import closing
 from copy import deepcopy
 from datetime import UTC, datetime
 import json
@@ -396,8 +397,9 @@ def main():
     store = ArenaStore(config["working_db"],replay_dir=output/"replays")
     store.conn.commit()
     import sqlite3
-    with sqlite3.connect(output/"arena.sqlite") as snapshot:
+    with closing(sqlite3.connect(output/"arena.sqlite")) as snapshot:
         store.conn.backup(snapshot)
+        snapshot.execute("PRAGMA journal_mode=DELETE")
     store.close()
     dump(output/"results.json",{"updated_at":datetime.now(UTC).isoformat(),"tournaments":[]})
     started = time.perf_counter()

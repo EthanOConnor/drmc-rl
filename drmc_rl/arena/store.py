@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import math
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -75,8 +76,9 @@ CREATE TABLE IF NOT EXISTS matches (
   max_decisions_per_side INTEGER,
   policy_run_seed INTEGER,
   provenance TEXT NOT NULL DEFAULT '{}',
+  condition_key TEXT NOT NULL DEFAULT '',
   created TEXT NOT NULL,
-  UNIQUE(agent_a, agent_b, seed, side_assignment)
+  UNIQUE(agent_a, agent_b, seed, side_assignment, condition_key)
 );
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -170,6 +172,47 @@ CREATE INDEX IF NOT EXISTS leases_status_expires ON leases(status, expires);
 """
 
 
+def _scope_match_identity(connection: sqlite3.Connection) -> None:
+    """Retain old rows/IDs while allowing the same seed at different conditions."""
+    legacy = False
+    for index in connection.execute("PRAGMA index_list(matches)").fetchall():
+        name = index[1].replace('"', '""')
+        columns = [row[2] for row in connection.execute(f'PRAGMA index_info("{name}")')]
+        legacy |= bool(index[2]) and columns == [
+            "agent_a", "agent_b", "seed", "side_assignment"
+        ]
+    if not legacy:
+        return
+    sql = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='matches'"
+    ).fetchone()[0]
+    sql, changed = re.subn(
+        r"UNIQUE\s*\(\s*agent_a\s*,\s*agent_b\s*,\s*seed\s*,\s*side_assignment\s*\)",
+        "UNIQUE(agent_a, agent_b, seed, side_assignment, condition_key)",
+        sql, flags=re.IGNORECASE,
+    )
+    if changed != 1:
+        raise ValueError("unrecognized legacy match identity; refusing a lossy migration")
+    sql, renamed = re.subn(
+        r'CREATE TABLE\s+(?:"matches"|matches)\s*\(',
+        "CREATE TABLE matches_scoped (", sql, count=1, flags=re.IGNORECASE,
+    )
+    if renamed != 1:
+        raise ValueError("unrecognized matches table declaration")
+    objects = [row[0] for row in connection.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name='matches' "
+        "AND type IN ('index','trigger') AND sql IS NOT NULL"
+    )]
+    columns = ",".join('"' + row[1].replace('"', '""') + '"'
+                       for row in connection.execute("PRAGMA table_info(matches)"))
+    connection.execute(sql)
+    connection.execute(f"INSERT INTO matches_scoped ({columns}) SELECT {columns} FROM matches")
+    connection.execute("DROP TABLE matches")
+    connection.execute("ALTER TABLE matches_scoped RENAME TO matches")
+    for statement in objects:
+        connection.execute(statement)
+
+
 @dataclass(frozen=True)
 class Agent:
     id: str
@@ -204,7 +247,8 @@ class ArenaStore:
         self.conn = sqlite3.connect(self.path, timeout=30)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
-        # Schema upgrades are intentionally additive, but several arena workers
+        # Most upgrades are additive; replacing the old unscoped uniqueness
+        # constraint needs one transactional table rebuild. Several arena workers
         # can open the copied database at once during a cutover.  Acquire the
         # SQLite writer lock before inspecting table_info so every subsequent
         # opener observes the columns committed by the first migrator.
@@ -229,10 +273,17 @@ class ArenaStore:
             "max_decisions_per_side": "INTEGER",
             "policy_run_seed": "INTEGER",
             "provenance": "TEXT NOT NULL DEFAULT '{}'",
+            "condition_key": "TEXT NOT NULL DEFAULT ''",
         }
         for name, declaration in additive_match_columns.items():
             if name not in columns:
                 self.conn.execute(f"ALTER TABLE matches ADD COLUMN {name} {declaration}")
+        try:
+            _scope_match_identity(self.conn)
+        except BaseException:
+            self.conn.rollback()
+            self.conn.close()
+            raise
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS matches_match_key "
             "ON matches(match_key) WHERE match_key IS NOT NULL"
@@ -406,16 +457,19 @@ class ArenaStore:
         max_decisions_per_side: int | None = None,
         policy_run_seed: int | None = None,
         provenance: dict[str, Any] | None = None,
+        condition_key: str = "",
         commit: bool = True,
     ) -> bool:
+        if not isinstance(condition_key, str):
+            raise TypeError("match condition key must be a string")
         replay_ref = self._store_replay(replay) if replay else None
         cursor = self.conn.execute(
             """INSERT OR IGNORE INTO matches
                (agent_a,agent_b,seed,side_assignment,winner,match_len_sec,decisions,
                 terminal_reason,replay,replay_ref,match_key,game_index,
                 frame_counter_base,level,speed_setting,state_repr,
-                max_decisions_per_side,policy_run_seed,provenance,created)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                max_decisions_per_side,policy_run_seed,provenance,condition_key,created)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 a,
                 b,
@@ -436,6 +490,7 @@ class ArenaStore:
                 max_decisions_per_side,
                 policy_run_seed,
                 json.dumps(provenance or {}, sort_keys=True),
+                condition_key,
                 utc_now(),
             ),
         )

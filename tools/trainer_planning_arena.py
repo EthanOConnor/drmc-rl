@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import cProfile
 from collections import Counter
+from contextlib import closing
 from datetime import UTC, datetime
 import gzip
 import json
@@ -250,8 +251,9 @@ def publish(config, results, output, store):
                      for id,p in config["variants"].items()]})
     # Publish a closed, transactionally consistent database for the viewer.
     destination = output / "arena.next.sqlite"
-    with sqlite3.connect(destination) as snapshot:
+    with closing(sqlite3.connect(destination)) as snapshot:
         store.conn.backup(snapshot)
+        snapshot.execute("PRAGMA journal_mode=DELETE")
     destination.replace(output / "arena.sqlite")
 
 
@@ -413,9 +415,11 @@ def main():
                             terminal_reason=row["reason"],
                             replay=replay,
                             match_key=f"{match['id']}-{row['index']}",
+                            condition_key=match["id"],
                             level=match["level"],
                             speed_setting=2,
-                            provenance={"controller_frames": True, "move_trace": str(trace.name)},
+                            provenance={"controller_frames": True, "move_trace": str(trace.name),
+                                        "pace": row["pace"]},
                             commit=False,
                         )
                     with records.open("a") as stream:

@@ -129,13 +129,52 @@ the first new state collection was stopped and regenerated with causal views.
 | Experiment | Implemented foundation | Evidence and next decision |
 | --- | --- | --- |
 | E0: objectives and public inputs | Exact gradient/finite-difference tests; separately named losses; hidden-commitment input test; causal native observations and complete placement collection across pair events; full frontier and bond preservation | Native PPO updates pass in dictionary and direct-array modes without waiting-event samples. Preserve historical artifacts. Never reinterpret a masked private input as a fully public timeline. |
-| E1: episodic actor credit | Same frozen 25M adapter, parent, seeds, pace exposure and full categorical KL budget; 50M additional frames per arm; 16,384 reserved arena games | Both arms completed: historical 50,369,235 frames / 446,868 learning decisions; corrected 50,201,899 / 445,535. Each collected 22,080 natural games over 75 updates; repeated seed experiences are counted separately. Held-out evaluation is running. Realized median KL is comparable across paces, not identical. One training seed is screening; finalists need independent seeds. |
+| E1: episodic actor credit | Same frozen 25M adapter, parent, seeds, pace exposure and full categorical KL budget; 50M additional frames per arm; 16,384 reserved arena games | Training and all 16,384 evaluation games completed with no censoring. Corrected credit wins 55.9% at 14-HI Top Humans and 54.4% at Fast against the historical objective; other trained paces are inconclusive. Details below. Keep the corrected objective for further training; independent training seeds and cross-pace confirmation remain required for adoption. |
 | E2: critic and public context | Candidate-attending value query; separate terminal/candidate WDL heads; versioned per-side public conditioning; baseline/critic/context/combined fitting modes | The expanded 64-game study completed all four 100-epoch fits on the same 48 training / 16 validation games. Aggregate outcome errors improved, but held-out gap/ranking losses worsened; details below. No architecture is selected. New-schema live history/motor emission remains required before paced deployment. |
 | E3: paired candidate improvement | Full-root, complete-reserve panel with two public continuations; chance variance and continuation sensitivity separated; reference-relative KL-bounded targets; supervised gap/WDL fitting | The 520-continuation pilot has exact serial CPU/batched GPU parity. The expanded study completed 2,090 candidates and 8,360 natural continuations across 64 independent 14-HI roots, with no unknown mass. Only 32 roots distinguish moves under this panel. Learned ranking and real-game improvement need substantially more prospective evidence; the failed V3 gate remains failed. |
 | E4: diverse experience | Frozen public opponent pool in pace training; empirical regularized mixture; exact states 4/8/16 own placements before natural losses | Initial bank had 16 states from four natural 14-HI games; the expanded study uses 64 independent source games. Expand source diversity and mix openings/midgame/finishes with predecessors. No curriculum or league change enters the E1 arms. Clean-start population results govern adoption. |
 | E5: effects, memory and scale | Existing exact-effect and public-event modules audited; supervised auxiliary phase with policy KL; layer updates and representation-rank diagnostics | Integrate observed event history and exact effects before spatial wave/support/access labels and next-known-pill motor opportunity maps. Compare current 320×8 with 384×12 and 512×12 only after target quality; equal GPU time and equal exposure are separate reports. Distill a successful large teacher into the fast student. |
 | E6: search and anticipation | Cooperative frontier batching with exact requested-side inference, complete cache identities, fail-closed reserve-history cache, full-root output and unknown exhausted labels | Synthetic and real neural/native parity pass. CPU/Metal timing is workload-dependent, so batching remains opt-in. Adaptive/Gumbel allocation waits for useful Q ranking; mixed simultaneous matrices, tactical extensions and a late-conditioned anticipation trunk are separate experiments. Charge their measured computation delay. |
 | E7: expression and calibration | Whole-game paired noninferiority analysis with a declared margin, seed design, comparison family and fixed confirmation set; censoring blocks certification | Persistent 2–6-placement proposals still need replay-aligned human setups, held-out local-regret calibration and blind clip preferences. No permanent horizontal/combo reward, independent random blunders or uncalibrated Elo claim. |
+
+The E1 arena completed at 11:16 UTC on September 9. All 16,384 journal records
+form complete side-swapped pairs, using 768 distinct evaluation seeds with no
+overlap with either training journal. Each arm trained for 75 updates and
+22,080 natural game experiences: historical credit used 50,369,235 additional
+frames / 446,868 learning decisions; corrected credit used 50,201,899 / 445,535.
+Realized median update KL was comparable across paces, not identical.
+
+| 14-HI pace | Corrected score vs historical (1,024 games each) | Paired 95% interval | Five-comparison family interval | Score-equivalent Elo difference |
+| --- | ---: | ---: | ---: | ---: |
+| Sloth | 50.00% | 48.54–51.46% | 48.05–51.95% | 0.0 |
+| Relaxed | 50.63% | 47.56–53.66% | 46.53–54.59% | +4.4 |
+| Normal | 49.02% | 45.70–52.25% | 44.73–53.32% | −6.8 |
+| Fast | 54.39% | 51.07–57.71% | 50.00–58.79% | +30.6 |
+| Top Humans | 55.86% | 52.44–59.28% | 51.37–60.35% | +40.9 |
+
+Intervals resample complete seed pairs on this fixed evaluation; the family
+intervals use Bonferroni adjustment across the five primary comparisons. Sloth
+has 862 natural draws, not timeouts. Separate 20-HI checks have 512 games each:
+Normal scores 53.13% (paired 95%: 49.80–56.45%); Top Humans scores 57.03%
+(52.15–61.91%). Only Top Humans excludes parity after adjusting those two
+pressure comparisons together. Elo here only transforms each condition's match
+score; it is not a human rating or a claim of transitivity across conditions.
+
+Against the older 100M+ adapter, corrected credit scores 48.24%, 47.27%, 51.95%,
+55.27% and 55.27% from Sloth through Top Humans (512 games per pace). The two
+fastest trained paces are positive in exploratory paired intervals; this is
+not uniform superiority. The corrected objective is the next training default,
+while the deployed model stays unchanged. One training seed cannot establish
+the reliability of the training procedure. Live history/motor integration now
+proceeds as required; further independent-seed confirmation need not defer it.
+The complete assessment is `runs/review-20260909/objective-arena-assessment.json`.
+
+The journal audit also found an old viewer-database uniqueness constraint that
+collapsed repeated seeds across paces. Complete journals and journal-derived
+standings were intact. Match identity now includes its comparison condition;
+the viewer was recovered from all complete, uncensored journal pairs without
+rerunning games. Snapshot connections are explicitly closed, and sync excludes
+SSHFS temporary snapshots and SQLite sidecars.
 
 The review's commentator excerpts identify replay windows and qualities such
 as efficient low-drop clears, connected structures, delayed payoff, access,

@@ -7,16 +7,55 @@ import sqlite3
 import subprocess
 import time
 from collections import Counter
+from contextlib import closing
 
 from drmc_rl.arena.store import ArenaStore
 from drmc_rl.arena.experiment import dump, relative_ratings, outcome_summary
 
 
+def completed_journal_matches(report, games):
+    """The append-only journal retains games lost by old unscoped SQLite keys."""
+    matches = {match["id"]: match for match in report["tournaments"]}
+    unique, pairs = {}, {}
+    for row in games:
+        key = f"{row['comparison']}-{row['index']}"
+        if key in unique and unique[key] != row:
+            raise ValueError("conflicting controller journal records")
+        unique[key] = row
+        if row["comparison"] not in matches or row["side"] not in (0, 1):
+            raise ValueError("controller journal identity does not match its schedule")
+        pair = pairs.setdefault((row["comparison"], row["seed"]), {})
+        if row["side"] in pair and pair[row["side"]] != key:
+            raise ValueError("controller journal repeats a side/seed within one condition")
+        pair[row["side"]] = key
+    complete = {}
+    for sides in pairs.values():
+        if set(sides) != {0, 1}:
+            continue
+        rows = [unique[key] for key in sides.values()]
+        if any(row["reason"] == "timeout" or row.get("score") is None for row in rows):
+            continue
+        for key in sides.values():
+            row = unique[key]
+            match = matches[row["comparison"]]
+            if row["level"] != match["level"] or row["pace"] != match.get("pace", "frame_perfect"):
+                raise ValueError("controller journal condition differs from its schedule")
+            expected_winner = {0.0: "b", 0.5: "draw", 1.0: "a"}.get(row["score"])
+            if expected_winner is None or row["winner"] != expected_winner:
+                raise ValueError("controller journal winner and score disagree")
+            complete[key] = (match, row)
+    return complete
+
+
 def sync(source: Path, target: Path, feed: str = "screen"):
     if not feed or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for c in feed):
         raise ValueError("feed must be a simple lowercase identifier")
-    # Never replace the served SQLite file while its readers may have WAL open.
-    with sqlite3.connect(f"file:{source / 'arena.sqlite'}?mode=ro", uri=True) as remote:
+    report = json.loads((source / "results.json").read_text())
+    games = [json.loads(line) for line in (source / "games.jsonl").read_text().splitlines()]
+    journal = completed_journal_matches(report, games)
+    # The source is a closed snapshot. Close readers explicitly before the next
+    # atomic replacement, avoiding leaked SSHFS .fuse_hidden snapshot copies.
+    with closing(sqlite3.connect(f"file:{source / 'arena.sqlite'}?mode=ro&immutable=1", uri=True)) as remote:
         remote.row_factory = sqlite3.Row
         store = ArenaStore(target / "arena.sqlite")
         try:
@@ -26,12 +65,19 @@ def sync(source: Path, target: Path, feed: str = "screen"):
                 store.conn.execute(f"INSERT OR IGNORE INTO agents ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
                                    tuple(values.values()))
             existing = {r[0] for r in store.conn.execute("SELECT match_key FROM matches")}
+            for key, (match, _) in journal.items():
+                if key in existing:
+                    store.conn.execute(
+                        "UPDATE matches SET condition_key=? WHERE match_key=? AND condition_key=''",
+                        (match["id"], key),
+                    )
             count = 0
             for row in remote.execute("SELECT * FROM matches ORDER BY id"):
-                if row["match_key"] in existing:
+                if row["match_key"] in existing or row["match_key"] not in journal:
                     continue
                 values = dict(row)
                 values.pop("id")
+                values["condition_key"] = journal[row["match_key"]][0]["id"]
                 if values.get("replay_ref"):
                     replay = Path(values["replay_ref"])
                     if replay.is_absolute() or ".." in replay.parts:
@@ -40,8 +86,27 @@ def sync(source: Path, target: Path, feed: str = "screen"):
                     destination.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copyfile(source / "replays" / replay, destination)
                 columns = list(values)
-                store.conn.execute(f"INSERT OR IGNORE INTO matches ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
-                                   tuple(values.values()))
+                inserted = store.conn.execute(f"INSERT OR IGNORE INTO matches ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})",
+                                              tuple(values.values())).rowcount
+                count += inserted
+                if inserted:
+                    existing.add(row["match_key"])
+            for key, (match, row) in journal.items():
+                if key in existing:
+                    continue
+                inserted = store.record(
+                    match["a"], match["b"], seed=row["seed"], side=row["side"],
+                    winner=row["winner"], match_len_sec=row["frames"] / 60.0988,
+                    decisions=row["a_stats"].get("decisions", 0) + row["b_stats"].get("decisions", 0),
+                    terminal_reason=row["reason"], match_key=key, condition_key=match["id"],
+                    level=row["level"], speed_setting=2,
+                    provenance={"controller_frames": True, "pace": row["pace"],
+                                "move_trace": f"{match['id']}-{row['index']:04d}.json.gz",
+                                "recovered_from_game_journal": True},
+                    commit=False,
+                )
+                if not inserted:
+                    raise ValueError("controller journal conflicts with a stored match identity")
                 count += 1
             # Replace only this feed's disposable worker telemetry.
             workers = list(remote.execute("SELECT * FROM worker_samples"))
@@ -56,8 +121,6 @@ def sync(source: Path, target: Path, feed: str = "screen"):
             store.conn.commit()
         finally:
             store.close()
-    report = json.loads((source / "results.json").read_text())
-    games = [json.loads(line) for line in (source / "games.jsonl").read_text().splitlines()]
     feeds = target / "feeds"
     feeds.mkdir(exist_ok=True)
     dump(feeds / f"{feed}.json", {"report": report, "games": games})
@@ -127,6 +190,7 @@ def watch(path):
             source.mkdir(parents=True, exist_ok=True)
             try:
                 subprocess.run(["rsync", "-az", "--exclude", "moves", "--exclude", "working/", "--exclude", "*.pt*",
+                                "--exclude", ".fuse_hidden*", "--exclude", "*-wal", "--exclude", "*-shm",
                                 remote.rstrip("/")+"/", str(source)+"/"],
                     check=True, capture_output=True, timeout=30)
                 if not (source / "games.jsonl").is_file():
