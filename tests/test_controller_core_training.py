@@ -12,7 +12,7 @@ from drmc_rl.human.controller_context import controller_policy_inputs
 from drmc_rl.models.policy.controller_core import ControllerCorePolicy, write_public_replay
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.eval_policy import _build_net_from_cfg
-from tools.train_pace_strategy import update_adapter
+from tools.train_pace_strategy import _policy_snapshot, update_adapter
 from tools.vs_head_to_head import PlainPolicy
 
 
@@ -109,3 +109,29 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
             np.testing.assert_array_equal(replay["public_context"][i], row["public_context"])
             assert replay["actions"][lo + replay["slot"][i]] == replay["action"][i]
             assert replay["game_seed"][i] == games[i]["seed"]
+
+
+def test_collection_audit_preserves_behavior_and_detects_real_distribution_drift(parent):
+    actor = ControllerCorePolicy(parent, seed=38)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for row in rows:
+        row.update({"return": 1., "advantage": 1., "weight": 1.})
+    row = rows[-1]  # The unrestricted frontier has enough rare alternatives.
+    original = row["behavior_logp"].copy()
+    # A tiny perturbation to a low-probability move can exceed the old absolute
+    # logp tolerance while moving less than 1e-5 of total probability mass.
+    perturbed = torch.tensor(original)
+    perturbed[perturbed.argmin()] += 1e-4
+    row["behavior_logp"] = perturbed.log_softmax(-1).numpy()
+    row["old_logprob"] = float(row["behavior_logp"][row["slot"]])
+    actual, agreement = _policy_snapshot(actor, rows, 2)
+    np.testing.assert_array_equal(actual[-1].numpy(), row["behavior_logp"])
+    assert 0 < agreement["collection_max_total_variation"] <= 1e-5
+    assert agreement["collection_max_logp_error"] > 3e-5
+    shifted = torch.tensor(original) + torch.linspace(-.1, .1, len(original))
+    row["behavior_logp"] = shifted.log_softmax(-1).numpy()
+    row["old_logprob"] = float(row["behavior_logp"][row["slot"]])
+    with pytest.raises(RuntimeError, match="total variation"):
+        _policy_snapshot(actor, rows, 2)

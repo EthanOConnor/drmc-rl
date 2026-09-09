@@ -156,6 +156,7 @@ def _training_forward(actor, features):
 def _policy_snapshot(actor, records, size, *, reference=None):
     """Exact categorical KL on all decisions, including unchosen moves."""
     distributions, divergences, errors = [], [], []
+    agreement = {}
     for start in range(0, len(records), size):
         rows = records[start : start + size]
         features, data = _training_batch(actor, rows)
@@ -164,18 +165,37 @@ def _policy_snapshot(actor, records, size, *, reference=None):
         errors.extend((values - data["return"]).square().cpu().tolist())
         if reference is None:
             chosen = logs.gather(1, data["slot"][:, None]).squeeze(1)
-            if not torch.allclose(chosen, data["old_logprob"], atol=3e-5, rtol=0):
-                raise RuntimeError("collection likelihood differs from the frozen update policy")
-            distributions.extend(
-                logs[i, : len(row["base_logits"])].cpu().clone() for i, row in enumerate(rows)
-            )
+            if "behavior_logp" in rows[0]:
+                # GPU reductions vary slightly with batch/candidate padding.
+                # Preserve the ACTUAL behavior distribution for PPO/KL and
+                # audit total probability mass, not one rare sampled logp.
+                current = logs.cpu().numpy()
+                old = np.full_like(current, -1e9)
+                for i, row in enumerate(rows):
+                    old[i, :len(row["behavior_logp"])] = row["behavior_logp"]
+                    if abs(float(old[i, row["slot"]]) - row["old_logprob"]) > 1e-6:
+                        raise RuntimeError("stored behavior likelihood differs from the sampled action")
+                    distributions.append(torch.from_numpy(row["behavior_logp"].copy()))
+                tv = float(np.max(np.abs(np.exp(old.astype(np.float64)) - np.exp(current.astype(np.float64))).sum(-1) / 2))
+                error = float(np.max(np.abs(old - current)))
+                agreement["collection_max_total_variation"] = max(agreement.get("collection_max_total_variation", 0), tv)
+                agreement["collection_max_logp_error"] = max(agreement.get("collection_max_logp_error", 0), error)
+                if not np.isfinite(tv) or tv > 1e-5:
+                    raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={tv:.9g}, max logp error={error:.9g}")
+            else:
+                if not torch.allclose(chosen, data["old_logprob"], atol=3e-5, rtol=0):
+                    difference = float((chosen - data["old_logprob"]).abs().max())
+                    raise RuntimeError(f"collection likelihood differs from the frozen update policy: max logp error={difference:.9g}")
+                host_logs = logs.cpu()
+                distributions.extend(host_logs[i, : len(row["base_logits"])].clone()
+                                     for i, row in enumerate(rows))
         else:
-            old = torch.full_like(logs, -1e9)
+            old = np.full(tuple(logs.shape), -1e9, np.float32)
             for i, row in enumerate(rows):
-                old[i, : len(row["base_logits"])].copy_(reference[start + i])
-            divergences.extend(categorical_kl(old, logs).cpu().tolist())
+                old[i, : len(row["base_logits"])]=reference[start + i].numpy()
+            divergences.extend(categorical_kl(torch.as_tensor(old, device=logs.device), logs).cpu().tolist())
     if reference is None:
-        return distributions
+        return distributions, agreement
     kl = float(np.mean(divergences))
     return (max(0.0, kl) if np.isfinite(kl) else kl), float(np.mean(errors))
 
@@ -198,7 +218,7 @@ def update_adapter(actor, optimizer, records, config, seed):
         record["advantage"] = float(advantages[i])
         record.update({key + "_weight": float(weights[i]) for key, weights in reductions.items()})
     size = config.get("minibatch", 128)
-    old_distributions = _policy_snapshot(actor, records, size)
+    old_distributions, collection_agreement = _policy_snapshot(actor, records, size)
     rng, totals = np.random.default_rng(seed), defaultdict(list)
     max_kl = float(config.get("max_update_kl", 0.06))
     if not np.isfinite(max_kl) or max_kl <= 0:
@@ -293,7 +313,7 @@ def update_adapter(actor, optimizer, records, config, seed):
     return {
         key: float(sum(v * n for v, n in values) / sum(n for _, n in values))
         for key, values in totals.items()
-    } | dict(
+    } | collection_agreement | dict(
         update_kl=accepted_kl,
         first_step_kl=first_step_kl or 0.0,
         value_mse=value_mse,
@@ -503,6 +523,14 @@ def main():
                     updated_at=datetime.now(UTC).isoformat())
                 dump(output/"training.json",progress)
             records = terminal_samples(batch)
+            rows = [r for r,_,_ in batch]
+            if full_core and config.get("public_replay", False):
+                from drmc_rl.models.policy.controller_core import write_public_replay
+                # Preserve complete natural experience even if the subsequent
+                # optimizer audit fails. Resume atomically replaces a repeated
+                # uncommitted update shard together with its new behavior data.
+                write_public_replay(output / "public-replay" / f"update-{update:05d}.npz",
+                                    records, rows, update=update, pace=pace, level=level)
             progress.update(phase="optimizing", collecting_decisions=len(records),
                             collecting_frames=sum(row["frames"] for row, _, _ in batch),
                             updated_at=datetime.now(UTC).isoformat())
@@ -510,11 +538,6 @@ def main():
             optimizing = time.perf_counter()
             losses = update_adapter(actor,optimizer,records,config,config["seed"]+update)
             breakdown["optimizer_seconds"] = time.perf_counter()-optimizing
-            rows = [r for r,_,_ in batch]
-            if full_core and config.get("public_replay", False):
-                from drmc_rl.models.policy.controller_core import write_public_replay
-                write_public_replay(output / "public-replay" / f"update-{update:05d}.npz",
-                                    records, rows, update=update, pace=pace, level=level)
             stats = progress["paces"].setdefault(pace,{})
             journaling = time.perf_counter()
             with (output/"training-games.jsonl").open("a") as stream:

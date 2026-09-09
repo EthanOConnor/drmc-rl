@@ -83,6 +83,7 @@ class ControllerCorePolicy(PlainPolicy):
                 mask=arrays[5][i, :n].copy(),
                 public_context=arrays[6][i].copy(),
                 base_logits=reference[i, :n].copy(),
+                behavior_logp=logs[i, :n].numpy().copy(),
                 slot=slot, action=int(actions[i, slot]),
                 old_logprob=float(logs[i, slot]), old_value=float(values[i]),
                 observed_frame=int(infos[i]["public_pair_state"].frame_id),
@@ -153,14 +154,15 @@ def write_public_replay(path, records, games, *, update, pace, level):
         for key in ("observation", "pill", "preview", "public_context")
     }
     payload.update({key: np.concatenate([r[key] for r in records])
-                    for key in ("actions", "costs", "base_logits")})
+                    for key in ("actions", "costs", "base_logits", "behavior_logp")})
     payload["offsets"] = np.concatenate(([0], np.cumsum(counts)))
     for key in ("action", "slot", "return", "old_logprob", "old_value", "observed_frame", "viewer_side"):
         payload[key] = np.asarray([r[key] for r in records])
     payload["game_seed"] = np.asarray([games[r["game_id"]]["seed"] for r in records], np.int32)
     payload["learner_port"] = np.asarray([games[r["game_id"]]["side"] for r in records], np.int8)
     payload["metadata"] = np.asarray(json.dumps(dict(
-        schema="drmc-public-controller-replay-v1", update=update, pace=pace, level=level,
+        schema="drmc-public-controller-replay-v1", update=update, behavior_update=update - 1,
+        pace=pace, level=level,
         observation_schema=PUBLIC_CONTEXT_SCHEMA, actor_inputs=INPUT_FIELDS,
         outcome_scope="natural-terminal-observed-policy-continuation",
         reference_scope="fixed-post-migration-initial-policy",
