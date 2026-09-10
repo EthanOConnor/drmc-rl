@@ -1274,6 +1274,16 @@ adoption decision: inspect certification, real work savings and wall time for
 every root, including budget failures. Launch Metal diagnostics outside the
 restricted sandbox, which cannot expose the device, with the virtualenv's bin
 directory on PATH for the registered recipe's Python child.
+The completed `runs/review-20260909/adaptive-native-result-v1.json` audit
+uses source `142ee1a`, native `afaf62a`, and source-bank SHA-256
+`3fbece83ff356bea005501cd9388469f26752002ff7c6b7b14a249149e4f2ff9`.
+The four source indices (19, 35, 59, 71) were fixed before evaluation. Both
+allocation sizes certified all four roots; all intervals contained the
+independent complete matrices. Complete/16/32 allocation took 10.48/4.07/3.57
+seconds, with 3,724/1,152/1,184 evaluated joint actions. The largest actual
+response gap was 0.016375, below the declared 0.02 target. Keep the raw
+matrices, intervals, order and timing; these are development mechanics results
+on a shared machine, not an independent strength confirmation or adoption.
 
 The 300M milestone is running separately in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved

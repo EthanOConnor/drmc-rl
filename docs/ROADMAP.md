@@ -134,7 +134,7 @@ the first new state collection was stopped and regenerated with causal views.
 | E3: paired candidate improvement | Full-root, complete-reserve panel with two public continuations; chance variance and continuation sensitivity separated; reference-relative KL-bounded targets; supervised gap/WDL fitting | The 520-continuation pilot has exact serial CPU/batched GPU parity. The expanded study completed 2,090 candidates and 8,360 natural continuations across 64 independent 14-HI roots, with no unknown mass. Only 32 roots distinguish moves under this panel. Learned ranking and real-game improvement need substantially more prospective evidence; the failed V3 gate remains failed. |
 | E4: diverse experience | Frozen public opponent pool in pace training; empirical regularized mixture; exact states 4/8/16 own placements before natural losses | Initial bank had 16 states from four natural 14-HI games; the expanded study uses 64 independent source games. Expand source diversity and mix openings/midgame/finishes with predecessors. No curriculum or league change enters the E1 arms. Clean-start population results govern adoption. |
 | E5: effects, memory and scale | Existing exact-effect and public-event modules audited; supervised auxiliary phase with policy KL; layer updates and representation-rank diagnostics | Integrate observed event history and exact effects before spatial wave/support/access labels and next-known-pill motor opportunity maps. Compare current 320×8 with 384×12 and 512×12 only after target quality; equal GPU time and equal exposure are separate reports. Distill a successful large teacher into the fast student. |
-| E6: search and anticipation | Cooperative frontier batching with exact requested-side inference, complete cache identities, fail-closed reserve-history cache, full-root output and unknown exhausted labels | Synthetic and real neural/native parity pass. CPU/Metal timing is workload-dependent, so batching remains opt-in. Adaptive/Gumbel allocation waits for useful Q ranking; mixed simultaneous matrices, tactical extensions and a late-conditioned anticipation trunk are separate experiments. Charge their measured computation delay. |
+| E6: search and anticipation | Cooperative frontier batching, complete mixed matrices and bounded adaptive root allocation; exact requested-side inference, complete cache identities and explicit unknown entries | Synthetic and native matrix checks pass. Adaptive allocation reduces work on four development roots while retaining response bounds; this does not establish useful Q ranking or stronger play. Tactical extensions and a late-conditioned anticipation trunk remain separate experiments. Charge measured computation delay before full-game evaluation. |
 | E7: expression and calibration | Whole-game paired noninferiority analysis with a declared margin, seed design, comparison family and fixed confirmation set; censoring blocks certification | Persistent 2–6-placement proposals still need replay-aligned human setups, held-out local-regret calibration and blind clip preferences. No permanent horizontal/combo reward, independent random blunders or uncalibrated Elo claim. |
 
 The E1 arena completed at 11:16 UTC on September 9. All 16,384 journal records
@@ -507,8 +507,26 @@ indefinitely staged.
   total measured time from 58.5 to 20.8 seconds on the shared Mac. Warm matrix
   solving took 1.3–1.7 ms; its separate cold start took 174 ms. This establishes
   numerical game equivalence, not calibrated candidate quality, exclusive
-  throughput or stronger play. Candidate-dependent allocation, useful quality
-  estimates and substantial strength evaluation remain open.
+  throughput or stronger play.
+  Bounded root allocation is now implemented on this same queued traversal.
+  Every legal action remains represented; unknown joint values retain [-1, 1]
+  intervals and null W/D/L. Two interval games guide allocation along unresolved
+  best responses and bound the returned mixture's response gap. Twenty distinct
+  focused adaptive/mixed cases pass, covering player reversal, complete chance
+  support, independent full-matrix bounds and rejection of unfinished batches.
+  A separate four-root V2 native audit at depth one checked both 16- and
+  32-action allocation batches against complete matrices. All eight interval
+  and response checks passed with the declared 1e-5 numerical evaluation
+  tolerance and 0.02 response-gap target. Complete evaluation covered 3,724
+  joint actions, 9,150 native nodes and 3,728 neural rows in 10.48 seconds.
+  Allocation batches of 16/32 covered 1,152/1,184 joint actions and
+  1,160/1,192 neural rows in 4.07/3.57 seconds on the shared Mac. The largest
+  actual response gap was 0.016375, within its retained interval bound. This
+  demonstrates bounded allocation and a workload-specific computation saving;
+  four development roots do not establish search strength or mature critic
+  quality. Nested allocation, tactical extensions, useful quality estimates,
+  shared neural anticipation and substantial live strength evaluation remain
+  open. Partial matrices never enter quality training.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the
