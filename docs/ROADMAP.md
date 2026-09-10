@@ -712,6 +712,14 @@ indefinitely staged.
   reachable proposal choices and competitive/style effects, rather than repeat
   another recorded-prefix memory comparison. Calibrated local quality admission, actual persistent
   games and blind preferences remain open; this result does not cancel E7.
+  The autonomous controller observer is now implemented: both frozen heads
+  rank complete reachable frontiers while the competitive actor retains every
+  choice. Actual lock/effect/bottle agreement verifies conditional payoffs;
+  original targets, revised targets, garbage interruptions and unfinished
+  terminal transitions stay distinct. A fixed 256-game allocation covers all
+  seven 14-HI paces and separate 20-HI Normal/Top Humans, using the current
+  45/30-frame slow reactions. These are compatibility diagnostics under
+  unchanged competitive play, not a proposal-controlled strength evaluation.
 
 This task owns the continuation; its hourly follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing

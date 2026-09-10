@@ -1711,6 +1711,18 @@ autonomous persistence is established. Future confirmation excludes all
 dashboard contains separate replanning comparison and confirmation cards;
 no arena entrant or product route changed.
 
+`trainer-spatial-execution-audit` takes `spatial_execution_config` with the
+completed recurrent `study`, a new `output`, and an `arena` using explicit
+side-balanced seeds and frozen actor checkpoints. It requires synchronous
+event batches and writes progress during each batch. Both fixed proposal heads
+observe the same actual 300M-versus-parent moves; they do not control a player.
+Full move/controller journals, original and revised targets, complete-frontier
+rankings, verified transition counts and abandonment reasons are retained per
+game. Conditional payoffs require observed lock/effects/bottle agreement;
+garbage and unfinished terminal transitions do not become successful plans.
+Report whole-reset-seed descriptive intervals separately by level and pace.
+This does not authorize style selection, train a model or establish strength.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches

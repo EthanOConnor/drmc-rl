@@ -90,7 +90,8 @@ class ParallelPlanning:
             Path(self.planner.capture_path).write_text(json.dumps(list(self.planner.roots.values())))
 
 
-def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None):
+def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
+                    observer=None):
     if preparer is not None or any(p.get("anticipation") for p in config["variants"].values()):
         raise ValueError("event rollout currently requires reaction-covered computation")
     if config.get("replay_games", 0):
@@ -104,6 +105,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
     statistics = [Counter() for _ in range(2*len(jobs))]
     pending = {}
     asynchronous = config.get("async_planning", False)
+    if observer is not None and asynchronous:
+        raise ValueError("shadow observers require deterministic synchronous decision batches")
     if asynchronous and not hasattr(planner,"submit"):
         raise ValueError("asynchronous rollout requires a submitting planner")
     with EventVsPool(len(jobs), lib_path=config.get("native_library")) as pool:
@@ -112,6 +115,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
             tick = time.perf_counter()
             progress = pool.advance(limit)
             measured["engine_seconds"] += time.perf_counter()-tick
+            if observer is not None:
+                observer.observe({side: pool.public_state(side) for side in observer.sides})
             ready = []
             for side, value in enumerate(progress):
                 for field in ("validated_input_frames", "locks", "unplanned_locks"):
@@ -217,6 +222,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                         learning.update(zip(indices, records))
             measured["inference_seconds"] += time.perf_counter()-tick
             tick = time.perf_counter()
+            observations_for_shadow = []
             for j,i in enumerate(selected_indices):
                 side = ready[i]
                 state, delay, _ = requests[i]
@@ -234,6 +240,15 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 if sample is not None:
                     row["learning"] = sample
                 moves[pair].append(row)
+                if observer is not None and side in observer.sides:
+                    # The native script is already installed. Detached public
+                    # records cannot change the actor's inputs or controller tape.
+                    observations_for_shadow.append(dict(side=side, frame=row["frame"],
+                        board=bytes(pool.states[side].board), pill=tuple(state["pill"]),
+                        preview=tuple(state["preview"]), action=int(move["placement"]["action"]),
+                        feasible=tuple(map(int, np.flatnonzero(candidates[i][-1] != 65535)))))
+            if observer is not None:
+                observer.decide(observations_for_shadow)
             measured["witness_seconds"] += time.perf_counter()-tick
         output = []
         for pair,(seed,assignment,index) in enumerate(jobs):

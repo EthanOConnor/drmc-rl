@@ -256,9 +256,10 @@ def test_recurrent_prefixes_are_causal_differentiable_and_match_event_runtime():
     assert torch.isfinite(duration[elapsed>0]).all()
 
 
-def test_replanning_revises_current_slot_and_commits_only_unique_placement_events():
+@pytest.mark.parametrize('persistent', [True, False])
+def test_replanning_revises_current_slot_and_commits_only_unique_placement_events(persistent):
     torch.manual_seed(89)
-    model=SpatialProposer(8,8,plan_update_schema=RECURRENT_PUBLIC).eval()
+    model=SpatialProposer(8,8,persistent=persistent,plan_update_schema=RECURRENT_PUBLIC).eval()
     with torch.no_grad():
         model.horizon.weight.zero_()
         model.horizon.bias.fill_(-20)

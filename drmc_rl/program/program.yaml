@@ -99,6 +99,21 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-spatial-execution-audit:
+    status: active
+    stage: 4
+    purpose: Observe fixed persistent and history-reset proposals in autonomous controller games without changing competitive choices.
+    requires_paths: [tools/audit_spatial_execution.py, '{spatial_execution_config}']
+    requires_gates: []
+    command: [python, -m, tools.audit_spatial_execution, --config, '{spatial_execution_config}']
+    produces: [Verified conditional payoff transitions, original and revised goal realization, complete reachable rankings, abandonment reasons, paired whole-game diagnostics]
+    resources:
+      preferred_host: local
+      accelerator: mps
+    notes:
+      - Proposals are observers only. No scores alter actor decisions or authorize quality sacrifice.
+      - Verify actual locks, clear counts and next settled bottles before attributing spatial payoffs. Incoming garbage and missing history remain explicit interruptions.
+      - Preserve original targets separately from revised targets; autonomous style selection, quality admission and blind preferences remain later evidence requirements.
   trainer-spatial-expressive-confirmation:
     status: active
     stage: 4

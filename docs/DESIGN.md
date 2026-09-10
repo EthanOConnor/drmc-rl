@@ -569,6 +569,17 @@ action ranking but cannot extend that cap. Checkpoints declare the update
 schema, preserving the earlier fixed-root experiment. This implementation
 does not establish a persistence benefit or admit a competitive sacrifice.
 
+`ConstructionObserver` now follows these fixed proposals through actual native
+controller games. It never returns a choice to the actor. Synchronous decision
+batches preserve actor inputs and controller tapes. A payoff requires the
+observed lock, clear counts and next settled bottle to reproduce the conditional
+post-lock transition; incoming garbage, missing history and unresolved terminal
+animations remain explicit exclusions. Goal-specific cleared cells match the
+training definition. Original-target realization is recorded separately from
+success at a revised target. These measurements describe compatibility with
+unchanged competitive play, not games controlled by the proposals or evidence
+that a quality sacrifice is safe.
+
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor
 envelope describing what future pills will be able to do. Pace training must

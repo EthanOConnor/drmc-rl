@@ -177,7 +177,7 @@ class SpatialProposal:
 
     @classmethod
     def start(cls, model, inputs, *, frame, goal=None):
-        if not model.persistent:
+        if not model.persistent and not model.replanning:
             raise ValueError("a stateless control cannot start a persistent proposal")
         with torch.inference_mode():
             current = model.encode(*inputs).detach().clone()
