@@ -1227,8 +1227,6 @@ Geometry preparation medians were 1.5–6.8 ms; hit decision medians remained
 Humans/Frame Perfect. This small shared-host check does not justify changing
 compute charges or certify app scheduling, high-stack tails or strength.
 
-### Persistent construction diagnostics
-
 For offline joint-search diagnostics, `--opponent-mode mixed` selects the
 complete simultaneous-action matrix in either recursive or frontier-batched
 execution. `--matrix-iterations`, `--matrix-temperature` and
@@ -1243,6 +1241,8 @@ the reported representative action loses the mixture's protection. The
 registered `search-frontier-benchmark` accepts these settings plus an explicit
 `native_library` and records both strategies, convergence and causal schema.
 It remains a mechanics/throughput probe with an uncalibrated value link.
+
+### Persistent construction diagnostics
 
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and

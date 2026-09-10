@@ -185,6 +185,7 @@ class SearchResult:
     opponent_actions: tuple[int, ...] = ()
     opponent_policy: tuple[float, ...] = ()
     action_selection: str = "argmax"
+    joint_utilities: np.ndarray | None = None
 
 
 class JointEventSearch(Generic[StateT]):
@@ -294,7 +295,10 @@ class JointEventSearch(Generic[StateT]):
                 len(matrix[0]), 1 / len(matrix[0]))
         started = time.perf_counter()
         solution = solve_entropy_regularized_zero_sum(
-            utilities, iterations=self.config.matrix_iterations,
+            # A common payoff offset changes no strategy. Removing it avoids
+            # shrinking mirror-prox steps to the scale of a nearly constant
+            # critic value instead of the differences between joint actions.
+            utilities - utilities.mean(), iterations=self.config.matrix_iterations,
             temperature=self.config.matrix_temperature, floor=0.0)
         self._matrix_solve_ms += (time.perf_counter() - started) * 1000
         # Certify the actual returned distributions, including float32 export
@@ -343,6 +347,7 @@ class JointEventSearch(Generic[StateT]):
             budget_exhausted=self._budget_exhausted, chance_nodes=self._chance_nodes,
             chance_outcomes=self._chance_outcomes, opponent_actions=tuple(opponent_actions),
             opponent_policy=tuple(map(float, opponent_policy)), action_selection="sample_policy",
+            joint_utilities=np.asarray([[v.utility for v in row] for row in matrix], np.float64),
             **self._matrix_metadata())
 
     def _value(self, state: StateT, depth: int, root_side: int) -> WDL:

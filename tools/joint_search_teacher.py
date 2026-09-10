@@ -104,6 +104,8 @@ def main() -> None:
                         "action_selection": result.action_selection,
                         "opponent_actions": list(result.opponent_actions),
                         "opponent_policy": list(result.opponent_policy) if usable else None,
+                        "joint_utilities": (result.joint_utilities.tolist()
+                                            if usable and result.joint_utilities is not None else None),
                         "matrix_games": result.matrix_games,
                         "matrix_solve_ms": result.matrix_solve_ms,
                         "equilibrium_gap": result.equilibrium_gap,

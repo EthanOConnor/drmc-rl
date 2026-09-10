@@ -143,3 +143,17 @@ def test_teacher_withholds_unconverged_targets(tmp_path, monkeypatch):
     assert row["unsearched_actions"] == []
     for field in ("policy_target", "opponent_policy", "utilities", "wdl", "best_action", "root_value"):
         assert row[field] is None
+
+
+def test_common_critic_offset_changes_value_but_not_solver_dynamics():
+    results = []
+    for offset in (0, .8):
+        model = MatrixModel()
+        model.matrix = model.matrix * .1 + offset
+        results.append(JointEventSearch(model, SearchConfig(
+            opponent_mode="mixed")).search(Position(), root_side=0))
+    a, b = results
+    np.testing.assert_allclose(a.policy_target, b.policy_target, atol=1e-7)
+    np.testing.assert_allclose(a.opponent_policy, b.opponent_policy, atol=1e-7)
+    assert a.equilibrium_converged and b.equilibrium_converged
+    assert b.root_value.utility - a.root_value.utility == pytest.approx(.8)

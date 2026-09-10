@@ -646,6 +646,10 @@ must be sampled; `best_action` is only its most probable display representative.
 Recursive and cooperative inference drivers implement the same backups, and
 report solver wall time separately from native nodes and neural work. This
 does not certify the current critic or authorize live search.
+The solver subtracts the matrix's common payoff offset before optimization,
+which preserves strategies and prevents a large shared state value from
+artificially reducing the step size. Exported utilities and convergence gaps
+remain in the original units.
 
 Search begins as an offline teacher. It does not control PPO rollout behavior
 until paired same-weight evaluation opens the joint-search gate. The existing

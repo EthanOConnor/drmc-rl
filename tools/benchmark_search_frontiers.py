@@ -122,6 +122,8 @@ def benchmark(config):
                         equilibrium_converged=result.equilibrium_converged,
                         public_observation_schema=root.public_observation_schema,
                         boundary=model.boundary(root).value,
+                        joint_utilities=(None if result.joint_utilities is None
+                                         else result.joint_utilities.tolist()),
                     )
                 finally:
                     runner.close()
