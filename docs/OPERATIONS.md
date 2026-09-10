@@ -1321,6 +1321,18 @@ plan termination and altered intermediate states require actual execution.
 Fresh replay confirmation is separate from these previously used development
 sessions. Ordinary competitive weights and product routing remain unchanged.
 
+`trainer-spatial-expressive-confirmation` takes `spatial_confirmation_config`
+with the completed fixed study's `progress.json` under `study`, a fresh verified
+sequence `source`, and new `output`. It verifies the original data, competitive
+checkpoint and both proposal checkpoint hashes, and rejects any session-ID or
+blob-content overlap with development. Shared feature extraction has the same
+device/batch settings as fitting. Both heads and their training-only priors are
+loaded unchanged; no optimizer or checkpoint selection is available. It reports
+paired whole-session intervals and distinct evaluated-window/action counts,
+with zero optimizer updates and no new outcome frames. These recorded-prefix
+measurements still do not establish autonomous construction completion or
+competitive noninferiority.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches

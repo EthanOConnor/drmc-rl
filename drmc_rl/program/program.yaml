@@ -99,6 +99,17 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-spatial-expressive-confirmation:
+    status: active
+    stage: 4
+    purpose: Confirm fixed-final spatial proposal heads against trained controls and training-only priors on entirely reserved human replay sessions.
+    requires_paths: [tools/confirm_spatial_expressive.py, '{spatial_confirmation_config}']
+    requires_gates: []
+    command: [python, -m, tools.confirm_spatial_expressive, --config, '{spatial_confirmation_config}']
+    produces: [Session/content overlap rejection, fixed-model prediction measurements, paired session intervals, zero optimizer updates]
+    resources:
+      preferred_host: local
+      accelerator: mps
   trainer-spatial-expressive-study:
     status: active
     stage: 4

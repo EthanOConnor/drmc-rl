@@ -261,6 +261,11 @@ def fit_models(data,config,output,report):
         torch.save(checkpoint,path)
         arm.update(status='Complete',checkpoint_sha256=sha256(path),final=metrics)
         write_progress(output,report)
+    return compare_arms(report)
+
+
+def compare_arms(report):
+    """Paired session uncertainty shared by development and fresh confirmation."""
     a,b = (report['arms'][name]['final']['by_session'] for name in ('persistent','stateless'))
     groups = sorted(a)
     rng = np.random.default_rng(91731)

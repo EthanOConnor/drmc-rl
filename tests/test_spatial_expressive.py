@@ -166,3 +166,49 @@ def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets
     # can reach the decoder. Neither trained arm modifies the competitive core.
     assert not a['quality_admission'] and a['diagnostic_only']
     json.dumps(results[0],allow_nan=False)
+
+
+def test_fresh_confirmation_has_no_optimizer_and_rejects_reused_content(tmp_path,monkeypatch):
+    from tools import confirm_spatial_expressive as confirm
+    from tools.fit_spatial_expressive import sha256
+    from drmc_rl.human.spatial_proposer import SCHEMA
+
+    torch.set_num_threads(1)
+    earlier,fresh=tmp_path/'earlier.npz',tmp_path/'fresh.npz'
+    def source(path,entries):
+        np.savez(path,metadata=np.asarray(json.dumps(dict(sources=entries))))
+    source(earlier,[dict(session='old',sha256='old-blob')])
+    source(fresh,[dict(session='fresh-a',sha256='a'),dict(session='fresh-b',sha256='b')])
+    core=tmp_path/'core.pt'
+    core.write_bytes(b'frozen feature encoder supplied by the test')
+    data=dict(planes=np.zeros((4,8,16,8),np.float32),features=np.zeros((4,8),np.float32),
+        canonical_pill=np.zeros((4,2),np.int64),canonical_preview=np.ones((4,2),np.int64),
+        feature_index=np.arange(4),action=np.array([123,124]*2),windows=np.array([[0,2,0,0],[2,2,0,1]]),
+        spatial_targets=np.full((2,384),1/384,np.float32),sessions=np.array(['fresh-a','fresh-b']))
+    monkeypatch.setattr(confirm,'prepare_data',lambda *a:data)
+    def no_optimizer(*a,**k):
+        raise AssertionError('confirmation cannot construct an optimizer')
+    monkeypatch.setattr(torch.optim,'AdamW',no_optimizer)
+    study=dict(schema=SCHEMA,status='Complete',source_sha256=sha256(earlier),competitive_sha256=sha256(core),
+               config=dict(source=str(earlier),checkpoint=str(core)),arms={})
+    for name in ('persistent','stateless'):
+        model=SpatialProposer(8,8,persistent=name=='persistent')
+        checkpoint=dict(schema=SCHEMA,persistent=model.persistent,feature_dim=8,width=8,
+            source_sha256=study['source_sha256'],competitive_sha256=study['competitive_sha256'],
+            state_dict=model.state_dict(),training_priors=dict(spatial=torch.full((4,81,384),1/384),
+                horizon=torch.full((4,81,6),1/6),intent=torch.full((81,4),1/4)))
+        path=tmp_path/(name+'-final.pt')
+        torch.save(checkpoint,path)
+        study['arms'][name]=dict(checkpoint_sha256=sha256(path))
+    study_path=tmp_path/'study.json'
+    study_path.write_text(json.dumps(study))
+    config=dict(study=str(study_path),source=str(fresh),output=str(tmp_path/'confirmation'))
+    result=confirm.run(config)
+    assert result['status']=='Complete' and result['optimizer_updates']==0
+    assert result['arms']['persistent']['evaluated_actions']==4
+    assert result['session_overlap']==result['blob_overlap']==0
+    assert not result['quality_admission']
+    source(fresh,[dict(session='new-alias',sha256='old-blob')])
+    with pytest.raises(ValueError,match='reuses development'):
+        confirm.run({**config,'output':str(tmp_path/'must-not-exist')})
+    assert not (tmp_path/'must-not-exist').exists()
