@@ -78,8 +78,11 @@ def audit(config):
             record = dict(source_id=row["id"], order=order,
                           public_observation_schema=state.public_observation_schema, variants={})
             report["records"].append(record)
+            report["current_source_id"] = row["id"]
             results = {}
             for name in order:
+                report["current_variant"] = name
+                dump(output, report)
                 runner = DrMarioVsPoolRunner(num_pairs=1, lib_path=config["native_library"])
                 try:
                     model = BeliefNativePairSearchModel(runner, continuation=continuation,

@@ -607,9 +607,23 @@ indefinitely staged.
   464 of 900 root pairs; nested work records 60 matrix certificates and 57,120
   actual simultaneous transitions across all depths. This demonstrates the
   mechanism and a saving on this position, not general performance or strength.
-  Tactical extensions, useful quality estimates,
-  shared neural anticipation and substantial live strength evaluation remain
-  open. Partial matrices never enter quality training.
+  Bounded public tactical extensions are now implemented and checked on two
+  fixed 14-HI V2 development roots (eight variant runs). Top-four-row occupancy
+  or one to four remaining viruses can extend leaf decisions; the original
+  global work limits and complete chance/action inventories remain. The quiet
+  root has identical values/policy and no extensions. The pressured root records
+  1,260 extended decisions and takes 279.97/184.97/164.23 seconds for complete,
+  root-adaptive and nested search, versus 7.38 seconds without extensions.
+  Its policy total variation is 1.0 and maximum utility change 0.23666. Both
+  adaptive modes pass independent complete-matrix bounds with zero violations;
+  neither prunes any of this pressured root's 1,260 joint actions. The observed
+  timing differences include cache/inference scheduling on a shared Mac.
+  `tactical-native-assessment-v1.json` retains the full comparison. This proves
+  the bounded mechanism changes a horizon-sensitive choice, not that the choice
+  is better. Extensions remain off by default. Useful quality estimates,
+  shared neural anticipation, adaptive allocation from unilateral roots and
+  substantial live strength evaluation remain open. Partial matrices never
+  enter quality training; these offline costs are not a live latency claim.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the

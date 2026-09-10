@@ -1736,6 +1736,13 @@ separate shallower comparison, never the reference matrix for extended bounds.
 Keep source, predicate, native identity, full matrices, charged work and
 independent interval checks. An improved response bound or changed policy is
 not evidence that the uncalibrated critic became accurate.
+`tactical-native-v1` completed both fixed development positions from source
+`5be4aca` with native `afaf62a`. Retain `tactical-native-result-v1.json`, its
+configuration and roots, plus `assess_tactical_native_v1.py` and
+`tactical-native-assessment-v1.json`. The latter independently checks every
+adaptive interval and response bound against the matching extended complete
+matrix, and confirms the quiet root stays unchanged. Former supervisor 68101
+and worker 68108 are done; do not restart this fixed mechanics study.
 
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
