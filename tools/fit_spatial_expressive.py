@@ -38,7 +38,7 @@ def prepare_data(config, output, report):
         data = {k:archive[k] for k in ('board','pill','preview','action','windows','sessions','metadata')}
     if json.loads(str(data['metadata']))['schema'] != SOURCE_SCHEMA:
         raise ValueError('verified construction source required')
-    payload = load_checkpoint(config['checkpoint'], map_location='cpu')
+    payload = load_checkpoint(Path(config['checkpoint']), map_location='cpu')
     cfg = dict(payload['cfg'])
     sp = cfg.get('smdp_ppo', cfg)
     feature_device = config.get('feature_device', 'cpu')

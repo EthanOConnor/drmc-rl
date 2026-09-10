@@ -1,3 +1,4 @@
+import copy
 import json
 
 import numpy as np
@@ -12,7 +13,7 @@ from drmc_rl.human.spatial_proposer import (
 )
 from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 from tools.fit_expressive_proposer import session_validation
-from tools.fit_spatial_expressive import fit_models
+from tools.fit_spatial_expressive import fit_models, prepare_data
 
 
 def test_spatial_goal_identifies_actual_colored_clear_cells():
@@ -84,6 +85,36 @@ def test_spatial_persistence_requires_the_selected_location_and_handles_surprise
     assert surprise.rank(model,inputs,[123]) == []
     with pytest.raises(ValueError,match='stateless'):
         SpatialProposal.start(SpatialProposer(8,16,persistent=False),inputs,frame=10)
+
+
+def test_preparation_loads_checkpoint_and_deduplicates_only_actual_inputs(tmp_path,monkeypatch):
+    import tools.eval_policy
+    from drmc_rl.human.expressive_sequences import SCHEMA
+
+    core = G5CandidatePlacementPolicyNet(in_channels=20,board_channels=16,encoder_blocks=1,
+        d_model=16,pill_embed_dim=8,transformer_heads=4,cross_layers=0,interaction_layers=0,
+        cand_hidden_dim=32,patch_kernel=3).eval()
+    checkpoint = tmp_path/'core.pt'
+    torch.save(dict(cfg=dict(smdp_ppo=dict(candidate_board_channels=16)),state_dict=core.state_dict()),checkpoint)
+    monkeypatch.setattr(tools.eval_policy,'_build_net_from_cfg',lambda *a:(copy.deepcopy(core),0,512))
+    board=np.full((2,16,8),0xFF,np.uint8)
+    board[:,15,:3]=0xD1
+    source=tmp_path/'source.npz'
+    np.savez(source,board=board,pill=np.ones((2,2),np.uint8),preview=np.zeros((2,2),np.uint8),
+        action=np.array([122,123]),windows=np.array([[0,2,0,0]]),sessions=np.array(['one']),
+        metadata=np.asarray(json.dumps(dict(schema=SCHEMA))))
+    output=tmp_path/'prepared'
+    output.mkdir()
+    report={}
+    data=prepare_data(dict(source=str(source),checkpoint=str(checkpoint)),output,report)
+    assert report['unique_public_inputs']==1 and data['feature_index'].tolist()==[0,0]
+    assert data['features'].shape==(1,32)
+    with np.load(output/'prepared.npz',allow_pickle=False) as archive:
+        np.testing.assert_array_equal(archive['features'],data['features'])
+        np.testing.assert_array_equal(archive['planes'],data['planes'])
+    expected=np.zeros((3,16,8),np.float32)
+    expected[0,15,:5]=.2
+    np.testing.assert_array_equal(data['spatial_targets'][0],expected.ravel())
 
 
 def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets(tmp_path):
