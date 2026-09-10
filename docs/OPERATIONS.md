@@ -623,6 +623,33 @@ must pass a substantial controller comparison before adoption. Focused tests
 verify full target support and identical trained weights after changing only
 held-out observations/targets.
 
+The first substantive alignment fit is complete at September 10 07:14 UTC:
+`public-input-alignment-v2`, frozen source `9d6e38d`, eight fixed epochs on
+Metal in 543 seconds. It made 38,616 supervised presentations from 4,827
+training positions (153 reset seeds); 1,207 validation positions belong to
+38 other seeds. No rows lacked a historical teacher action. Seed-weighted
+validation KL fell from 0.14333 to 0.03085 and choice agreement rose from
+91.14% to 94.31%. These are behavior-alignment metrics, not stronger play.
+The fixed final checkpoint SHA256 is
+`66d4327bf3ec6160dd624467da186c6f520f2cdbbc512ef100baff78b4f092a3`.
+The initial v1 launch was stopped during source loading before any optimizer
+update; v2 fixes repeated NPZ decompression by loading each column once.
+
+`public-input-alignment-arena-v1` is now running on the Mac through the
+registered `trainer-planning-arena` recipe, supervisor 68616. Its config and
+launch/preparation scripts are under `runs/review-20260909`. The fixed budget
+is 16,384 games against the public parent and corrected untrained initialization:
+seven 14-HI paces at 1,024 games per opponent, and separate 20-HI Normal/Top
+Humans at 512. It uses frozen arena `07f46eb` and the same native `19f292c`
+frame/reach libraries, one Metal/Torch worker, three planner workers and four
+charged compute frames. Its 768 distinct reserved seeds have no overlap with
+any of the 191 alignment source seeds. The bank is reused from the preceding
+initialization study, so this is not an independent confirmation study.
+Retain full seed/side journals and the fixed final epoch; do not select an
+early score or replace the active outcome-training optimizer with this fit.
+The existing single dashboard sync includes this arena, and a separate
+alignment card counts example presentations without inflating console frames.
+
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
 recorded in every training journal entry. Frozen member checkpoint/adapter

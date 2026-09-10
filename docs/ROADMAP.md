@@ -384,6 +384,14 @@ indefinitely staged.
   a context actor's chosen same-color orientation rather than replacing its
   exact witness with the historical canonical orientation; native tests cover
   both formerly rewritten orientations.
+  The fixed eight-epoch alignment fit is now complete: 38,616 supervised
+  presentations, 4,827 training positions and 1,207 whole-seed validation
+  positions. Validation KL fell from 0.14333 to 0.03085; choice agreement
+  increased from 91.14% to 94.31%. A fixed 16,384-game controller tournament
+  against the parent and corrected initialization is running at all seven
+  14-HI paces, with 20 HI separate. It reuses the reserved initialization bank
+  and is not independent confirmation. No alignment checkpoint is promoted,
+  and the separate substantial outcome run keeps its own model and optimizer.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation

@@ -111,6 +111,12 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-public-input-alignment-v1'){
+      const target=num(run.training_rows)*num(run.config?.epochs);
+      const latest=run.epochs?.at(-1)?.validation;
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.root_presentations,target)}<div class="training-detail"><span>${count(run.root_presentations)} / ${count(target)} example presentations</span><span>${count(run.epochs?.length)} / ${count(run.config?.epochs)} epochs complete</span></div><p class="budget-note">${count(run.training_rows)} training positions · ${count(run.validation_rows)} validation positions.${latest?`<br>Validation policy KL ${Number(latest.kl).toFixed(4)} · ${(100*num(latest.agreement)).toFixed(1)}% choice agreement.`:''}<br>Matches the frozen player's behavior on full public inputs. Playing strength is evaluated separately. ${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
     const source=run.schema==='drmc-public-quality-bank-job-v1';
     const done=source?run.games:run.states, target=source?run.target_games:run.target_states;
     const detail=source?`${count(run.natural_games)} natural games · ${count(run.censored_games)} capped games`:
