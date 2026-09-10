@@ -424,10 +424,14 @@ indefinitely staged.
   are near 50% against E1, recovering the earlier fast-pace deficits without
   yet establishing superiority there. The 20-HI Normal score versus E1 is
   56.54%, Top Humans 48.05%, reported separately. The next fixed 8,192-game
-  candidate confirmation compares actual Sloth/Relaxed product adapters and
-  the fastest parent routes on 1,024 additional candidate-unseen reserved
-  seeds. Complete that allocation and representative actual-app checks before
-  adopting a route; retain the current outcome optimizer and other baselines.
+  candidate confirmation is also complete on 1,024 additional candidate-unseen
+  reserved seeds. Against actual product routes, Sloth scores 57.54%, Relaxed
+  46.00%, Super Human 61.08% and Frame Perfect 61.72%. Shared whole-seed
+  simultaneous intervals over all four comparisons establish gains in the
+  first and fastest two conditions, and a loss at Relaxed. Retain the original
+  50M Relaxed adapter. The 300M core is the selected Sloth/Super Human/Frame
+  Perfect candidate for representative actual-app checks before adoption;
+  retain the current outcome optimizer and other pace baselines.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation
@@ -572,9 +576,15 @@ indefinitely staged.
   deeper simultaneous nodes solve interval security games, and all depths share
   work budgets. Incomplete values retain null W/D/L and broad intervals rather
   than a neutral fallback. Analytic mixed, reversed-player, correlated-reveal,
-  single-side and budget-failure checks pass. Actual native depth-four work and
-  complete-reference comparisons must establish coverage and cost before any
-  efficiency claim. Tactical extensions, useful quality estimates,
+  single-side and budget-failure checks pass. A native depth-four comparison
+  on one V2 development position now passes independent complete-matrix
+  interval and response checks for both root-only and nested allocation.
+  Complete/root/nested runs take 317.48/289.64/135.64 seconds; nested inference
+  batching uses 1,434 calls versus 12,058 for root allocation. Both inspect
+  464 of 900 root pairs; nested work records 60 matrix certificates and 57,120
+  actual simultaneous transitions across all depths. This demonstrates the
+  mechanism and a saving on this position, not general performance or strength.
+  Tactical extensions, useful quality estimates,
   shared neural anticipation and substantial live strength evaluation remain
   open. Partial matrices never enter quality training.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows

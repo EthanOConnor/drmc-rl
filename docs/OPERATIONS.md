@@ -1411,6 +1411,24 @@ response gap was 0.016375, below the declared 0.02 target. Keep the raw
 matrices, intervals, order and timing; these are development mechanics results
 on a shared machine, not an independent strength confirmation or adoption.
 
+The depth-four `nested-native-result-v1.json` audit is complete, from frozen
+`a924425` and native `afaf62a`, using one actual V2 root (source index 9,
+full 30-by-30 root inventories). `nested-native-config-v1.json` retains the
+same five-million-node budget and two-million-entry belief cache for all
+variants; adaptive modes share a two-million actual joint-transition cap.
+Complete/root-16/nested-16 take 317.48/289.64/135.64 seconds and
+330,044/116,992/114,991 nodes. Neural calls are 2,210/12,058/1,434.
+Both adaptive modes evaluate 464 of 900 root pairs. Their intervals contain
+the complete matrix with zero violation; actual response gaps are
+0.01939597/0.01939522 within retained bounds 0.01941518/0.01941461 and the
+0.02 target. Nested mode records 60 matrix certificates and 57,120 actual
+simultaneous transitions across all depths, without budget exhaustion.
+This is one development position with an uncalibrated critic on a shared
+machine: the 2.34-fold wall saving does not establish general latency or
+strength. Preserve raw matrices, interval certificates and timing. Former
+supervisor 79970 is complete; do not rerun this fixed probe. Its dashboard
+card reports the completed variants separately.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved
@@ -1445,9 +1463,28 @@ the parent, 2,048 games per condition. The 1,024 additional training-excluded
 reset seeds were never used for this 300M checkpoint or either motor prediction
 confirmation. Some were evaluated for other frozen cores: this is candidate
 confirmation, not globally untouched seeds or independent training-seed
-replication. Assess the complete four-condition family using shared whole-seed
-uncertainty. Config, study and launch scripts are under the local review root;
-the live feed is `core-300m-confirmation-mac`. No product route changed.
+replication. All 8,192 games completed at September 10 15:18:09 UTC with zero
+censoring. `assess_core_300m_confirmation.py` and
+`core-300m-confirmation-assessment.json` verify checkpoint identity, schedule,
+every seed/side pair, scores and execution totals. Twenty thousand shared
+whole-seed bootstrap resamples yield simultaneous 95% intervals over the
+four-condition family:
+
+| 14-HI pace | Existing opponent | 300M score | Simultaneous 95% interval |
+| --- | --- | ---: | ---: |
+| Sloth | Original final adapter | 57.54% | 55.17–59.92% |
+| Relaxed | Original 50M adapter | 46.00% | 42.38–49.61% |
+| Super Human | Public 10M parent | 61.08% | 57.86–64.31% |
+| Frame Perfect | Public 10M parent | 61.72% | 58.46–64.98% |
+
+Each condition contains 2,048 games. Sloth has 1,177 natural draws, Relaxed
+12, and the fastest two zero; draws score one half. Retain the original
+Relaxed route. The 300M core is the selected candidate for actual-app
+Sloth/Super Human/Frame Perfect checks before adoption; other pace routes
+and the ongoing outcome optimizer remain unchanged. Config, study, raw play
+and launch scripts remain under the local review root. Preserve the completed
+`core-300m-confirmation-mac` feed and do not restart former supervisor 55538.
+No product route changed or package was built in this evaluation pass.
 
 ### Persistent construction diagnostics
 
