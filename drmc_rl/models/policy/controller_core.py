@@ -166,6 +166,23 @@ class ControllerCorePolicy(PlainPolicy):
         logits, value = self.net(*features[:6], aux=features[6])
         return logits, value.reshape(-1)
 
+    @torch.no_grad()
+    def precise_behavior_logp(self, record):
+        """Independent FP64 reference for a rare FP32 collection-audit outlier.
+
+        Copy the unchanged model to CPU instead of changing the actor, its
+        optimizer tensors, or the recorded behavior distribution. CPU supports
+        FP64 on every training host, including those using Metal inference.
+        This is verification only; PPO still uses the original collection logs.
+        """
+        features, _ = self.training_batch([record])
+        inputs = tuple(value.detach().to(device="cpu", dtype=torch.float64)
+                       if value.is_floating_point() else value.detach().cpu()
+                       for value in features)
+        reference = deepcopy(self.net).to(device="cpu", dtype=torch.float64).eval()
+        logits, _ = reference(*inputs[:6], aux=inputs[6])
+        return logits[0, :len(record["actions"])].log_softmax(-1).numpy().copy()
+
     def save(self, path, **metadata):
         path = Path(path)
         temporary = path.with_suffix(path.suffix + ".next")

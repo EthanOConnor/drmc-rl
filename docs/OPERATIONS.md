@@ -385,8 +385,12 @@ Parameter/buffer version checks reject network writes during collection and
 mixed-update samples before optimization. The independent input/distribution
 audit bounds FP32 total variation at `1e-4` and absolute log-probability error
 at `1e-3`; a batched outlier is recomputed at the single-row shape under the
-same bounds. A failing recheck stops before optimization. Both original
-discrepancies and recheck counts are recorded. These numerical bounds limit
+same bounds. A remaining full-core outlier is checked against an independent
+CPU FP64 copy of the unchanged network and inputs, still under those same
+bounds. A failure against that reference stops before optimization. The
+reference copy never mutates the actor, optimizer, sampling RNG or stored
+behavior likelihoods. Raw FP32 discrepancies, single-row rechecks and precise
+recheck errors/counts are recorded separately. These numerical bounds limit
 probability mass error to 0.01% and likelihood-ratio error to about 0.1%; PPO
 still uses the original recorded behavior logs, never the recomputed values.
 The 17,980-row Top Humans collection audit on tf3090 found a batched maximum of
@@ -397,6 +401,19 @@ paths agreed within that bound. A fresh 16,435-decision collection reached
 identity test. These audits motivate the separate structural identity check
 and numerical bound. They are not evidence of learning or permission to
 substitute a newly computed behavior policy.
+
+At update 379, the September 10 run stopped before optimization on an FP32
+total-variation discrepancy of 0.000118735, above the unchanged 0.0001 limit.
+Its 11,326-decision shard and update-378 model/optimizer remain preserved.
+Replaying all rows reproduced a batched maximum of 0.000122210, with 99th
+percentile 0.000003517. The worst row's independent FP64 error was 0.000091169
+and log-probability error 0.000388528, both within the existing limits. FP64
+batch-size variation was below 2e-13; disabling cuDNN or using double group
+normalization alone did not remove the FP32 sensitivity. This motivates the
+rare accurate-reference check, not a looser audit threshold or an altered
+behavior distribution. The preserved numerical reports are
+`controller-core-live-v4/failed-collection-379-audit.json` and
+`failed-collection-379-precision.json` on the training output mount.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling

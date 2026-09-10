@@ -280,6 +280,45 @@ def test_collection_audit_rechecks_batch_shape_outliers_without_weakening_bound(
         _policy_snapshot(actor, rows, 4)
 
 
+def test_precise_collection_audit_uses_same_weights_and_preserves_behavior(parent, monkeypatch):
+    actor = ControllerCorePolicy(parent, seed=59)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for row in rows:
+        row.update({"return": 1., "advantage": 1., "weight": 1.})
+    before = {name: value.clone() for name, value in actor.net.state_dict().items()}
+    versions = actor._parameter_versions()
+    sampling_state = actor.rng.get_state().clone()
+    original = actor.training_forward
+
+    def fp32_rounding(features):
+        logits, values = original(features)
+        return logits + torch.linspace(-.003, .003, logits.shape[1]), values
+
+    # Both batched and single-row FP32 paths exceed the audit limits. The real
+    # double-precision model still reproduces the actual collected policy.
+    monkeypatch.setattr(actor, "training_forward", fp32_rounding)
+    actual, agreement = _policy_snapshot(actor, rows, 4)
+    assert agreement["collection_precision_rechecks"] > 0
+    assert agreement["collection_max_precise_total_variation"] <= 1e-4
+    assert agreement["collection_max_precise_logp_error"] <= 1e-3
+    for row, logs in zip(rows, actual):
+        np.testing.assert_array_equal(row["behavior_logp"], logs)
+    assert actor._parameter_versions() == versions
+    assert torch.equal(sampling_state, actor.rng.get_state())
+    for name, value in actor.net.state_dict().items():
+        assert value.dtype == before[name].dtype
+        assert torch.equal(value, before[name])
+    actor.finish_collection(rows)
+
+    shifted = torch.tensor(rows[0]["behavior_logp"]) + torch.linspace(-.1, .1, len(rows[0]["actions"]))
+    rows[0]["behavior_logp"] = shifted.log_softmax(-1).numpy()
+    rows[0]["old_logprob"] = float(rows[0]["behavior_logp"][rows[0]["slot"]])
+    with pytest.raises(RuntimeError, match="after FP64 audit"):
+        _policy_snapshot(actor, rows, 4)
+
+
 def test_collection_versions_detect_even_tiny_network_writes(parent):
     actor = ControllerCorePolicy(parent, seed=57)
     obs, infos = controller_requests(actor)
