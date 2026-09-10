@@ -35,7 +35,13 @@ def _write(path, data):
 def load_rows(paths, *, roots_per_seed):
     rows, identities = [], []
     for path in map(Path, paths):
-        with np.load(path, allow_pickle=False) as replay:
+        with np.load(path, allow_pickle=False) as archive:
+            # NpzFile decompresses on every __getitem__. Load each required
+            # column once per shard instead of once per selected position.
+            replay = {key: archive[key] for key in (
+                "metadata", "game_seed", "observation", "pill", "preview",
+                "public_context", "offsets", "actions", "costs",
+            )}
             metadata = json.loads(str(replay["metadata"]))
             if (metadata["schema"] not in {"drmc-public-controller-replay-v1", "drmc-public-controller-replay-v2"}
                     or metadata["observation_schema"] != PUBLIC_CONTEXT_SCHEMA):
