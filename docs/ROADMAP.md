@@ -567,7 +567,14 @@ indefinitely staged.
   actual response gap was 0.016375, within its retained interval bound. This
   demonstrates bounded allocation and a workload-specific computation saving;
   four development roots do not establish search strength or mature critic
-  quality. Nested allocation, tactical extensions, useful quality estimates,
+  quality. Opt-in nested allocation is now implemented on the same cooperative
+  traversal: chance and single-side backups propagate lower/upper bounds,
+  deeper simultaneous nodes solve interval security games, and all depths share
+  work budgets. Incomplete values retain null W/D/L and broad intervals rather
+  than a neutral fallback. Analytic mixed, reversed-player, correlated-reveal,
+  single-side and budget-failure checks pass. Actual native depth-four work and
+  complete-reference comparisons must establish coverage and cost before any
+  efficiency claim. Tactical extensions, useful quality estimates,
   shared neural anticipation and substantial live strength evaluation remain
   open. Partial matrices never enter quality training.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows

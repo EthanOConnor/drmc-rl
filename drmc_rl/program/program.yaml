@@ -132,7 +132,7 @@ recipes:
   trainer-adaptive-search-audit:
     status: active
     stage: 4
-    purpose: Compare bounded adaptive joint-action allocation against complete public pair-search matrices, without quality labels or promotion.
+    purpose: Compare bounded root and nested joint-action allocation against complete public pair-search matrices, without quality labels or promotion.
     requires_paths: [tools/audit_adaptive_search.py, '{adaptive_search_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.audit_adaptive_search, --config, '{adaptive_search_config}']
@@ -140,6 +140,9 @@ recipes:
     resources:
       preferred_host: local
       accelerator: mps
+    notes:
+      - allocation_modes explicitly selects root or nested allocation at the same finite event depth. Unfinished descendant utilities remain intervals with null W/D/L.
+      - Nested joint-action and node budgets are shared across the tree. Only independently checked root response bounds admit diagnostic sampling; no partial matrix supplies quality labels.
   trainer-commentary-alignment:
     status: active
     stage: 1

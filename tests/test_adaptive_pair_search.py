@@ -140,3 +140,124 @@ def test_declared_evaluation_error_remains_in_known_cells():
     rng = np.random.default_rng(71)
     for _ in range(20):
         assert_valid_bounds(result, matrix + rng.uniform(-.001, .001, matrix.shape))
+
+
+class NestedMatrix(Matrix):
+    """An independently solvable continuation matrix after every root pair."""
+    def __init__(self, payoff, *, chance=False):
+        super().__init__(payoff)
+        self.inner = np.zeros((4, 5))
+        self.inner[0, :] = .3
+        self.inner[1:, 0] = -.6
+        self.chance = chance
+        self.batches = []
+
+    def boundary(self, state):
+        return dict(both=DecisionBoundary.BOTH, inner=DecisionBoundary.BOTH,
+            chance=DecisionBoundary.ADVANCE, own=DecisionBoundary.P1,
+            opponent=DecisionBoundary.P2, terminal=DecisionBoundary.TERMINAL)[state.phase]
+
+    def legal_actions(self, state, side):
+        if state.phase == 'both':
+            return super().legal_actions(state, side)
+        return list(range(self.inner.shape[side] if state.phase == 'inner' else 3))
+
+    def apply_actions(self, state, a, b):
+        self.calls.append((state.phase, a, b))
+        if state.phase == 'both':
+            return State('chance' if self.chance else 'inner', .6*float(self.payoff[a, b]))
+        if state.phase == 'inner':
+            return State('terminal', state.value+.3*float(self.inner[a, b]))
+        delta = [-.05, 0, .05][a] if state.phase == 'own' else [-.08, 0, .08][b]
+        return State('inner', state.value+delta)
+
+    def chance_outcomes(self, state):
+        return [ChanceOutcome(.25, State('own', state.value+.2)),
+                ChanceOutcome(.75, State('opponent', state.value-.1))]
+
+    def prepare_requests(self, requests):
+        assert all(s.phase in ('both', 'inner', 'own', 'opponent') for s, _ in requests)
+        self.batches.append(list(requests))
+
+
+@pytest.mark.parametrize('side',[0,1])
+@pytest.mark.parametrize('chance',[False,True])
+def test_nested_bounds_cover_exact_mixed_chance_and_unilateral_values(side,chance):
+    root=np.array([[.8,-.4,.95],[-.2,.6,.95],[-.9,-.9,.95]])
+    model=NestedMatrix(root,chance=chance)
+    config=SearchConfig(depth_events=4 if chance else 2,opponent_mode='mixed',
+        own_beam=1,opponent_beam=1,chance_beam=1,max_nodes=20000)
+    result=AdaptiveJointEventSearch(model,config,nested=True,allocation_batch=2,
+        response_gap=.0001).search(State(),root_side=side)
+    # The inner game has value .3. Public chance and intervening single-side
+    # decisions contribute .25*(.2+.05)+.75*(-.1-.08) = -.0725.
+    exact=.6*root+.09-(.0725 if chance else 0.)
+    assert result.certified and result.nested
+    assert_valid_bounds(result,exact if side==0 else -exact.T)
+    assert all(v is None for row in result.joint_wdl for v in row)
+    nested=[r for r in result.nested_certificates if not r['root']]
+    assert nested and all(r['actions']*r['opponent_actions']==20 for r in nested)
+    assert any(r['evaluated']<20 for r in nested)
+    assert result.total_allocated_joint_actions==sum(phase in ('both','inner') for phase,_,_ in model.calls)
+    assert result.total_allocated_joint_actions>result.allocated_joint_actions
+    assert any(len(batch)>(2 if chance else 1) for batch in model.batches)
+    if chance:
+        assert result.chance_outcomes==2*result.chance_nodes
+    payload=result.to_dict()
+    assert not payload['usable_for_quality_training'] and payload['candidate_truncation']==0
+
+
+@pytest.mark.parametrize('joint_budget',[1,5,25,100])
+def test_nested_global_budget_keeps_partial_child_intervals_without_invented_wdl(joint_budget):
+    root=np.array([[.8,-.4],[-.2,.6]])
+    model=NestedMatrix(root)
+    result=AdaptiveJointEventSearch(model,SearchConfig(depth_events=2,opponent_mode='mixed'),
+        nested=True,allocation_batch=2,max_joint_actions=joint_budget,response_gap=.0001).search(
+            State(),root_side=0)
+    assert result.total_allocated_joint_actions<=joint_budget
+    assert_valid_bounds(result,.6*root+.09)
+    assert all(v is None for row in result.joint_wdl for v in row)
+    if not result.certified:
+        with pytest.raises(ValueError,match='certificate'):
+            result.select_action(np.random.default_rng(1))
+
+
+def test_nested_expired_chance_budget_retains_mass_and_never_evaluates_forced_states():
+    root=np.array([[.8,-.4],[-.2,.6]])
+    result=AdaptiveJointEventSearch(NestedMatrix(root,chance=True),SearchConfig(
+        depth_events=4,opponent_mode='mixed',max_nodes=3,chance_beam=1),
+        nested=True,allocation_batch=2).search(State(),root_side=0)
+    assert not result.certified and result.node_budget_exhausted and result.nodes<=3
+    assert_valid_bounds(result,.6*root+.09-.0725)
+    assert result.chance_outcomes==2*result.chance_nodes
+
+
+def test_nested_solver_failure_withholds_sampling_and_keeps_conservative_intervals(monkeypatch):
+    model=NestedMatrix([[.8,-.4],[-.2,.6]])
+    search=AdaptiveJointEventSearch(model,SearchConfig(depth_events=2,opponent_mode='mixed'),nested=True)
+    original=search._solve_payoffs
+    def fail(payoff):
+        strategies=original(payoff)
+        if search._matrix_games>=5:
+            search._equilibrium_converged=False
+            search._matrix_failures.append('injected bounded solver failure')
+        return strategies
+    monkeypatch.setattr(search,'_solve_payoffs',fail)
+    result=search.search(State(),root_side=0)
+    assert not result.certified and result.stop_reason=='solver_failure'
+    assert result.matrix_failures
+    assert_valid_bounds(result,.6*model.payoff+.09)
+
+
+@pytest.mark.parametrize('side',[0,1])
+def test_non_pure_interior_equilibrium_is_bounded_without_reporting_mixture_wdl(side):
+    root=np.array([[.8,-.4],[-.2,.6]])
+    model=NestedMatrix(root)
+    model.inner=root.copy()  # p=(.4,.6), q=(.5,.5), value .2.
+    result=AdaptiveJointEventSearch(model,SearchConfig(depth_events=2,opponent_mode='mixed'),
+        nested=True,allocation_batch=1,response_gap=.0001).search(State(),root_side=side)
+    exact=.6*root+.06
+    assert result.certified
+    assert_valid_bounds(result,exact if side==0 else -exact.T)
+    assert all(v is None for row in result.joint_wdl for v in row)
+    assert any(not c['root'] and c['certified'] for c in result.nested_certificates)

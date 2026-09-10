@@ -1389,6 +1389,17 @@ adoption decision: inspect certification, real work savings and wall time for
 every root, including budget failures. Launch Metal diagnostics outside the
 restricted sandbox, which cannot expose the device, with the virtualenv's bin
 directory on PATH for the registered recipe's Python child.
+`allocation_modes` defaults to `["root"]`; use `["root", "nested"]` for a
+matched-depth comparison of both mechanisms. Nested mode reports all interior
+matrix certificates and counts `max_joint_actions` across actual simultaneous
+transitions at every depth. Partial child values retain their real intervals,
+with null W/D/L at decision backups. The default root-only contract and frozen
+studies remain unchanged. At least four pair-event levels can be needed to
+reach a second simultaneous decision after both players reveal a new preview;
+depth two does not necessarily exercise nested allocation on native games.
+`belief_cache_size` can retain more public posteriors for a larger active
+frontier; eviction still fails rather than reconstructing a missing history.
+Use the same capacity for all variants and record it in the fixed config.
 The completed `runs/review-20260909/adaptive-native-result-v1.json` audit
 uses source `142ee1a`, native `afaf62a`, and source-bank SHA-256
 `3fbece83ff356bea005501cd9388469f26752002ff7c6b7b14a249149e4f2ff9`.

@@ -7,10 +7,17 @@ backups. Native transitions remain serial and restore their exact source state.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
 from drmc_rl.game.pair_state import DecisionBoundary
 from drmc_rl.search.joint_event import JointEventSearch, SearchResult, WDL
+
+
+@dataclass(frozen=True)
+class InferenceRequests:
+    requests: tuple
 
 
 class QueuedJointEventSearch(JointEventSearch):
@@ -95,6 +102,19 @@ class QueuedJointEventSearch(JointEventSearch):
         )
 
     def _resolve(self, generators):
+        driver = self._cooperate(generators)
+        try:
+            while True:
+                try:
+                    requests = next(driver)
+                except StopIteration as completed:
+                    return completed.value
+                self._prepare(requests.requests)
+        finally:
+            driver.close()
+
+    def _cooperate(self, generators):
+        """Compose nested frontiers without running inference inside a child."""
         pending = list(enumerate(generators))
         values = [None] * len(generators)
         try:
@@ -107,10 +127,14 @@ class QueuedJointEventSearch(JointEventSearch):
                     except StopIteration as completed:
                         values[i] = completed.value
                     else:
-                        requests.append(request)
+                        if isinstance(request, InferenceRequests):
+                            requests.extend(request.requests)
+                        else:
+                            requests.append(request)
                         waiting.append((i, generator))
-                self._prepare(requests)
                 pending = waiting
+                if pending:
+                    yield InferenceRequests(tuple(requests))
         finally:
             for _, generator in pending:
                 generator.close()

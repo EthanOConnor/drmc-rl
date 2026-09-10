@@ -45,6 +45,11 @@ def audit(config):
     if (not batches or len(set(batches)) != len(batches)
             or any(type(b) is not int or b < 1 for b in batches)):
         raise ValueError("allocation batches must be distinct positive integers")
+    modes = tuple(config.get('allocation_modes', ('root',)))
+    if not modes or len(set(modes)) != len(modes) or not set(modes) <= {'root', 'nested'}:
+        raise ValueError('allocation modes must be distinct root/nested entries')
+    allocations = {('nested-'+str(b) if mode == 'nested' else str(b)): (mode == 'nested', b)
+                   for mode in modes for b in batches}
     evaluation_tolerance = float(config.get("evaluation_tolerance", 1e-5))
     response_gap = float(config.get("response_gap", .02))
     rows = load_source_rows(Path(config["state_bank"]))[:int(config.get("states", 4))]
@@ -61,7 +66,7 @@ def audit(config):
     report["matrix_cold_start_ms"] = warmup._matrix_solve_ms
     dump(output, report)
     try:
-        variants = ["complete", *[str(b) for b in batches]]
+        variants = ["complete", *allocations]
         for row_index, row in enumerate(rows):
             state, side = state_from_payload(row), int(row["root_side"])
             continuation.batch_sizes = []
@@ -75,7 +80,8 @@ def audit(config):
             for name in order:
                 runner = DrMarioVsPoolRunner(num_pairs=1, lib_path=config["native_library"])
                 try:
-                    model = BeliefNativePairSearchModel(runner, continuation=continuation)
+                    model = BeliefNativePairSearchModel(runner, continuation=continuation,
+                        belief_cache_size=int(config.get('belief_cache_size',65536)))
                     model.register_belief(state, PillReserveBelief.from_dict(row["reserve_belief"]))
                     continuation._cache.clear()
                     continuation.batch_sizes = []
@@ -83,8 +89,9 @@ def audit(config):
                     if name == "complete":
                         search = QueuedJointEventSearch(model, search_config, **kwargs)
                     else:
+                        nested, allocation_batch = allocations[name]
                         search = AdaptiveJointEventSearch(model, search_config, **kwargs,
-                            allocation_batch=int(name), response_gap=response_gap,
+                            allocation_batch=allocation_batch, nested=nested, response_gap=response_gap,
                             evaluation_tolerance=evaluation_tolerance,
                             max_joint_actions=int(config.get("max_joint_actions", 262144)))
                     start = time.monotonic()
@@ -130,6 +137,7 @@ def audit(config):
                                                np.max(matrix - actual.utility_upper)))
                 bounds_hold = interval_violation <= 1e-12 and gap <= actual.gap_upper + 1e-12
                 comparison = dict(certified=actual.certified, stop_reason=actual.stop_reason,
+                    nested=actual.nested, total_allocated_joint_actions=actual.total_allocated_joint_actions,
                     evaluated_joint_actions=int(actual.evaluated.sum()),
                     total_joint_actions=int(actual.evaluated.size),
                     response_gap_bound=actual.gap_upper, full_matrix_response_gap=gap,

@@ -728,8 +728,24 @@ meets the declared tolerance or a work budget expires. A failed inner solve or
 expired traversal discards the entire unfinished allocation batch. Known cells
 retain a separately declared numerical evaluation tolerance; this is not a
 learned uncertainty estimate. Interior search, forced advancement and complete
-correlated reveals use the existing queued traversal. This root-only mechanism
-does not yet implement nested allocation or tactical depth extensions.
+correlated reveals use the existing queued traversal in the default root-only
+mode. The opt-in `nested=True` mode instead carries utility intervals through
+the whole configured tree. Chance backups retain every supported outcome and
+weight both bounds; single-side decisions apply max/min to both bounds; each
+simultaneous node solves lower/upper security games. Descendants receive a
+stricter local allocation target, but parents use their actual returned bounds,
+including unresolved work and numerical evaluator error. The joint-action
+budget covers actual simultaneous transitions at all depths, and the node
+budget is shared across the tree. Exhaustion returns [-1,1], never a neutral
+W/D/L. Interior mixed or single-side backups withhold W/D/L instead of
+inventing a distribution from their utility interval. Revisited states include
+depth, player perspective and requested precision in the cache identity.
+Nested inference requests are combined by the same cooperative coordinator,
+so a child does not launch private inference loops. A 1e-12 outward arithmetic
+guard at interval mixtures/matrix bounds is separate from the declared learned
+evaluator tolerance. Only an explicitly checked root response bound admits
+sampling; this remains an uncalibrated finite-depth diagnostic. Tactical depth
+extensions and useful live search remain separate unfinished work.
 Its certificate applies only to the configured finite-depth critic game.
 Partial matrices never supply quality-training labels, and uncertified results
 cannot be sampled by the action decoder. A registered native audit independently
