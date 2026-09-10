@@ -111,6 +111,20 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-adaptive-search-audit-v1'){
+      const records=run.records || [], record=records.at(-1);
+      const pending=record?.order?.find(name=>!record.variants?.[name]);
+      const completed=records.reduce((n,r)=>n+Object.keys(r.variants || {}).length,0);
+      const variants=1+(run.config?.allocation_modes?.length || 1)*(run.config?.allocation_batches?.length || 2);
+      const rows=(record?.order || []).map(name=>{
+        const result=record.variants?.[name];
+        const label=name==='complete'?'Complete reference':name.startsWith('nested-')?'Nested allocation':'Root allocation';
+        const status=result?(name==='complete'?(result.budget_exhausted?'Budget exhausted':result.equilibrium_converged===false?'Uncertified':'Computed'):(result.certified?'Response bound met':'Uncertified')):(run.status==='Running'&&name===pending?'Evaluating':'Queued');
+        return `<div class="training-detail"><strong>${label}</strong><span>${status}</span></div>${result?`<div class="training-detail"><span>${num(result.seconds).toFixed(1)}s</span><span>${count(result.nodes)} native nodes</span></div>`:''}`;
+      }).join('');
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(completed,num(run.config?.states)*variants)}<div class="training-detail"><span>${count(completed)} / ${count(num(run.config?.states)*variants)} variant runs</span><span>${count(run.search_config?.depth_events)} event levels</span></div>${rows}<p class="budget-note">Updates after each variant. Bounds describe the finite-depth critic game; playing strength is untested.</p></div>`);
+      continue;
+    }
     if(run.schema==='drmc-motor-confirmation-v1'){
       $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.completed_conditions,run.target_conditions)}<div class="training-detail"><span>${count(run.completed_conditions)} / ${count(run.target_conditions)} conditions complete</span><span>${esc(run.condition || '')}</span></div><p class="budget-note">${esc(run.phase)} · ${count(run.games)} source games · ${count(run.roots)} labeled positions in this condition.<br>Fresh reserved seeds. Prediction accuracy and playing strength are evaluated separately. ${ago(age(run.updated_at))}</p></div>`);
       continue;
