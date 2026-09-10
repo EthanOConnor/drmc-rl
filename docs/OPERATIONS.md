@@ -1313,6 +1313,9 @@ examples in the same order. The persistent arm retains root context; the
 stateless control uses each actual current state. Both action decoders consume
 predicted plans, never payoff labels or true future duration. The fixed-final
 checkpoints and paired whole-session descriptive comparisons are retained.
+Spatial, duration and intent heads are also compared with smoothed
+goal/pill/preview frequency priors fitted only on the training sessions; a
+gain over random initialization is not sufficient prediction evidence.
 Do not interpret recorded-prefix predicted-goal scores as autonomous play;
 plan termination and altered intermediate states require actual execution.
 Fresh replay confirmation is separate from these previously used development

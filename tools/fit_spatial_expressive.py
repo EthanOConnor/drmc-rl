@@ -121,7 +121,28 @@ def batch(data, ids, device, persistent):
     return inputs(memory),inputs(current),integers,torch.as_tensor(data['spatial_targets'][window],device=device)
 
 
-def losses(model,data,ids,device,persistent,*,free=False):
+def training_priors(data,training,persistent):
+    """Whole-session-weighted goal/pill/preview priors; no holdout observations."""
+    counts = Counter(int(data['windows'][i,3]) for i in training)
+    spatial,horizon,intent = np.zeros((4,81,384)),np.zeros((4,81,6)),np.zeros((81,4))
+    for i in training:
+        start,length,goal,session = map(int,data['windows'][i])
+        weight = len(training)/(len(counts)*counts[session]*length)
+        for step in range(length):
+            index = data['feature_index'][start if persistent else start+step]
+            pill,preview = data['canonical_pill'][index],data['canonical_preview'][index]
+            pair = int((3*pill[0]+pill[1])*9+3*preview[0]+preview[1])
+            spatial[goal,pair] += weight*data['spatial_targets'][i]
+            horizon[goal,pair,length-1 if persistent else length-step-1] += weight
+            intent[pair,goal] += weight
+    def smooth(array):
+        marginal = array.sum(-2,keepdims=True)+1e-3
+        marginal /= marginal.sum(-1,keepdims=True)
+        return ((array+16*marginal)/(array.sum(-1,keepdims=True)+16)).astype(np.float32)
+    return dict(spatial=smooth(spatial),horizon=smooth(horizon),intent=smooth(intent))
+
+
+def losses(model,data,ids,device,persistent,*,free=False,priors=None):
     root_inputs,current_inputs,(goal,horizon,elapsed,owner,action,remaining),target = batch(data,ids,device,persistent)
     memory,current = model.encode(*root_inputs),model.encode(*current_inputs)
     logits,spatial,duration = model(memory,current,goal,elapsed)
@@ -136,6 +157,12 @@ def losses(model,data,ids,device,persistent,*,free=False):
         autonomous,_,_ = model(memory,current,autonomous_goal,elapsed)
         values.update(predicted_goal_action_nll=F.cross_entropy(autonomous,action,reduction='none'),
                       predicted_goal_action_agreement=(autonomous.argmax(-1)==action).float())
+    if priors is not None:
+        pill,preview = root_inputs[2:4]
+        pair = (3*pill[:,0]+pill[:,1])*9+3*preview[:,0]+preview[:,1]
+        values.update(spatial_prior_nll=-(target*priors['spatial'][goal,pair].log()).sum(-1),
+            horizon_prior_nll=-priors['horizon'][goal,pair,horizon].log(),
+            intent_prior_nll=-priors['intent'][pair,goal].log())
     count = torch.bincount(owner,minlength=len(ids)).clamp_min(1)
     grouped = {k:torch.zeros(len(ids),device=device).scatter_add_(0,owner,v)/count for k,v in values.items()}
     for name,mask in [('early_setup',remaining>=3),('payoff',remaining==1)]:
@@ -145,13 +172,13 @@ def losses(model,data,ids,device,persistent,*,free=False):
     return grouped,len(action)
 
 
-def evaluate(model,data,ids,device,size,persistent):
+def evaluate(model,data,ids,device,size,persistent,priors=None):
     model.eval()
     records = []
     with torch.inference_mode():
         for start in range(0,len(ids),size):
             chosen = ids[start:start+size]
-            values,_ = losses(model,data,chosen,device,persistent,free=True)
+            values,_ = losses(model,data,chosen,device,persistent,free=True,priors=priors)
             values = {k:v.cpu().numpy() for k,v in values.items()}
             records.extend(dict(session=int(data['windows'][i,3]),
                 **{k:float(v[j]) for k,v in values.items()}) for j,i in enumerate(chosen))
@@ -188,12 +215,13 @@ def fit_models(data,config,output,report):
         rng = np.random.default_rng(int(config.get('seed',19473)))
         model = SpatialProposer(data['features'].shape[1],int(config.get('width',128)),
                                 persistent=persistent).to(device)
+        priors = {k:torch.as_tensor(v,device=device) for k,v in training_priors(data,training,persistent).items()}
         optimizer = torch.optim.AdamW(model.parameters(),lr=float(config.get('learning_rate',3e-4)))
         arm = dict(status='Running',window_presentations=0,action_presentations=0,epochs=[])
         report['arms'][name] = arm
         report.update(phase='initial_evaluation',current_arm=name)
         write_progress(output,report)
-        arm['initial'] = evaluate(model,data,validation,device,size,persistent)['summary']
+        arm['initial'] = evaluate(model,data,validation,device,size,persistent,priors)['summary']
         last_write = time.monotonic()
         for epoch in range(epochs):
             model.train()
@@ -218,7 +246,7 @@ def fit_models(data,config,output,report):
                     arm['last_loss'] = float(loss.detach())
                     write_progress(output,report)
                     last_write = time.monotonic()
-            metrics = evaluate(model,data,validation,device,size,persistent)
+            metrics = evaluate(model,data,validation,device,size,persistent,priors)
             arm['epochs'].append(dict(epoch=epoch+1,validation=metrics['summary']))
             print(json.dumps(dict(arm=name,**arm['epochs'][-1])),flush=True)
             write_progress(output,report)
@@ -226,7 +254,8 @@ def fit_models(data,config,output,report):
             persistent=persistent,state_dict={k:v.detach().cpu() for k,v in model.state_dict().items()},
             source_sha256=report['source_sha256'],competitive_sha256=report['competitive_sha256'],
             feature_contract='frozen-legacy-own-bottle-mean-max-v1',diagnostic_only=True,
-            quality_admission=False,selection='fixed final epoch')
+            quality_admission=False,selection='fixed final epoch',
+            training_priors={k:v.detach().cpu() for k,v in priors.items()})
         path = output/(name+'-final.pt')
         torch.save(checkpoint,path)
         arm.update(status='Complete',checkpoint_sha256=sha256(path),final=metrics)
@@ -245,6 +274,15 @@ def fit_models(data,config,output,report):
         comparisons[key] = dict(persistent_minus_stateless=float(delta.mean()),
             ci95=np.quantile(delta[draws].mean(1),[.025,.975]).tolist(),sessions=len(eligible))
     report['paired_session_comparisons'] = comparisons
+    report['training_prior_comparisons'] = {}
+    draws = rng.integers(len(groups),size=(20000,len(groups)))
+    for name,arm in report['arms'].items():
+        rows = arm['final']['by_session']
+        report['training_prior_comparisons'][name] = {}
+        for key in ('spatial','horizon','intent'):
+            delta = np.asarray([rows[g][key+'_nll']-rows[g][key+'_prior_nll'] for g in groups])
+            report['training_prior_comparisons'][name][key] = dict(model_minus_prior=float(delta.mean()),
+                ci95=np.quantile(delta[draws].mean(1),[.025,.975]).tolist(),sessions=len(groups))
     report['comparison_scope'] = 'Descriptive recorded-prefix development validation, individual intervals. Predicted-goal scores still use actual human intermediate states, without simulating plan termination. Fresh replay confirmation and actual quality-admitted persistent play remain required.'
     return report
 
