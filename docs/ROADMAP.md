@@ -317,7 +317,16 @@ indefinitely staged.
   supports training-only cell-prior initialization, fixed head-only epochs on
   cached public features, and separate head/core learning rates. Core-state
   identity must survive warmup; cached features are discarded before shared
-  updates. Useful fresh prediction and controller strength still require evidence.
+  updates. The fixed revision completed 40 head-only and 20 shared-core epochs,
+  100,740 root presentations, followed by all nine fresh confirmation conditions
+  (1,152 natural games and 1,728 roots). Reachability beats training-only
+  prevalence in every condition; clear prediction improves in seven, with
+  Sloth and 20-HI Top Humans inconclusive. These conclusions survive a shared
+  whole-seed family correction over all 18 reach/clear comparisons. Conditional
+  no-incoming-garbage prediction is now supported; playing strength remains a
+  separate question. The immutable refit is in a fixed 16,384-game Mac arena
+  against its 25M parent and the current product opponent at each pace, using
+  new reserved seeds excluded from both prediction confirmations.
   No new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and
@@ -408,6 +417,17 @@ indefinitely staged.
   cover every pace with training-only replay; keep the substantial outcome
   run's model and optimizer unchanged, and await the fixed 300M comparison
   before allocating another outcome branch.
+  The fixed 300M comparison is now complete: all 16,384 games, no censoring.
+  At 14 HI, Super Human scores 59.67% and Frame Perfect 61.52% against the
+  parent; both gains survive the full primary-family correction (54.31–65.02%
+  and 56.28–66.77%). Sloth also beats E1 at 59.23%; Relaxed/Normal/Fast/Top Humans
+  are near 50% against E1, recovering the earlier fast-pace deficits without
+  yet establishing superiority there. The 20-HI Normal score versus E1 is
+  56.54%, Top Humans 48.05%, reported separately. The next fixed 8,192-game
+  candidate confirmation compares actual Sloth/Relaxed product adapters and
+  the fastest parent routes on 1,024 additional candidate-unseen reserved
+  seeds. Complete that allocation and representative actual-app checks before
+  adopting a route; retain the current outcome optimizer and other baselines.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation
@@ -431,6 +451,13 @@ indefinitely staged.
   supports a Sloth upgrade, subject to its live context and device checks;
   it does not support changing Relaxed. The existing V3 regret decoder remains the current 0–10 path;
   a common-core calibrated ladder and expressive selection remain unfinished.
+  Outcome training stopped before update 379 on a rare FP32 probability-audit
+  outlier. Replaying all 11,326 preserved decisions against the same model with
+  a rare independent CPU FP64 reference passed the unchanged error bounds,
+  retaining actual behavior probabilities and detecting real corruption in
+  focused tests. The unchanged update-378 model/optimizer resumed from a new
+  frozen source; update 379 subsequently completed. No numerical limit, input
+  schema, reward, sampling policy or native execution contract was relaxed.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public
@@ -617,10 +644,12 @@ indefinitely staged.
   spatial-anchor hits are 14.90% versus 19.75%. These are recorded-prefix
   predictions, not autonomous construction completion or strength. Retain
   the learned spatial predictor and this second negative persistence result;
-  do not install the persistent head. The next bounded mechanism should use
-  current-state action features and revise or abandon spatial proposals as
-  actual pills and board events arrive, rather than freezing root features
-  in the move decoder. Calibrated local quality admission, actual persistent
+  do not install the persistent head. Code inspection confirms that the spatial
+  move decoder already sees both current-state features and fixed root memory.
+  Its spatial/duration plan stays rooted at the initial decision. The next
+  bounded mechanism must revise that plan or abandon it as actual pills and
+  board events arrive; simply adding current-state features would repeat an
+  existing input. Calibrated local quality admission, actual persistent
   games and blind preferences remain open; this result does not cancel E7.
 
 This task owns the continuation; its hourly follow-up checks the active studies

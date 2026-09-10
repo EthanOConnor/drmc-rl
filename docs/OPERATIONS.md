@@ -414,10 +414,24 @@ rare accurate-reference check, not a looser audit threshold or an altered
 behavior distribution. The preserved numerical reports are
 `controller-core-live-v4/failed-collection-379-audit.json` and
 `failed-collection-379-precision.json` on the training output mount.
+The implemented FP64 fallback then passed all 11,326 preserved decisions with
+exact original behavior logs retained; only one row needed the precise check.
+Three focused native tests also verify untouched weights, dtypes, RNG and
+version counters, plus rejection of real distribution corruption. Source
+`controller-core-9154380-source` resumes the unchanged update-378 model and
+optimizer through `trainer-controller-core`, configuration
+`controller-core-live-v4-after-precision-v1.json`. The recovery directory
+`controller-core-precision-recovery-v1` preserves the failed replay, failure
+report, and resumable checkpoint (SHA-256
+`567d18d23f711c0286c69adb63b9437e757655bdf562389100d7c819d9cc6aa3`).
+Its supervisor is 3052699, and its log is the host-local
+`controller-core-live-v4-precision-v1.log`. Native libraries remain the original
+`19f292c` files in the earlier source snapshot. Update 379 completed after
+recovery; counts reached 472,234,760 frames and 4,739,370 learner decisions.
 
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
-`configs/` directory, currently `controller-core-live-v4-after-teacher-data-v4.json`; each
+`configs/` directory, currently `controller-core-live-v4-after-precision-v1.json`; each
 checkpoint also carries that configuration. Native code is `19f292c`.
 It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
@@ -572,6 +586,32 @@ with the same nine-condition allocation of 1,152 natural games and up to
 exclusion and records its config hash. Inspect its adjacent `.pid`/`.log`
 and output progress before recovery. The dashboard shows refitting and fresh
 confirmation separately; no product route changed.
+
+The new `motor-refit-confirmation-v1` completed at September 10 12:45:52 UTC:
+all nine conditions, 1,152 natural games and 1,728 labeled positions. Its 46–52
+scored independent reset seeds per condition support lower reachability Brier
+error than the training-only pace/cell prior at every condition. At 14 HI,
+Sloth was 0.01020 versus 0.01761, Normal 0.06817 versus 0.09430, Top Humans
+0.08766 versus 0.11677, and Frame Perfect 0.09368 versus 0.12062. Clear Brier
+also improved in seven conditions; Sloth and 20-HI Top Humans were inconclusive.
+`motor-refit-confirmation-family-v1.json` retains 20,000 shared whole-reset-seed
+resamples, simultaneous standardized intervals over all 18 reach/clear
+contrasts, and the same conclusions after that family correction. These are
+conditional no-incoming-garbage predictions, not competitive values or a
+demonstrated playing-strength improvement.
+
+The fixed follow-up `motor-refit-arena-v1` runs 16,384 natural controller games
+on Mac MPS, through `trainer-planning-arena` from frozen
+`motor-refit-d36716e-source` with original native `19f292c` libraries and the
+unchanged four-frame compute charge. It compares the refit with its 25M parent
+at every pace and the current product route: original final Sloth, original
+50M Relaxed, corrected E1 Normal/Fast/Top Humans, and public 10M Super Human/
+Frame Perfect. Seven 14-HI paces receive 1,024 games per opponent; 20-HI Normal
+and Top Humans receive 512 separately. The 768 fixed reset seeds exclude
+training, fitting and both motor prediction confirmations. Supervisor 52970,
+config, study, journals and log are under the local review root. A live
+`motor-refit-arena` feed and `public_core_motor_refit` entrant retain the
+complete allocation in the common tournament; assess only its full result.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the
@@ -1360,7 +1400,8 @@ response gap was 0.016375, below the declared 0.02 target. Keep the raw
 matrices, intervals, order and timing; these are development mechanics results
 on a shared machine, not an independent strength confirmation or adoption.
 
-The 300M milestone is running separately in
+The 300M milestone completed all 16,384 natural games at September 10
+13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved
 `launch_core_300m_arena.py` through the registered planning-arena recipe.
 It uses the original frozen `controller-arena-0c76c0e-source` and native19f
@@ -1370,8 +1411,32 @@ The checkpoint actually contains 301,781,835 frames and 2,988,847 decisions
 (update 241). Its 768 reserved seeds are explicitly excluded by the training
 configuration and reused from the 100M study for a learning-curve comparison;
 this is not independent confirmation. Keep all seven 14-HI paces separate,
-with Normal/Top Humans 20 HI reported separately. Assess only the completed
-allocation. The dashboard feed is `core-300m-mac`; do not duplicate its worker.
+with Normal/Top Humans 20 HI reported separately. The complete
+`core-300m-assessment.py/.json` audit verifies every side/seed pair, schedule,
+score and execution count, with no censoring. At 14 HI, the 300M core scores
+59.67% at Super Human and 61.52% at Frame Perfect against the parent. Their
+simultaneous primary-family 95% intervals are 54.31–65.02% and 56.28–66.77%.
+It also beats the parent at Sloth, Fast and Top Humans. Against corrected E1,
+Sloth scores 59.23% (family 55.37–63.08%); Relaxed/Normal/Fast/Top Humans score
+50.68/49.32/50.29/51.07%, all inconclusive. E1 falls back to the parent at
+Super Human/Frame Perfect, so those duplicate edges are not independent
+replications. Separate 20-HI scores against E1 are Normal 56.54% (individual
+51.17–61.91%) and Top Humans 48.05% (42.58–53.71%). These findings support a
+fastest-mode candidate; direct slow-product comparisons and candidate
+confirmation remain. Preserve the completed `core-300m-mac` dashboard feed;
+do not restart its former supervisor 92309.
+
+`controller-core-300m-confirmation-mac` is the fixed follow-up, through the
+same registered recipe/source/native libraries and unchanged compute charge,
+supervisor 55538. Its 8,192 games cover Sloth versus the original final adapter,
+Relaxed versus the original 50M adapter, and Super Human/Frame Perfect versus
+the parent, 2,048 games per condition. The 1,024 additional training-excluded
+reset seeds were never used for this 300M checkpoint or either motor prediction
+confirmation. Some were evaluated for other frozen cores: this is candidate
+confirmation, not globally untouched seeds or independent training-seed
+replication. Assess the complete four-condition family using shared whole-seed
+uncertainty. Config, study and launch scripts are under the local review root;
+the live feed is `core-300m-confirmation-mac`. No product route changed.
 
 ### Persistent construction diagnostics
 
@@ -1384,8 +1449,12 @@ fixed epochs, width 128, 32 windows per batch and learning rate 0.0003. Choose
 thread and Metal feature extraction are supported. `prepared.npz` retains
 full-precision features and exact spatial target distributions. Two independently
 optimized arms start from the same seed and consume the same session-weighted
-examples in the same order. The persistent arm retains root context; the
-stateless control uses each actual current state. Both action decoders consume
+examples in the same order. The persistent arm's action decoder already sees
+both fixed root memory and actual current-state features. Its spatial and
+duration plan is predicted from the root; the stateless control refreshes that
+plan from each actual current state. A subsequent event-driven revision must
+address plan updating or abandonment, rather than add an input already present.
+Both action decoders consume
 predicted plans, never payoff labels or true future duration. The fixed-final
 checkpoints and paired whole-session descriptive comparisons are retained.
 Spatial, duration and intent heads are also compared with smoothed
