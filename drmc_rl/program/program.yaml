@@ -99,6 +99,39 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-expressive-study:
+    status: active
+    stage: 4
+    purpose: Run finite verified human sequence extraction and fixed-epoch persistent proposal fitting, without promotion.
+    requires_paths: [tools/run_expressive_study.py, '{expressive_study_config}']
+    requires_gates: []
+    command: [python, -m, tools.run_expressive_study, --config, '{expressive_study_config}']
+    produces: [Source and fitting status, separate actual exposure counts and a diagnostic proposal network]
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
+  trainer-expressive-sequences:
+    status: active
+    stage: 4
+    purpose: Extract uninterrupted human 2–6-placement constructions with exact own-board transition verification, without inferring preference or competitive value.
+    requires_paths: [tools/build_expressive_sequences.py, '{expressive_sequences_config}']
+    requires_gates: []
+    command: [python, -m, tools.build_expressive_sequences, --config, '{expressive_sequences_config}']
+    produces: [Verified construction windows, complete source identities, exclusions and observed geometry]
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
+  trainer-expressive-proposer:
+    status: active
+    stage: 4
+    purpose: Train diagnostic persistent human construction proposals on causal own-board inputs with whole-session validation; never override the competitive core or authorize quality sacrifice.
+    requires_paths: [tools/fit_expressive_proposer.py, '{expressive_proposer_config}']
+    requires_gates: []
+    command: [python, -m, tools.fit_expressive_proposer, --config, '{expressive_proposer_config}']
+    produces: [Fixed-epoch persistent proposal network, grouped imitation diagnostics and actual supervised exposure]
+    resources:
+      preferred_host: mombox
+      accelerator: cpu
   trainer-public-input-alignment:
     status: active
     stage: 3

@@ -1227,6 +1227,36 @@ Geometry preparation medians were 1.5–6.8 ms; hit decision medians remained
 Humans/Frame Perfect. This small shared-host check does not justify changing
 compute charges or certify app scheduling, high-stack tails or strength.
 
+### Persistent construction diagnostics
+
+`trainer-expressive-sequences` takes `expressive_sequences_config`, a JSON with
+`db`, `fcr_root`, and a fresh `output`. Defaults are 512 randomly selected
+replay sessions, at most 96 windows per session, and seed 20260910. The DB and
+blob archive are read-only. `sequences.npz` retains original session/blob
+identities, game/player/frame indices, raw boards/pills/previews, canonical
+macro actions, levels/speeds, geometric goals and contiguous window offsets.
+Source progress counts verified placements and construction windows; none is
+reported as new outcome training. Missing blobs and all sequence exclusions
+are recorded. The output does not contain reconstructed two-player state or
+certified motor traces. Never feed it to outcome/Q training as such.
+
+`trainer-expressive-proposer` takes `expressive_proposer_config` with `source`
+pointing at that NPZ and a fresh `output`. Optional settings include `seed`,
+`split_seed`, `epochs` (default eight), `batch_windows` (32), `width` (64),
+`learning_rate` (0.0003), `device` and `threads` (one). Entire replay sessions
+are split before gradients; descriptive validation never selects epochs or
+weights. Progress separately counts window and action presentations, with zero
+new console-frame training. `proposer-final.pt` is an auxiliary diagnostic,
+with quality admission explicitly unavailable. It is not installed in the
+backend or admitted to a strength tournament on imitation scores.
+
+`trainer-expressive-study` takes `expressive_study_config`, a JSON containing
+its own fresh `output` and both child config paths under their names above.
+It invokes the two registered recipes sequentially, stops on failure, and
+retains separate extraction/fitting logs. Run it with the existing mombox
+evaluation Python, one CPU thread and low scheduling priority while the main
+GPU and fixed arenas continue. Do not alter their source snapshots.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

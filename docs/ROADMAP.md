@@ -496,6 +496,22 @@ indefinitely staged.
   reward compensate for losses. A clip bank or a noninferiority calculator alone
   does not complete this item.
 
+  The initial persistent proposal network and registered source/fitting recipes
+  are now implemented. It retains causal root memory and a geometry goal for
+  2–6 placements, scores actual new pills, and terminates on payoff, garbage,
+  mismatched own state or its placement limit. The source extractor verifies
+  complete post-lock own bottles, with original bonds, against the next replay
+  observation and breaks at missing events or garbage. One original replay
+  yielded 1,362 verified placements and 823 construction windows, excluding
+  298 garbage intervals and seven incorrect/invalid locks. Three focused tests
+  cover sequence corruption, persistent fresh inputs and event termination,
+  strict checkpoint reload and identical learned weights after modifying only
+  held-out sessions. Broader source extraction and fixed-epoch fitting are the
+  next execution step. These are auxiliary proposals, not candidate values or
+  style permission; the competitive core and installed trainer remain unchanged.
+  Commentary alignment, learned preference, quality admission and persistent
+  full-game evaluation are still open.
+
 This task owns the continuation; its hourly follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing
 roadmap current with the concrete next action and evidence. Use tf3090 for large

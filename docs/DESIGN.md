@@ -483,6 +483,38 @@ not an exact historical continuation or a public-posterior quality label.
 Matched clean-start training and held-out full-game outcomes are needed to
 attribute a gain to this sampling change.
 
+`human/expressive_sequences.py` supplies a separate construction-imitation
+diagnostic. Recorded raw-color lock poses must be supported, collision-free,
+and reproduce the entire next observed own bottle after exact bond-aware
+cascade resolution. Gaps, missing locks, mismatched previews, unsettled roots,
+and incoming garbage split sequences. It never repairs a wrong recorded lock
+by choosing an arbitrary action with a matching payoff. Current labels are
+observed horizontal, crossing, large-wave and cascade clears, not named
+community motifs, preference judgments, or candidate values. Each 2–6-move
+window precedes the first occurrence of its selected geometric payoff.
+
+`human/expressive_proposer.py` learns auxiliary proposal order. The root's
+public own-board/pill/preview embedding remains fixed through the construction;
+each step additionally reads the actual current own board, pill and preview,
+the persistent geometry goal and remaining placement count. Future queue
+entries, the observed future payoff and hidden opponent state are targets or
+absent, never actor inputs. A separate intent head proposes a goal/horizon at
+the root. Terminal events, observed payoff, exhausted budget, incoming garbage
+or an own-state mismatch end the proposal before another ranking. Duplicate
+completion notifications do not consume extra turns. Ranking accepts the
+complete actual feasible action inventory and returns proposal order only.
+It does not authorize overriding the common competitive core, claim a
+calibrated quality allowance, or change the installed trainer.
+
+Fitting holds out whole Fightcade sessions, gives each training session equal
+total weight and each construction equal weight within its session, and retains
+the fixed final epoch. Action imitation and goal/horizon prediction have
+separate diagnostic losses. Commentary timing remains an independent evidence
+link: video reconstruction gaps and checkpoint guesses cannot certify a
+historical construction. Useful replay-aligned preferences, calibrated quality
+admission, persistent full-game noninferiority and live integration remain
+required before expressive behavior can enter the product.
+
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor
 envelope describing what future pills will be able to do. Pace training must
