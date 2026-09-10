@@ -339,6 +339,11 @@ indefinitely staged.
   resume checks pass. The active billion-frame study retains its frozen source;
   evaluate this corrected initialization in the next independent training
   branch rather than reinterpreting or silently replacing that study.
+  A fixed 16,384-game Mac initialization ablation now compares the corrected
+  initial core with the frozen parent and original initial core, preserving
+  every shared weight, the previous controller-native libraries, reserved
+  seeds and compute charge. Its results must establish full-game behavior
+  before interpreting the corrected graph as a better training start.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public

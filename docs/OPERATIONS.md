@@ -548,6 +548,21 @@ changed 12 choices. The active frozen run is unchanged. The next independent
 training branch must evaluate the corrected initialization and full controller
 behavior; equal-input migration parity alone does not establish match strength.
 
+A fixed initialization-only study now occupies the freed Mac slot:
+`controller-residual-initial-mac.json`, launched by
+`launch_residual_initial_mac.py` from `controller-residual-07f46eb-source`.
+Its 16,384 games compare the corrected initial core with the parent and original
+initial core: 1,024 games per 14-HI pace/opponent and 512 per 20-HI Normal/Top
+Humans cell. The original parameters are retained exactly; only the two added
+zero side-conditioning scales and their graph flag differ. No extra training
+is claimed. `residual-initial-v1/manifest.json` records the original and corrected
+checkpoint hashes; `prepare_residual_initial_study.py` verifies all shared
+tensors and strict controller-core reload. The same frozen native 19f292c
+controller libraries and four-frame compute assumption are retained to match
+the original study; the separate search-reveal path is not used. Read its
+supervisor PID/log and complete journals before recovery. The 100M study and
+main training retain their own identities and continue independently.
+
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
 recorded in every training journal entry. Frozen member checkpoint/adapter
