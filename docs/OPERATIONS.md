@@ -824,6 +824,25 @@ checks also pass on tf3090 Linux from
 complete-reserve shortcut is enabled. V2 corpus collection and selected-reserve
 rollout benchmarking must use new experiment identities.
 
+Native `afaf62a` adds atomic `search_set_reserve(pair_index, colors_raw)` with
+128 ordered raw-color pairs. It changes only the two private reserve copies;
+current/preview colors, clocks, RNG, public observations and output buffers are
+unchanged. Python validates shape, integer type and color bounds before the
+native call. Terminal rollouts may explicitly select
+`reserve_execution="prefilled"`, which requires a genuine V2 observer snapshot
+and installs each complete public-posterior hypothesis once. The default remains
+`"boundary"`. Prefilled results report zero `boundary_reveal_calls` and null
+`reveals`; native-call counts are different work units, not comparable horizons.
+Compare natural zero-censored tails and every public decision before claiming a
+speedup. Source-bank configuration may explicitly set
+`public_observation_schema="causal-settled-pair-v2"`; its default is V1, and
+resume rejects a timeline change. The broader running bank and quality labels
+remain V1. The isolated Mac library is `build-reserve-v2/libdrmario_pool.dylib`;
+do not use the rejected `build-reserve` prototype. The V2 collector/resume checks
+and the same-frame earlier-reveal regression pass. A bounded real-checkpoint
+benchmark on fresh V2 roots, with identical policies, posterior reserves and
+order-balanced runs, and Linux checks remain to be run.
+
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
 `opponents`, `conditions` (level/speed/pace), `confirmation_seeds`, `score_margin`,

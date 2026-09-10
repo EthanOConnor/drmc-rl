@@ -81,7 +81,9 @@ def test_bulk_resolves_an_earlier_reveal_before_asking_for_actions():
                 side, index = reveal
                 runner.search_reveal(0, side, pill_id_to_raw_pair(reserve[index]))
             else:
-                runner.step_search(np.array([min(state.legal_actions_by_side[i], default=-1)
+                # Different routes put P1's reveal before P2's parked input
+                # on the same console frame (P1 acts first).
+                runner.step_search(np.array([(max if i == 0 else min)(state.legal_actions_by_side[i], default=-1)
                     if state.privileged.need_action[i] else -2 for i in (0, 1)], np.int32))
             state = capture_native_state(runner, level=14, previous=state)
         else:

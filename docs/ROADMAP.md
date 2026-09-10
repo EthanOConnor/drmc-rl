@@ -307,7 +307,7 @@ indefinitely staged.
   0.0150; validation policy KL was 0.00101. These comparisons with the initial
   predictor are preliminary; the independent prevalence baseline, fresh-seed
   confirmation, device latency and full-game strength remain outstanding.
-  Fresh Frame Perfect, Sloth, Relaxed and Normal confirmations find reach/clear
+  Fresh Frame Perfect, Sloth, Relaxed, Normal and Fast confirmations find reach/clear
   prediction worse than the training-only pace/cell prevalence baseline. The
   random-initialization comparison therefore does not establish useful motor
   prediction. Complete the remaining conditions and strength study, and make a
@@ -344,6 +344,20 @@ indefinitely staged.
   every shared weight, the previous controller-native libraries, reserved
   seeds and compute charge. Its results must establish full-game behavior
   before interpreting the corrected graph as a better training start.
+  Product integration has a separate concrete gap: `HumanBackend` still loads
+  the competitive checkpoint through `PlainPolicy`; only the arena currently
+  installs `PacePolicy` and its motor context. A plain app rebuild therefore
+  does not include the learned adapters. Wire the selected frozen adapter into
+  live scoring, warmup, preparation and packaging, preserving the exact parent
+  output at Super Human/Frame Perfect and verifying each supported pace in the
+  actual sidecar. The September 10 provisional tester-build shortlist is the
+  original final adapter for Sloth, the 50M adapter for Relaxed, corrected E1
+  for Normal/Fast/Top Humans, and the 10M public parent at the two fastest
+  paces. This is a product judgment from completed studies, not a claim that
+  every selected checkpoint is a uniquely established winner; several nearby
+  rankings remain unresolved. Finish the 100M allocation before reconsidering
+  the new core. The existing V3 regret decoder remains the current 0–10 path;
+  a common-core calibrated ladder and expressive selection remain unfinished.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
   and equal-GPU-time analyses, independent teacher members and diverse public
@@ -387,8 +401,12 @@ indefinitely staged.
   restore and hidden-commitment protection. Dense, sparse and automatic reveal
   advancement agree across eight natural games; 964 physics snapshots in 32
   games exactly match the prior engine. Actual public inference and Mac/Linux
-  snapshot checks pass. Complete-reserve hypothesis execution and its throughput
-  comparison remain to be implemented on this new contract before adoption.
+  snapshot checks pass. Complete-reserve hypothesis execution and explicit V2
+  source collection are now implemented as opt-in paths. Focused native and
+  Python checks cover atomic private installation, complete public decision
+  parity, natural outcomes, slot reuse and source resume. The real-checkpoint
+  throughput comparison and Linux integration checks remain before adoption;
+  the running V1 source/label studies keep their frozen contracts.
   The initial bulk-reserve prototype changed the retained opponent bottle on
   some decisions and was rejected; its reproduction is retained under
   `runs/review-20260909/prefilled-reserve-audit`. The separate native reveal
