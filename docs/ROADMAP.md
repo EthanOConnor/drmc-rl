@@ -654,9 +654,23 @@ indefinitely staged.
   recorded-prefix comparison. Runtime commits history once per completed
   placement, so preview revisions and repeated rankings cannot advance memory
   or extend the initial placement budget. This is a new mechanism, not evidence
-  that persistence now helps. Fixed-schedule training and new confirmation
-  exclude both earlier banks' 768 session/content identities from confirmation.
-  Calibrated local quality admission, actual persistent
+  that persistence now helps. The fixed eight-epoch comparison is complete:
+  1,069,520 action presentations per arm, 272.8 seconds with cached features.
+  Fresh confirmation excludes both earlier banks' 768 session/content
+  identities and scores 24,212 constructions from 256 new sessions. Persistent
+  action NLL is 3.7084 versus 3.7013 for the history-reset control; difference
+  +0.0071 (individual paired 95% −0.0014–0.0167), inconclusive. Early setups are
+  also inconclusive; payoff NLL worsens by 0.0153 (0.0019–0.0298) and spatial
+  anchor hits fall by 0.57 percentage points (−0.98–−0.17). Both arms beat
+  training-only spatial, duration and intent priors. These are a new sample and
+  changed control, so do not attribute improvement over the earlier experiment
+  from cross-sample point estimates. Retain the tested event-update mechanism
+  and all fixed models; this comparison has not established useful carried
+  history. Do not extend fitting or tune on the new confirmation bank. Further
+  confirmation must exclude all 1,024 session/content identities.
+  The next useful evidence must measure actual plan completion/abandonment,
+  reachable proposal choices and competitive/style effects, rather than repeat
+  another recorded-prefix memory comparison. Calibrated local quality admission, actual persistent
   games and blind preferences remain open; this result does not cancel E7.
 
 This task owns the continuation; its hourly follow-up checks the active studies

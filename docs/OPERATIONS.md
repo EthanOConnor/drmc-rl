@@ -1527,6 +1527,38 @@ promote the persistent mechanism. No outcome frames were trained or arena
 entrant added. Subsequent actual planning must address changing inputs and
 quality admission before strength or preference claims.
 
+`spatial-replanning-v1` (source `991f030`, former supervisor 66581) completed
+at September 10 14:08:26 UTC. Both arms used eight fixed epochs, 304,400 window
+and 1,069,520 action presentations; cached-feature preparation and fitting took
+272.8 seconds, with zero outcome-training frames. Persistent final SHA-256 is
+`3c54171d20d7053a1d7b2bc9a5c21fb102fb0181ede48f8928495ef5e97ee974`;
+history-reset final is
+`789afdad702feaaab9747c96d0a0fa132cf3c224e309d1c1c35ea08001137bb5`.
+The original full-precision prepared features are referenced by hash and path;
+they were not copied or extracted again.
+
+`expressive-confirmation-archive-v2.zip` reserves 256 new blobs with selection
+seed 93617, excluding all 768 earlier session IDs and content hashes. The
+source archive on mombox was read only; this bounded copy lives in authorized
+overflow storage and locally. Registered source extraction
+`expressive-confirmation-source-v2` verified 362,458 placements and retained
+24,212 constructions/84,977 actions in 40.0 seconds. All 256 sessions have
+scored windows. Source SHA-256 is
+`1b0867ae9901ae996fac2527a0593d23ae2be843e790c506ba2f645b1d29a871`.
+
+`spatial-replanning-confirmation-v1` (same frozen source, former supervisor
+68003) completed at 14:10:03 UTC in 56.6 seconds, with zero optimizer updates.
+Persistent-minus-control action NLL is +0.0071 (individual paired 95%
+−0.0014–0.0167); predicted-goal and early-setup differences are inconclusive.
+Payoff NLL worsens by +0.0153 (0.0019–0.0298); spatial-anchor hits are
+16.05% versus 16.62%, difference −0.57 percentage points (−0.98–−0.17).
+Both arms beat all three training-only prediction priors. Retain the complete
+per-session reports and fixed models. Neither recurrent strength nor useful
+autonomous persistence is established. Future confirmation excludes all
+1,024 identities across the original bank and both confirmation banks. The
+dashboard contains separate replanning comparison and confirmation cards;
+no arena entrant or product route changed.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches
