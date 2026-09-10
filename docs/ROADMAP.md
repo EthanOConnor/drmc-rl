@@ -626,8 +626,21 @@ indefinitely staged.
   action inventory, a directly checked regret bound and shared descendant
   work budgets. Reversed-player, mixed/chance continuation, unknown alternatives,
   budget failures and independent precise-vector checks pass. It does not
-  create an inactive opponent root action; native cost/quality confirmation
-  remains separate. Partial matrices never
+  create an inactive opponent root action. A fixed native comparison now
+  checks three 14-HI V2 unilateral roots with and without bounded tactical
+  extensions (12 runs). All six independent interval/regret checks pass, with
+  zero actual regret against complete search; every root action is evaluated.
+  Complete/root/nested times are 3.07/3.26/3.19 seconds for pressured P2,
+  3.40/2.17/2.07 for pressured P1, and 0.126/0.143/0.141 for quiet P1.
+  A separate depth-four comparison on the same quiet root passes both checks
+  in 5.91/5.60/5.51 seconds, again with full root coverage. Neither native
+  study reaches simultaneous descendants; that combined path is analytically
+  tested but not claimed as native coverage. Retain both completed studies;
+  do not keep deepening this root as another mechanics exercise. These timings
+  reflect caching/batching on the shared Mac, not root pruning or live latency.
+  Broad unknown upper bounds often require complete unilateral inventories;
+  useful tighter allocation needs defensible bounds, not policy truncation.
+  Partial matrices never
   enter quality training; these offline costs are not a live latency claim.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement

@@ -1452,6 +1452,23 @@ strength. Preserve raw matrices, interval certificates and timing. Former
 supervisor 79970 is complete; do not rerun this fixed probe. Its dashboard
 card reports the completed variants separately.
 
+Unilateral-root comparisons from frozen `3bf1fb3` are complete. Retain
+`runs/review-20260909/unilateral-native-{config,result,assessment}-v1.json`
+and `assess_unilateral_native_v1.py`: source indices 0/3/30 cover pressured
+P2, pressured P1 and quiet P1 at 14 HI, depth one plus up to two tactical
+events, including separate unextended controls. All six independent precise
+vector/bound checks pass; no root action is pruned. Complete/root/nested costs
+are 3.07/3.26/3.19, 3.40/2.17/2.07 and 0.126/0.143/0.141 seconds.
+The separate `unilateral-mixed-native-*` depth-four files retain three runs on
+index 30 and two passing checks (5.91/5.60/5.51 seconds). Despite its original
+filename/aim, that tree never reaches a simultaneous descendant. Record zero
+actual joint transitions; analytic mixed-descendant tests remain separate.
+`assess_unilateral_native_v1.py --depth-four` checks that saved study.
+Both supervisors (99106 and 161) are done; neither study should be repeated.
+These are finite-critic mechanics and shared-device costs, not quality labels,
+general speedups or strength evidence. The dashboard identifies unilateral
+decisions and full-reference checks without fabricating an opponent root.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved

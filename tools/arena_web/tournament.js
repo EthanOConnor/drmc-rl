@@ -125,17 +125,20 @@ function renderOperations() {
     }
     if(run.schema==='drmc-adaptive-search-audit-v1'){
       const records=run.records || [], record=records.at(-1);
+      const unilateral=['p1','p2'].includes(record?.root_boundary);
+      const checks=records.flatMap(r=>Object.values(r.comparisons || {}));
       const pending=record?.order?.find(name=>!record.variants?.[name]);
       const completed=records.reduce((n,r)=>n+Object.keys(r.variants || {}).length,0);
       const variants=1+(run.config?.compare_unextended?1:0)+(run.config?.allocation_modes?.length || 1)*(run.config?.allocation_batches?.length || 2);
       const rows=(record?.order || []).map(name=>{
         const result=record.variants?.[name];
         const label=name==='unextended'?'Without extensions':name==='complete'?'Complete reference':name.startsWith('nested-')?'Nested allocation':'Root allocation';
-        const status=result?(['complete','unextended'].includes(name)?(result.budget_exhausted?'Budget exhausted':result.equilibrium_converged===false?'Uncertified':'Computed'):(result.certified?'Response bound met':'Uncertified')):(run.status==='Running'&&name===pending?'Evaluating':'Queued');
-        return `<div class="training-detail"><strong>${label}</strong><span>${status}</span></div>${result?`<div class="training-detail"><span>${num(result.seconds).toFixed(1)}s</span><span>${count(result.nodes)} native nodes</span></div>${result.tactical_extensions?`<div class="training-detail"><span>Extended decisions</span><span>${count(result.tactical_extensions)}</span></div>`:''}`:''}`;
+        const status=result?(['complete','unextended'].includes(name)?(result.budget_exhausted?'Budget exhausted':result.equilibrium_converged===false?'Uncertified':'Computed'):(result.certified?(unilateral?'Regret bound met':'Response bound met'):'Uncertified')):(run.status==='Running'&&name===pending?'Evaluating':'Queued');
+        return `<div class="training-detail"><strong>${label}</strong><span>${status}</span></div>${result?`<div class="training-detail"><span>${num(result.seconds).toFixed(1)}s</span><span>${count(result.nodes)} native nodes</span></div>${result.evaluated_root_actions!=null?`<div class="training-detail"><span>Root actions evaluated</span><span>${count(result.evaluated_root_actions)} / ${count(result.total_root_actions)}</span></div>`:''}${result.tactical_extensions?`<div class="training-detail"><span>Extended decisions</span><span>${count(result.tactical_extensions)}</span></div>`:''}`:''}`;
       }).join('');
       const extension=run.search_config?.tactical_extension_events?` + up to ${count(run.search_config.tactical_extension_events)} tactical`:'';
-      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(completed,num(run.config?.states)*variants)}<div class="training-detail"><span>${count(completed)} / ${count(num(run.config?.states)*variants)} variant runs</span><span>${count(run.search_config?.depth_events)} event levels${extension}</span></div>${rows}<p class="budget-note">Updates after each variant. Bounds describe the finite-depth critic game; playing strength is untested.</p></div>`);
+      const depth=num(run.search_config?.depth_events);
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(completed,num(run.config?.states)*variants)}<div class="training-detail"><span>${count(completed)} / ${count(num(run.config?.states)*variants)} variant runs</span><span>${count(depth)} event ${depth===1?'level':'levels'}${extension}</span></div>${unilateral?`<div class="training-detail"><span>Position ${count(records.length)} / ${count(run.config?.states)}</span><span>P${num(record.root_side)+1} deciding</span></div>`:''}${rows}${checks.length?`<div class="training-detail"><span>Full-reference bound checks</span><span>${count(checks.filter(c=>c.bounds_hold).length)} / ${count(checks.length)} passed</span></div>`:''}<p class="budget-note">Updates after each variant. Bounds describe the finite-depth critic game; playing strength is untested.</p></div>`);
       continue;
     }
     if(run.schema==='drmc-motor-confirmation-v1'){
