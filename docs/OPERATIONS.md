@@ -1390,7 +1390,8 @@ cross-matrix gaps, neural rows/calls and timing are retained; none are quality
 training labels or controller tournament outcomes.
 
 `trainer-adaptive-search-audit` compares complete queued matrices with bounded
-root allocation. Supply `adaptive_search_config` with a frozen checkpoint,
+root allocation, and complete action vectors for unilateral P1/P2 roots.
+Supply `adaptive_search_config` with a frozen checkpoint,
 native library, causal state bank, output identity and optional allocation
 batch sizes. The diagnostic rotates variant order across roots, records cold
 solver initialization separately, and retains every completed variant even if
@@ -1404,6 +1405,13 @@ adoption decision: inspect certification, real work savings and wall time for
 every root, including budget failures. Launch Metal diagnostics outside the
 restricted sandbox, which cannot expose the device, with the virtualenv's bin
 directory on PATH for the registered recipe's Python child.
+Unilateral reports identify the acting side and `full_vector_regret`; they do
+not invent an opponent action or call a root action a joint transition.
+`max_root_actions` defaults to 512. Both unilateral allocation modes share
+`max_joint_actions` over actual simultaneous descendant transitions.
+`policy_temperature` can be set explicitly to zero for pure-choice reference
+comparisons; retain the setting in the fixed config. Complete reference values
+come from the full-precision W/D/L backups rather than the display utility array.
 `allocation_modes` defaults to `["root"]`; use `["root", "nested"]` for a
 matched-depth comparison of both mechanisms. Nested mode reports all interior
 matrix certificates and counts `max_joint_actions` across actual simultaneous

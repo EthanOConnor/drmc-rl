@@ -758,6 +758,17 @@ so a child does not launch private inference loops. A 1e-12 outward arithmetic
 guard at interval mixtures/matrix bounds is separate from the declared learned
 evaluator tolerance. Only an explicitly checked root response bound admits
 sampling; this remains an uncalibrated finite-depth diagnostic.
+Unilateral P1/P2 roots use the same full-pair continuation. Their separate
+`AdaptiveDecisionResult` retains one interval per legal root action and bounds
+regret by `max(upper) - lower[selected]`. It selects the largest lower bound;
+priors only break exact ties. It never queries an inactive opponent's root
+policy or invents a no-op action/matrix column. `max_root_actions` limits actual
+root transitions, while all simultaneous descendants share `max_joint_actions`
+in both complete-descendant and nested modes. Failed complete batches are
+discarded; nested partial results retain sound intervals and null W/D/L.
+The independent audit compares against precise complete action values, not
+their rounded display array, and reports root actions separately from joint
+transitions. A regret certificate still concerns only the finite critic game.
 Optional `tactical_extension_events` now extends leaf decisions in recursive,
 queued and adaptive traversal. The default is zero. The authored
 `public-top-four-or-last-four-v1` predicate checks only visible top-four-row

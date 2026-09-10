@@ -621,8 +621,13 @@ indefinitely staged.
   `tactical-native-assessment-v1.json` retains the full comparison. This proves
   the bounded mechanism changes a horizon-sensitive choice, not that the choice
   is better. Extensions remain off by default. Useful quality estimates,
-  shared neural anticipation, adaptive allocation from unilateral roots and
-  substantial live strength evaluation remain open. Partial matrices never
+  shared neural anticipation and substantial live strength evaluation remain
+  open. Unilateral P1/P2 root allocation is now implemented with a complete
+  action inventory, a directly checked regret bound and shared descendant
+  work budgets. Reversed-player, mixed/chance continuation, unknown alternatives,
+  budget failures and independent precise-vector checks pass. It does not
+  create an inactive opponent root action; native cost/quality confirmation
+  remains separate. Partial matrices never
   enter quality training; these offline costs are not a live latency claim.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement

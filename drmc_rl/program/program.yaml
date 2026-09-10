@@ -147,7 +147,7 @@ recipes:
   trainer-adaptive-search-audit:
     status: active
     stage: 4
-    purpose: Compare bounded root and nested joint-action allocation, including optional public tactical extensions, against complete public pair-search matrices without quality labels or promotion.
+    purpose: Compare bounded unilateral and simultaneous root/nested allocation, including optional public tactical extensions, against complete public pair search without quality labels or promotion.
     requires_paths: [tools/audit_adaptive_search.py, '{adaptive_search_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.audit_adaptive_search, --config, '{adaptive_search_config}']
@@ -158,6 +158,7 @@ recipes:
     notes:
       - allocation_modes explicitly selects root or nested allocation at the same finite event depth. Unfinished descendant utilities remain intervals with null W/D/L.
       - Nested joint-action and node budgets are shared across the tree. Only independently checked root response bounds admit diagnostic sampling; no partial matrix supplies quality labels.
+      - Unilateral roots retain a complete action vector and bound regret without inventing an inactive opponent action. max_root_actions limits their allocations; max_joint_actions counts actual simultaneous descendants in both allocation modes.
   trainer-commentary-alignment:
     status: active
     stage: 1

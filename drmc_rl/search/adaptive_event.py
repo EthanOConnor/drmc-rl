@@ -1,4 +1,4 @@
-"""Bounded adaptive joint-action allocation over the existing full-pair tree.
+"""Bounded adaptive action allocation over the existing full-pair tree.
 
 Unknown root matrix entries retain the full utility interval [-1,1]. Lower
 and upper games produce security strategies; only a directly checked worst
@@ -25,6 +25,70 @@ class _UtilityInterval:
         if (not np.isfinite([self.lower, self.upper]).all()
                 or not -1. <= self.lower <= self.upper <= 1.):
             raise ValueError("invalid finite-game utility interval")
+
+
+@dataclass(frozen=True)
+class AdaptiveDecisionResult:
+    """A single acting player's complete inventory and bounded root regret.
+
+    There is no opponent root action or artificial one-column matrix. Later
+    opponent and simultaneous decisions still use the full pair model.
+    """
+    actions: tuple[int, ...]
+    root_side: int
+    policy_target: np.ndarray
+    utility_lower: np.ndarray
+    utility_upper: np.ndarray
+    evaluated: np.ndarray
+    action_wdl: tuple[WDL | None, ...]
+    security_lower: float
+    security_upper: float
+    gap_upper: float
+    certified: bool
+    stop_reason: str
+    nodes: int
+    cache_hits: int
+    chance_nodes: int
+    chance_outcomes: int
+    inference_batches: int
+    matrix_solves: int
+    matrix_solve_ms: float
+    allocation_rounds: int
+    allocated_root_actions: int
+    discarded_root_actions: int
+    total_allocated_joint_actions: int
+    nested: bool
+    nested_certificates: tuple
+    node_budget_exhausted: bool
+    matrix_failures: tuple
+    tactical_extensions: int
+    tactical_reasons: tuple
+
+    def select_action(self, rng):
+        if not self.certified:
+            raise ValueError("adaptive decision has no valid regret certificate")
+        return int(rng.choice(self.actions, p=self.policy_target))
+
+    def to_dict(self):
+        return dict(schema="drmc-adaptive-decision-search-v1", actions=list(self.actions),
+            root_side=self.root_side, root_boundary="p1" if self.root_side == 0 else "p2",
+            policy_target=self.policy_target.tolist(), utility_lower=self.utility_lower.tolist(),
+            utility_upper=self.utility_upper.tolist(), evaluated=self.evaluated.tolist(),
+            action_wdl=[None if v is None else [v.win, v.draw, v.loss] for v in self.action_wdl],
+            security_lower=self.security_lower, security_upper=self.security_upper,
+            gap_upper=self.gap_upper, certified=self.certified, stop_reason=self.stop_reason,
+            nodes=self.nodes, cache_hits=self.cache_hits, chance_nodes=self.chance_nodes,
+            chance_outcomes=self.chance_outcomes, inference_batches=self.inference_batches,
+            matrix_solves=self.matrix_solves, matrix_solve_ms=self.matrix_solve_ms,
+            allocation_rounds=self.allocation_rounds, allocated_root_actions=self.allocated_root_actions,
+            evaluated_root_actions=int(self.evaluated.sum()), total_root_actions=len(self.actions),
+            discarded_root_actions=self.discarded_root_actions,
+            total_allocated_joint_actions=self.total_allocated_joint_actions,
+            nested=self.nested, nested_certificates=list(self.nested_certificates),
+            node_budget_exhausted=self.node_budget_exhausted, matrix_failures=list(self.matrix_failures),
+            tactical_extensions=self.tactical_extensions, tactical_reasons=dict(self.tactical_reasons),
+            candidate_truncation=0, calibrated=False, usable_for_quality_training=False,
+            scope="Root regret bound for the configured finite-depth critic game only.")
 
 
 @dataclass(frozen=True)
@@ -95,7 +159,7 @@ class AdaptiveSearchResult:
 
 
 class AdaptiveJointEventSearch(QueuedJointEventSearch):
-    """Allocate root joint actions by their unresolved best-response influence.
+    """Allocate complete root inventories by unresolved regret/response bounds.
 
     Interior decisions, mixed backups, forced events and correlated reveals
     use the existing queued PairSearchModel traversal without approximation
@@ -103,12 +167,14 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
     """
 
     def __init__(self, model, config=None, *, batch_size=32, allocation_batch=16,
-                 max_joint_actions=262144, response_gap=.02, evaluation_tolerance=0., nested=False):
+                 max_joint_actions=262144, max_root_actions=512, response_gap=.02,
+                 evaluation_tolerance=0., nested=False):
         config = config or SearchConfig(opponent_mode="mixed")
         if config.opponent_mode != "mixed" or config.matrix_solver != "linear_program":
             raise ValueError("adaptive matrix allocation requires mixed linear-program search")
         if (type(allocation_batch) is not int or allocation_batch < 1
-                or type(max_joint_actions) is not int or max_joint_actions < 1):
+                or type(max_joint_actions) is not int or max_joint_actions < 1
+                or type(max_root_actions) is not int or max_root_actions < 1):
             raise ValueError("adaptive joint-action budgets must be positive integers")
         if not np.isfinite(response_gap) or response_gap <= 0:
             raise ValueError("response_gap must be finite and positive")
@@ -117,6 +183,7 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
         super().__init__(model, config, batch_size=batch_size)
         self.allocation_batch = allocation_batch
         self.max_joint_actions = max_joint_actions
+        self.max_root_actions = max_root_actions
         self.response_gap = float(response_gap)
         self.evaluation_tolerance = float(evaluation_tolerance)
         if type(nested) is not bool:
@@ -126,9 +193,14 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
     def search(self, state, *, root_side, root_actions=None):
         if root_side not in (0, 1):
             raise ValueError("root_side must be zero or one")
-        if (self.model.boundary(state) != DecisionBoundary.BOTH
+        expected = DecisionBoundary.P1 if root_side == 0 else DecisionBoundary.P2
+        boundary = self.model.boundary(state)
+        if (boundary not in (DecisionBoundary.BOTH, expected)
                 or self.model.terminal_value(state, root_side) is not None):
-            raise ValueError("adaptive matrix allocation requires a live simultaneous root")
+            raise ValueError("adaptive allocation requires a live decision for the root player")
+        self._unilateral_root = boundary != DecisionBoundary.BOTH
+        if self._unilateral_root:
+            return self._search_unilateral(state, root_side, root_actions)
         if self.nested:
             return self._search_nested(state, root_side, root_actions)
         self._cache.clear()
@@ -218,6 +290,106 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
             tactical_extensions=self._tactical_extensions,
             tactical_reasons=tuple(sorted(self._tactical_reasons.items())))
 
+    def _joint_child(self, state, root_side, own, other, depth):
+        # Complete descendants of a unilateral root share the same actual
+        # simultaneous-transition limit as interval descendants. The original
+        # simultaneous-root implementation retains its existing accounting.
+        if getattr(self, "_unilateral_root", False):
+            if self._total_joint_actions >= self.max_joint_actions:
+                self._joint_budget_exhausted = True
+                return WDL(.5, 0., .5)  # caller discards the unfinished batch
+            if self._nodes >= self.config.max_nodes:
+                self._budget_exhausted = True
+                return WDL(.5, 0., .5)
+            self._total_joint_actions += 1
+        return (yield from super()._joint_child(state, root_side, own, other, depth))
+
+    def _search_unilateral(self, state, root_side, root_actions):
+        self._cache.clear()
+        self._nodes = self._cache_hits = self._chance_nodes = self._chance_outcomes = 0
+        self._budget_exhausted = self._joint_budget_exhausted = False
+        self.inference_batches = self._total_joint_actions = 0
+        self._nested_certificates = []
+        self._reset_matrices()
+        self._prepare([(state, root_side)])
+        actions = (self._ranked_actions(state, root_side, 512, maximize=True)
+                   if root_actions is None else list(root_actions))
+        if (not actions or len(set(actions)) != len(actions)
+                or set(actions) != set(self.model.legal_actions(state, root_side))):
+            raise ValueError("adaptive search requires the complete unique root inventory")
+        prior = self._prior_weights(state, root_side, actions)
+        lower, upper = np.full(len(actions), -1.), np.ones(len(actions))
+        attempted, evaluated = np.zeros(len(actions), bool), np.zeros(len(actions), bool)
+        values = [None] * len(actions)
+        allocated = discarded = rounds = 0
+        certified, reason = False, "root_budget"
+
+        def child(index):
+            nonlocal allocated
+            if self._nodes >= self.config.max_nodes:
+                self._budget_exhausted = True
+                return _UtilityInterval(), False
+            action = actions[index]
+            next_state = self.model.apply_actions(state, action if root_side == 0 else None,
+                                                  action if root_side == 1 else None)
+            allocated += 1
+            depth = self.config.depth_events - 1
+            if self.nested:
+                value = yield from self._interval_visit(next_state, depth, root_side, self.response_gap / 4.)
+            else:
+                wdl = yield from self._visit(next_state, depth, root_side)
+                value = _UtilityInterval(max(-1., wdl.utility - self.evaluation_tolerance),
+                    min(1., wdl.utility + self.evaluation_tolerance), wdl)
+            return value, True
+
+        while True:
+            # Priors only break exact ties. Unknown alternatives keep upper=1.
+            best = int(np.lexsort((np.arange(len(actions)), -prior, -lower))[0])
+            p = np.zeros(len(actions))
+            p[best] = 1.
+            lo, hi = float(lower[best]), float(upper.max())
+            if not self._equilibrium_converged:
+                reason = "solver_failure"
+                break
+            if hi - lo <= self.response_gap:
+                certified, reason = True, "regret_bound"
+                break
+            if self._budget_exhausted:
+                reason = "node_budget"
+                break
+            if self._joint_budget_exhausted:
+                reason = "joint_budget"
+                break
+            if attempted.all():
+                reason = "interval_tolerance"
+                break
+            remaining = self.max_root_actions - allocated
+            if remaining <= 0:
+                break
+            unknown = np.flatnonzero(~attempted)
+            order = np.lexsort((unknown, -prior[unknown], -upper[unknown]))
+            chosen = unknown[order[:min(self.allocation_batch, remaining, len(unknown))]]
+            batch = self._resolve([child(int(i)) for i in chosen])
+            attempted[chosen] = True
+            rounds += 1
+            # In complete mode, an unfinished descendant may have returned a
+            # neutral fallback. Discard its entire batch, never certify it.
+            failed = not self.nested and (self._budget_exhausted or self._joint_budget_exhausted
+                                         or not self._equilibrium_converged)
+            for index, (value, applied) in zip(chosen, batch, strict=True):
+                if failed:
+                    discarded += int(applied)
+                    continue
+                evaluated[index] = applied
+                lower[index], upper[index], values[index] = value.lower, value.upper, value.wdl
+        return AdaptiveDecisionResult(tuple(actions), root_side, p, lower, upper, evaluated,
+            tuple(values), lo, hi, max(0., hi-lo), certified, reason,
+            self._nodes, self._cache_hits, self._chance_nodes, self._chance_outcomes,
+            self.inference_batches, self._matrix_games, self._matrix_solve_ms,
+            rounds, allocated, discarded, self._total_joint_actions, self.nested,
+            tuple(self._nested_certificates), self._budget_exhausted, tuple(self._matrix_failures),
+            self._tactical_extensions, tuple(sorted(self._tactical_reasons.items())))
+
     def _search_nested(self, state, root_side, root_actions):
         self._cache.clear()
         self._nodes = self._cache_hits = self._chance_nodes = self._chance_outcomes = 0
@@ -249,6 +421,8 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
 
     def _interval_joint_child(self, state, root_side, own, other, depth, gap):
         if self._total_joint_actions >= self.max_joint_actions:
+            if getattr(self, "_unilateral_root", False):
+                self._joint_budget_exhausted = True
             return _UtilityInterval(), False
         if self._nodes >= self.config.max_nodes:
             self._budget_exhausted = True
@@ -290,6 +464,8 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
                 break
             remaining = self.max_joint_actions-self._total_joint_actions
             if remaining <= 0:
+                if getattr(self, "_unilateral_root", False):
+                    self._joint_budget_exhausted = True
                 break
             if attempted.all():
                 # Descendant intervals, including numerical evaluator error,

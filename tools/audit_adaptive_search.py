@@ -1,4 +1,4 @@
-"""Compare adaptive full-pair root allocation with complete queued matrices.
+"""Compare adaptive full-pair root allocation with complete queued search.
 
 This registered diagnostic uses an explicitly uncalibrated critic. It checks
 response bounds and actual work; no resulting row is a quality-training label.
@@ -27,6 +27,49 @@ from drmc_rl.teachers.v3_baseline import load_source_rows
 from tools.benchmark_search_frontiers import MeteredContinuation
 
 
+def full_utilities(result):
+    # SearchResult.utilities is a display float32 array. Retain the actual
+    # backed-up values for a numerical certificate against unilateral roots.
+    if result.joint_utilities is not None:
+        return result.joint_utilities
+    return np.asarray([v.utility for v in result.values], np.float64)
+
+
+def compare_adaptive_result(complete, actual):
+    if complete.budget_exhausted or not complete.equilibrium_converged:
+        raise RuntimeError("complete reference did not finish with a valid equilibrium")
+    if set(complete.actions) != set(actual.actions):
+        raise RuntimeError("adaptive search changed the complete legal inventory")
+    own_indices = [complete.actions.index(a) for a in actual.actions]
+    reference = full_utilities(complete)
+    simultaneous = complete.joint_utilities is not None
+    if simultaneous:
+        if set(complete.opponent_actions) != set(actual.opponent_actions):
+            raise RuntimeError("adaptive search changed the complete opponent inventory")
+        reference = reference[np.ix_(own_indices,
+            [complete.opponent_actions.index(a) for a in actual.opponent_actions])]
+        gap = max(0., float((reference @ actual.opponent_policy).max()
+                           - (actual.policy_target @ reference).min()))
+    else:
+        reference = reference[own_indices]
+        gap = max(0., float(reference.max() - actual.policy_target @ reference))
+    if reference.shape != actual.utility_lower.shape or reference.shape != actual.utility_upper.shape:
+        raise RuntimeError("adaptive interval shape does not match the full reference")
+    violation = float(max(0., np.max(actual.utility_lower - reference),
+                          np.max(reference - actual.utility_upper)))
+    comparison = dict(certified=actual.certified, stop_reason=actual.stop_reason,
+        nested=actual.nested, total_allocated_joint_actions=actual.total_allocated_joint_actions,
+        response_gap_bound=actual.gap_upper, interval_violation=violation,
+        bounds_hold=violation <= 1e-12 and gap <= actual.gap_upper + 1e-12)
+    if simultaneous:
+        comparison.update(evaluated_joint_actions=int(actual.evaluated.sum()),
+            total_joint_actions=int(actual.evaluated.size), full_matrix_response_gap=gap)
+    else:
+        comparison.update(evaluated_root_actions=int(actual.evaluated.sum()),
+            total_root_actions=int(actual.evaluated.size), full_vector_regret=gap)
+    return comparison
+
+
 def audit(config):
     output = Path(config["output"])
     if output.exists():
@@ -40,6 +83,7 @@ def audit(config):
         device=config.get("device", "cpu"))
     search_config = SearchConfig(depth_events=int(config.get("depth_events", 1)),
         tactical_extension_events=config.get("tactical_extension_events", 0),
+        policy_temperature=float(config.get("policy_temperature", .25)),
         opponent_mode="mixed", max_nodes=int(config.get("max_nodes", 100000)),
         matrix_time_limit_seconds=float(config.get("matrix_time_limit_seconds", .25)))
     batches = tuple(config.get("allocation_batches", (16, 32)))
@@ -76,6 +120,7 @@ def audit(config):
             rotation = row_index % len(variants)
             order = variants[rotation:] + variants[:rotation]
             record = dict(source_id=row["id"], order=order,
+                          root_boundary=state.privileged.decision_boundary.value, root_side=side,
                           public_observation_schema=state.public_observation_schema, variants={})
             report["records"].append(record)
             report["current_source_id"] = row["id"]
@@ -100,6 +145,7 @@ def audit(config):
                         search = AdaptiveJointEventSearch(model, search_config, **kwargs,
                             allocation_batch=allocation_batch, nested=nested, response_gap=response_gap,
                             evaluation_tolerance=evaluation_tolerance,
+                            max_root_actions=int(config.get("max_root_actions", 512)),
                             max_joint_actions=int(config.get("max_joint_actions", 262144)))
                     start = time.monotonic()
                     result = search.search(state, root_side=side,
@@ -116,7 +162,10 @@ def audit(config):
                     if name in ("complete", "unextended"):
                         summary.update(actions=list(result.actions),
                             opponent_actions=list(result.opponent_actions),
-                            joint_utilities=result.joint_utilities.tolist(),
+                            joint_utilities=(result.joint_utilities.tolist()
+                                             if result.joint_utilities is not None else None),
+                            action_utilities=(full_utilities(result).tolist()
+                                              if result.joint_utilities is None else None),
                             policy_target=result.policy_target.tolist(),
                             opponent_policy=list(result.opponent_policy),
                             equilibrium_gap=result.equilibrium_gap,
@@ -134,24 +183,9 @@ def audit(config):
             record["comparisons"] = {}
             for name in allocations:
                 actual = results[name]
-                if set(complete.actions) != set(actual.actions) or set(
-                        complete.opponent_actions) != set(actual.opponent_actions):
-                    raise RuntimeError("adaptive search changed the complete legal inventories")
-                matrix = complete.joint_utilities[np.ix_(
-                    [complete.actions.index(a) for a in actual.actions],
-                    [complete.opponent_actions.index(a) for a in actual.opponent_actions])]
-                p, q = actual.policy_target, actual.opponent_policy
-                gap = max(0., float((matrix @ q).max() - (p @ matrix).min()))
-                interval_violation = float(max(0, np.max(actual.utility_lower - matrix),
-                                               np.max(matrix - actual.utility_upper)))
-                bounds_hold = interval_violation <= 1e-12 and gap <= actual.gap_upper + 1e-12
-                comparison = dict(certified=actual.certified, stop_reason=actual.stop_reason,
-                    nested=actual.nested, total_allocated_joint_actions=actual.total_allocated_joint_actions,
-                    evaluated_joint_actions=int(actual.evaluated.sum()),
-                    total_joint_actions=int(actual.evaluated.size),
-                    response_gap_bound=actual.gap_upper, full_matrix_response_gap=gap,
-                    interval_violation=interval_violation, bounds_hold=bounds_hold,
-                    speedup=record["variants"]["complete"]["seconds"] / record["variants"][name]["seconds"])
+                comparison = compare_adaptive_result(complete, actual)
+                comparison["speedup"] = (record["variants"]["complete"]["seconds"]
+                                         / record["variants"][name]["seconds"])
                 record["comparisons"][name] = comparison
             if "unextended" in results:
                 base = results["unextended"]
@@ -160,7 +194,7 @@ def audit(config):
                 if base.actions != complete.actions or base.opponent_actions != complete.opponent_actions:
                     raise RuntimeError("extension changed a root legal inventory")
                 record["tactical_comparison"] = dict(
-                    max_abs_utility_change=float(np.abs(base.joint_utilities - complete.joint_utilities).max()),
+                    max_abs_utility_change=float(np.abs(full_utilities(base) - full_utilities(complete)).max()),
                     policy_total_variation=float(np.abs(base.policy_target - complete.policy_target).sum() / 2),
                     elapsed_ratio=record["variants"]["complete"]["seconds"] / record["variants"]["unextended"]["seconds"],
                     scope="Change relative to a shallower uncalibrated critic game, not evidence of better Q or strength.")
