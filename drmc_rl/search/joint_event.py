@@ -142,6 +142,8 @@ class SearchConfig:
     matrix_iterations: int = 2048
     matrix_temperature: float = 0.001
     matrix_gap_tolerance: float = 0.02
+    matrix_solver: str = "linear_program"
+    matrix_time_limit_seconds: float = 0.25
 
     def __post_init__(self) -> None:
         if self.depth_events < 1:
@@ -162,6 +164,10 @@ class SearchConfig:
             raise ValueError("matrix_temperature must be finite and positive")
         if not math.isfinite(self.matrix_gap_tolerance) or self.matrix_gap_tolerance <= 0:
             raise ValueError("matrix_gap_tolerance must be finite and positive")
+        if self.matrix_solver not in {"linear_program", "mirror_prox"}:
+            raise ValueError("unknown matrix solver")
+        if not math.isfinite(self.matrix_time_limit_seconds) or self.matrix_time_limit_seconds <= 0:
+            raise ValueError("matrix_time_limit_seconds must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,6 +192,16 @@ class SearchResult:
     opponent_policy: tuple[float, ...] = ()
     action_selection: str = "argmax"
     joint_utilities: np.ndarray | None = None
+    matrix_failures: tuple[str, ...] = ()
+
+    def select_action(self, rng: np.random.Generator) -> int:
+        """Decode a usable result without collapsing a simultaneous mixture."""
+        if self.budget_exhausted or not self.equilibrium_converged:
+            raise ValueError("cannot select from an incomplete or unconverged search")
+        if self.action_selection == "sample_policy":
+            probability = np.asarray(self.policy_target, np.float64)
+            return int(rng.choice(self.actions, p=probability / probability.sum()))
+        return self.best_action
 
 
 class JointEventSearch(Generic[StateT]):
@@ -205,11 +221,13 @@ class JointEventSearch(Generic[StateT]):
         self._matrix_solve_ms = 0.0
         self._equilibrium_gap = 0.0
         self._equilibrium_converged = True
+        self._matrix_failures = []
 
     def _matrix_metadata(self):
         return dict(matrix_games=self._matrix_games, matrix_solve_ms=self._matrix_solve_ms,
                     equilibrium_gap=self._equilibrium_gap,
-                    equilibrium_converged=self._equilibrium_converged)
+                    equilibrium_converged=self._equilibrium_converged,
+                    matrix_failures=tuple(self._matrix_failures))
 
     def search(
         self, state: StateT, *, root_side: int, root_actions: Sequence[int] | None = None
@@ -283,8 +301,6 @@ class JointEventSearch(Generic[StateT]):
         )
 
     def _solve_matrix(self, matrix):
-        from drmc_rl.arena.meta_strategy import solve_entropy_regularized_zero_sum
-
         utilities = np.asarray([[v.utility for v in row] for row in matrix], np.float64)
         self._matrix_games += 1
         if self._budget_exhausted:
@@ -294,17 +310,48 @@ class JointEventSearch(Generic[StateT]):
             return np.full(len(matrix), 1 / len(matrix)), np.full(
                 len(matrix[0]), 1 / len(matrix[0]))
         started = time.perf_counter()
-        solution = solve_entropy_regularized_zero_sum(
-            # A common payoff offset changes no strategy. Removing it avoids
-            # shrinking mirror-prox steps to the scale of a nearly constant
-            # critic value instead of the differences between joint actions.
-            utilities - utilities.mean(), iterations=self.config.matrix_iterations,
-            temperature=self.config.matrix_temperature, floor=0.0)
+        centered = utilities - utilities.mean()
+        if self.config.matrix_solver == "linear_program":
+            from scipy.optimize import linprog
+
+            rows, columns = utilities.shape
+            # max v subject to A.T p >= v, sum(p)=1, p>=0.
+            # Negative inequality marginals supply the minimizing strategy.
+            solution = linprog(
+                np.r_[np.zeros(rows), -1.0],
+                A_ub=np.c_[-centered.T, np.ones(columns)], b_ub=np.zeros(columns),
+                A_eq=np.array([np.r_[np.ones(rows), 0.0]]), b_eq=np.array([1.0]),
+                bounds=[(0, None)] * rows + [(None, None)], method="highs-ds",
+                options={"maxiter": self.config.matrix_iterations,
+                         "time_limit": self.config.matrix_time_limit_seconds,
+                         "primal_feasibility_tolerance": 1e-9,
+                         "dual_feasibility_tolerance": 1e-9})
+            if not solution.success:
+                self._matrix_solve_ms += (time.perf_counter() - started) * 1000
+                self._equilibrium_converged = False
+                self._matrix_failures.append(str(solution.message))
+                return np.full(rows, 1 / rows), np.full(columns, 1 / columns)
+            p = np.maximum(0, solution.x[:-1])
+            q = np.maximum(0, -solution.ineqlin.marginals)
+        else:
+            from drmc_rl.arena.meta_strategy import solve_entropy_regularized_zero_sum
+
+            # A common offset changes no strategy, but would shrink the
+            # mirror-prox step relative to the meaningful payoff differences.
+            solution = solve_entropy_regularized_zero_sum(
+                centered, iterations=self.config.matrix_iterations,
+                temperature=self.config.matrix_temperature, floor=0.0)
+            p = solution.row_strategy.astype(np.float64)
+            q = solution.column_strategy.astype(np.float64)
         self._matrix_solve_ms += (time.perf_counter() - started) * 1000
-        # Certify the actual returned distributions, including float32 export
-        # rounding. This is a numerical saddle gap, never critic uncertainty.
-        p = solution.row_strategy.astype(np.float64)
-        q = solution.column_strategy.astype(np.float64)
+        if (not np.isfinite(p).all() or not np.isfinite(q).all()
+                or p.sum() <= 0 or q.sum() <= 0):
+            self._equilibrium_converged = False
+            self._matrix_failures.append("solver returned an invalid probability distribution")
+            return np.full(len(matrix), 1 / len(matrix)), np.full(
+                len(matrix[0]), 1 / len(matrix[0]))
+        # Certify the actual returned distributions. Keep the mixed root
+        # probabilities at this precision. This gap is not critic uncertainty.
         p /= p.sum()
         q /= q.sum()
         gap = max(0.0, float((utilities @ q).max() - (p @ utilities).min()))
@@ -338,7 +385,7 @@ class JointEventSearch(Generic[StateT]):
         return SearchResult(
             actions=tuple(actions), values=values,
             utilities=np.asarray([v.utility for v in values], np.float32),
-            policy_target=policy.astype(np.float32),
+            policy_target=policy.copy(),
             # A representative for displays only. Execution must sample the
             # complete mixture; argmax destroys its simultaneous-game guarantee.
             best_action=int(actions[int(np.argmax(policy))]),

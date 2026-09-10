@@ -637,9 +637,12 @@ The opt-in `mixed` opponent mode instead solves a simultaneous zero-sum
 matrix. Its row and column strategies are chosen together; the opponent does
 not get to observe our sampled action before choosing its own. Every legal
 action on both sides and every supported correlated reveal remains in the
-matrix/tree, regardless of beam settings. The existing entropy mirror-prox
-solver uses a small explicit regularizer and reports the unregularized
-best-response gap of its actual returned distributions. A numerical gap is
+matrix/tree, regardless of beam settings. The default solver uses
+[HiGHS dual simplex](https://docs.scipy.org/doc/scipy/reference/optimize.linprog-highs-ds.html)
+through the optional SciPy search dependency: maximizing the row player's
+guaranteed value yields its strategy and the inequality duals give the column
+strategy. It has explicit iteration/time limits and independently checks the
+unregularized best-response gap of its returned distributions. A numerical gap is
 not uncertainty in the learned values. A failed convergence check or exhausted
 tree budget withholds teacher targets. At a simultaneous root, `policy_target`
 must be sampled; `best_action` is only its most probable display representative.
@@ -647,9 +650,10 @@ Recursive and cooperative inference drivers implement the same backups, and
 report solver wall time separately from native nodes and neural work. This
 does not certify the current critic or authorize live search.
 The solver subtracts the matrix's common payoff offset before optimization,
-which preserves strategies and prevents a large shared state value from
-artificially reducing the step size. Exported utilities and convergence gaps
-remain in the original units.
+which preserves strategies. The earlier entropy mirror-prox variant remains
+available as an explicit diagnostic; centering prevents a large common value
+from reducing its step size, but did not cure its observed convergence failure.
+Exported utilities and convergence gaps remain in the original units.
 
 Search begins as an offline teacher. It does not control PPO rollout behavior
 until paired same-weight evaluation opens the joint-search gate. The existing

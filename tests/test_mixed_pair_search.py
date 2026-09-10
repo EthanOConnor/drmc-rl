@@ -122,6 +122,7 @@ def test_incomplete_or_unconverged_matrices_are_not_certified(implementation):
     assert result.matrix_solve_ms == 0
     result = implementation(MatrixModel(), SearchConfig(
         matrix_iterations=10, matrix_gap_tolerance=1e-10,
+        matrix_solver="mirror_prox",
         opponent_mode="mixed")).search(Position(), root_side=0)
     assert not result.budget_exhausted and not result.equilibrium_converged
     assert result.equilibrium_gap > .02
@@ -136,6 +137,7 @@ def test_teacher_withholds_unconverged_targets(tmp_path, monkeypatch):
         MatrixModel(), lambda payload: Position()))
     monkeypatch.setattr(sys, "argv", ["teacher", "--states", str(source), "--output",
         str(output), "--adapter", "test:model", "--opponent-mode", "mixed",
+        "--matrix-solver", "mirror_prox",
         "--matrix-iterations", "10", "--matrix-gap-tolerance", "1e-10"])
     joint_search_teacher.main()
     row = json.loads(output.read_text())
@@ -157,3 +159,22 @@ def test_common_critic_offset_changes_value_but_not_solver_dynamics():
     np.testing.assert_allclose(a.opponent_policy, b.opponent_policy, atol=1e-7)
     assert a.equilibrium_converged and b.equilibrium_converged
     assert b.root_value.utility - a.root_value.utility == pytest.approx(.8)
+
+
+def test_execution_samples_reproducible_mixture_and_rejects_failed_solver(monkeypatch):
+    from types import SimpleNamespace
+    from scipy import optimize
+
+    result = JointEventSearch(MatrixModel(), SearchConfig(opponent_mode="mixed")).search(
+        Position(), root_side=0)
+    left, right = np.random.default_rng(1923), np.random.default_rng(1923)
+    choices = [result.select_action(left) for _ in range(100)]
+    assert choices == [result.select_action(right) for _ in range(100)]
+    assert set(choices) == {0, 1}  # A representative argmax alone is not execution.
+    monkeypatch.setattr(optimize, "linprog", lambda *args, **kwargs: SimpleNamespace(
+        success=False, message="time limit reached"))
+    failed = JointEventSearch(MatrixModel(), SearchConfig(opponent_mode="mixed")).search(
+        Position(), root_side=0)
+    assert not failed.equilibrium_converged and failed.matrix_failures == ("time limit reached",)
+    with pytest.raises(ValueError, match="unconverged"):
+        failed.select_action(left)

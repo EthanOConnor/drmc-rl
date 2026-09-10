@@ -39,6 +39,8 @@ def main() -> None:
     parser.add_argument("--matrix-iterations", type=int, default=2048)
     parser.add_argument("--matrix-temperature", type=float, default=0.001)
     parser.add_argument("--matrix-gap-tolerance", type=float, default=0.02)
+    parser.add_argument("--matrix-solver", choices=("linear_program", "mirror_prox"), default="linear_program")
+    parser.add_argument("--matrix-time-limit-seconds", type=float, default=.25)
     parser.add_argument("--temperature", type=float, default=0.25)
     parser.add_argument("--checkpoint", help="forwarded to adapter")
     parser.add_argument(
@@ -61,6 +63,8 @@ def main() -> None:
             matrix_iterations=args.matrix_iterations,
             matrix_temperature=args.matrix_temperature,
             matrix_gap_tolerance=args.matrix_gap_tolerance,
+            matrix_solver=args.matrix_solver,
+            matrix_time_limit_seconds=args.matrix_time_limit_seconds,
         ),
     )
     if args.frontier_batch_size:
@@ -110,6 +114,7 @@ def main() -> None:
                         "matrix_solve_ms": result.matrix_solve_ms,
                         "equilibrium_gap": result.equilibrium_gap,
                         "equilibrium_converged": result.equilibrium_converged,
+                        "matrix_failures": list(result.matrix_failures),
                         "root_value": None
                         if not usable
                         else {

@@ -18,7 +18,7 @@ import torch
 from drmc_rl.arena.experiment import dump
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
 from drmc_rl.search.belief_native_pair import BeliefNativePairSearchModel
-from drmc_rl.search.joint_event import JointEventSearch, SearchConfig
+from drmc_rl.search.joint_event import JointEventSearch, SearchConfig, WDL
 from drmc_rl.search.native_pair import state_from_payload
 from drmc_rl.search.pill_belief import PillReserveBelief
 from drmc_rl.search.public_policy import PublicPolicyContinuation
@@ -48,6 +48,9 @@ def benchmark(config):
         device=config.get("device", "cpu"),
     )
     rows = load_source_rows(Path(config["state_bank"]))[: int(config.get("states", 2))]
+    variant_order = tuple(config.get("variant_order", ("recursive", "queued")))
+    if sorted(variant_order) != ["queued", "recursive"]:
+        raise ValueError("variant_order must include recursive and queued exactly once")
     search_config = SearchConfig(
         depth_events=int(config.get("depth_events", 2)),
         own_beam=int(config.get("own_beam", 2)),
@@ -57,6 +60,8 @@ def benchmark(config):
         matrix_iterations=int(config.get("matrix_iterations", 2048)),
         matrix_temperature=float(config.get("matrix_temperature", .001)),
         matrix_gap_tolerance=float(config.get("matrix_gap_tolerance", .02)),
+        matrix_solver=config.get("matrix_solver", "linear_program"),
+        matrix_time_limit_seconds=float(config.get("matrix_time_limit_seconds", .25)),
     )
     report = dict(
         schema="drmc-frontier-benchmark-v1",
@@ -71,18 +76,24 @@ def benchmark(config):
         native_library_sha256=(sha256_file(Path(config["native_library"]))
                                if config.get("native_library") else None),
     )
+    if search_config.opponent_mode == "mixed":
+        # Initialize the solver outside the order-sensitive native timings;
+        # retain cold import/initialization cost as a separate measurement.
+        warmup = JointEventSearch(None, search_config)
+        warmup._solve_matrix([[WDL.terminal(1), WDL.terminal(-1)],
+                              [WDL.terminal(-1), WDL.terminal(1)]])
+        report["matrix_cold_start_ms"] = warmup._matrix_solve_ms
     dump(output, report)
     try:
-        for row in rows:
+        for row_index, row in enumerate(rows):
             root = state_from_payload(row)
             side = int(row["root_side"])
             continuation.batch_sizes = []
             continuation.infer_batch([(root, side)])  # kernel warmup, outside timings
             results = {}
-            record = dict(source_id=row["id"], variants={})
-            for name in config.get("variant_order", ("recursive", "queued")):
-                if name not in ("recursive", "queued"):
-                    raise ValueError("variant_order must name recursive or queued")
+            order = variant_order[::-1] if config.get("alternate_order") and row_index % 2 else variant_order
+            record = dict(source_id=row["id"], variants={}, order=list(order))
+            for name in order:
                 runner = DrMarioVsPoolRunner(num_pairs=1, lib_path=config.get("native_library"))
                 try:
                     model = BeliefNativePairSearchModel(runner, continuation=continuation)
@@ -120,6 +131,7 @@ def benchmark(config):
                         matrix_solve_ms=result.matrix_solve_ms,
                         equilibrium_gap=result.equilibrium_gap,
                         equilibrium_converged=result.equilibrium_converged,
+                        matrix_failures=list(result.matrix_failures),
                         public_observation_schema=root.public_observation_schema,
                         boundary=model.boundary(root).value,
                         joint_utilities=(None if result.joint_utilities is None
@@ -137,7 +149,11 @@ def benchmark(config):
                 and a.opponent_actions == b.opponent_actions
                 and np.allclose(a.opponent_policy, b.opponent_policy, rtol=0, atol=1e-5)
                 and a.equilibrium_converged == b.equilibrium_converged
+                and (a.joint_utilities is None and b.joint_utilities is None
+                     or a.joint_utilities is not None and b.joint_utilities is not None
+                     and np.allclose(a.joint_utilities, b.joint_utilities, rtol=0, atol=1e-5))
             )
+            record["converged"] = a.equilibrium_converged and b.equilibrium_converged
             record["speedup"] = (
                 record["variants"]["recursive"]["seconds"] / record["variants"]["queued"]["seconds"]
             )
@@ -146,6 +162,8 @@ def benchmark(config):
             print(json.dumps({k: v for k, v in record.items() if k != "variants"}), flush=True)
             if not record["parity"]:
                 raise RuntimeError("queued search differs from the recursive reference")
+            if not record["converged"]:
+                raise RuntimeError("mixed matrix did not converge; comparison retained")
         report["status"] = "Complete"
     except BaseException as error:
         report.update(status="Failed", error=str(error))
