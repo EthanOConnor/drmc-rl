@@ -1300,6 +1300,24 @@ allocation. The dashboard feed is `core-300m-mac`; do not duplicate its worker.
 
 ### Persistent construction diagnostics
 
+`trainer-spatial-expressive-study` takes `spatial_expressive_config` with a
+verified sequence `source`, frozen public competitive `checkpoint` and fresh
+`output`. It reuses exact own-bottle mean/max features, deduplicated solely by
+actual board/pill/preview inputs. Defaults use feature batches of 32, eight
+fixed epochs, width 128, 32 windows per batch and learning rate 0.0003. Choose
+`feature_device` separately from the small heads' training `device`; one CPU
+thread and Metal feature extraction are supported. `prepared.npz` retains
+full-precision features and exact spatial target distributions. Two independently
+optimized arms start from the same seed and consume the same session-weighted
+examples in the same order. The persistent arm retains root context; the
+stateless control uses each actual current state. Both action decoders consume
+predicted plans, never payoff labels or true future duration. The fixed-final
+checkpoints and paired whole-session descriptive comparisons are retained.
+Do not interpret recorded-prefix predicted-goal scores as autonomous play;
+plan termination and altered intermediate states require actual execution.
+Fresh replay confirmation is separate from these previously used development
+sessions. Ordinary competitive weights and product routing remain unchanged.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches

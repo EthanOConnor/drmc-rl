@@ -1,0 +1,123 @@
+import json
+
+import numpy as np
+import pytest
+import torch
+
+from drmc_rl.game.cascade import resolve_cascade
+from drmc_rl.game.observation import board_bytes_to_semantic_planes
+from drmc_rl.human.expressive_sequences import locked_field
+from drmc_rl.human.spatial_proposer import (
+    FrozenConstructionEncoder, SpatialProposal, SpatialProposer, spatial_clear_target,
+)
+from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
+from tools.fit_expressive_proposer import session_validation
+from tools.fit_spatial_expressive import fit_models
+
+
+def test_spatial_goal_identifies_actual_colored_clear_cells():
+    board = np.full((16,8),0xFF,np.uint8)
+    board[15,:3] = 0xD1
+    result = resolve_cascade(locked_field(board,[1,1],123))
+    target = spatial_clear_target(result,0)
+    expected = np.zeros_like(target)
+    expected[0,15,:5] = .2
+    np.testing.assert_array_equal(target,expected)
+    with pytest.raises(ValueError,match='selected spatial goal'):
+        spatial_clear_target(result,3)
+
+
+def test_shared_features_match_real_competitive_own_bottle_path():
+    torch.manual_seed(12)
+    core = G5CandidatePlacementPolicyNet(in_channels=20,board_channels=16,encoder_blocks=1,
+        d_model=16,pill_embed_dim=8,transformer_heads=4,cross_layers=0,interaction_layers=0,
+        cand_hidden_dim=32,patch_kernel=3).eval()
+    board = np.full((16,8),0xFF,np.uint8)
+    board[15,4:6] = [0x60,0x70]
+    own = torch.tensor(np.stack([board_bytes_to_semantic_planes(board)]*2))
+    pill = torch.tensor([[0,1],[1,1]])
+    preview = torch.tensor([[2,2],[0,2]])
+    captured = []
+    hook = core.bottle.register_forward_hook(lambda m,a,o:captured.append(o.detach().clone()))
+    historical = own.clone()
+    historical[1,6:8] = 0
+    with torch.inference_mode():
+        core(torch.cat((historical,torch.zeros_like(own),torch.zeros(2,4,16,8)),1),pill,preview,
+             torch.tensor([[123],[123]]),torch.ones(2,1),torch.ones(2,1,dtype=torch.bool))
+    hook.remove()
+    expected = torch.cat((captured[0].mean((2,3)),captured[0].amax((2,3))),-1)
+    encoder = FrozenConstructionEncoder(core)
+    with torch.inference_mode():
+        actual = encoder(own,pill,preview)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    assert not any(p.requires_grad for p in encoder.parameters())
+    core.aux_dim = 1
+    with pytest.raises(ValueError,match='full public-context'):
+        FrozenConstructionEncoder(core)
+
+
+def test_spatial_persistence_requires_the_selected_location_and_handles_surprises():
+    torch.manual_seed(1)
+    model = SpatialProposer(8,16).eval()
+    with torch.no_grad():
+        model.target.weight.zero_()
+        model.target.bias.fill_(-20)
+        model.target.bias[120] = 20  # red, bottom-left cell
+        model.horizon.weight.zero_()
+        model.horizon.bias.fill_(-20)
+        model.horizon.bias[2] = 20
+    inputs = (torch.zeros(1,8,16,8),torch.zeros(1,8),torch.tensor([[0,1]]),torch.tensor([[2,2]]))
+    plan = SpatialProposal.start(model,inputs,frame=10,goal=0)
+    memory,spatial = plan.memory.clone(),plan.spatial.clone()
+    assert plan.remaining == 3
+    assert set(plan.rank(model,inputs,[123,124,125])) == {123,124,125}
+    changed = (*inputs[:3],torch.tensor([[0,0]]))
+    plan.rank(model,changed,[123,124,125])
+    assert torch.equal(plan.memory,memory) and torch.equal(plan.spatial,spatial)
+    plan.observe(frame=20,completed_placement=True,observed_goals=[0],cleared_cells=[(15,1,0)])
+    plan.observe(frame=20,completed_placement=True)
+    assert plan.remaining == 2 and plan.reason is None
+    plan.observe(frame=30,completed_placement=True,observed_goals=[0],cleared_cells=[(15,0,0)])
+    assert plan.reason == 'spatial_goal_observed'
+    surprise = SpatialProposal.start(model,inputs,frame=10,goal=0)
+    surprise.observe(frame=11,incoming_garbage=True)
+    assert surprise.rank(model,inputs,[123]) == []
+    with pytest.raises(ValueError,match='stateless'):
+        SpatialProposal.start(SpatialProposer(8,16,persistent=False),inputs,frame=10)
+
+
+def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets(tmp_path):
+    torch.set_num_threads(1)
+    sessions = ([f's{i}' for i in range(100) if not session_validation(f's{i}',81029)][:2]+
+                [f's{i}' for i in range(100) if session_validation(f's{i}',81029)][:2])
+    rng = np.random.default_rng(27)
+    data = dict(planes=rng.normal(size=(12,8,16,8)).astype(np.float32),
+        features=rng.normal(size=(12,8)).astype(np.float32),canonical_pill=np.zeros((12,2),np.int64),
+        canonical_preview=np.ones((12,2),np.int64),feature_index=np.arange(12),
+        action=np.asarray([123,124,125]*4),windows=np.asarray([[i*3,3,0,i] for i in range(4)]),
+        spatial_targets=np.full((4,384),1/384,np.float32),sessions=np.asarray(sessions))
+    config=dict(epochs=2,batch_windows=2,width=8,threads=1)
+    results = []
+    for attempt in range(2):
+        output=tmp_path/str(attempt)
+        output.mkdir()
+        report=dict(source_sha256='fixture',competitive_sha256='fixture')
+        if attempt:
+            data['features'][6:] += 2
+            data['spatial_targets'][2:] = 0
+            data['spatial_targets'][2:,0] = 1
+            data['action'][6:] = 127
+        results.append(fit_models(data,config,output,report))
+    for name in ('persistent','stateless'):
+        a=torch.load(tmp_path/'0'/f'{name}-final.pt',weights_only=False)
+        b=torch.load(tmp_path/'1'/f'{name}-final.pt',weights_only=False)
+        assert all(torch.equal(v,b['state_dict'][k]) for k,v in a['state_dict'].items())
+        loaded=SpatialProposer(a['feature_dim'],a['width'],persistent=a['persistent'])
+        loaded.load_state_dict(a['state_dict'],strict=True)
+        assert results[0]['arms'][name]['action_presentations']==12
+        assert results[0]['arms'][name]['final']!=results[1]['arms'][name]['final']
+    assert results[0]['paired_session_comparisons']['early_setup_nll']['sessions']==2
+    # Labels have no argument in the action path; only predicted distributions
+    # can reach the decoder. Neither trained arm modifies the competitive core.
+    assert not a['quality_admission'] and a['diagnostic_only']
+    json.dumps(results[0],allow_nan=False)

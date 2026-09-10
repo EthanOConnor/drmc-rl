@@ -515,6 +515,28 @@ historical construction. Useful replay-aligned preferences, calibrated quality
 admission, persistent full-game noninferiority and live integration remain
 required before expressive behavior can enter the product.
 
+`human/spatial_proposer.py` implements the bounded second proposal experiment.
+Its goal predicts a colored location in a horizontal, crossing, large-wave or
+cascade clear, together with a duration. A frozen competitive own-bottle
+encoder supplies mean/max features from the actual board and visible pills;
+its historical same-color bond encoding is preserved, while the small spatial
+branch receives complete bonds. This reuses the competitive encoder without
+inventing an opponent or missing public history. Own-only replay cannot feed
+a full-context core and that combination is rejected. Payoff cells are
+supervised targets only: the action decoder receives predicted spatial and
+duration distributions during both fitting and execution. It never receives
+the future bottle or true remaining construction length. A selected persistent
+plan keeps its root features and spatial target while reading current inputs,
+and ends on the matching colored location/geometry, surprise, terminal or
+placement budget. A distinct stateless network of the same size and initial
+weights is trained on the same sessions, predicting afresh each placement.
+The comparison reports early setups separately from payoff placements and
+retains both observed-goal and predicted-goal action scores. These replay-prefix
+scores still use actual human intermediate states; they are not autonomous
+play, motor-feasibility evidence or competitive noninferiority. The existing
+validation sessions are development data, so fresh replay confirmation and
+quality-admitted persistent games remain necessary.
+
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor
 envelope describing what future pills will be able to do. Pace training must

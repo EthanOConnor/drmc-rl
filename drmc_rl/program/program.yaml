@@ -99,6 +99,21 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-spatial-expressive-study:
+    status: active
+    stage: 4
+    purpose: Train and compare persistent spatial construction proposals with a separate stateless control using frozen competitive own-bottle features.
+    requires_paths: [tools/fit_spatial_expressive.py, '{spatial_expressive_config}']
+    requires_gates: []
+    command: [python, -m, tools.fit_spatial_expressive, --config, '{spatial_expressive_config}']
+    produces: [Shared-feature audit identity, fixed-final persistent and stateless heads, actual presentations, session-grouped development comparisons]
+    resources:
+      preferred_host: local
+      accelerator: mps
+    notes:
+      - Only actual own-board and visible pill inputs enter the frozen competitive encoder. Own-only replays cannot supply a full public-history core.
+      - Spatial payoff and duration are supervised targets, never action-decoder inputs. Both arms decode predicted plans and retain complete feasible inventories at execution.
+      - Existing validation sessions are development data. Fresh replay confirmation, calibrated quality admission and actual persistent strength/preference evaluation remain required.
   trainer-adaptive-search-audit:
     status: active
     stage: 4
