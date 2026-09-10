@@ -30,8 +30,9 @@ class TracedActor:
 def compare(task):
     boundary, bulk = TracedActor(), TracedActor()
     reference_metrics, bulk_metrics = {}, {}
-    reference = rollout_tasks([task], boundary, batch_size=1, metrics=reference_metrics)
-    result = rollout_tasks([task], bulk, batch_size=1, reserve_execution="prefilled", metrics=bulk_metrics)
+    reference = rollout_tasks([task], boundary, batch_size=1, metrics=reference_metrics, trace_decisions=True)
+    result = rollout_tasks([task], bulk, batch_size=1, reserve_execution="prefilled", metrics=bulk_metrics,
+                           trace_decisions=True)
     assert boundary.trace == bulk.trace
     assert result[0]["outcome"] == reference[0]["outcome"] in (1, 2, 3)
     assert result[0]["events"] <= reference[0]["events"]
@@ -39,10 +40,14 @@ def compare(task):
     assert result[0]["reveals"] is None and result[0]["boundary_reveal_calls"] == 0
     assert bulk_metrics["reserve_install_calls"] == 1
     assert bulk_metrics["policy_decisions"] == reference_metrics["policy_decisions"]
+    assert result[0]["decision_trace_sha256"] == reference[0]["decision_trace_sha256"]
+    assert len(result[0]["decision_trace_sha256"]) == 64
+    assert result[0]["decision_trace_count"] == reference[0]["decision_trace_count"] > 0
     # Distinct reused slots must not read stale output buffers after restore.
     many = rollout_tasks([replace(task, id=i) for i in range(3)], TracedActor(),
                          batch_size=2, native_workers=2, reserve_execution="prefilled")
     assert [r["outcome"] for r in many] == [reference[0]["outcome"]] * 3
+    assert all("decision_trace_sha256" not in r for r in many)
 
 
 @pytest.mark.parametrize("level,speed,seed", [(0, 2, (3, 7)), (14, 0, (11, 193)),

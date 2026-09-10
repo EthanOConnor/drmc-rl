@@ -14,6 +14,8 @@ from typing import Any
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor, wait
 from functools import lru_cache
+import hashlib
+import json
 import time
 
 import numpy as np
@@ -80,7 +82,7 @@ def _advance_native(slot):
 def rollout_tasks(
     tasks, continuation, *, batch_size=32, max_events=2048, progress=None, native_workers=1,
     on_result=None, metrics=None,
-    reserve_execution="boundary",
+    reserve_execution="boundary", trace_decisions=False,
 ):
     """Return natural outcomes for all tasks; incomplete results retain None.
 
@@ -134,7 +136,9 @@ def rollout_tasks(
         initial_reveal = runner.search_reveal_info(0) if prefilled else None
         return {"runner": runner, "task": task, "state": task.state,
                 "events": 0, "reveals": 0, "root_forced": False,
-                "prefilled": prefilled, "initial_reveal": initial_reveal}
+                "prefilled": prefilled, "initial_reveal": initial_reveal,
+                "trace": hashlib.sha256() if trace_decisions else None,
+                "traced_decisions": 0}
 
     runners = []
     try:
@@ -194,6 +198,20 @@ def rollout_tasks(
                 legal = slots[index]["state"].legal_actions_by_side[side]
                 slots[index]["action"][side] = max(
                     legal, key=lambda action: probability.get(action, 1e-8))
+            if trace_decisions:
+                from drmc_rl.search.public_policy import PublicPolicyContinuation
+                trace_started = time.perf_counter()
+                for slot in slots:
+                    for side, action in enumerate(slot["action"]):
+                        if action == -2:
+                            continue
+                        # Same public input key as actual continuation inference,
+                        # plus the selected action (including the forced root).
+                        # Private reserve/checkpoint bytes never enter this hash.
+                        record = (PublicPolicyContinuation._request_key(slot["state"], side), int(action))
+                        slot["trace"].update(json.dumps(record, separators=(",", ":")).encode() + b"\n")
+                        slot["traced_decisions"] += 1
+                measured['decision_trace_seconds'] += time.perf_counter() - trace_started
             active = []
             # Distinct runners have independent physics and native workspaces.
             # Preserve request and completion order while releasing the GIL
@@ -241,6 +259,9 @@ def rollout_tasks(
                             "weight": task.weight,
                             "continuation_id": task.continuation_id,
                             "opponent_id": task.opponent_id,
+                            **({"decision_trace_sha256": slot["trace"].hexdigest(),
+                                "decision_trace_count": slot["traced_decisions"]}
+                               if trace_decisions else {}),
                         }
                     )
                     if on_result is not None:

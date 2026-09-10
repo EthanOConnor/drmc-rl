@@ -109,6 +109,7 @@ def run(config):
         member_sha256=identities, chance_model=CHANCE_MODEL_ID, execution="native-smdp-v1",
         root_batch_size=root_batch_size, native_workers=int(config.get("native_workers", 1)),
         reserve_execution=config.get("reserve_execution", "boundary"),
+        trace_decisions=bool(config.get("trace_decisions", False)),
         device=config.get("device", "cuda"), strict_fp32=True, product_gates_passed=False,
         source_sha256=contract["source_sha256"], batches=list(previous.get("batches", [])),
     )
@@ -181,6 +182,7 @@ def run(config):
                           max_events=config.get("max_events", 4096),
                           native_workers=config.get("native_workers", 1),
                           reserve_execution=config.get("reserve_execution", "boundary"),
+                          trace_decisions=bool(config.get("trace_decisions", False)),
                           progress=lambda count: report(current_rollouts_complete=count),
                           on_result=receive, metrics=measured)
             if any(row["id"] not in completed for row in current):
