@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import time
 import hashlib
+import uuid
 from dataclasses import dataclass
-from collections import deque
+from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -265,6 +266,8 @@ class HumanBackend:
         self.search_budget = AdaptiveSearchBudget()
         self.search: HumanValueSearch | None = None
         self.preparer = None
+        self.geometry_preparer = None
+        self.prepared_geometry = OrderedDict()
         self.planner = NativeReachabilityRunner(max_frames=max_frames)
         self.warmup()
         self.ready = True
@@ -347,10 +350,14 @@ class HumanBackend:
         from drmc_rl.human.controller_context import uses_public_context
         return {
             "schema": PROTOCOL_SCHEMA,
-            "request_types": ["hello", "health", "decide", "coach", "prepare_next", "cancel", "shutdown"],
+            "request_types": ["hello", "health", "decide", "coach", "prepare_next", "prepare_geometry", "cancel", "shutdown"],
             "anticipation": {"version": 1, "available": self.competitive is not None and not uses_public_context(self.competitive),
                              "preview_branches": 9, "frame_parities": 2,
                              "public_information_only": True, "opponent_ablation": True},
+            "geometry_preparation": {"version": 1, "available": self.competitive is not None,
+                                     "frame_parities": 2, "max_entries": 2,
+                                     "fresh_context_required": True,
+                                     "token_field": "geometry_token"},
             "modes": ["play", "coach"],
             "state": {
                 "board_planes": "8x16x8 canonical color/virus/connectivity planes",
@@ -415,6 +422,10 @@ class HumanBackend:
         return plan_candidates(self.planner, state, execution_delay_frames, pace)
 
     def close(self) -> None:
+        if self.geometry_preparer is not None:
+            self.geometry_preparer.close()
+            self.geometry_preparer = None
+        self.prepared_geometry.clear()
         if self.preparer is not None:
             self.preparer.close()
             self.preparer = None
@@ -457,6 +468,19 @@ class HumanBackend:
             raise ValueError(
                 "rating and temperature must be finite; temperature must be non-negative"
             )
+        candidate, geometry_status = None, "not_requested"
+        token = request.get("geometry_token")
+        if token is not None:
+            if not isinstance(token, str):
+                raise ValueError("geometry_token must be a string")
+            # Consume once, including on a miss. A caller can keep at most two
+            # pending players' preparations; old process tokens cannot alias.
+            prepared = self.prepared_geometry.pop(token, None)
+            geometry_status = "unavailable"
+            if prepared is not None:
+                candidate, geometry_status = prepared.select(state, pace, execution_delay)
+        if candidate is None:
+            candidate = self._candidates(state, execution_delay, pace)
         (
             planes,
             opponent_planes,
@@ -468,7 +492,7 @@ class HumanBackend:
             reach,
             packed,
             costs512,
-        ) = self._candidates(state, execution_delay, pace)
+        ) = candidate
         rating_sd = float(request.get("target_rating_sd", 0.0))
         opponent_rating = state.get("opponent_rating")
         opponent_rating_sd = float(state.get("opponent_rating_sd", 0.0))
@@ -655,6 +679,7 @@ class HumanBackend:
         script = script[: len(controller_states)]
         timing["execution_frames"] = len(script)
         result = {
+            "geometry_preparation": {"status": geometry_status},
             "execution": {
                 "start_frame": int(request["frame_id"]) + execution_delay,
                 "delay_frames": execution_delay,
@@ -730,6 +755,35 @@ class HumanBackend:
                 response.update(
                     type="cancelled", cancel_request_id=int(request["cancel_request_id"])
                 )
+                return response
+            if kind == "prepare_geometry":
+                from drmc_rl.human.anticipation import NextTurnGeometryPreparer
+                from drmc_rl.human.controller_context import live_controller_state, uses_public_context
+
+                if self.competitive is None:
+                    raise ValueError("next-turn geometry requires the public competitive policy")
+                state = request["state"]
+                if uses_public_context(self.competitive):
+                    state = live_controller_state(state)
+                pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
+                delay = int(request.get("execution_delay_frames", 0))
+                if not 0 <= delay <= max(30, pace.reaction_frames):
+                    raise ValueError("invalid prepared execution delay")
+                if self.geometry_preparer is None:
+                    self.geometry_preparer = NextTurnGeometryPreparer(self.planner)
+                prepared = self.geometry_preparer.prepare(state, request["committed"], pace, delay)
+                token = None
+                counts = [0, 0]
+                if prepared is not None:
+                    token = uuid.uuid4().hex
+                    self.prepared_geometry[token] = prepared
+                    while len(self.prepared_geometry) > 2:
+                        self.prepared_geometry.popitem(last=False)
+                    counts = [0 if c is None else int(c[-2].count) for c in prepared.candidates]
+                # Native planner buffers and speculative state never cross the
+                # protocol. The next decide supplies the complete actual view.
+                response.update(type="geometry_prepared", geometry_token=token,
+                                candidate_counts=counts)
                 return response
             if kind == "prepare_next":
                 from drmc_rl.human.anticipation import NextTurnPreparer

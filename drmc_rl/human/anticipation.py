@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 
+from drmc_rl.execution.pace import Pace
 from drmc_rl.game.observation import legacy_vs_policy_boards
 
 
@@ -55,20 +58,17 @@ def execution_for_action(candidate, action, pace, *, delay=0, frame_id=0):
     }
 
 
-class NextTurnPreparer:
-    """Predict our settled bottle from a committed move, then branch on preview.
+class NextTurnPredictor:
+    """Predict our settled bottle from a committed move.
 
     The one-placement simulator receives only public tiles/colors. Its reserve
     is irrelevant: we read only the resulting bottle. Garbage and opponent
     changes are handled by validating the prepared context at the real spawn.
     """
 
-    def __init__(self, policy, planner, *, lib_path=None):
-        from drmc_rl.human.controller_context import uses_public_context
-        if uses_public_context(policy):
-            raise ValueError("context actors require geometry preparation with fresh late context; legacy scored branches are incompatible")
+    def __init__(self, planner, *, lib_path=None):
         from drmc_rl.human.afterstate_sim import NativeAfterstateSimulator
-        self.policy, self.planner = policy, planner
+        self.planner = planner
         self.sim = NativeAfterstateSimulator(num_envs=1, lib_path=lib_path)
 
     def close(self):
@@ -112,6 +112,17 @@ class NextTurnPreparer:
                 "horizontal_velocity": end.hor_velocity, "hold_dir": 0,
                 "rotation_hold": 0, "frame_parity": 0}}
 
+
+class NextTurnPreparer(NextTurnPredictor):
+    """Legacy scored branches; context actors must score fresh public inputs."""
+
+    def __init__(self, policy, planner, *, lib_path=None):
+        from drmc_rl.human.controller_context import uses_public_context
+        if uses_public_context(policy):
+            raise ValueError("context actors require geometry preparation with fresh late context; legacy scored branches are incompatible")
+        super().__init__(planner, lib_path=lib_path)
+        self.policy = policy
+
     def prepare(self, state, execution, pace):
         from drmc_rl.human.backend import plan_candidates
         predicted = self.predict(state, execution)
@@ -146,6 +157,73 @@ class NextTurnPreparer:
                 row.append(materialized[action])
             branches.append(row)
         return {"state": predicted, "plans": plans, "branches": branches}
+
+
+@dataclass(frozen=True)
+class PreparedGeometry:
+    """Complete own feasibility only: no saved policy scores or public history."""
+
+    state: dict
+    candidates: tuple
+    pace: Pace
+    delay: int
+
+    def select(self, state, pace, delay):
+        from drmc_rl.human.backend import _board_planes, _pair
+
+        if pace != self.pace or delay != self.delay:
+            return None, "execution_profile"
+        if state.get("public_context_schema") != self.state.get("public_context_schema"):
+            return None, "observation_contract"
+        for name in ("board_planes", "pill", "speed", "speed_ups"):
+            if not np.array_equal(self.state[name], state[name]):
+                return None, "own_state"
+        falling = state.get("falling", {})
+        for name, value in self.state["falling"].items():
+            if name != "frame_parity" and falling.get(name) != value:
+                return None, "microstate"
+        parity = falling.get("frame_parity")
+        if parity not in (0, 1):
+            return None, "microstate"
+        candidate = self.candidates[int(parity)]
+        if candidate is None:
+            return None, "unreachable"
+        # Only geometry survives preparation. All board/pill model inputs come
+        # from the real request; the caller separately encodes its fresh history.
+        return (_board_planes(state["board_planes"]),
+                _board_planes(state["opponent_board_planes"]),
+                _pair(state["pill"], "pill"), _pair(state["preview"], "preview"),
+                *candidate[4:]), "hit"
+
+
+class NextTurnGeometryPreparer(NextTurnPredictor):
+    """Prepare both spawn parities without guessing future opponent/history."""
+
+    def prepare(self, state, execution, pace, delay):
+        from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+
+        if not 0 <= delay <= max(30, pace.reaction_frames):
+            raise ValueError("invalid prepared execution delay")
+        predicted = self.predict(state, execution)
+        if predicted is None:
+            return None
+        # Explicit whitelist: the predictor's input can contain a decoded
+        # PublicPairState, but it is never a future context or a cached model input.
+        expected = {k: predicted[k] for k in
+                    ("board_planes", "pill", "speed", "speed_ups", "falling")}
+        expected["public_context_schema"] = state.get("public_context_schema")
+        geometry = {**expected, "opponent_board_planes": np.zeros((8, 16, 8), np.float32),
+                    "preview": [0, 0]}
+        candidates = []
+        for parity in (0, 1):
+            branch = {**geometry, "falling": {**expected["falling"], "frame_parity": parity}}
+            try:
+                candidates.append(plan_candidates(self.planner, branch, delay, pace))
+            except NoReachablePlacement:
+                candidates.append(None)
+        if all(c is None for c in candidates):
+            return None
+        return PreparedGeometry(expected, tuple(candidates), pace, delay)
 
 
 def select_prepared(prepared, state, *, strict_opponent=True):

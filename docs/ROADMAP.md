@@ -442,6 +442,20 @@ indefinitely staged.
   some decisions and was rejected; its reproduction is retained under
   `runs/review-20260909/prefilled-reserve-audit`. The separate native reveal
   ordering fix prevents chance nodes from bypassing an earlier parked input.
+  Geometry-only preparation is now implemented and consumed by the source
+  backend. It retains complete own frontiers for both parities at the actual
+  pace/delay, then scores the real preview/opponent/history on arrival. Fresh
+  public context remains mandatory; legacy cached scores stay rejected for
+  history actors. Native tests cover all nine previews, both parities,
+  same-color rotations, gravity changes, carried controller state, exact
+  witnesses and ordinary misses. A real 100M-core Metal JSONL audit matched
+  all 61 playable decisions across Sloth/Normal/Top Humans/Frame Perfect;
+  three Sloth positions were unreachable in both paths. Of the playable
+  decisions, 52 reused geometry and nine replanned after own-board changes.
+  Median paired savings were small and variable (about -0.2 to 2.7 ms across
+  these paces) on the shared Mac. Keep the existing compute allowance. This
+  implements exact geometry reuse with fresh scoring, not shared neural
+  features, host integration or a demonstrated full-game strength gain.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the

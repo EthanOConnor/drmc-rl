@@ -1136,6 +1136,30 @@ supports further integration; it does not certify app render/latch timing,
 high-stack tails, final packages or a new search compute budget. The Sloth core
 still needs per-pace product routing and representative live-game verification.
 
+For source development, query `capabilities.geometry_preparation` before using
+`prepare_geometry`. Supply the current public state, committed result, next
+pace and `execution_delay_frames`. The reply carries `geometry_token` and two
+candidate counts; a null token means preparation was unavailable. Pass that
+token with the next ordinary `decide` and its complete actual public state.
+Tokens are process-local, single-use and bounded to two outstanding entries.
+`result.geometry_preparation.status` distinguishes a hit from execution-profile,
+observation-contract, own-state, microstate and unavailable misses. Every miss
+uses normal fresh planning with the same requested motor limits. Neither
+native buffers nor speculative history are serialized. Existing app/browser
+schedulers continue using their prior protocol until explicitly integrated.
+
+`runs/review-20260909/live-geometry-audit.py` retains the bounded real 100M-core
+Metal source-process check, with order-balanced fresh/cached requests on twelve
+14-HI controller prefixes. All 61 playable decisions matched exactly in scores,
+full candidate inventories and controller scripts; three further Sloth states
+were unreachable in both modes. Geometry hit 52 times. The nine own-state
+misses all coincide with observed incoming volleys. Independent native replay
+of all 64 boundaries confirms this in `live-geometry-audit/mismatch-audit.json`.
+Geometry preparation medians were 1.5–6.8 ms; hit decision medians remained
+21–27 ms. Paired savings were about 0.3/2.7/-0.2/1.5 ms for Sloth/Normal/Top
+Humans/Frame Perfect. This small shared-host check does not justify changing
+compute charges or certify app scheduling, high-stack tails or strength.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

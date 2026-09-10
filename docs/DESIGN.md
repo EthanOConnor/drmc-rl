@@ -306,6 +306,20 @@ model input used in controller arenas. Gravity names the actual counter period
 future motor-opportunity features and device/strength evaluation remain pending;
 missing history or motor features must not be fabricated as known inputs.
 
+The source backend also supports geometry-only next-turn preparation. A
+committed placement predicts only the settled own bottle, next known pill,
+gravity and carried horizontal controller state. Both spawn parities retain
+complete frontiers at the requested pace and execution delay. The bounded
+two-entry cache contains no policy scores or predicted public history. A
+single-use opaque token accompanies the actual next decision; own geometry,
+microstate, observation contract and execution profile must match exactly.
+Scoring then receives the actual preview, opponent board/pill and live public
+history. Opponent changes alone do not invalidate geometry, while incoming
+garbage or other own-state changes cause ordinary fresh planning. Legacy scored
+anticipation remains unavailable for context actors. This shares native
+feasibility, not a cached neural trunk; host scheduling, larger latency studies
+and full-game evaluation of any changed compute allowance remain separate.
+
 The controller outcome trainer can now update the full G5 on this input
 contract. It reuses the measured causal controller collector and episodic loss,
 but stores exact public model inputs instead of frozen trunk features. A fixed
