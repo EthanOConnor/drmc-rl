@@ -25,6 +25,8 @@ from drmc_rl.game.pair_state import DecisionBoundary, PrivilegedPairState
 from drmc_rl.search.joint_event import ChanceOutcome, WDL
 
 CAUSAL_PUBLIC_SCHEMA = "causal-settled-pair-v1"
+EVENT_PUBLIC_SCHEMA = "causal-settled-pair-v2"
+CAUSAL_PUBLIC_SCHEMAS = (CAUSAL_PUBLIC_SCHEMA, EVENT_PUBLIC_SCHEMA)
 LEGACY_PUBLIC_SCHEMA = "legacy-warp-buffer-v1"
 
 
@@ -52,7 +54,7 @@ class NativePairSearchState:
                 raise ValueError("native legal action costs must be finite positive frames")
         if not 0 <= self.level <= 20 or self.speed_setting not in (0, 1, 2):
             raise ValueError("native search context has invalid level or speed")
-        if self.public_observation_schema not in (CAUSAL_PUBLIC_SCHEMA, LEGACY_PUBLIC_SCHEMA):
+        if self.public_observation_schema not in (*CAUSAL_PUBLIC_SCHEMAS, LEGACY_PUBLIC_SCHEMA):
             raise ValueError("unknown native public observation timeline")
 
 
@@ -243,6 +245,7 @@ def capture_native_state(
     viruses_initial: tuple[int, int] | None = None,
     previous: NativePairSearchState | None = None,
     causal_public: bool = False,
+    event_public: bool = False,
 ) -> NativePairSearchState:
     from drmc_rl.game.pair_state import PublicPairState, VisibleSideState
 
@@ -271,12 +274,15 @@ def capture_native_state(
         for side in range(2)
     )
     clocks = tuple(int(item) for item in buffers.side_frames[:2])
-    causal_public |= (
-        previous is not None and previous.public_observation_schema == CAUSAL_PUBLIC_SCHEMA
+    event_public |= previous is not None and previous.public_observation_schema == EVENT_PUBLIC_SCHEMA
+    causal_public |= event_public or (
+        previous is not None and previous.public_observation_schema in CAUSAL_PUBLIC_SCHEMAS
     )
     if causal_public:
-        if previous is not None and previous.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+        if previous is not None and previous.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
             raise ValueError("a legacy warped snapshot cannot initialize a causal public timeline")
+        if event_public and previous is not None and previous.public_observation_schema != EVENT_PUBLIC_SCHEMA:
+            raise ValueError("a V1 public trajectory cannot be relabeled as a native V2 event timeline")
         # warp_fall writes a future lock into the private board and advances
         # that side's clock atomically. Until the other timeline catches up,
         # export the last causally observed settled bottle, with an age mask.
@@ -284,7 +290,23 @@ def capture_native_state(
         now = min(clocks)
         if any(need[side] and clocks[side] > now + 1 for side in (0, 1)):
             raise ValueError("an actionable side is ahead of the causal pair timeline")
-        if previous is None and need != (True, True):
+        if event_public:
+            visible = runner.settled_public()
+            if int(visible.frame) != now:
+                raise ValueError("native public timeline and output buffers disagree")
+            sides = tuple(
+                VisibleSideState(
+                    board=bytes(side.board),
+                    pill=tuple(side.pill),
+                    preview=tuple(side.preview),
+                    active=None,
+                    viruses_remaining=int(side.viruses_remaining),
+                    animation_phase=("unknown", "resolving", "decision")[side.phase],
+                    state_age_frames=max(0, now - int(side.observed_frame)),
+                )
+                for side in visible.sides
+            )
+        elif previous is None and need != (True, True):
             raise ValueError(
                 "causal public capture must start at a fresh joint decision or carry its previous view"
             )
@@ -292,7 +314,7 @@ def capture_native_state(
             before = previous.privileged.public
             if now < before.frame_id:
                 raise ValueError("causal public time moved backwards")
-            sides = tuple(
+            sides = sides if event_public else tuple(
                 replace(
                     before.sides[side],
                     active=None,
@@ -340,7 +362,8 @@ def capture_native_state(
             if viruses_initial is not None
             else (min(84, 4 * (int(level) + 1)),) * 2
         ),
-        public_observation_schema=CAUSAL_PUBLIC_SCHEMA if causal_public else LEGACY_PUBLIC_SCHEMA,
+        public_observation_schema=(EVENT_PUBLIC_SCHEMA if event_public else
+                                   CAUSAL_PUBLIC_SCHEMA if causal_public else LEGACY_PUBLIC_SCHEMA),
     )
 
 

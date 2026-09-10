@@ -95,8 +95,10 @@ class PlainPolicy:
 
     def model_inputs(self, obs: np.ndarray, infos: List[Dict[str, Any]]):
         """Pack the full validated public frontier for inference or learning."""
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMAS
+
         if getattr(self, "requires_causal_observations", False) and any(
-            info.get("vs/observation_timeline") != "causal-settled-pair-v1" for info in infos
+            info.get("vs/observation_timeline") not in CAUSAL_PUBLIC_SCHEMAS for info in infos
         ):
             raise ValueError("this checkpoint requires an explicit causal observation timeline")
         if (self.public_only or getattr(self, "requires_causal_observations", False)) and any(

@@ -66,6 +66,7 @@ gates:
     depends_on: [pair-state-v2, timing-action-gate]
     criteria:
       - Search advances single-side, simultaneous, deterministic, and chance events causally.
+      - Native event observations are independent of host polling and preserve their causal history through branch restore before reveal boundaries are collapsed.
       - Same-weight paired evaluation beats the unsearched policy with confidence.
       - Public-information search does not consume privileged-only fields at deployment.
   psro-population:

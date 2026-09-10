@@ -69,7 +69,7 @@ reproduced two hidden opponent commitments with different future bottle cells
 and endpoint clocks while the viewer was still parked at the same decision.
 Removing pending-attack scalars alone did not prevent this leak.
 
-New offline public continuations require `causal-settled-pair-v1`. Starting at
+The frozen public studies use `causal-settled-pair-v1`. Starting at
 a fresh joint decision, capture carries the previous public view through exact
 branches. An ahead-of-time warped side retains its last observed bottle and
 pill context, with explicit snapshot age and unknown active phase. It refreshes
@@ -98,6 +98,34 @@ Historical `legacy-warp-buffer-v1` rows cannot initialize this timeline and
 are rejected by `PublicPolicyContinuation`. Preserve them as historical
 teacher evidence, never relabel them as fair public observations. Frame/event
 controller rollouts use actual per-frame state and do not use this warp path.
+
+V1 retains the last Python-captured public bottle. It is conservative, but
+different polling schedules can retain different bottles at the same later
+decision. The rejected complete-reserve shortcut reproduced this without a
+physics difference. Preserve V1 and its fixed polling schedule for existing
+studies; their inputs and labels have not been silently migrated.
+
+`causal-settled-pair-v2` moves settled-observation bookkeeping into native
+events. Select it explicitly with `capture_native_state(..., event_public=True)`;
+subsequent branches inherit it. Each side retains its visible sample and at
+most two pending samples: a one-frame-ahead boundary and an atomic fall
+endpoint. Samples become visible only when the causal pair clock catches up.
+Reads are const, and the public API never exports a future warp endpoint or
+committed pose. A parked P1 can retain its one-frame-ahead own decision state,
+consistent with the engine's within-frame ordering. The contract still omits
+falling animation; the actual frame controller keeps its separate exact public
+history and incurs no settled-observer copies.
+
+Native snapshot V2 appends this observer state to the unchanged physics body.
+Restoring V1 preserves its original bytes and leaves the new observer unavailable;
+legacy non-strict and forced-spectator stepping also invalidate it. Reset starts
+a new valid timeline. A missing observer fails rather than inventing history.
+V2 public trajectories require their V2 snapshots and cannot be made by relabeling
+V1 rows. On 32 natural audit games, all 964 physics snapshots matched native
+`e0162ed` exactly and all observer restores matched. Dense, sparse and automatic
+reveal advancement also produced identical V2 inputs across eight natural games.
+This enables further bulk-reserve experiments; it does not itself certify a
+new continuation policy, Q corpus, throughput gain or search-strength gain.
 
 ### PrivilegedPairState
 

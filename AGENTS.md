@@ -30,8 +30,11 @@ gate that must be completed first.
   restricted to critics, search teachers, counterfactual labels, and parity.
   Hidden RNG or internal attack state must never leak into a public actor.
   The old native SMDP buffers can also contain a future opponent lock after a
-  fall warp. New offline public data must carry `causal-settled-pair-v1`;
-  zeroing auxiliary fields alone does not establish a causal observation.
+  fall warp. Offline public data must declare `causal-settled-pair-v1` or the
+  explicitly selected native event timeline `causal-settled-pair-v2`, with a
+  fixed observation contract per experiment. Never relabel a V1 trajectory as
+  V2 or reconstruct missing history from raw warped buffers. Zeroing auxiliary
+  fields alone does not establish a causal observation.
 - The target competitive model is the asynchronous **full pair game**. New
   search work implements `drmc_rl.search.joint_event.PairSearchModel`; do not
   extend the own-board depth-2 approximation into another permanent stack.

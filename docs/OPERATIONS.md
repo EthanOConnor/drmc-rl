@@ -803,6 +803,25 @@ must include the quarantine guard in `6d7e05a` or later. These studies do not
 complete the independent larger-teacher and student-distillation program or
 promote a model.
 
+Native `23411a5` adds `drm_vspool_settled_public`, exposed by
+`DrMarioVsPoolRunner.settled_public()`. A fresh placement reset records a native
+event timeline; `capture_native_state(..., event_public=True)` chooses the new
+`causal-settled-pair-v2` contract. Later captures and search branches inherit it.
+V2 snapshots append observer history, while old V1 snapshots remain exactly
+restorable with the new public API unavailable. Never use an old snapshot's
+current raw bottle to initialize this history. Non-strict/forced stepping also
+invalidates it; the frame controller uses its own public history.
+The isolated Mac library is `drmario-native/build-event-public/libdrmario_pool.dylib`.
+Thirty-nine focused Mac checks cover public capture, hidden commitments,
+inference, old/new restore, controller physics and the unchanged independent
+NES demo. A separate 32-game audit under
+`review-20260909/event-public-audit` matches all 964 physics snapshots with
+`e0162ed`, including seven one-frame-ahead inputs; every observer roundtrip
+matches. Four native snapshot/ABI tests also pass on tf3090 Linux from
+`/dev/shm/pp-event-public-native-23411a5`. No running study was migrated and no
+complete-reserve shortcut is enabled. V2 corpus collection and selected-reserve
+rollout benchmarking must use new experiment identities.
+
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
 `opponents`, `conditions` (level/speed/pace), `confirmation_seeds`, `score_margin`,

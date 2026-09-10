@@ -133,9 +133,9 @@ class PublicPolicyContinuation:
         return [(dict(values[key][0]), values[key][1]) for key in keys]
 
     def _policy_key(self, state, side):
-        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMAS
 
-        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+        if state.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
             raise ValueError("public continuation requires a causal public timeline")
         if not state.privileged.need_action[side]:
             raise ValueError("public continuation requires an acting side")
@@ -152,9 +152,9 @@ class PublicPolicyContinuation:
     def _infer_uncached(self, requests):
         observations, infos = [], []
         for state, side in requests:
-            from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+            from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMAS
 
-            if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+            if state.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
                 raise ValueError(
                     "public continuation requires a causal public timeline; legacy warped buffers expose future locks"
                 )
@@ -188,9 +188,9 @@ class PublicPolicyContinuation:
 
     @staticmethod
     def _request_key(state, side):
-        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMAS
 
-        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+        if state.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
             raise ValueError(
                 "public continuation requires a causal public timeline; legacy warped buffers expose future locks"
             )

@@ -117,6 +117,22 @@ class _DrmVsPoolOutputs(C.Structure):
     ]
 
 
+class _DrmVsSettledSide(C.Structure):
+    _fields_ = [
+        ("observed_frame", C.c_uint64),
+        ("board", C.c_uint8 * 128),
+        ("pill", C.c_uint8 * 2),
+        ("preview", C.c_uint8 * 2),
+        ("viruses_remaining", C.c_uint16),
+        ("phase", C.c_uint8),
+        ("_pad", C.c_uint8),
+    ]
+
+
+class _DrmVsSettledPublic(C.Structure):
+    _fields_ = [("frame", C.c_uint64), ("sides", _DrmVsSettledSide * 2)]
+
+
 @dataclass(frozen=True)
 class VsVolley:
     """One garbage release event (checkReleaseAttack on the receiver's board)."""
@@ -195,6 +211,7 @@ class DrMarioVsPoolRunner:
         restore = getattr(self._lib, "drm_vspool_restore", None)
         reveal_info = getattr(self._lib, "drm_vspool_search_reveal_info", None)
         search_reveal = getattr(self._lib, "drm_vspool_search_reveal", None)
+        settled_public = getattr(self._lib, "drm_vspool_settled_public", None)
         inject = getattr(self._lib, "drm_vspool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
             raise DrMarioPoolError(f"{path} does not export the required drm_vspool_* symbols")
@@ -276,6 +293,11 @@ class DrMarioVsPoolRunner:
                 C.POINTER(_DrmVsPoolOutputs),
             ]
             inject.restype = C.c_int
+        if settled_public is not None:
+            settled_public.argtypes = [
+                C.c_void_p, C.c_uint32, C.POINTER(_DrmVsSettledPublic), C.c_size_t,
+            ]
+            settled_public.restype = C.c_int
 
         self._destroy_fn = destroy
         self._reset_fn = reset
@@ -287,6 +309,7 @@ class DrMarioVsPoolRunner:
         self._reveal_info_fn = reveal_info
         self._search_reveal_fn = search_reveal
         self._inject_fn = inject
+        self._settled_public_fn = settled_public
 
         cfg = _DrmVsPoolConfig()
         cfg.protocol_version = DRMARIO_VSPOOL_PROTOCOL_VERSION
@@ -547,6 +570,25 @@ class DrMarioVsPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_vspool_search_reveal failed with rc={rc}")
         self._solve_deferred()
+
+    def settled_public(self, pair_index: int = 0) -> _DrmVsSettledPublic:
+        """Read the native event timeline without advancing or mutating it.
+
+        Legacy engine snapshots lack this history. A fresh reset or a V2
+        snapshot is required; raw future bottles cannot reconstruct it.
+        """
+        if self._settled_public_fn is None:
+            raise DrMarioPoolError("native library lacks polling-independent public observations")
+        pair = int(pair_index)
+        if not 0 <= pair < self.num_pairs:
+            raise IndexError(pair)
+        result = _DrmVsSettledPublic()
+        rc = int(self._settled_public_fn(self._handle, pair, C.byref(result), C.sizeof(result)))
+        if rc == -3:
+            raise DrMarioPoolError("causal observation history unavailable; reset or restore a V2 snapshot")
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_settled_public failed with rc={rc}")
+        return result
 
     def snapshot(self, pair_index: int) -> bytes:
         """Return the canonical, pointer-free native snapshot for one pair."""

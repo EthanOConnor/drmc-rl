@@ -93,6 +93,17 @@ states, four natural games, no capped outcomes and two compatible seed
 hypotheses per selected state. It is a mechanics/teacher pilot, not sufficient
 population diversity for promotion.
 
+That V1 requirement describes the frozen source/label studies below. Native
+`23411a5` additionally supports an explicit `causal-settled-pair-v2` event
+timeline, selected by `capture_native_state(..., event_public=True)`. It removes
+the dependence on Python polling while preserving causal settled bottles.
+V2 snapshots include its history; old snapshots cannot reconstruct it. Existing
+source collection and quality fitting retain V1 and remain unchanged. Use a
+separate declared corpus/continuation contract for V2 experiments, with fresh
+V2 source trajectories and full label agreement checks before replacing a
+driver. Do not relabel the current broad bank or install new libraries into its
+running source snapshot. See DESIGN for the native observation boundary.
+
 `paired-terminal-quality` continues every legal root over identical distinct
 complete reserves and a named actor/opponent panel. The initial panel crosses
 the installed 10M public core and frozen public bootstrap, under native SMDP

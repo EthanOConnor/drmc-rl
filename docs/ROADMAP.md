@@ -382,8 +382,13 @@ indefinitely staged.
   measured compute delay and test opponent-context ablations. Integrate the
   successful approach into live planning and run substantial controller
   tournaments. Frontier batching alone does not complete this item.
-  Make public observation updates independent of internal search polling
-  cadence before collapsing complete-reserve rollouts into strict transitions.
+  Native event bookkeeping now implements an explicitly selected V2 public
+  timeline independent of internal search polling, with versioned observer
+  restore and hidden-commitment protection. Dense, sparse and automatic reveal
+  advancement agree across eight natural games; 964 physics snapshots in 32
+  games exactly match the prior engine. Actual public inference and Mac/Linux
+  snapshot checks pass. Complete-reserve hypothesis execution and its throughput
+  comparison remain to be implemented on this new contract before adoption.
   The initial bulk-reserve prototype changed the retained opponent bottle on
   some decisions and was rejected; its reproduction is retained under
   `runs/review-20260909/prefilled-reserve-audit`. The separate native reveal
