@@ -541,7 +541,7 @@ Payoff cells are
 supervised targets only: the action decoder receives predicted spatial and
 duration distributions during both fitting and execution. It never receives
 the future bottle or true remaining construction length. A selected persistent
-plan keeps its root features and spatial target while reading current inputs,
+plan under `fixed-root-v1` keeps its root features and spatial target while reading current inputs,
 and ends on the matching colored location/geometry, surprise, terminal or
 placement budget. A distinct stateless network of the same size and initial
 weights is trained on the same sessions, predicting afresh each placement.
@@ -551,6 +551,20 @@ scores still use actual human intermediate states; they are not autonomous
 play, motor-feasibility evidence or competitive noninferiority. The existing
 validation sessions are development data, so fresh replay confirmation and
 quality-admitted persistent games remain necessary.
+
+The explicit `recurrent-public-v1` variant refreshes its spatial plan and
+remaining-duration prediction from a GRU over actual public decision inputs.
+Training unrolls only the causal prefix; future payoff, goal labels and true
+duration never enter recurrent memory. Both arms have the same parameter count,
+initialization, root-selected intent and elapsed-placement input. The stateless
+control resets only the recurrent hidden state. Repeated runtime requests
+replace the current decision's provisional memory, including a changed visible
+preview; an observed completed placement commits it once for the next turn.
+The original 2–6-placement cap remains fixed, and actual payoff or board
+surprises terminate the proposal. Refreshed duration predictions condition
+action ranking but cannot extend that cap. Checkpoints declare the update
+schema, preserving the earlier fixed-root experiment. This implementation
+does not establish a persistence benefit or admit a competitive sacrifice.
 
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor

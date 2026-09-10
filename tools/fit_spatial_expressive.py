@@ -16,7 +16,7 @@ from drmc_rl.game.cascade import resolve_cascade
 from drmc_rl.game.observation import board_bytes_to_semantic_planes
 from drmc_rl.human.expressive_sequences import SCHEMA as SOURCE_SCHEMA, locked_field
 from drmc_rl.human.spatial_proposer import (
-    COLOR_MAP, SCHEMA, FrozenConstructionEncoder, SpatialProposer, spatial_clear_target,
+    COLOR_MAP, FIXED_ROOT, SCHEMA, FrozenConstructionEncoder, SpatialProposer, spatial_clear_target,
 )
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 from tools.build_expressive_sequences import write_progress
@@ -32,6 +32,24 @@ def sha256(path):
 
 
 def prepare_data(config, output, report):
+    if config.get('prepared_from'):
+        previous_path = Path(config['prepared_from'])
+        previous = json.loads(previous_path.read_text())
+        if (previous.get('status') != 'Complete' or previous.get('schema') != SCHEMA
+                or previous.get('source_sha256') != sha256(config['source'])
+                or previous.get('competitive_sha256') != sha256(config['checkpoint'])):
+            raise ValueError('prepared features require the identical completed source and competitive checkpoint')
+        prepared = Path(previous.get('prepared_source', previous_path.parent/'prepared.npz'))
+        if sha256(prepared) != previous.get('prepared_sha256'):
+            raise ValueError('prepared feature content changed')
+        with np.load(prepared, allow_pickle=False) as archive:
+            data = {k:archive[k] for k in archive.files}
+        report.update({k:previous[k] for k in ('competitive_aux_spec','unique_public_inputs',
+            'feature_rows','targets','unique_payoffs')})
+        report.update(phase='reused_features', prepared_source=str(prepared.resolve()),
+            prepared_sha256=previous['prepared_sha256'], prepared_from_sha256=sha256(previous_path))
+        write_progress(output, report)
+        return data
     from tools.eval_policy import _build_net_from_cfg
 
     with np.load(config['source'], allow_pickle=False) as archive:
@@ -99,16 +117,16 @@ def prepare_data(config, output, report):
     return data
 
 
-def batch(data, ids, device, persistent):
+def batch(data, ids, device, persistent, *, replanning=False):
     memory, current, goal, horizon, elapsed, owner, window, remaining = [],[],[],[],[],[],[],[]
     for slot,i in enumerate(ids):
         start,length,g,_ = map(int,data['windows'][i])
         for step in range(length):
-            memory.append(start if persistent else start+step)
+            memory.append(start if persistent and not replanning else start+step)
             current.append(start+step)
             goal.append(g)
-            horizon.append(length-1 if persistent else length-step-1)
-            elapsed.append(step if persistent else 0)
+            horizon.append(length-1 if persistent and not replanning else length-step-1)
+            elapsed.append(step if persistent or replanning else 0)
             remaining.append(length-step)
             owner.append(slot)
             window.append(i)
@@ -122,7 +140,7 @@ def batch(data, ids, device, persistent):
     return inputs(memory),inputs(current),integers,torch.as_tensor(data['spatial_targets'][window],device=device)
 
 
-def training_priors(data,training,persistent):
+def training_priors(data,training,persistent,*,replanning=False):
     """Whole-session-weighted goal/pill/preview priors; no holdout observations."""
     counts = Counter(int(data['windows'][i,3]) for i in training)
     spatial,horizon,intent = np.zeros((4,81,384)),np.zeros((4,81,6)),np.zeros((81,4))
@@ -130,11 +148,11 @@ def training_priors(data,training,persistent):
         start,length,goal,session = map(int,data['windows'][i])
         weight = len(training)/(len(counts)*counts[session]*length)
         for step in range(length):
-            index = data['feature_index'][start if persistent else start+step]
+            index = data['feature_index'][start if persistent and not replanning else start+step]
             pill,preview = data['canonical_pill'][index],data['canonical_preview'][index]
             pair = int((3*pill[0]+pill[1])*9+3*preview[0]+preview[1])
             spatial[goal,pair] += weight*data['spatial_targets'][i]
-            horizon[goal,pair,length-1 if persistent else length-step-1] += weight
+            horizon[goal,pair,length-1 if persistent and not replanning else length-step-1] += weight
             intent[pair,goal] += weight
     def smooth(array):
         marginal = array.sum(-2,keepdims=True)+1e-3
@@ -144,8 +162,11 @@ def training_priors(data,training,persistent):
 
 
 def losses(model,data,ids,device,persistent,*,free=False,priors=None):
-    root_inputs,current_inputs,(goal,horizon,elapsed,owner,action,remaining),target = batch(data,ids,device,persistent)
-    memory,current = model.encode(*root_inputs),model.encode(*current_inputs)
+    root_inputs,current_inputs,(goal,horizon,elapsed,owner,action,remaining),target = batch(
+        data,ids,device,persistent,replanning=model.replanning)
+    current = model.encode(*current_inputs)
+    memory = (model.sequence_memory(current,owner,elapsed,len(ids)) if model.replanning
+              else model.encode(*root_inputs))
     logits,spatial,duration = model(memory,current,goal,elapsed)
     values = dict(action_nll=F.cross_entropy(logits,action,reduction='none'),
         spatial_nll=-(target*F.log_softmax(spatial,-1)).sum(-1),
@@ -155,6 +176,10 @@ def losses(model,data,ids,device,persistent,*,free=False,priors=None):
         spatial_anchor_hit=target.gather(1,spatial.argmax(-1)[:,None]).squeeze(1).gt(0).float())
     if free:
         autonomous_goal = model.intent(memory).argmax(-1)
+        if model.replanning:
+            # Both controls hold the goal chosen at the actual opening state.
+            # Later human states cannot choose a more convenient root intent.
+            autonomous_goal = autonomous_goal[elapsed == 0][owner]
         autonomous,_,_ = model(memory,current,autonomous_goal,elapsed)
         values.update(predicted_goal_action_nll=F.cross_entropy(autonomous,action,reduction='none'),
                       predicted_goal_action_agreement=(autonomous.argmax(-1)==action).float())
@@ -215,8 +240,9 @@ def fit_models(data,config,output,report):
         torch.manual_seed(int(config.get('seed',19473)))
         rng = np.random.default_rng(int(config.get('seed',19473)))
         model = SpatialProposer(data['features'].shape[1],int(config.get('width',128)),
-                                persistent=persistent).to(device)
-        priors = {k:torch.as_tensor(v,device=device) for k,v in training_priors(data,training,persistent).items()}
+            persistent=persistent,plan_update_schema=config.get('plan_update_schema',FIXED_ROOT)).to(device)
+        priors = {k:torch.as_tensor(v,device=device) for k,v in training_priors(
+            data,training,persistent,replanning=model.replanning).items()}
         optimizer = torch.optim.AdamW(model.parameters(),lr=float(config.get('learning_rate',3e-4)))
         arm = dict(status='Running',window_presentations=0,action_presentations=0,epochs=[])
         report['arms'][name] = arm
@@ -252,6 +278,7 @@ def fit_models(data,config,output,report):
             print(json.dumps(dict(arm=name,**arm['epochs'][-1])),flush=True)
             write_progress(output,report)
         checkpoint = dict(schema=SCHEMA,feature_dim=model.feature_dim,width=model.width,
+            plan_update_schema=model.plan_update_schema,
             persistent=persistent,state_dict={k:v.detach().cpu() for k,v in model.state_dict().items()},
             source_sha256=report['source_sha256'],competitive_sha256=report['competitive_sha256'],
             feature_contract='frozen-legacy-own-bottle-mean-max-v1',diagnostic_only=True,

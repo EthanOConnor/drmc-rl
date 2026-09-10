@@ -110,6 +110,8 @@ recipes:
     resources:
       preferred_host: local
       accelerator: mps
+    notes:
+      - exclude_sources must include earlier confirmation banks for an architecture chosen after those results; reject both session aliases and reused content.
   trainer-spatial-expressive-study:
     status: active
     stage: 4
@@ -124,6 +126,8 @@ recipes:
     notes:
       - Only actual own-board and visible pill inputs enter the frozen competitive encoder. Own-only replays cannot supply a full public-history core.
       - Spatial payoff and duration are supervised targets, never action-decoder inputs. Both arms decode predicted plans and retain complete feasible inventories at execution.
+      - recurrent-public-v1 updates plans on actual decision prefixes. The equal-capacity stateless control resets only recurrent history; both receive current inputs, root intent and elapsed placements.
+      - prepared_from may reuse completed full-precision features only when source, competitive checkpoint and prepared content hashes agree; it adds no training examples.
       - Existing validation sessions are development data. Fresh replay confirmation, calibrated quality admission and actual persistent strength/preference evaluation remain required.
   trainer-adaptive-search-audit:
     status: active

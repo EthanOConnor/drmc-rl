@@ -9,7 +9,7 @@ from drmc_rl.game.cascade import resolve_cascade
 from drmc_rl.game.observation import board_bytes_to_semantic_planes
 from drmc_rl.human.expressive_sequences import locked_field
 from drmc_rl.human.spatial_proposer import (
-    FrozenConstructionEncoder, SpatialProposal, SpatialProposer, spatial_clear_target,
+    FIXED_ROOT, RECURRENT_PUBLIC, FrozenConstructionEncoder, SpatialProposal, SpatialProposer, spatial_clear_target,
 )
 from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 from tools.fit_expressive_proposer import session_validation
@@ -131,7 +131,8 @@ def test_preparation_loads_checkpoint_and_deduplicates_only_actual_inputs(tmp_pa
     np.testing.assert_array_equal(data['spatial_targets'][0],expected.ravel())
 
 
-def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets(tmp_path):
+@pytest.mark.parametrize('plan_update_schema',[FIXED_ROOT,RECURRENT_PUBLIC])
+def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets(tmp_path,plan_update_schema):
     torch.set_num_threads(1)
     sessions = ([f's{i}' for i in range(100) if not session_validation(f's{i}',81029)][:2]+
                 [f's{i}' for i in range(100) if session_validation(f's{i}',81029)][:2])
@@ -141,7 +142,7 @@ def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets
         canonical_preview=np.ones((12,2),np.int64),feature_index=np.arange(12),
         action=np.asarray([123,124,125]*4),windows=np.asarray([[i*3,3,0,i] for i in range(4)]),
         spatial_targets=np.full((4,384),1/384,np.float32),sessions=np.asarray(sessions))
-    config=dict(epochs=2,batch_windows=2,width=8,threads=1)
+    config=dict(epochs=2,batch_windows=2,width=8,threads=1,plan_update_schema=plan_update_schema)
     results = []
     for attempt in range(2):
         output=tmp_path/str(attempt)
@@ -157,7 +158,8 @@ def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets
         a=torch.load(tmp_path/'0'/f'{name}-final.pt',weights_only=False)
         b=torch.load(tmp_path/'1'/f'{name}-final.pt',weights_only=False)
         assert all(torch.equal(v,b['state_dict'][k]) for k,v in a['state_dict'].items())
-        loaded=SpatialProposer(a['feature_dim'],a['width'],persistent=a['persistent'])
+        loaded=SpatialProposer(a['feature_dim'],a['width'],persistent=a['persistent'],
+                               plan_update_schema=a['plan_update_schema'])
         loaded.load_state_dict(a['state_dict'],strict=True)
         assert results[0]['arms'][name]['action_presentations']==12
         assert results[0]['arms'][name]['final']!=results[1]['arms'][name]['final']
@@ -168,7 +170,8 @@ def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets
     json.dumps(results[0],allow_nan=False)
 
 
-def test_fresh_confirmation_has_no_optimizer_and_rejects_reused_content(tmp_path,monkeypatch):
+@pytest.mark.parametrize('plan_update_schema',[FIXED_ROOT,RECURRENT_PUBLIC])
+def test_fresh_confirmation_has_no_optimizer_and_rejects_reused_content(tmp_path,monkeypatch,plan_update_schema):
     from tools import confirm_spatial_expressive as confirm
     from tools.fit_spatial_expressive import sha256
     from drmc_rl.human.spatial_proposer import SCHEMA
@@ -190,10 +193,11 @@ def test_fresh_confirmation_has_no_optimizer_and_rejects_reused_content(tmp_path
         raise AssertionError('confirmation cannot construct an optimizer')
     monkeypatch.setattr(torch.optim,'AdamW',no_optimizer)
     study=dict(schema=SCHEMA,status='Complete',source_sha256=sha256(earlier),competitive_sha256=sha256(core),
-               config=dict(source=str(earlier),checkpoint=str(core)),arms={})
+               config=dict(source=str(earlier),checkpoint=str(core),plan_update_schema=plan_update_schema),arms={})
     for name in ('persistent','stateless'):
-        model=SpatialProposer(8,8,persistent=name=='persistent')
+        model=SpatialProposer(8,8,persistent=name=='persistent',plan_update_schema=plan_update_schema)
         checkpoint=dict(schema=SCHEMA,persistent=model.persistent,feature_dim=8,width=8,
+            plan_update_schema=plan_update_schema,
             source_sha256=study['source_sha256'],competitive_sha256=study['competitive_sha256'],
             state_dict=model.state_dict(),training_priors=dict(spatial=torch.full((4,81,384),1/384),
                 horizon=torch.full((4,81,6),1/6),intent=torch.full((81,4),1/4)))
@@ -212,3 +216,112 @@ def test_fresh_confirmation_has_no_optimizer_and_rejects_reused_content(tmp_path
     with pytest.raises(ValueError,match='reuses development'):
         confirm.run({**config,'output':str(tmp_path/'must-not-exist')})
     assert not (tmp_path/'must-not-exist').exists()
+    previous=tmp_path/'earlier-confirmation.npz'
+    source(previous,[dict(session='confirmed',sha256='confirmation-blob')])
+    source(fresh,[dict(session='alias',sha256='confirmation-blob')])
+    with pytest.raises(ValueError,match='earlier evaluation'):
+        confirm.run({**config,'exclude_sources':[str(previous)],'output':str(tmp_path/'must-not-exist')})
+    assert not (tmp_path/'must-not-exist').exists()
+
+
+def test_recurrent_prefixes_are_causal_differentiable_and_match_event_runtime():
+    torch.manual_seed(32)
+    current=torch.randn(5,8,requires_grad=True)
+    owner=torch.tensor([0,0,0,1,1])
+    elapsed=torch.tensor([0,1,2,0,1])
+    persistent=SpatialProposer(8,8,plan_update_schema=RECURRENT_PUBLIC)
+    control=SpatialProposer(8,8,persistent=False,plan_update_schema=RECURRENT_PUBLIC)
+    control.load_state_dict(persistent.state_dict(),strict=True)
+    actual=persistent.sequence_memory(current,owner,elapsed,2)
+    expected=[]
+    for start,length in [(0,3),(3,2)]:
+        previous=torch.zeros(1,8)
+        for row in range(start,start+length):
+            previous=persistent.update_memory(current[row:row+1],previous)
+            expected.append(previous[0])
+    torch.testing.assert_close(actual,torch.stack(expected))
+    changed=current.detach().clone()
+    changed[[2,4]] += 100
+    revised=persistent.sequence_memory(changed,owner,elapsed,2)
+    torch.testing.assert_close(actual[[0,1,3]],revised[[0,1,3]],rtol=0,atol=0)
+    grad=torch.autograd.grad(actual[2].sum(),current,retain_graph=True)[0]
+    assert grad[:2].abs().sum()>0 and grad[3:].count_nonzero()==0
+    reset=control.sequence_memory(current,owner,elapsed,2)
+    grad=torch.autograd.grad(reset[2].sum(),current)[0]
+    assert grad[:2].count_nonzero()==0 and grad[2].abs().sum()>0
+    torch.testing.assert_close(actual[[0,3]],reset[[0,3]])
+    _,duration=persistent.plan_at(actual,torch.zeros(5,dtype=torch.long),elapsed)
+    assert torch.isneginf(duration[elapsed==0,0]).all()
+    assert torch.isfinite(duration[elapsed>0]).all()
+
+
+def test_replanning_revises_current_slot_and_commits_only_unique_placement_events():
+    torch.manual_seed(89)
+    model=SpatialProposer(8,8,plan_update_schema=RECURRENT_PUBLIC).eval()
+    with torch.no_grad():
+        model.horizon.weight.zero_()
+        model.horizon.bias.fill_(-20)
+        model.horizon.bias[2]=20
+    inputs=(torch.zeros(1,8,16,8),torch.zeros(1,8),torch.tensor([[0,1]]),torch.tensor([[2,2]]))
+    proposal=SpatialProposal.start(model,inputs,frame=1,goal=0)
+    assert proposal.remaining==3
+    ranking=proposal.rank(model,inputs,list(range(512)))
+    memory,spatial=proposal.memory.clone(),proposal.spatial.clone()
+    assert proposal.rank(model,inputs,list(range(512)))==ranking
+    assert torch.equal(proposal.memory,memory) and len(set(ranking))==512
+    changed=(*inputs[:3],torch.tensor([[0,0]]))
+    proposal.rank(model,changed,list(range(512)))
+    assert not torch.equal(proposal.memory,memory) and not torch.equal(proposal.spatial,spatial)
+    assert proposal.committed_memory.count_nonzero()==0 and proposal.remaining==3
+    committed=proposal.memory.clone()
+    proposal.observe(frame=2,completed_placement=True)
+    proposal.observe(frame=2,completed_placement=True)
+    torch.testing.assert_close(proposal.committed_memory,committed,rtol=0,atol=0)
+    assert proposal.remaining==2 and proposal.elapsed==1
+    with torch.inference_mode():
+        expected=model.update_memory(model.encode(*inputs),committed)
+    proposal.rank(model,inputs,[123,124])
+    torch.testing.assert_close(proposal.memory,expected,rtol=0,atol=0)
+    assert proposal.remaining==2  # Revised predictions cannot extend the root budget.
+    proposal.observe(frame=3,completed_placement=True)
+    proposal.observe(frame=4,completed_placement=True)
+    assert proposal.reason=='placement_budget' and proposal.rank(model,inputs,[123])==[]
+    for event,reason in [(dict(incoming_garbage=True),'board_changed'),
+                         (dict(own_state_mismatch=True),'board_changed'),(dict(terminal=True),'terminal')]:
+        fresh=SpatialProposal.start(model,inputs,frame=10)
+        fresh.observe(frame=11,**event)
+        assert fresh.reason==reason and fresh.rank(model,inputs,[123])==[]
+
+
+def test_prepared_feature_reuse_requires_unchanged_source_encoder_and_content(tmp_path):
+    from tools.fit_spatial_expressive import sha256
+    from drmc_rl.human.spatial_proposer import SCHEMA
+
+    source,core=tmp_path/'source.npz',tmp_path/'core.pt'
+    source.write_bytes(b'verified replay source')
+    core.write_bytes(b'frozen competitive model')
+    np.savez_compressed(tmp_path/'prepared.npz',features=np.arange(8,dtype=np.float32))
+    previous=dict(schema=SCHEMA,status='Complete',source_sha256=sha256(source),
+        competitive_sha256=sha256(core),prepared_sha256=sha256(tmp_path/'prepared.npz'),
+        competitive_aux_spec='none',unique_public_inputs=1,feature_rows=1,targets=1,unique_payoffs=1)
+    study=tmp_path/'progress.json'
+    study.write_text(json.dumps(previous))
+    output=tmp_path/'reuse'
+    output.mkdir()
+    config=dict(source=str(source),checkpoint=str(core),prepared_from=str(study))
+    report={}
+    data=prepare_data(config,output,report)
+    np.testing.assert_array_equal(data['features'],np.arange(8,dtype=np.float32))
+    assert report['prepared_source']==str(tmp_path/'prepared.npz')
+    assert not (output/'prepared.npz').exists()
+    core.write_bytes(b'changed model')
+    with pytest.raises(ValueError,match='identical completed source'):
+        prepare_data(config,output,{})
+    core.write_bytes(b'frozen competitive model')
+    source.write_bytes(b'changed replay')
+    with pytest.raises(ValueError,match='identical completed source'):
+        prepare_data(config,output,{})
+    source.write_bytes(b'verified replay source')
+    (tmp_path/'prepared.npz').write_bytes(b'corrupt features')
+    with pytest.raises(ValueError,match='feature content changed'):
+        prepare_data(config,output,{})

@@ -1451,9 +1451,17 @@ full-precision features and exact spatial target distributions. Two independentl
 optimized arms start from the same seed and consume the same session-weighted
 examples in the same order. The persistent arm's action decoder already sees
 both fixed root memory and actual current-state features. Its spatial and
-duration plan is predicted from the root; the stateless control refreshes that
-plan from each actual current state. A subsequent event-driven revision must
-address plan updating or abandonment, rather than add an input already present.
+duration plan is predicted from the root under the original `fixed-root-v1`
+contract; the stateless control refreshes that plan from each actual current
+state. The explicit `plan_update_schema: recurrent-public-v1` instead trains a
+GRU on the causal sequence of actual current inputs. Both independently trained
+arms have the same GRU capacity, elapsed-placement input and root-selected goal;
+the control resets only hidden history. Spatial and remaining-duration plans
+are updated at every actual decision. Duration class one is allowed after the
+root; the initial 2–6-placement execution budget cannot grow. Repeated runtime
+ranking revises the current slot without appending history. Only a unique
+completed-placement event commits memory. Existing termination on payoff,
+garbage, mismatches, terminal state and exhausted budget still applies.
 Both action decoders consume
 predicted plans, never payoff labels or true future duration. The fixed-final
 checkpoints and paired whole-session descriptive comparisons are retained.
@@ -1465,11 +1473,21 @@ plan termination and altered intermediate states require actual execution.
 Fresh replay confirmation is separate from these previously used development
 sessions. Ordinary competitive weights and product routing remain unchanged.
 
+Set `prepared_from` to a completed study's `progress.json` to reuse its exact
+full-precision features and targets without copying or extracting them again.
+The source bank, competitive checkpoint and prepared file hashes must match;
+the output records the original prepared path and identity. This changes no
+examples or split. Each new checkpoint declares its plan-update schema, and
+confirmation rejects a schema mismatch before loading its weights.
+
 `trainer-spatial-expressive-confirmation` takes `spatial_confirmation_config`
 with the completed fixed study's `progress.json` under `study`, a fresh verified
 sequence `source`, and new `output`. It verifies the original data, competitive
 checkpoint and both proposal checkpoint hashes, and rejects any session-ID or
-blob-content overlap with development. Shared feature extraction has the same
+blob-content overlap with development. Supply `exclude_sources` for every
+earlier confirmation bank that preceded selection of the new architecture;
+these session IDs and content hashes are also rejected before output creation.
+Shared feature extraction has the same
 device/batch settings as fitting. Both heads and their training-only priors are
 loaded unchanged; no optimizer or checkpoint selection is available. It reports
 paired whole-session intervals and distinct evaluated-window/action counts,

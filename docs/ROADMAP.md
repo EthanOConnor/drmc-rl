@@ -647,9 +647,16 @@ indefinitely staged.
   do not install the persistent head. Code inspection confirms that the spatial
   move decoder already sees both current-state features and fixed root memory.
   Its spatial/duration plan stays rooted at the initial decision. The next
-  bounded mechanism must revise that plan or abandon it as actual pills and
-  board events arrive; simply adding current-state features would repeat an
-  existing input. Calibrated local quality admission, actual persistent
+  bounded mechanism is implemented as explicit `recurrent-public-v1`: a GRU
+  updates location and remaining-duration predictions from actual decision
+  prefixes. Its separately trained control has identical capacity and inputs
+  but resets hidden history. Both hold the root-selected intent during the
+  recorded-prefix comparison. Runtime commits history once per completed
+  placement, so preview revisions and repeated rankings cannot advance memory
+  or extend the initial placement budget. This is a new mechanism, not evidence
+  that persistence now helps. Fixed-schedule training and new confirmation
+  exclude both earlier banks' 768 session/content identities from confirmation.
+  Calibrated local quality admission, actual persistent
   games and blind preferences remain open; this result does not cancel E7.
 
 This task owns the continuation; its hourly follow-up checks the active studies

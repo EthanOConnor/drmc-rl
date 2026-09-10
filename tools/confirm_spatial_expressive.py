@@ -9,7 +9,7 @@ import time
 import numpy as np
 import torch
 
-from drmc_rl.human.spatial_proposer import SCHEMA, SpatialProposer
+from drmc_rl.human.spatial_proposer import FIXED_ROOT, SCHEMA, SpatialProposer
 from tools.build_expressive_sequences import write_progress
 from tools.fit_spatial_expressive import compare_arms, evaluate, prepare_data, sha256
 
@@ -30,9 +30,16 @@ def run(config):
     if sha256(earlier)!=study['source_sha256'] or sha256(checkpoint)!=study['competitive_sha256']:
         raise ValueError('frozen source or competitive checkpoint changed')
     old_sessions,old_blobs=source_identities(earlier)
+    development_sessions = len(old_sessions)
+    excluded_sources = []
+    for previous in config.get('exclude_sources', []):
+        sessions, blobs = source_identities(previous)
+        old_sessions.update(sessions)
+        old_blobs.update(blobs)
+        excluded_sources.append(dict(path=str(previous),sha256=sha256(previous)))
     fresh_sessions,fresh_blobs=source_identities(config['source'])
     if old_sessions & fresh_sessions or old_blobs & fresh_blobs:
-        raise ValueError('confirmation reuses development sessions or replay content')
+        raise ValueError('confirmation reuses development or earlier evaluation sessions or replay content')
     output=Path(config['output'])
     output.mkdir(parents=True,exist_ok=False)
     torch.set_num_threads(int(config.get('threads',1)))
@@ -40,7 +47,8 @@ def run(config):
     report=dict(schema='drmc-spatial-expressive-confirmation-v1',status='Running',config=config,
         source_sha256=sha256(config['source']),competitive_sha256=study['competitive_sha256'],
         study_sha256=sha256(study_path),train_source_sha256=study['source_sha256'],
-        excluded_development_sessions=len(old_sessions),confirmation_sessions=len(fresh_sessions),
+        excluded_development_sessions=development_sessions,excluded_sessions=len(old_sessions),
+        excluded_blobs=len(old_blobs),excluded_sources=excluded_sources,confirmation_sessions=len(fresh_sessions),
         session_overlap=0,blob_overlap=0,console_frames_trained=0,optimizer_updates=0,
         action_presentations=0,diagnostic_only=True,quality_admission=False,arms={})
     write_progress(output,report)
@@ -57,9 +65,11 @@ def run(config):
             if (saved['schema']!=SCHEMA or saved['source_sha256']!=study['source_sha256']
                     or saved['competitive_sha256']!=study['competitive_sha256']
                     or saved['feature_dim']!=data['features'].shape[1]
+                    or saved.get('plan_update_schema',FIXED_ROOT)!=study['config'].get('plan_update_schema',FIXED_ROOT)
                     or saved['persistent']!=(name=='persistent')):
                 raise ValueError('proposal checkpoint contract differs from the completed study')
-            model=SpatialProposer(saved['feature_dim'],saved['width'],persistent=saved['persistent']).to(device)
+            model=SpatialProposer(saved['feature_dim'],saved['width'],persistent=saved['persistent'],
+                plan_update_schema=saved.get('plan_update_schema',FIXED_ROOT)).to(device)
             model.load_state_dict(saved['state_dict'],strict=True)
             model.eval().requires_grad_(False)
             priors={k:v.to(device) for k,v in saved['training_priors'].items()}
