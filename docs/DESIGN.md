@@ -769,6 +769,20 @@ discarded; nested partial results retain sound intervals and null W/D/L.
 The independent audit compares against precise complete action values, not
 their rounded display array, and reports root actions separately from joint
 transitions. A regret certificate still concerns only the finite critic game.
+
+The existing unconditioned G5 encoder now has an inference-only
+`PreparedBottle` path. It computes only the eight public bottle planes, then
+reuses those features across conditional previews. Either side can be prepared
+independently; a changed opponent can still be encoded while reusing our bottle.
+Interaction, preview, public history, motor context, candidates and value/policy
+heads run on the actual inputs afterward. Exact bottle equality, model instance,
+encoder tensor versions, device/dtype, autocast and cached-tensor mutation checks
+reject stale reuse. Detached features cannot enter a training forward pass.
+The current conditioned models reject this path: disabling their early FiLM
+conditioning changes their policy and needs a separate training/evaluation
+study. The diagnostic reports that migration drift separately from within-model
+reuse parity, and charges preparation plus remaining inference explicitly.
+
 Optional `tactical_extension_events` now extends leaf decisions in recursive,
 queued and adaptive traversal. The default is zero. The authored
 `public-top-four-or-last-four-v1` predicate checks only visible top-four-row

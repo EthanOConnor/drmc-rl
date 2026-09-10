@@ -1389,6 +1389,18 @@ matrix certificates in both drivers. The `v1`/`v2` mirror-prox failures and
 cross-matrix gaps, neural rows/calls and timing are retained; none are quality
 training labels or controller tournament outcomes.
 
+`trainer-neural-preparation-audit` takes `neural_preparation_config` with a
+public controller-core checkpoint, explicit closed `replay_shards`, fresh
+output, device, state count and repetition count. It compares fresh forwards
+with prepared own/both bottles across all nine conditional previews, preserving
+the complete candidate frontier. Preparation and remaining inference times are
+separate; include both when reporting total cost. It disables trunk conditioning
+only in a temporary diagnostic model and reports policy/value drift against the
+unchanged parent. The parent checkpoint is never rewritten or installed.
+Within-model reuse parity is not behavior preservation of that architectural
+change. Any useful unconditioned student still requires fitting and whole-game
+strength/latency evaluation before adoption.
+
 `trainer-adaptive-search-audit` compares complete queued matrices with bounded
 root allocation, and complete action vectors for unilateral P1/P2 roots.
 Supply `adaptive_search_config` with a frozen checkpoint,

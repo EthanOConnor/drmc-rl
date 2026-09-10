@@ -293,6 +293,21 @@ recipes:
     produces: [Per-root wall time, actual neural batch counts, full action utilities and parity, optional complete mixed strategies and numerical convergence]
     resources:
       accelerator: cpu
+  trainer-neural-preparation-audit:
+    status: active
+    stage: 4
+    purpose: Measure reusable unconditioned bottle features with fresh late context, and separately report behavior drift from the original conditioned core; no model promotion or quality labels.
+    requires_paths: [tools/audit_bottle_preparation.py, '{neural_preparation_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.audit_bottle_preparation, --config, '{neural_preparation_config}']
+    produces: [Per-root preparation and remaining inference times, exact candidate/preview comparison, explicit untrained migration drift]
+    resources:
+      preferred_host: local
+      accelerator: mps
+    notes:
+      - Recorded public controller inputs remain complete. Nine previews are conditional queries, not independent uniform chance outcomes.
+      - Prepared features contain only bottle planes and reject encoder changes, altered bottles, autocast changes, or training use. Existing conditioned models reject this path.
+      - Disabling trunk conditioning changes the policy and requires separate training and whole-game evaluation before any product adoption.
   paired-quality-fit:
     status: staged
     stage: 4

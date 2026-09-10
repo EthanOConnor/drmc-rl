@@ -578,6 +578,13 @@ indefinitely staged.
   solving took 1.3–1.7 ms; its separate cold start took 174 ms. This establishes
   numerical game equivalence, not calibrated candidate quality, exclusive
   throughput or stronger play.
+  The existing unconditioned encoder now exposes exact reusable own/opponent
+  bottle features, with fresh late preview/history/motor/candidate scoring.
+  Stale model/input/autocast checks and inference-only use are enforced;
+  conditioned models reject preparation. A registered diagnostic separates
+  within-model reuse parity/cost from the untrained behavior change caused by
+  disabling trunk conditioning. Distillation and full-game preservation of
+  strength remain prerequisites; the current trained models are unchanged.
   Bounded root allocation is now implemented on this same queued traversal.
   Every legal action remains represented; unknown joint values retain [-1, 1]
   intervals and null W/D/L. Two interval games guide allocation along unresolved

@@ -409,6 +409,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         aux: Optional[torch.Tensor] = None,
         return_aux: bool = False,
         motor_geometry: Optional[torch.Tensor] = None,
+        prepared_bottles=None,
     ) -> (
         Tuple[torch.Tensor, torch.Tensor]
         | Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]
@@ -456,9 +457,14 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                 opponent_cond = cond + self.side_condition_scale[1] * (opposite_condition - cond)
             else:
                 bottle_cond, opponent_cond = own_condition, opposite_condition
-        own = self.bottle_projection(self.bottle(obs[:, :8], bottle_cond))
+        if prepared_bottles is not None and len(prepared_bottles) != 2:
+            raise ValueError("prepared_bottles must contain own and opponent entries")
+        own_prepared, opponent_prepared = prepared_bottles or (None, None)
+        own = (self.bottle_projection(self.bottle(obs[:, :8], bottle_cond))
+               if own_prepared is None else own_prepared.resolve(self, obs[:, :8]))
         opponent_obs = obs[:, 8:16] if self.opponent_features else torch.zeros_like(obs[:, 8:16])
-        opponent = self.bottle_projection(self.bottle(opponent_obs, opponent_cond))
+        opponent = (self.bottle_projection(self.bottle(opponent_obs, opponent_cond))
+                    if opponent_prepared is None else opponent_prepared.resolve(self, opponent_obs))
         columns = torch.stack(
             (own.mean(dim=2).transpose(1, 2), opponent.mean(dim=2).transpose(1, 2)), dim=1
         )
