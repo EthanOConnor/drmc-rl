@@ -307,7 +307,7 @@ indefinitely staged.
   0.0150; validation policy KL was 0.00101. These comparisons with the initial
   predictor are preliminary; the independent prevalence baseline, fresh-seed
   confirmation, device latency and full-game strength remain outstanding.
-  Fresh Frame Perfect, Sloth, Relaxed, Normal and Fast confirmations find reach/clear
+  Fresh Frame Perfect, Sloth, Relaxed, Normal, Fast and Top Humans confirmations find reach/clear
   prediction worse than the training-only pace/cell prevalence baseline. The
   random-initialization comparison therefore does not establish useful motor
   prediction. Complete the remaining conditions and strength study, and make a
@@ -359,8 +359,19 @@ indefinitely staged.
   A fixed 16,384-game Mac initialization ablation now compares the corrected
   initial core with the frozen parent and original initial core, preserving
   every shared weight, the previous controller-native libraries, reserved
-  seeds and compute charge. Its results must establish full-game behavior
-  before interpreting the corrected graph as a better training start.
+  seeds and compute charge. It completed without censoring at 06:06 UTC
+  September 10. Against the original initial core, every 14-HI score lies
+  between 49.0% and 51.0%; the simultaneous family resolves no improvement.
+  Against the parent, Top Humans/Super Human/Frame Perfect score
+  43.75%/42.68%/42.58%, all below 50% in that family. Other 14-HI cells are
+  inconclusive; the separate 20-HI Normal score is 50.0%, Top Humans 45.7%.
+  `core-residual-initial-assessment.py/.json` retains 20,000 shared whole-seed
+  bootstrap draws. Its common absolute-score family band handles Sloth's
+  zero-variance side-pair scores without asserting population equivalence.
+  Equal-input preservation remains useful migration evidence but did not
+  recover whole-game strength. Attribute the remaining live input/frontier
+  changes on training-only public roots before another initialization branch;
+  retain the current frozen training run and selected product baselines.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation

@@ -568,7 +568,7 @@ changed 12 choices. The active frozen run is unchanged. The next independent
 training branch must evaluate the corrected initialization and full controller
 behavior; equal-input migration parity alone does not establish match strength.
 
-A fixed initialization-only study now occupies the freed Mac slot:
+A fixed initialization-only study used the freed Mac slot:
 `controller-residual-initial-mac.json`, launched by
 `launch_residual_initial_mac.py` from `controller-residual-07f46eb-source`.
 Its 16,384 games compare the corrected initial core with the parent and original
@@ -580,8 +580,20 @@ checkpoint hashes; `prepare_residual_initial_study.py` verifies all shared
 tensors and strict controller-core reload. The same frozen native 19f292c
 controller libraries and four-frame compute assumption are retained to match
 the original study; the separate search-reveal path is not used. Read its
-supervisor PID/log and complete journals before recovery. The 100M study and
-main training retain their own identities and continue independently.
+supervisor PID/log and complete journals before recovery. This allocation is
+complete: all 16,384 natural games finished at 06:06 UTC September 10 with zero
+censoring. Do not restart it. `core-residual-initial-assessment.py/.json` verifies
+the complete journal and side pairs, using 20,000 shared whole-seed bootstrap
+draws. One Sloth comparison has exactly 0.5 for every seed pair, so this study
+uses a common maximum absolute-score bootstrap band across its 14 primary
+comparisons instead of dividing by a zero standard error. Its family radius is
+4.10 percentage points. No 14-HI comparison resolves an improvement over the
+original initial core. Against the parent, Top Humans/Super Human/Frame Perfect
+score 43.75%/42.68%/42.58% and all three family intervals stay below 50%.
+Normal's pointwise loss does not survive the family check; other paces remain
+inconclusive. Level 20 stays separate. Before a new initialization training
+branch, examine the remaining live encoding and candidate-frontier changes
+using training-only roots. The main run retains its frozen source/checkpoint.
 
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
