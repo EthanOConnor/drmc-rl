@@ -438,8 +438,23 @@ indefinitely staged.
   scheduler checks completed 373 placements with no placement mismatches;
   two ROM guarded replans and missed requests remain in the report. The GUI
   loaded the portfolio, but synthetic sub-frame Start taps did not start a
-  game. Native latch/frame diagnostics were added. Defaults remain unchanged
-  pending rendered gameplay acceptance; stage one is still open.
+  game. The explicit bounded autoplay mode now enters through normal controller
+  input without changing preferences. Ten valid GUI games completed 412
+  placements with no initial-state or placement mismatches; missed requests and
+  five guarded ROM replans remain in the report. Four short visible follow-ups
+  cover the missing fast display cases and revised Sloth: 140 more completed
+  placements, 4,466 actual presentations, no corrections or mismatches. The explicit
+  tester manifest selects the three supported 300M routes; browser/package
+  delivery and ROM divergence investigation remain. At the user's request,
+  live Sloth/Relaxed reaction floors are now 45/30 frames, with unchanged motor
+  limits. Frozen training and tournament evidence still use 60/36, and must not
+  be relabeled as revised-preset confirmation. Stage one is still open.
+  The motor-refit arena subsequently completed all 16,384 games without
+  censoring. No strength gain survives the 18-condition simultaneous family;
+  product comparisons regress at 14-HI Sloth/Relaxed/Fast/Top Humans and at
+  20-HI Top Humans. Reject that refit as a replacement despite better motor
+  prediction. Preserve the main outcome run and finish the distinct original
+  auxiliary arena; prediction quality alone does not justify actor promotion.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation

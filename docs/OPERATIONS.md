@@ -600,8 +600,9 @@ contrasts, and the same conclusions after that family correction. These are
 conditional no-incoming-garbage predictions, not competitive values or a
 demonstrated playing-strength improvement.
 
-The fixed follow-up `motor-refit-arena-v1` runs 16,384 natural controller games
-on Mac MPS, through `trainer-planning-arena` from frozen
+The fixed follow-up `motor-refit-arena-v1` completed all 16,384 natural controller
+games at September 10 17:35:22 UTC, with zero censoring, on Mac MPS through
+`trainer-planning-arena` from frozen
 `motor-refit-d36716e-source` with original native `19f292c` libraries and the
 unchanged four-frame compute charge. It compares the refit with its 25M parent
 at every pace and the current product route: original final Sloth, original
@@ -611,7 +612,21 @@ and Top Humans receive 512 separately. The 768 fixed reset seeds exclude
 training, fitting and both motor prediction confirmations. Supervisor 52970,
 config, study, journals and log are under the local review root. A live
 `motor-refit-arena` feed and `public_core_motor_refit` entrant retain the
-complete allocation in the common tournament; assess only its full result.
+complete allocation in the common tournament. Former supervisor 52970 is done;
+do not restart the allocation.
+
+`motor-refit-arena-assessment.json` retains 20,000 shared whole-reset-seed
+bootstrap resamples and simultaneous intervals across all 18 fixed conditions.
+No condition establishes a strength gain. Against product routes at 14 HI,
+Sloth scores 43.55% (40.50–46.61%), Relaxed 41.36% (35.64–47.07%), Fast 40.92%
+(35.68–46.16%), and Top Humans 41.21% (36.17–46.25%); all intervals are the
+simultaneous family intervals. Normal versus its own 25M parent is also below
+50% (42.99–49.98%). At 20 HI, Top Humans versus E1 scores 41.89%
+(33.89–49.90%); Normal is inconclusive. Natural draws remain half scores.
+Reject this refit as a competitive replacement despite its improved conditional
+motor prediction. Keep the labels/prediction evidence, existing product routes,
+and the independent outcome-training optimizer unchanged. The original motor
+auxiliary arena on mombox is a separate still-running study.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the
@@ -1499,8 +1514,8 @@ The explicit candidate manifest is
 `drmc_rl/human/portfolios/tester-300m.json`: 300M at Sloth/Super Human/Frame
 Perfect, original 50M at Relaxed, E1 at Normal/Fast/Top Humans. It is **opt-in**;
 defaults, browser assets and existing packages remain unchanged. The source app
-and sibling `train-versus` launcher accept `--pace-manifest`. This selection
-file is not a completed rendered-game acceptance or a distributable.
+and sibling `train-versus` launcher accept `--pace-manifest`. Desktop rendered
+acceptance is recorded below; this selection file is not a distributable.
 
 Both acceptance tools now supply the causal public history already collected
 by the actual app. Six real-time 14-HI checks used actual 300M weights, two
@@ -1527,9 +1542,50 @@ the ROM trace contract without inventing an emulated CPU cycle. A separate
 12-second setup run verified exactly 722 input samples, completed frames and
 audio-ready events, with normal timed shutdown; its trace is retained too.
 
-Finish rendered gameplay with normal-duration Start input, investigate the two
-guarded replans, then select routes and validate browser/packaged delivery.
-Do not weaken focus or pacing behavior to make synthetic automation pass.
+The app now has an explicit bounded `--trainer-autoplay` acceptance mode. It
+waits for both workers, uses ordinary setup controller input, isolates physical
+controller sources and leaves saved settings unchanged. It reports the active
+play interval separately from loading/results. Normal interactive play retains
+its focus and input behavior.
+
+Ten valid 14-HI GUI runs completed 17,984 active frames and 417 executed/412
+completed placements, with zero initial-state or completed-placement mismatches.
+There were 40 missed requests and five guarded ROM Super Human replans. The
+short Sloth top-outs remain evidence; they were not retried until a win. One
+earlier native attempt changed to level 15 through physical keyboard input and
+was excluded; that finding prompted the explicit test-mode isolation. A separate
+short natural Sloth loss and the earlier setup-only attempt are retained too.
+`rendered-300m-assessment.json` links the accepted `rendered-300m-v3/v4` traces.
+Several fast runs submitted frames with zero actual presentation timestamps;
+those intervals are not display-latency evidence. In covered intervals the
+per-run 95th percentile from frame completion to first display was 21.3–24.8 ms.
+Four short explicitly visible follow-ups completed another 140 placements,
+with zero corrections or state/placement mismatches and 4,466 actual
+presentations. They cover native/ROM Super Human, native Frame Perfect, and
+the revised 45-frame native Sloth preset. Their active-frame interval-error
+95th percentiles were 0.174–0.389 ms; frame-complete-to-first-display 95th
+percentiles were 24.3–27.3 ms. Missing timestamps before/during visibility
+changes remain in `rendered-300m-visible-v1`, rather than being called displayed
+frames. These runs
+remain operational evidence, not physical input latency or another strength
+tournament. Guarded examples include missed horizontal movement and differing
+gravity microstates; the underlying ROM cause is not established.
+
+After the fixed old-profile checks, the user requested reaction floors of
+45 frames for Sloth (~749 ms) and 30 for Relaxed (~499 ms). App scheduling,
+exact reachability and package capability validation now agree on those values.
+Edge/motion/overlap limits and all faster presets are unchanged. Nine focused
+planner/backend checks passed, including actual delayed decisions at both new
+profiles; the app's delayed-execution regression covers both too. Existing
+frozen training/arena sources retain Sloth 60 and Relaxed 36. Do not relabel
+their strength results as evidence collected at 45/30. Continuous motor context
+is supplied to the selected models at the actual new values; outcome confirmation
+at the revised slow presets remains distinct work.
+
+The selected tester configuration remains 300M at Sloth/Super Human/Frame
+Perfect, original 50M at Relaxed and E1 at Normal/Fast/Top Humans. Use its explicit
+manifest for source play; browser assets and distributables still require their
+own integration and validation. This does not open certified product gates.
 Fourteen focused Python portfolio/public-context checks and the Rust pace-scope
 test passed. Release app and acceptance tools built. Portable v2 tests verify
 complete choices/scripts at all seven paces and reject mislabeled cores.

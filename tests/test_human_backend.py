@@ -10,7 +10,7 @@ from drmc_rl.human.search import blend_human_and_search, semantic_planes_to_nes_
 from drmc_rl.planning.native_reach import is_library_present
 
 
-@pytest.mark.parametrize("pace", ["sloth", "top_humans"])
+@pytest.mark.parametrize("pace", ["sloth", "relaxed", "top_humans"])
 def test_context_competitive_core_warms_and_executes_live_history(tmp_path, pace):
     import os
     import torch

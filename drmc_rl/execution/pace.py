@@ -67,8 +67,8 @@ class Pace:
 
 
 PACES = (
-    Pace("sloth", "Sloth", 60, 12, 24, 1),
-    Pace("relaxed", "Relaxed", 36, 7, 14, 1),
+    Pace("sloth", "Sloth", 45, 12, 24, 1),
+    Pace("relaxed", "Relaxed", 30, 7, 14, 1),
     Pace("normal", "Normal", 22, 4, 8, 1),
     Pace("fast", "Fast", 12, 3, 5, 2),
     Pace("top_humans", "Top Humans", 6, 2, 3, 2),
