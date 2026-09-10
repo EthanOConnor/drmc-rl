@@ -99,6 +99,17 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-commentary-alignment:
+    status: active
+    stage: 1
+    purpose: Match supplied commentary timestamps to candidate video reconstructions and verify continuous physics prefixes for review, without creating training labels.
+    requires_paths: [tools/align_expressive_commentary.py, '{commentary_evidence}', '{commentary_reconstruction}']
+    requires_gates: []
+    command: [python, -m, tools.align_expressive_commentary, --evidence, '{commentary_evidence}', --reconstruction, '{commentary_reconstruction}', --output, '{commentary_alignment_output}']
+    produces: [Timestamped review candidates, setup windows, unresolved video/player identities and physics-prefix checks]
+    resources:
+      preferred_host: local
+      accelerator: cpu
   trainer-expressive-study:
     status: active
     stage: 4

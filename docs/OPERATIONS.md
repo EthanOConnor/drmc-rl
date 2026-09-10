@@ -1229,6 +1229,21 @@ compute charges or certify app scheduling, high-stack tails or strength.
 
 ### Persistent construction diagnostics
 
+`trainer-commentary-alignment` takes `commentary_evidence`,
+`commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
+`commentary_alignment_output`. It retains unresolved video identities, matches
+all candidate feeds within the passage interval plus eight seconds, and links
+up to six preceding placements for setup review. Starting from virus-only
+initial bottles, it checks each recorded placement and all resulting colored
+tiles while preserving internally reconstructed bonds. A sequence gap,
+unknown timestamp, invalid lock or mismatched board stops the prefix; it never
+resumes from an unknown-bond checkpoint. This is internal physics consistency,
+not video verification, preference or a VS-attack label. The September 10
+`commentary-alignment-v2/alignment.json` review under `runs/review-20260909`
+matches three of nine supplied passages with eight consistent candidates;
+two passages retain unresolved video IDs. All candidates remain ineligible
+for training until video, commentator referent and event labels are checked.
+
 `trainer-expressive-sequences` takes `expressive_sequences_config`, a JSON with
 `db`, `fcr_root`, and a fresh `output`. Defaults are 512 randomly selected
 replay sessions, at most 96 windows per session, and seed 20260910. The DB and
@@ -1256,6 +1271,55 @@ It invokes the two registered recipes sequentially, stops on failure, and
 retains separate extraction/fitting logs. Run it with the existing mombox
 evaluation Python, one CPU thread and low scheduling priority while the main
 GPU and fixed arenas continue. Do not alter their source snapshots.
+
+The first finite study is complete on mombox: `expressive-study-v1`, frozen source
+`expressive-2d7dedc-source`, former supervisor 1475768; configs live under the existing
+remote review root's `configs/`. The supervisor PID/log are siblings of the
+study output, not inside the fresh directory it creates. Extraction completed
+at September 10 08:09:30 UTC in 296 seconds: 512 sessions, 781,583 verified
+placements, 48,864 selected constructions and 171,605 stored placement rows.
+The corpus SHA256 is
+`ffc9c5a477f939aa1dccbc8be1732a58ec69e52a23df1dbfe4c4192df05764a6`.
+Goal counts are horizontal 13,971, crossing 3,026, large clear 8,683 and
+cascade 23,184. Original levels/speeds remain attached. The source is complete;
+do not repeat it. The registered fitter then started on that NPZ, eight fixed
+epochs, width 64, 32 windows per batch, one CPU thread, learning rate 0.0003,
+model seed 92713 and session split seed 81029. Its actual optimizer counters
+are authoritative; extracted placements are not training updates.
+The split contains 38,050 training windows from 399 sessions and 10,814
+validation windows from 113 other sessions. A separate native `afaf62a`
+afterstate check sampled 256 distinct sessions, alternating setup and payoff
+positions. Every resulting bottle, clear-wave count and virus-clear count
+matched the Python/replay reconstruction exactly. This checks one-placement
+physics, not a controller witness or an execution-time allowance. The retained
+script/report are `audit_expressive_native.py` and
+`expressive-native-assessment.json` under the local review root.
+
+After the fixed final save, `audit_expressive_fit.py` in that directory compares
+held-out imitation NLL to training-only categorical priors, with smoothing mass
+16 fixed before assessment. Priors condition on goal/current pill/remaining
+placements for actions, and root pill/preview for intent. It groups by whole
+held-out session, compares root memory with a current-state substitution, and
+reports the first action under the model's own selected intent. The memory
+check is an input ablation, not a separately trained control. Imitation,
+free-intent root choice and actual persistent playing strength are distinct.
+The fit completed at 08:23:45 UTC September 10 in 852 seconds: eight fixed
+epochs, 304,400 window and 1,069,520 action presentations. Final checkpoint
+SHA256 `e1241effa51067d6bd4f28de27f73df952451eaef1551209833c469307a4d325`.
+Do not restart this study. The final assessment is retained in
+`expressive-fit-assessment.json`: action NLL 4.21252 versus prior 5.83311,
+intent NLL 2.74613 versus prior 2.73463, and NLL 4.20028 after replacing root
+memory with current features. Shared 20,000 whole-session bootstrap draws
+give paired difference intervals respectively [-1.6444,-1.5958],
+[0.00271,0.02018] and [0.00906,0.01537]; these are descriptive individual
+intervals, not a joint promotion family. Its own selected intent gives 6.12%
+first-action agreement; teacher-selected intent gives 7.82% across steps,
+both over all 512 action classes rather than a live feasible subset.
+Automatic intent and root memory have not demonstrated benefit. Retain the
+prototype as a rejected first persistence mechanism, with spatially explicit
+goals and common competitive features as the next bounded revision. The
+existing core's candidate values/admission, actual persistent games and blind
+same-root preferences remain separate required work.
 
 ### Arena coordinator
 

@@ -506,11 +506,34 @@ indefinitely staged.
   298 garbage intervals and seven incorrect/invalid locks. Three focused tests
   cover sequence corruption, persistent fresh inputs and event termination,
   strict checkpoint reload and identical learned weights after modifying only
-  held-out sessions. Broader source extraction and fixed-epoch fitting are the
-  next execution step. These are auxiliary proposals, not candidate values or
+  held-out sessions. Broader extraction completed on 512 sampled replay
+  sessions: 781,583 verified transitions and 48,864 construction windows,
+  containing 171,605 placement examples. It excluded 124,113 garbage intervals,
+  4,706 mismatched boards, 1,228 invalid locks and 13 unsettled spawns. The
+  registered eight-epoch CPU fit on mombox completed 304,400 construction and
+  1,069,520 action presentations in 852 seconds. These are auxiliary
+  proposals, not candidate values or
   style permission; the competitive core and installed trainer remain unchanged.
   Commentary alignment, learned preference, quality admission and persistent
   full-game evaluation are still open.
+  The supplied commentary evidence also has an executable alignment review:
+  three of nine passages match candidate video events; eight candidates have
+  internally consistent reconstruction prefixes. Two passages lack a video
+  identity in the excerpt. Across the relevant video games, 79 complete
+  recorded prefixes match, 59 stop at missing timestamps and 89 at board
+  mismatches. No candidate is video-verified or eligible for training by this
+  check alone; player referents, timing and the actual video still need review.
+  The final held-out assessment spans 10,814 windows from 113 sessions.
+  Action NLL is 4.2125 versus 5.8331 for a training-only conditioned frequency
+  prior. Automatic goal/horizon NLL is slightly worse than its prior,
+  2.7461 versus 2.7346. Replacing root memory with current-state features also
+  improves NLL slightly, to 4.2003; this is an input ablation, not a trained
+  stateless control. The prototype learns placement patterns but does not
+  establish useful persistent intent. Keep this negative result. The bounded
+  next revision should represent specific spatial constructions on shared
+  competitive features and compare a separately trained stateless control,
+  with fresh replay confirmation before persistent full-game and preference
+  evaluation. Do not promote it or extend the run on validation fluctuations.
 
 This task owns the continuation; its hourly follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing

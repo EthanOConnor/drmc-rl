@@ -111,6 +111,16 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-expressive-sequences-v1'){
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.sessions,run.target_sessions)}<div class="training-detail"><span>${count(run.sessions)} / ${count(run.target_sessions)} replay sessions</span><span>${count(run.windows)} constructions</span></div><p class="budget-note">${count(run.counters?.verified)} reproduced placements. Sequences stop at garbage, gaps or mismatched boards.<br>Observed geometry; preference and strength are evaluated separately. ${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
+    if(run.schema==='drmc-persistent-expressive-proposer-v1'){
+      const target=num(run.training_windows)*num(run.config?.epochs);
+      const latest=run.epochs?.at(-1)?.validation;
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.window_presentations,target)}<div class="training-detail"><span>${count(run.window_presentations)} / ${count(target)} construction presentations</span><span>${count(run.epochs?.length)} / ${count(run.config?.epochs)} epochs complete</span></div><p class="budget-note">${count(run.action_presentations)} action presentations · ${count(run.train_sessions)} training / ${count(run.validation_sessions)} validation sessions.${latest?`<br>Validation action agreement ${(100*num(latest.action_agreement)).toFixed(1)}%.`:''}<br>Human imitation only; proposals do not override the competitive player. ${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
     if(run.schema==='drmc-public-input-alignment-v1'){
       const target=num(run.training_rows)*num(run.config?.epochs);
       const latest=run.epochs?.at(-1)?.validation;
