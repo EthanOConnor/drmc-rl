@@ -211,6 +211,7 @@ class DrMarioVsPoolRunner:
         restore = getattr(self._lib, "drm_vspool_restore", None)
         reveal_info = getattr(self._lib, "drm_vspool_search_reveal_info", None)
         search_reveal = getattr(self._lib, "drm_vspool_search_reveal", None)
+        search_set_reserve = getattr(self._lib, "drm_vspool_search_set_reserve", None)
         settled_public = getattr(self._lib, "drm_vspool_settled_public", None)
         inject = getattr(self._lib, "drm_vspool_inject_plans", None)
         if create is None or destroy is None or reset is None or step is None:
@@ -298,6 +299,9 @@ class DrMarioVsPoolRunner:
                 C.c_void_p, C.c_uint32, C.POINTER(_DrmVsSettledPublic), C.c_size_t,
             ]
             settled_public.restype = C.c_int
+        if search_set_reserve is not None:
+            search_set_reserve.argtypes = [C.c_void_p, C.c_uint32, C.POINTER(C.c_uint8), C.c_size_t]
+            search_set_reserve.restype = C.c_int
 
         self._destroy_fn = destroy
         self._reset_fn = reset
@@ -310,6 +314,7 @@ class DrMarioVsPoolRunner:
         self._search_reveal_fn = search_reveal
         self._inject_fn = inject
         self._settled_public_fn = settled_public
+        self._search_set_reserve_fn = search_set_reserve
 
         cfg = _DrmVsPoolConfig()
         cfg.protocol_version = DRMARIO_VSPOOL_PROTOCOL_VERSION
@@ -570,6 +575,27 @@ class DrMarioVsPoolRunner:
         if rc != 0:
             raise DrMarioPoolError(f"drm_vspool_search_reveal failed with rc={rc}")
         self._solve_deferred()
+
+    def search_set_reserve(self, pair_index: int, colors_raw) -> None:
+        """Install a private posterior hypothesis without changing visible state.
+
+        This teacher operation neither advances nor refreshes output buffers.
+        Callers must enforce consistency with the entire public pill history.
+        """
+        if self._search_set_reserve_fn is None:
+            raise DrMarioPoolError("native library lacks complete-reserve teacher rollouts")
+        pair = int(pair_index)
+        if not 0 <= pair < self.num_pairs:
+            raise IndexError(pair)
+        values = np.asarray(colors_raw)
+        if (values.shape != (128, 2) or values.dtype.kind not in "iu"
+                or np.any(values < 0) or np.any(values > 2)):
+            raise ValueError("reserve must contain 128 ordered raw color pairs in [0,2]")
+        values = np.ascontiguousarray(values, dtype=np.uint8)
+        rc = int(self._search_set_reserve_fn(self._handle, pair,
+                                            values.ctypes.data_as(C.POINTER(C.c_uint8)), values.size))
+        if rc != 0:
+            raise DrMarioPoolError(f"drm_vspool_search_set_reserve failed with rc={rc}")
 
     def settled_public(self, pair_index: int = 0) -> _DrmVsSettledPublic:
         """Read the native event timeline without advancing or mutating it.

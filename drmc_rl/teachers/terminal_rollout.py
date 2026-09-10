@@ -19,7 +19,7 @@ import time
 import numpy as np
 
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
-from drmc_rl.search.native_pair import NativePairSearchState, capture_native_state
+from drmc_rl.search.native_pair import EVENT_PUBLIC_SCHEMA, NativePairSearchState, capture_native_state
 from drmc_rl.search.pill_belief import (
     PillReserveBelief, _matching_seed_indices, pill_id_to_raw_pair, reserve_table,
 )
@@ -66,8 +66,9 @@ def _native_executor(workers):
 
 def _advance_native(slot):
     runner, task = slot["runner"], slot["task"]
-    if slot["reveal"] is None:
-        runner.step_search(slot["action"])
+    if slot["prefilled"] or slot["reveal"] is None:
+        advance = runner.step_strict if slot["prefilled"] else runner.step_search
+        advance(slot["action"])
         if np.any(runner.buffers.invalid_action >= 0):
             raise RuntimeError("terminal rollout rejected a complete-frontier action")
     else:
@@ -79,6 +80,7 @@ def _advance_native(slot):
 def rollout_tasks(
     tasks, continuation, *, batch_size=32, max_events=2048, progress=None, native_workers=1,
     on_result=None, metrics=None,
+    reserve_execution="boundary",
 ):
     """Return natural outcomes for all tasks; incomplete results retain None.
 
@@ -87,6 +89,8 @@ def rollout_tasks(
     """
     if batch_size < 1 or max_events < 1 or native_workers < 1:
         raise ValueError("batch size, native workers and maximum events must be positive")
+    if reserve_execution not in ("boundary", "prefilled"):
+        raise ValueError("reserve execution must be boundary or prefilled")
     executor = _native_executor(min(native_workers, batch_size, 32)) if native_workers > 1 else None
     tasks = iter(tasks)
     slots: list[dict[str, Any]] = []
@@ -118,8 +122,19 @@ def rollout_tasks(
         runner.restore(0, task.state.privileged.engine_checkpoint)
         if runner.snapshot(0) != task.state.privileged.engine_checkpoint:
             raise RuntimeError("native restore changed the rollout checkpoint")
+        prefilled = reserve_execution == "prefilled"
+        if prefilled:
+            if task.state.public_observation_schema != EVENT_PUBLIC_SCHEMA:
+                raise ValueError("prefilled reserve rollouts require the native V2 event timeline")
+            runner.settled_public()  # Reject a mislabeled V1 physics snapshot.
+            runner.search_set_reserve(0, _reserve_colors(task.reserve))
+            measured['reserve_install_calls'] += 1
+        # A source may be parked while an earlier reveal is runnable. Resolve
+        # that chance event before requesting any policy action in either mode.
+        initial_reveal = runner.search_reveal_info(0) if prefilled else None
         return {"runner": runner, "task": task, "state": task.state,
-                "events": 0, "reveals": 0, "root_forced": False}
+                "events": 0, "reveals": 0, "root_forced": False,
+                "prefilled": prefilled, "initial_reveal": initial_reveal}
 
     runners = []
     try:
@@ -140,7 +155,8 @@ def rollout_tasks(
                 slot["action"] = action
                 # Reveal stops expose no new player action until the selected
                 # posterior preview has been injected into the native engine.
-                reveal = slot["runner"].search_reveal_info(0)
+                reveal = (slot.pop("initial_reveal", None) if slot["prefilled"]
+                          else slot["runner"].search_reveal_info(0))
                 slot["reveal"] = reveal
                 if reveal is not None:
                     continue
@@ -217,7 +233,11 @@ def rollout_tasks(
                             "id": task.id,
                             "outcome": outcome if terminal else None,
                             "events": slot["events"],
-                            "reveals": slot["reveals"],
+                            # Bulk mode has no Python reveal boundary. Do not
+                            # infer counts from stale buffers after restore.
+                            "reveals": None if slot["prefilled"] else slot["reveals"],
+                            "boundary_reveal_calls": slot["reveals"],
+                            "reserve_execution": reserve_execution,
                             "weight": task.weight,
                             "continuation_id": task.continuation_id,
                             "opponent_id": task.opponent_id,
@@ -243,8 +263,16 @@ def rollout_tasks(
             metrics.update(measured)
             metrics.update(wall_seconds=time.perf_counter()-started,
                            completed_rollouts=len(results),
+                           boundary_reveal_calls=sum(r["boundary_reveal_calls"] for r in results),
                            inference_batch_rows=dict(sorted(inference_rows.items())))
     return results
+
+
+@lru_cache(maxsize=1024)
+def _reserve_colors(reserve):
+    result = np.asarray([pill_id_to_raw_pair(value) for value in reserve], dtype=np.uint8)
+    result.setflags(write=False)
+    return result
 
 
 def aggregate_outcomes(tasks, results):

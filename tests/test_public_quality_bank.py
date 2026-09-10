@@ -34,14 +34,15 @@ def test_catalog_is_unique_disjoint_and_independent_of_execution_batching(tmp_pa
 
 
 @pytest.mark.skipif(not is_library_present(), reason="native pool library missing")
-def test_batched_source_games_reproduce_serial_natural_games_and_complete_public_roots(tmp_path):
+@pytest.mark.parametrize("event_public", [False, True])
+def test_batched_source_games_reproduce_serial_natural_games_and_complete_public_roots(tmp_path, event_public):
     config = configuration(tmp_path)
     catalog = game_catalog(config)
     serial, batched, metrics = [], [], {}
     collect_games(catalog, {"a": FirstLegal()}, batch_size=1, max_events=512,
-                  states_per_game=8, on_game=serial.append)
+                  states_per_game=8, on_game=serial.append, event_public=event_public)
     collect_games(catalog, {"a": FirstLegal()}, batch_size=3, max_events=512,
-                  states_per_game=8, native_workers=2, on_game=batched.append, metrics=metrics)
+                  states_per_game=8, native_workers=2, on_game=batched.append, metrics=metrics, event_public=event_public)
     serial.sort(key=lambda g: g["spec"]["index"])
     batched.sort(key=lambda g: g["spec"]["index"])
     assert batched == serial
@@ -49,6 +50,7 @@ def test_batched_source_games_reproduce_serial_natural_games_and_complete_public
     assert metrics["completed_games"] == 6 and max(metrics["inference_batch_rows"]) > 1
     assert metrics["policy_decisions"] == sum(g["policy_decisions"] for g in batched)
     for game in batched:
+        assert game["public_observation_schema"] == f"causal-settled-pair-v{2 if event_public else 1}"
         assert len(game["rows"]) == 8
         assert len({r["id"] for r in game["rows"]}) == 8
         assert {r["temporal_bin"] for r in game["rows"]} == {"opening", "middle", "late"}
@@ -67,13 +69,16 @@ def test_batched_source_games_reproduce_serial_natural_games_and_complete_public
 
 
 @pytest.mark.skipif(not is_library_present(), reason="native pool library missing")
-def test_collection_resume_retains_completed_games_and_never_relabels_censoring(tmp_path, monkeypatch):
+@pytest.mark.parametrize("event_public", [False, True])
+def test_collection_resume_retains_completed_games_and_never_relabels_censoring(tmp_path, monkeypatch, event_public):
     import tools.build_public_quality_bank as module
     from pathlib import Path
     import json
 
     config = configuration(tmp_path)
     config.update(max_events=1)
+    if event_public:
+        config["public_observation_schema"] = "causal-settled-pair-v2"
     actor = FirstLegal()
     actor.policy = SimpleNamespace(aux_spec="zero_v1_vs")
     monkeypatch.setattr(module, "PublicPolicyContinuation", lambda *args, **kwargs: actor)
@@ -103,5 +108,8 @@ def test_collection_resume_retains_completed_games_and_never_relabels_censoring(
         assert all(r["outcome"] is None for r in game["rows"])
     progress = json.loads((Path(config["output"])/"progress.json").read_text())
     assert progress["status"] == "Complete" and not progress["product_gates_passed"]
+    assert progress["public_observation_schema"] == f"causal-settled-pair-v{2 if event_public else 1}"
+    manifest = json.loads((Path(config["output"])/"fit.jsonl.gz.manifest.json").read_text())
+    assert manifest["public_observation_schema"] == progress["public_observation_schema"]
     with pytest.raises(ValueError, match="frozen source collection"):
         run({**config, "seed": 1878})

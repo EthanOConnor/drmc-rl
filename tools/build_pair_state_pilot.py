@@ -108,9 +108,9 @@ def _condition_visible_reserve(
     # The causal collector conditions only at observed decision reveals. An
     # ahead-of-time private side buffer cannot add a future preview to belief.
     if state is not None:
-        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA
+        from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMAS
 
-        if state.public_observation_schema != CAUSAL_PUBLIC_SCHEMA:
+        if state.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
             raise ValueError("public reserve conditioning requires a causal state")
     result = belief
     for side in range(2):

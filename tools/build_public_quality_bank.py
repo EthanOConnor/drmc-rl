@@ -23,7 +23,10 @@ import torch
 from drmc_rl.arena.experiment import dump
 from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
-from drmc_rl.search.native_pair import CAUSAL_PUBLIC_SCHEMA, capture_native_state, state_to_payload
+from drmc_rl.search.native_pair import (
+    CAUSAL_PUBLIC_SCHEMA, CAUSAL_PUBLIC_SCHEMAS, EVENT_PUBLIC_SCHEMA,
+    capture_native_state, state_to_payload,
+)
 from drmc_rl.search.pill_belief import CHANCE_MODEL_ID, PillReserveBelief
 from drmc_rl.search.public_policy import PublicPolicyContinuation
 from drmc_rl.teachers.counterfactual_release import canonical_json, sha256_file
@@ -150,14 +153,17 @@ class RetainedPositions:
         return selected
 
 
-def _start_game(runner, spec, per_stratum):
+def _start_game(runner, spec, per_stratum, event_public=False):
     level, speed = spec["level"], spec["speed"]
     runner.reset(None, [build_vs_reset_spec(level=(level, level), speed_setting=(speed, speed),
         rng_override=True, rng_state=tuple(spec["reset_seed"]),
         frame_counter_base=spec["frame_counter_base"])])
     state = capture_native_state(runner, level=level, speed_setting=speed,
-        viruses_initial=(min(84, 4*(level+1)),)*2, causal_public=True)
-    game_id = hashlib.sha256(runner.snapshot(0)).hexdigest()
+        viruses_initial=(min(84, 4*(level+1)),)*2, causal_public=True, event_public=event_public)
+    identity = runner.snapshot(0)
+    if event_public:
+        identity += EVENT_PUBLIC_SCHEMA.encode()
+    game_id = hashlib.sha256(identity).hexdigest()
     belief = PillReserveBelief.from_initial_board(level=level,
                                                 board=state.privileged.public.sides[0].board)
     return dict(runner=runner, spec=spec, state=state, belief=belief, game_id=game_id, events=0,
@@ -202,11 +208,12 @@ def _finish_game(slot, states_per_game):
                 natural_outcome_available=natural, outcomes=outcomes, rows=rows,
                 pair_events=slot["events"], policy_decisions=sum(slot["retained"].counts),
                 console_frames=state.privileged.public.frame_id,
-                public_observation_schema=CAUSAL_PUBLIC_SCHEMA)
+                public_observation_schema=state.public_observation_schema)
 
 
 def collect_games(catalog, actors, *, batch_size, max_events, states_per_game,
-                  native_workers=1, per_stratum=8, on_game, progress=None, metrics=None):
+                  native_workers=1, per_stratum=8, on_game, progress=None, metrics=None,
+                  event_public=False):
     """Keep independent games in flight; actor batches never mix private inputs."""
     if min(batch_size, max_events, states_per_game, native_workers, per_stratum) < 1:
         raise ValueError("collection limits must be positive")
@@ -225,7 +232,7 @@ def collect_games(catalog, actors, *, batch_size, max_events, states_per_game,
         # their physics and snapshot identity cannot depend on slot ordering.
         runner = DrMarioVsPoolRunner(num_pairs=1)
         runners.append(runner)
-        return _start_game(runner, spec, per_stratum)
+        return _start_game(runner, spec, per_stratum, event_public)
 
     try:
         for _ in range(min(batch_size, len(catalog))):
@@ -307,7 +314,7 @@ def read_game(path):
         return json.load(stream)
 
 
-def export_partitions(output, catalog, completed, identities):
+def export_partitions(output, catalog, completed, identities, timeline=CAUSAL_PUBLIC_SCHEMA):
     manifests = {}
     for partition in dict.fromkeys(s["partition"] for s in catalog):
         rows, game_ids, natural, censored = [], [], 0, 0
@@ -324,7 +331,7 @@ def export_partitions(output, catalog, completed, identities):
         manifest = dict(schema="drmc-public-quality-bank-v1", partition=partition,
             artifact=str(path), sha256=sha256_file(path), states=len(rows), games=len(game_ids),
             natural_terminal_games=natural, censored_games=censored,
-            member_sha256=identities, public_observation_schema=CAUSAL_PUBLIC_SCHEMA,
+            member_sha256=identities, public_observation_schema=timeline,
             execution="native-smdp-v1", chance_model=CHANCE_MODEL_ID,
             per_game_selection="bounded-temporal-tactical-reservoir-v1",
             temporal_counts=dict(Counter(r["temporal_bin"] for r in rows)),
@@ -338,6 +345,9 @@ def export_partitions(output, catalog, completed, identities):
 
 
 def run(config):
+    timeline = config.get("public_observation_schema", CAUSAL_PUBLIC_SCHEMA)
+    if timeline not in CAUSAL_PUBLIC_SCHEMAS:
+        raise ValueError("source collection requires an explicit supported public timeline")
     output = Path(config["output"])
     output.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(config.get("threads", 2))
@@ -363,7 +373,7 @@ def run(config):
             continue
         game = read_game(path)
         if (game["spec"] != spec or game["schema"] != "drmc-public-quality-source-game-v1"
-                or game["public_observation_schema"] != CAUSAL_PUBLIC_SCHEMA
+                or game["public_observation_schema"] != timeline
                 or game["game_id"] in game_ids
                 or any(row["game_id"] != game["game_id"] for row in game["rows"])):
             raise ValueError("committed source game has an inconsistent identity")
@@ -376,7 +386,8 @@ def run(config):
     elapsed_before = float(previous.get("elapsed_seconds", 0))
     started = time.monotonic()
     progress = dict(schema="drmc-public-quality-bank-job-v1", status="Running", target_games=len(catalog), execution="native-smdp-v1",
-                    product_gates_passed=False, batch_size=config.get("batch_size", 32))
+                    product_gates_passed=False, batch_size=config.get("batch_size", 32),
+                    public_observation_schema=timeline)
 
     def report(**values):
         progress.update(values, games=len(completed), **dict(measured),
@@ -412,15 +423,16 @@ def run(config):
                 max_events=config.get("max_events", 4096), states_per_game=config.get("states_per_game", 8),
                 native_workers=config.get("native_workers", 1), per_stratum=config.get("reservoir_per_stratum", 8),
                 on_game=receive, metrics=metrics,
+                event_public=timeline == EVENT_PUBLIC_SCHEMA,
                 progress=lambda activity, live: report(activity={**activity, "live_games": live}))
             report(collection_metrics=metrics)
         if len(completed) != len(catalog):
             raise RuntimeError("source collection returned with unfinished games")
         report(phase="exporting")
-        report(status="Complete", phase="complete", partitions=export_partitions(output, catalog, completed, identities))
+        report(status="Complete", phase="complete", partitions=export_partitions(output, catalog, completed, identities, timeline))
     except BaseException as error:
         report(status="Failed", error=str(error))
-        export_partitions(output, catalog, completed, identities)
+        export_partitions(output, catalog, completed, identities, timeline)
         raise
     return progress
 
