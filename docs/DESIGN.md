@@ -344,6 +344,26 @@ checkpoints without the option retain their direct-side graph, including their
 original regularization reference on resume. New side scales and context weights
 receive outcome gradients; no history input is replaced with a fabricated value.
 
+Equal tensors are not equal live input contracts. A training-replay attribution
+audit now separates own bonds, opponent bonds and the same-color frontier.
+The expanded frontier is the largest observed source of changed decisions.
+`trainer-public-input-alignment` therefore supplies an explicit migration fit:
+the frozen parent sees its historical public encoding/frontier, while the
+student sees full bonds, public context and every legal orientation. The target
+mixes the parent's probability with a declared small uniform component over
+the full student frontier; this preserves support for new controller actions.
+Unsupported teacher roots are excluded from fitting and counted. These are
+behavior targets, never candidate quality or optimality labels. Whole reset
+seeds stay together across shards; validation is descriptive and the fixed
+final epoch is retained. Held-out full games must establish whether alignment
+recovers strength before a new outcome-training branch. Existing runs keep
+their original graph, reference and checkpoints.
+
+The live backend executes the exact orientation selected from that frontier.
+Same-color canonicalization belongs to the frozen actor's frontier construction;
+applying it after a context actor's choice can change the witness, timing and
+carried horizontal state despite an equivalent visible placement.
+
 Larger quality teachers can expand the dense bottle encoder with
 `grow_bottle_encoder`. In this comparison, 320×8, 384×12 and 512×12 explicitly
 mean bottle channels × residual blocks; token attention and the candidate

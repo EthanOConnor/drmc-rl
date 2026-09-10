@@ -186,3 +186,33 @@ def test_live_geometry_consumes_actual_history_and_reuses_no_scores(context_back
         # Two players may prepare concurrently; a third evicts only the oldest.
         tokens = [backend.handle(request)["geometry_token"] for _ in range(3)]
         assert list(backend.prepared_geometry) == tokens[1:]
+
+
+@pytest.mark.parametrize("orientation", [2, 3])
+def test_live_context_executes_the_chosen_same_color_orientation(context_backend, monkeypatch, orientation):
+    backend = context_backend
+    pace, delay = BY_ID["top_humans"], 6
+    with FrameVsPool(lib_path=os.environ.get("DRMARIO_POOL_LIB")) as pool:
+        for seed in range(20):
+            pool.reset([seed])
+            while not pool.states[1].falling:
+                pool.step()
+            state = live_state(pool)
+            if state["pill"][0] == state["pill"][1]:
+                break
+        assert state["pill"][0] == state["pill"][1]
+        candidate = backend._candidates(live_controller_state(state), delay, pace)
+        choices = candidate[-2].actions[candidate[-2].mask]
+        action = int(next(a for a in choices if a // 128 == orientation))
+        expected = execution_for_action(candidate, action, pace, delay=delay, frame_id=100)
+        def choose_exact_pose(obs, infos):
+            legal = np.flatnonzero(infos[0]["placements/feasible_mask"].reshape(512))
+            return legal[None], np.ones((1,len(legal)),bool), (legal==action)[None].astype(float)
+        monkeypatch.setattr(backend.competitive,"score",choose_exact_pose)
+        result = backend._infer({"type":"decide","strength_control":"quality","target_rating":1600,
+            "temperature":0,"pace":pace.id,"execution_delay_frames":delay,"frame_id":100,
+            "state":state}, remaining_ms=10000)
+        assert result["placement"] == expected["placement"]
+        assert result["controller_frames"] == expected["controller_frames"]
+        assert result["controller_states"] == expected["controller_states"]
+        assert result["execution"] == expected["execution"]

@@ -99,6 +99,22 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-public-input-alignment:
+    status: active
+    stage: 3
+    purpose: Align full public controller inputs with frozen parent behavior before outcome learning, using training replay and whole-seed descriptive validation.
+    requires_paths: [tools/fit_public_alignment.py, '{public_alignment_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.fit_public_alignment, --config, '{public_alignment_config}']
+    produces: [Diagnostic aligned public core, complete target support, grouped policy agreement and KL, actual supervised root presentations]
+    resources:
+      preferred_host: local
+      accelerator: mps
+    notes:
+      - The teacher receives its historical public encoding and canonical frontier; the student retains full public features and every exact feasible orientation.
+      - A declared small uniform probability supports every student action. No candidate quality or optimality labels are inferred from parent choices.
+      - Use training-only replay, group every shared reset seed across source shards, and retain a fixed final epoch. Validation never selects weights, epochs or learning rates.
+      - Count supervised presentations separately from console frames and outcome learner decisions. Substantial controller evaluation remains required before adoption or another training branch.
   trainer-motor-confirmation:
     status: active
     stage: 4

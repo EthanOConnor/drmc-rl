@@ -595,6 +595,34 @@ inconclusive. Level 20 stays separate. Before a new initialization training
 branch, examine the remaining live encoding and candidate-frontier changes
 using training-only roots. The main run retains its frozen source/checkpoint.
 
+`runs/review-20260909/migration-input-attribution.py` performs the eight-way
+factorial input audit without learning or new physics labels. It uses actual
+training replay tensors from `context-migration-audit/update-00001/00003/00007.npz`,
+four temporal rows per reset seed per shard. These V1 replay files lack exact
+motor geometry; never invent it or use this audit to generate movement labels.
+The 768-row report reproduces the frozen parent when both encoding and frontier
+are retained. Full restoration changes 49 selected controller actions and 30
+physical placements. Both bond changes alone alter 11 physical placements;
+the frontier change alone alters 25. There are 235 same-color rows and no
+new distinct physical placements in this sample; extra orientations still
+carry distinct timing/controller witnesses. Report level 20 separately.
+
+For migration fitting use `tools.program launch trainer-public-input-alignment
+--set public_alignment_config=PATH`. The JSON requires `parent`, `replays`,
+`output` and `source_scope: training-only-controller-replay`; it can set
+`device`, `threads`, `seed`, `epochs`, `batch_size`, `roots_per_seed_per_shard`,
+`validation_fraction`, `learning_rate` and `support_epsilon`. The teacher uses
+its actual legacy public contract. The full-input student targets its behavior
+with a small declared uniform probability on every legal action; default
+epsilon is 0.0001. This is not WDL/quality supervision. Every shared reset seed
+stays together across shards; only training rows enter gradients. The final
+fixed epoch is retained regardless of descriptive validation. `progress.json`
+records actual supervised root presentations, grouped KL/agreement and source
+identities; console frames trained are zero. `core-final.pt` is diagnostic and
+must pass a substantial controller comparison before adoption. Focused tests
+verify full target support and identical trained weights after changing only
+held-out observations/targets.
+
 An optional `opponent_pool` lists frozen `id`, `weight`, `checkpoint` and
 optional `adapter_checkpoint`. A member is sampled per collection update and
 recorded in every training journal entry. Frozen member checkpoint/adapter

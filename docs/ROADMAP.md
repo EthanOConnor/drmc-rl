@@ -372,6 +372,18 @@ indefinitely staged.
   recover whole-game strength. Attribute the remaining live input/frontier
   changes on training-only public roots before another initialization branch;
   retain the current frozen training run and selected product baselines.
+  The training-only attribution audit uses 768 positions from 192 recorded
+  seed/shard groups (14-HI Normal/Top Humans and separately 20-HI Frame Perfect).
+  Restoring both bond inputs changes 11 physical placements; expanding the
+  same-color frontier alone changes 25; all changes together affect 30.
+  These are same-position policy differences, not attribution of whole-game
+  losses. An explicit parent-behavior alignment fit is now implemented with
+  full student inputs/frontiers, whole-seed validation and fixed-epoch selection.
+  It must demonstrate held-out policy preservation and controller strength
+  before starting another outcome branch. The source backend also now retains
+  a context actor's chosen same-color orientation rather than replacing its
+  exact witness with the historical canonical orientation; native tests cover
+  both formerly rewritten orientations.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation

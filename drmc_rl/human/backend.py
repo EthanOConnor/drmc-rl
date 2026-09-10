@@ -16,7 +16,6 @@ from drmc_rl.human.afterstate_model import HUMAN_AFTERSTATE_SCHEMA
 from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
 from drmc_rl.human.coach import analyze_choice
 from drmc_rl.execution.pace import PACES, Pace, resolve_pace
-from drmc_rl.human.model import canonicalize_same_color_action
 from drmc_rl.human.runtime import HumanPolicyRuntime
 from drmc_rl.human.search import (
     HumanValueSearch,
@@ -629,8 +628,9 @@ class HumanBackend:
             )
             packed_slot = int(np.flatnonzero(packed.mask)[slot])
         action = int(packed.actions[packed_slot])
-        if pill[0] == pill[1]:
-            action = canonicalize_same_color_action(action)
+        # The frontier already applies the actor's same-color contract. A
+        # context actor can choose an equivalent-looking orientation with a
+        # different witness, lock timing or carried DAS; execute that exact pose.
         pose_index = int(ACTION_TO_POSE[action])
         x, y, rotation = pose_index & 7, (pose_index >> 3) & 15, (pose_index >> 7) & 3
         script = reach.script_for_pose(x, y, rotation)
