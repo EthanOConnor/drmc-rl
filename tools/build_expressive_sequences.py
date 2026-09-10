@@ -23,6 +23,26 @@ def write_progress(output, report):
     temporary.replace(path)
 
 
+def exclude_replays(catalogue, sources):
+    """Reserve new replay sessions and content, including aliased blob identities."""
+    sessions, hashes, identities = set(), set(), []
+    for source in sources:
+        path = Path(source)
+        with np.load(path,allow_pickle=False) as archive:
+            metadata = json.loads(str(archive['metadata']))
+        if metadata.get('schema') != SCHEMA:
+            raise ValueError('exclusion source must be a verified construction bank')
+        entries = metadata['sources']
+        sessions.update(str(r['session']) for r in entries)
+        hashes.update(str(r['sha256']) for r in entries)
+        identities.append(dict(path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                               sessions=len(entries)))
+    eligible = [(session,sha) for session,sha in catalogue
+                if str(session) not in sessions and str(sha) not in hashes]
+    return eligible,dict(sources=identities,excluded_sessions=len(sessions),
+                         excluded_blobs=len(hashes),excluded_catalogue_rows=len(catalogue)-len(eligible))
+
+
 def run(config):
     output = Path(config['output'])
     output.mkdir(parents=True, exist_ok=False)
@@ -31,6 +51,7 @@ def run(config):
     connection = sqlite3.connect('file:'+str(Path(config['db']).resolve())+'?mode=ro', uri=True)
     sessions = connection.execute('SELECT quarkid,sha256 FROM processed_replay WHERE sha256 IS NOT NULL ORDER BY quarkid').fetchall()
     connection.close()
+    sessions, exclusions = exclude_replays(sessions,config.get('exclude_sources',[]))
     rng = np.random.default_rng(int(config.get('seed', 20260910)))
     maximum = int(config.get('max_sessions', 512))
     cap = int(config.get('max_windows_per_session', 96))
@@ -40,7 +61,7 @@ def run(config):
     counts, goal_counts = Counter(), Counter()
     started = time.monotonic()
     report = dict(schema=SCHEMA, status='Running', phase='verifying_replay', target_sessions=maximum,
-                  sessions=0, windows=0, state_presentations=0, config=config)
+                  sessions=0, windows=0, state_presentations=0, config=config,exclusions=exclusions)
     write_progress(output, report)
     for index in rng.permutation(len(sessions))[:maximum]:
         session, sha = sessions[int(index)]
@@ -74,6 +95,7 @@ def run(config):
     arrays.update(windows=np.asarray(windows, np.int64),
                   sessions=np.asarray([r['session'] for r in identities]),
                   metadata=np.asarray(json.dumps(dict(schema=SCHEMA, goals=GOALS, sources=identities,
+                      exclusions=exclusions,
                       scope='own-board transition verification; no motor, quality or commentary preference labels'))))
     np.savez_compressed(output/'sequences.npz', **arrays)
     report.update(status='Complete', phase='complete', source_sha256=hashlib.sha256((output/'sequences.npz').read_bytes()).hexdigest(),

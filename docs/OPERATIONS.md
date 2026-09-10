@@ -1346,6 +1346,11 @@ Source progress counts verified placements and construction windows; none is
 reported as new outcome training. Missing blobs and all sequence exclusions
 are recorded. The output does not contain reconstructed two-player state or
 certified motor traces. Never feed it to outcome/Q training as such.
+For fresh confirmation, `exclude_sources` lists earlier verified sequence
+banks. Selection excludes both their session IDs and blob hashes, so replay
+aliases cannot cross the boundary. Exclusion source hashes and counts remain
+in the new bank metadata. Exclude all earlier development sessions, including
+the previously inspected validation set, before sampling confirmation.
 
 `trainer-expressive-proposer` takes `expressive_proposer_config` with `source`
 pointing at that NPZ and a fresh `output`. Optional settings include `seed`,

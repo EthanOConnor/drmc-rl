@@ -14,6 +14,7 @@ from drmc_rl.human.spatial_proposer import (
 from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 from tools.fit_expressive_proposer import session_validation
 from tools.fit_spatial_expressive import fit_models, prepare_data
+from tools.build_expressive_sequences import exclude_replays
 
 
 def test_spatial_goal_identifies_actual_colored_clear_cells():
@@ -28,11 +29,23 @@ def test_spatial_goal_identifies_actual_colored_clear_cells():
         spatial_clear_target(result,3)
 
 
-def test_shared_features_match_real_competitive_own_bottle_path():
+def test_fresh_replay_exclusions_cover_session_aliases_and_blob_reuse(tmp_path):
+    from drmc_rl.human.expressive_sequences import SCHEMA
+    source=tmp_path/'earlier.npz'
+    np.savez(source,metadata=np.asarray(json.dumps(dict(schema=SCHEMA,sources=[
+        dict(session='one',sha256='abc'),dict(session='two',sha256='def')]))))
+    eligible,report=exclude_replays([('one','changed'),('alias','abc'),('new','fresh')],[source])
+    assert eligible==[('new','fresh')]
+    assert report['excluded_catalogue_rows']==2
+    assert report['excluded_sessions']==report['excluded_blobs']==2
+
+
+@pytest.mark.parametrize('aux_dim',[0,72])
+def test_shared_features_match_real_competitive_own_bottle_path(aux_dim):
     torch.manual_seed(12)
     core = G5CandidatePlacementPolicyNet(in_channels=20,board_channels=16,encoder_blocks=1,
         d_model=16,pill_embed_dim=8,transformer_heads=4,cross_layers=0,interaction_layers=0,
-        cand_hidden_dim=32,patch_kernel=3).eval()
+        cand_hidden_dim=32,patch_kernel=3,aux_dim=aux_dim).eval()
     board = np.full((16,8),0xFF,np.uint8)
     board[15,4:6] = [0x60,0x70]
     own = torch.tensor(np.stack([board_bytes_to_semantic_planes(board)]*2))
@@ -44,10 +57,11 @@ def test_shared_features_match_real_competitive_own_bottle_path():
     historical[1,6:8] = 0
     with torch.inference_mode():
         core(torch.cat((historical,torch.zeros_like(own),torch.zeros(2,4,16,8)),1),pill,preview,
-             torch.tensor([[123],[123]]),torch.ones(2,1),torch.ones(2,1,dtype=torch.bool))
+             torch.tensor([[123],[123]]),torch.ones(2,1),torch.ones(2,1,dtype=torch.bool),
+             aux=torch.zeros(2,aux_dim) if aux_dim else None)
     hook.remove()
     expected = torch.cat((captured[0].mean((2,3)),captured[0].amax((2,3))),-1)
-    encoder = FrozenConstructionEncoder(core)
+    encoder = FrozenConstructionEncoder(core,zero_auxiliary=aux_dim>0)
     with torch.inference_mode():
         actual = encoder(own,pill,preview)
     torch.testing.assert_close(actual,expected,rtol=0,atol=0)

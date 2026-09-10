@@ -522,7 +522,10 @@ encoder supplies mean/max features from the actual board and visible pills;
 its historical same-color bond encoding is preserved, while the small spatial
 branch receives complete bonds. This reuses the competitive encoder without
 inventing an opponent or missing public history. Own-only replay cannot feed
-a full-context core and that combination is rejected. Payoff cells are
+a full-context core and that combination is rejected. The frozen public
+parent's explicit `zero_v1_vs` contract still has 72 auxiliary columns; those
+columns receive their defined constant zeros, not fabricated history.
+Payoff cells are
 supervised targets only: the action decoder receives predicted spatial and
 duration distributions during both fitting and execution. It never receives
 the future bottle or true remaining construction length. A selected persistent

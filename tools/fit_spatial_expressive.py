@@ -44,7 +44,8 @@ def prepare_data(config, output, report):
     feature_device = config.get('feature_device', 'cpu')
     core, _, _ = _build_net_from_cfg(cfg, int(sp['candidate_board_channels'])+4, feature_device)
     core.load_state_dict(payload.get('ema_state_dict') or payload['state_dict'], strict=True)
-    encoder = FrozenConstructionEncoder(core).to(feature_device).eval()
+    encoder = FrozenConstructionEncoder(core,zero_auxiliary=sp.get('aux_spec')=='zero_v1_vs').to(feature_device).eval()
+    report['competitive_aux_spec'] = sp.get('aux_spec','none')
     # Deduplicate by actual public inputs only, never action or future payoff.
     packed = np.concatenate((data['board'].reshape(-1,128), data['pill'], data['preview']), -1)
     keys = np.ascontiguousarray(packed).view(np.dtype((np.void, packed.shape[1]))).ravel()

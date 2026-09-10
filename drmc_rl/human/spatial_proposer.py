@@ -55,9 +55,9 @@ class FrozenConstructionEncoder(nn.Module):
     input reproduces the frozen core's same-color bond encoding exactly.
     Public-history cores require a real full-context adapter and are rejected.
     """
-    def __init__(self, core):
+    def __init__(self, core, *, zero_auxiliary=False):
         super().__init__()
-        if core.aux_dim or core.public_context_schema is not None:
+        if (core.aux_dim and not zero_auxiliary) or core.public_context_schema is not None:
             raise ValueError("own-only replay cannot supply a full public-context core")
         self.core = core.eval().requires_grad_(False)
         self.feature_dim = 2 * core.d_model
@@ -65,8 +65,12 @@ class FrozenConstructionEncoder(nn.Module):
     def forward(self, board, pill, preview):
         own = board.clone()
         own[pill[:, 0] == pill[:, 1], 6:8] = 0
-        cond = self.core.condition(torch.cat((self.core.pill_embedding(pill),
-                                              self.core.preview_embedding(preview)), -1))
+        pieces = [self.core.pill_embedding(pill),self.core.preview_embedding(preview)]
+        if self.core.aux_dim:
+            # Explicit zero_v1_vs public export contract, not reconstructed
+            # history or a guessed hidden pending-attack observation.
+            pieces.append(torch.zeros(len(board),self.core.aux_dim,device=board.device,dtype=board.dtype))
+        cond = self.core.condition(torch.cat(pieces, -1))
         if not self.core.conditioned_trunk:
             cond = torch.zeros_like(cond)
         features = self.core.bottle_projection(self.core.bottle(own, cond))
