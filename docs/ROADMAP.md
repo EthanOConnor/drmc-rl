@@ -432,6 +432,14 @@ indefinitely staged.
   50M Relaxed adapter. The 300M core is the selected Sloth/Super Human/Frame
   Perfect candidate for representative actual-app checks before adoption;
   retain the current outcome optimizer and other pace baselines.
+  V2 mixed-core live selection is implemented, including per-pace input
+  encoding, warmup, anticipation capabilities and portable packaging. The
+  explicit tester-300m manifest retains Relaxed/E1 routes. Six native/ROM
+  scheduler checks completed 373 placements with no placement mismatches;
+  two ROM guarded replans and missed requests remain in the report. The GUI
+  loaded the portfolio, but synthetic sub-frame Start taps did not start a
+  game. Native latch/frame diagnostics were added. Defaults remain unchanged
+  pending rendered gameplay acceptance; stage one is still open.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation

@@ -255,6 +255,11 @@ class HumanBackend:
                 self.competitive, pace_manifest, self.competitive_identity["sha256"],
             )
             self.competitive_identity["pace_opponents"] = self.competitive.identity
+            if self.competitive.cores:
+                self.competitive_identity.update(
+                    information_scope="per-pace-public-models-v2",
+                    observation_encoding="declared-per-core",
+                )
         self.seed = int(seed)
         if realtime_profile == "auto":
             realtime_profile = "balanced" if str(device).startswith("cuda") else "fast"
@@ -304,7 +309,6 @@ class HumanBackend:
             speed=speed, speed_ups=speed_ups, candidate_count=packed.count,
         )
         if self.competitive is not None:
-            from drmc_rl.human.controller_context import uses_public_context
             feasible = (costs != 0xFFFF).reshape(4, GRID_H, GRID_W)
             masks = [feasible]
             if str(self.competitive.device).startswith("mps"):
@@ -317,40 +321,51 @@ class HumanBackend:
                     mask = np.zeros(legal.size, dtype=bool)
                     mask[positions[:count]] = True
                     masks.append(mask.reshape(legal.shape))
-            for mask in masks:
-                observation = np.concatenate((planes, planes, mask.astype(np.float32)))
-                info = {
-                    "placements/feasible_mask": mask,
-                    "placements/cost_to_lock": np.where(mask, 32, 0xFFFF),
-                    "next_pill_colors": pill,
-                    "preview_pill": {"first_color": 2, "second_color": 1},
-                }
-                if uses_public_context(self.competitive):
-                    from drmc_rl.game.pair_state import DecisionBoundary, PublicPairState, VisibleSideState
-                    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
-                    from drmc_rl.search.public_policy import policy_request
+            for pace_id in getattr(self.competitive, "warmup_paces", ("frame_perfect",)):
+                policy = self._competitive_for_pace(pace_id)
+                self._warmup_competitive(policy, pace_id, masks, planes, pill, preview, state)
 
-                    # Synthetic kernel warmup, never a recorded live observation.
-                    side = VisibleSideState(bytes([255] * 128), tuple(pill), tuple(preview), None)
-                    public = PublicPairState(0, 0, (side, side), DecisionBoundary.BOTH)
-                    legal = np.flatnonzero(mask.reshape(512)).tolist()
-                    observation, info = policy_request(public, 0, legal, [32] * len(legal),
-                                                       context_schema=PUBLIC_CONTEXT_SCHEMA)
-                info["vs/observation_timeline"] = "causal-settled-pair-v1"
-                from drmc_rl.execution.pace import BY_ID, strategy_context
-                for pace_id in getattr(self.competitive, "warmup_paces", ("frame_perfect",)):
-                    pace = BY_ID[pace_id]
-                    paced_info = {**info, "pace/id": pace_id,
-                                  "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
-                    for batch in (1, 18):
-                        self.competitive.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
+    def _competitive_for_pace(self, pace_id):
+        selector = getattr(self.competitive, "for_pace", None)
+        return selector(pace_id) if selector else self.competitive
+
+    def _warmup_competitive(self, policy, pace_id, masks, planes, pill, preview, state):
+        from drmc_rl.human.controller_context import uses_public_context
+        for mask in masks:
+            observation = np.concatenate((planes, planes, mask.astype(np.float32)))
+            info = {
+                "placements/feasible_mask": mask,
+                "placements/cost_to_lock": np.where(mask, 32, 0xFFFF),
+                "next_pill_colors": pill,
+                "preview_pill": {"first_color": 2, "second_color": 1},
+            }
+            if uses_public_context(policy):
+                from drmc_rl.game.pair_state import DecisionBoundary, PublicPairState, VisibleSideState
+                from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+                from drmc_rl.search.public_policy import policy_request
+
+                # Synthetic kernel warmup, never a recorded live observation.
+                side = VisibleSideState(bytes([255] * 128), tuple(pill), tuple(preview), None)
+                public = PublicPairState(0, 0, (side, side), DecisionBoundary.BOTH)
+                legal = np.flatnonzero(mask.reshape(512)).tolist()
+                observation, info = policy_request(public, 0, legal, [32] * len(legal),
+                                                   context_schema=PUBLIC_CONTEXT_SCHEMA)
+            info["vs/observation_timeline"] = "causal-settled-pair-v1"
+            from drmc_rl.execution.pace import BY_ID, strategy_context
+            pace = BY_ID[pace_id]
+            paced_info = {**info, "pace/id": pace_id,
+                          "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
+            for batch in (1, 18):
+                policy.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
 
     def capabilities(self) -> dict[str, Any]:
         from drmc_rl.human.controller_context import uses_public_context
+        anticipation_paces = [p.id for p in PACES if self.competitive is not None
+                              and not uses_public_context(self._competitive_for_pace(p.id))]
         return {
             "schema": PROTOCOL_SCHEMA,
             "request_types": ["hello", "health", "decide", "coach", "prepare_next", "prepare_geometry", "cancel", "shutdown"],
-            "anticipation": {"version": 1, "available": self.competitive is not None and not uses_public_context(self.competitive),
+            "anticipation": {"version": 1, "available": bool(anticipation_paces), "supported_paces": anticipation_paces,
                              "preview_branches": 9, "frame_parities": 2,
                              "public_information_only": True, "opponent_ablation": True},
             "geometry_preparation": {"version": 1, "available": self.competitive is not None,
@@ -450,16 +465,17 @@ class HumanBackend:
 
     def _infer(self, request: Mapping[str, Any], *, remaining_ms: float) -> dict[str, Any]:
         state = request["state"]
+        pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
+        competitive = self._competitive_for_pace(pace.id)
         from drmc_rl.human.controller_context import (
             controller_policy_inputs, live_controller_state, uses_public_context,
         )
-        if (self.competitive is not None and uses_public_context(self.competitive)
+        if (competitive is not None and uses_public_context(competitive)
                 and request.get("strength_control") == "quality"):
             state = live_controller_state(state)
         rating = float(request["target_rating"])
         temperature = float(request.get("temperature", 1.0))
         execution_delay = int(request.get("execution_delay_frames", 0))
-        pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
         max_delay = max(30, pace.reaction_frames)
         if not 0 <= execution_delay <= max_delay:
             raise ValueError(f"execution_delay_frames must be in [0,{max_delay}]")
@@ -514,7 +530,7 @@ class HumanBackend:
             rating=rating,
         )
         competitive_only = (
-            self.afterstate_v3 and self.competitive is not None
+            self.afterstate_v3 and competitive is not None
             and request.get("strength_control") == "quality" and request.get("type") != "coach"
         )
         if competitive_only:
@@ -588,14 +604,14 @@ class HumanBackend:
                 raise ValueError("strength_control must be regret or quality")
             if control == "quality":
                 scores = details.get("competitive_score")
-                if self.competitive is not None:
+                if competitive is not None:
                     candidate = (planes, opponent_planes, pill, preview, speed, speed_ups,
                                  frame, reach, packed, costs512)
                     observed, infos = controller_policy_inputs(
-                        self.competitive, candidate, state, pace, execution_delay,
+                        competitive, candidate, state, pace, execution_delay,
                         int((state.get("public_live_context") or {}).get("compute_frames", execution_delay)),
                     )
-                    actions, masks, logits = self.competitive.score(observed, infos)
+                    actions, masks, logits = competitive.score(observed, infos)
                     if set(actions[0, masks[0]]) != set(valid_actions):
                         raise RuntimeError("competitive policy changed candidate coverage")
                     by_action = np.full(512, -np.inf, dtype=np.float32)
@@ -605,7 +621,7 @@ class HumanBackend:
                 packed_slot = self.runtime.choose_quality(scores, packed.mask)
                 strength = {"control": "quality", "chosen_regret": 0.0,
                             "rating_calibrated": False,
-                            "competitive_model": self.competitive_identity}
+                            "competitive_model": {**(self.competitive_identity or {}), "selected_pace": pace.id}}
             else:
                 packed_slot, strength = self.runtime.choose_strength(
                     details["competitive_score"],
@@ -763,9 +779,9 @@ class HumanBackend:
                 if self.competitive is None:
                     raise ValueError("next-turn geometry requires the public competitive policy")
                 state = request["state"]
-                if uses_public_context(self.competitive):
-                    state = live_controller_state(state)
                 pace = resolve_pace(request.get("pace"), request.get("timing_scale", 1.0))
+                if uses_public_context(self._competitive_for_pace(pace.id)):
+                    state = live_controller_state(state)
                 delay = int(request.get("execution_delay_frames", 0))
                 if not 0 <= delay <= max(30, pace.reaction_frames):
                     raise ValueError("invalid prepared execution delay")
@@ -789,9 +805,13 @@ class HumanBackend:
                 from drmc_rl.human.anticipation import NextTurnPreparer
                 if self.competitive is None:
                     raise ValueError("next-turn preparation requires the public competitive policy")
-                if self.preparer is None:
-                    self.preparer = NextTurnPreparer(self.competitive, self.planner)
+                from drmc_rl.human.controller_context import uses_public_context
                 pace = resolve_pace(request.get("pace"))
+                policy = self._competitive_for_pace(pace.id)
+                if uses_public_context(policy):
+                    raise ValueError("this pace requires fresh public context; use geometry preparation")
+                if self.preparer is None:
+                    self.preparer = NextTurnPreparer(policy, self.planner)
                 prepared = self.preparer.prepare(request["state"], request["committed"], pace)
                 if prepared is not None:
                     # All arrays cross the sidecar protocol as ordinary public

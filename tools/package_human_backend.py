@@ -53,18 +53,20 @@ def source_identity(path: Path) -> tuple[str, bool]:
 
 
 def copy_pace_portfolio(manifest: Path, competitive_checkpoint: Path, model_dir: Path):
-    """Copy only verified residuals, rewriting local paths for a portable package."""
+    """Copy verified cores and residuals with portable, manifest-relative paths."""
     from drmc_rl.human.pace_portfolio import read_portfolio
     with competitive_checkpoint.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     identity, paths = read_portfolio(manifest, digest)
     portable = {**identity, "adapters": {}}
-    directory = model_dir / "pace_adapters"
-    directory.mkdir(parents=True, exist_ok=True)
+    if "cores" in identity:
+        portable["cores"] = {}
     for name, source in paths.items():
-        relative = f"pace_adapters/{name}.pt"
+        kind = "cores" if name in identity.get("cores", {}) else "adapters"
+        relative = f"pace_{kind}/{name}.pt"
+        (model_dir / relative).parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, model_dir / relative)
-        portable["adapters"][name] = {**identity["adapters"][name], "path": relative}
+        portable[kind][name] = {**identity[kind][name], "path": relative}
     (model_dir / "pace_opponents.json").write_text(json.dumps(portable, indent=2) + "\n")
     return identity
 

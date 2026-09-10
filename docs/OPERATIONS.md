@@ -1484,7 +1484,55 @@ Sloth/Super Human/Frame Perfect checks before adoption; other pace routes
 and the ongoing outcome optimizer remain unchanged. Config, study, raw play
 and launch scripts remain under the local review root. Preserve the completed
 `core-300m-confirmation-mac` feed and do not restart former supervisor 55538.
-No product route changed or package was built in this evaluation pass.
+No product route changed or package was built in that evaluation pass.
+
+### Mixed-core live integration, September 10
+
+The v2 live portfolio accepts complete public-history cores alongside existing
+parent/residual routes. Selection precedes observation encoding, geometry
+preparation and warmup. Public-core routes reject legacy neural anticipation
+because they require fresh history; the app respects the sidecar's advertised
+pace scope. V1 manifests and lower-skill regret decoding retain their behavior.
+Packaging validates and relocates both core and residual artifacts.
+
+The explicit candidate manifest is
+`drmc_rl/human/portfolios/tester-300m.json`: 300M at Sloth/Super Human/Frame
+Perfect, original 50M at Relaxed, E1 at Normal/Fast/Top Humans. It is **opt-in**;
+defaults, browser assets and existing packages remain unchanged. The source app
+and sibling `train-versus` launcher accept `--pace-manifest`. This selection
+file is not a completed rendered-game acceptance or a distributable.
+
+Both acceptance tools now supply the causal public history already collected
+by the actual app. Six real-time 14-HI checks used actual 300M weights, two
+sidecars and the live scheduler: native and ROM runs at each proposed pace.
+All finished their existing acceptance checks. Across the six runs there were
+378 executed/373 completed placements, zero initial-state or completed-placement
+mismatches, 16 missed requests and two guarded replans, both in ROM runs.
+Native runs had no corrections. Sloth included physically unreachable late
+placements. Maximum round trip was 72.891 ms under concurrent Mac arena load;
+the adaptive compute allowance rose from four to five frames where required.
+These short operational checks do not replace the 8,192-game strength study;
+the two replan causes remain unassigned.
+
+Raw logs, native preview frames and `assessment.json` are retained under
+`runs/review-20260909/live-app-300m-v1`. Source bases were RL `e1aba8e` and
+app `d7c297a`, plus the mixed-portfolio integration changes. The GUI loaded the
+real mixed portfolio into two sidecars but remained in setup. Eight synthetic
+presses measured 0.053–5.660 ms at dispatch, seven below 0.2 ms. Its
+`gui-frame-perfect.csv` and `gui-menu-timing-report.json` are **setup-only**
+diagnostics with focus/occlusion transitions and a bounded trace tail, not
+gameplay or physical-input latency evidence. The native loop now emits its
+actual input sample, frame start/completion and audio-ready events, matching
+the ROM trace contract without inventing an emulated CPU cycle. A separate
+12-second setup run verified exactly 722 input samples, completed frames and
+audio-ready events, with normal timed shutdown; its trace is retained too.
+
+Finish rendered gameplay with normal-duration Start input, investigate the two
+guarded replans, then select routes and validate browser/packaged delivery.
+Do not weaken focus or pacing behavior to make synthetic automation pass.
+Fourteen focused Python portfolio/public-context checks and the Rust pace-scope
+test passed. Release app and acceptance tools built. Portable v2 tests verify
+complete choices/scripts at all seven paces and reject mislabeled cores.
 
 ### Persistent construction diagnostics
 
