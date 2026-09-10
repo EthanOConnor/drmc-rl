@@ -219,6 +219,7 @@ def fit(config):
     try:
         torch.set_num_threads(int(config.get("threads", 2)))
         seed = int(config["seed"])
+        split_seed = int(config.get("split_seed", seed))
         torch.manual_seed(seed)
         # Construction consumes different RNG amounts across architectures.
         sampler = torch.Generator(device="cpu").manual_seed(seed)
@@ -246,7 +247,7 @@ def fit(config):
         assert_disjoint_sources(sources, anchor_sources, confirmation)
         rows = join_quality_rows(sources, load_source_rows(Path(config["targets"])))
         train, validation = split_games(
-            rows, seed=seed, validation_fraction=config.get("validation_fraction", 0.25)
+            rows, seed=split_seed, validation_fraction=config.get("validation_fraction", 0.25)
         )
         assert_disjoint_sources(train, validation)
         anchors = policy_rows(anchor_sources)
@@ -255,8 +256,20 @@ def fit(config):
         net, cfg = upgrade_public_model(
             load_checkpoint(Path(config["checkpoint"]), map_location="cpu"),
             mode=config["mode"],
-            device=device,
+            device="cpu" if config.get("encoder_growth") else device,
         )
+        growth = None
+        if config.get("encoder_growth"):
+            from drmc_rl.training.model_growth import grow_bottle_encoder
+
+            requested = config["encoder_growth"]
+            net, cfg, growth = grow_bottle_encoder(
+                dict(cfg=cfg, state_dict=net.state_dict()),
+                channels=requested["channels"],
+                blocks=requested["blocks"],
+                seed=seed,
+                device=device,
+            )
         schema = cfg.get("smdp_ppo", cfg)["aux_spec"]
         datasets = {
             name: make_batch(part, schema=schema, device="cpu", targets=name != "anchor")
@@ -277,6 +290,8 @@ def fit(config):
             validation_states=len(validation),
             anchor_states=len(anchors),
             training_parameters=sum(p.numel() for p in net.parameters()),
+            encoder_growth=growth,
+            split_seed=split_seed,
             policy_kl_reference="post-migration-initial-policy",
             policy_kl_measured_splits=["train", "anchor", "validation"],
             policy_kl_rollback_splits=["train", "anchor"],

@@ -209,3 +209,37 @@ def test_heldout_drift_is_reported_but_cannot_control_optimizer_acceptance(tmp_p
         max(result["epochs"][0][k]["anchor_kl"] for k in ("train", "anchor"))
         < config["max_policy_kl"]
     )
+
+
+def test_independent_grown_teachers_share_the_fixed_whole_game_split(tmp_path):
+    from tools.eval_policy import _build_net_from_cfg
+
+    config, _ = fit_config(tmp_path)
+    source, target = data()
+    sources = [dict(source, id=str(i), game_id=f"fit-{i}", reset_seed=[30, i]) for i in range(8)]
+    targets = [dict(target, source_id=str(i), game_id=f"fit-{i}") for i in range(8)]
+    for name, rows in (("sources", sources), ("targets", targets)):
+        (tmp_path / (name + ".jsonl")).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    reports = []
+    for seed, width in ((29, 24), (71, 32)):
+        output = tmp_path / f"fit-{seed}"
+        reports.append(
+            fit(
+                dict(
+                    config,
+                    seed=seed,
+                    split_seed=803,
+                    output=str(output),
+                    encoder_growth=dict(channels=width, blocks=2),
+                )
+            )
+        )
+        saved = torch.load(output / "diagnostic.pt", weights_only=False)
+        net, _, _ = _build_net_from_cfg(saved["cfg"], 20, "cpu")
+        net.load_state_dict(saved["state_dict"], strict=True)
+        assert net.bottle_channels == width and len(net.bottle.blocks) == 2
+        assert saved["training_contract"]["encoder_growth"]["seed"] == seed
+        assert reports[-1]["accepted_examples"] == 6
+    assert reports[0]["train_games"] == reports[1]["train_games"]
+    assert reports[0]["validation_games"] == reports[1]["validation_games"]
+    assert reports[0]["split_seed"] == reports[1]["split_seed"] == 803

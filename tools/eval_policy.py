@@ -79,6 +79,8 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
             opponent_features=bool(g("candidate_opponent_features", True)),
             cross_ff_mult=int(g("candidate_cross_ff_mult", 2)),
             bottle_block=str(g("candidate_bottle_block", "dense")),
+            bottle_channels=g("candidate_bottle_channels", None),
+            bottle_norm_partitions=g("candidate_bottle_norm_partitions", None),
             compact_candidate_features=bool(g("candidate_compact_features", False)),
             critic_context=str(g("candidate_critic_context", "global")),
             terminal_wdl=bool(g("candidate_terminal_wdl", False)),

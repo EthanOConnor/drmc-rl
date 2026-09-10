@@ -26,9 +26,43 @@ def _groups(channels: int) -> int:
     return 1
 
 
-class _FiLMResidual(nn.Module):
-    def __init__(self, channels: int, cond_dim: int) -> None:
+class _PartitionedGroupNorm(nn.Module):
+    """Keep a grown encoder's existing channel populations normalized identically."""
+
+    def __init__(self, channels: int, partitions: tuple[int, ...]) -> None:
         super().__init__()
+        if (
+            not partitions
+            or any(type(width) is not int or width < 1 for width in partitions)
+            or sum(partitions) != channels
+        ):
+            raise ValueError("bottle normalization partitions must cover every channel")
+        self.partitions = partitions
+        self.weight = nn.Parameter(torch.ones(channels))
+        self.bias = nn.Parameter(torch.zeros(channels))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        normalized, start = [], 0
+        for width in self.partitions:
+            end = start + width
+            normalized.append(
+                F.group_norm(
+                    x[:, start:end].contiguous(),
+                    _groups(width),
+                    self.weight[start:end],
+                    self.bias[start:end],
+                    eps=1e-5,
+                )
+            )
+            start = end
+        return torch.cat(normalized, dim=1)
+
+
+class _FiLMResidual(nn.Module):
+    def __init__(self, channels: int, cond_dim: int, norm_partitions=None) -> None:
+        super().__init__()
+        if norm_partitions is not None:
+            raise ValueError("partitioned bottle growth currently requires dense blocks")
         inner = max(32, channels // 2)
         self.norm1 = nn.GroupNorm(_groups(channels), channels)
         self.reduce = nn.Conv2d(channels, inner, 1)
@@ -55,11 +89,17 @@ class _FiLMResidual(nn.Module):
 class _FiLMDenseResidual(nn.Module):
     """Full-capacity dense spatial block retained as the maximal variant."""
 
-    def __init__(self, channels: int, cond_dim: int) -> None:
+    def __init__(self, channels: int, cond_dim: int, norm_partitions=None) -> None:
         super().__init__()
-        self.norm1 = nn.GroupNorm(_groups(channels), channels)
+
+        def make_norm():
+            if norm_partitions is None:
+                return nn.GroupNorm(_groups(channels), channels)
+            return _PartitionedGroupNorm(channels, tuple(norm_partitions))
+
+        self.norm1 = make_norm()
         self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.norm2 = nn.GroupNorm(_groups(channels), channels)
+        self.norm2 = make_norm()
         self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
         self.film = nn.Linear(cond_dim, 4 * channels)
 
@@ -75,7 +115,13 @@ class _FiLMDenseResidual(nn.Module):
 
 class _SharedBottleEncoder(nn.Module):
     def __init__(
-        self, in_channels: int, d_model: int, blocks: int, cond_dim: int, block_type: str
+        self,
+        in_channels: int,
+        d_model: int,
+        blocks: int,
+        cond_dim: int,
+        block_type: str,
+        norm_partitions=None,
     ) -> None:
         super().__init__()
         self.stem = nn.Conv2d(in_channels + 2, d_model, 3, padding=1)
@@ -86,7 +132,9 @@ class _SharedBottleEncoder(nn.Module):
             block_cls = _FiLMResidual
         else:
             raise ValueError(f"unknown G5 bottle block {block_type!r}")
-        self.blocks = nn.ModuleList([block_cls(d_model, cond_dim) for _ in range(int(blocks))])
+        self.blocks = nn.ModuleList(
+            [block_cls(d_model, cond_dim, norm_partitions) for _ in range(int(blocks))]
+        )
         rows = torch.linspace(0.0, 1.0, GRID_H).view(1, 1, GRID_H, 1)
         cols = torch.linspace(0.0, 1.0, GRID_W).view(1, 1, 1, GRID_W)
         self.register_buffer("rows", rows.expand(1, 1, GRID_H, GRID_W), persistent=False)
@@ -113,9 +161,7 @@ class _TokenBlock(nn.Module):
             nn.Linear(ff_mult * d_model, d_model),
         )
 
-    def forward(
-        self, x: torch.Tensor, padding: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, padding: Optional[torch.Tensor] = None) -> torch.Tensor:
         y = self.norm1(x)
         y, _ = self.attn(y, y, y, key_padding_mask=padding, need_weights=False)
         x = x + y
@@ -150,6 +196,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         opponent_features: bool = True,
         cross_ff_mult: int = 2,
         bottle_block: str = "dense",
+        bottle_channels: int | None = None,
+        bottle_norm_partitions: tuple[int, ...] | None = None,
         compact_candidate_features: bool = False,
         critic_context: str = "global",
         terminal_wdl: bool = False,
@@ -166,6 +214,9 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         self.in_channels = int(in_channels)
         self.board_channels = 16
         self.d_model = int(d_model)
+        self.bottle_channels = self.d_model if bottle_channels is None else int(bottle_channels)
+        if self.bottle_channels < 1:
+            raise ValueError("bottle width must be positive")
         self.aux_dim = int(aux_dim)
         self.patch_kernel = int(patch_kernel)
         self.cost_norm_denom = float(cost_norm_denom)
@@ -204,7 +255,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
 
         embed_cls = (
             OrderedPairEmbedding
-            if pill_embed_type.strip().lower() in {"ordered_onehot", "ordered", "onehot", "ordered_pair"}
+            if pill_embed_type.strip().lower()
+            in {"ordered_onehot", "ordered", "onehot", "ordered_pair"}
             else UnorderedPillEmbedding
         )
         embed_kwargs = {"num_colors": num_colors, "output_dim": pill_embed_dim}
@@ -217,11 +269,26 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             nn.Linear(cond_in, d_model), nn.SiLU(), nn.Linear(d_model, d_model)
         )
 
-        self.bottle = _SharedBottleEncoder(8, d_model, encoder_blocks, d_model, bottle_block)
+        self.bottle = _SharedBottleEncoder(
+            8,
+            self.bottle_channels,
+            encoder_blocks,
+            d_model,
+            bottle_block,
+            norm_partitions=bottle_norm_partitions,
+        )
+        self.bottle_projection = (
+            nn.Identity()
+            if self.bottle_channels == d_model
+            else nn.Conv2d(self.bottle_channels, d_model, 1)
+        )
         self.column_pos = nn.Parameter(torch.randn(1, GRID_W, d_model) * 0.02)
         self.side = nn.Parameter(torch.randn(1, 2, 1, d_model) * 0.02)
         self.interaction = nn.ModuleList(
-            [_TokenBlock(d_model, transformer_heads, transformer_ff_mult) for _ in range(interaction_layers)]
+            [
+                _TokenBlock(d_model, transformer_heads, transformer_ff_mult)
+                for _ in range(interaction_layers)
+            ]
         )
         self.global_fusion = nn.Sequential(
             nn.LayerNorm(5 * d_model),
@@ -251,12 +318,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
             self.pose_cost = nn.Sequential(
                 nn.Linear(pos_embed_dim + cost_embed_dim, projection_dim), nn.SiLU()
             )
-            self.patch_projection = nn.Sequential(
-                nn.Linear(patch_dim, projection_dim), nn.SiLU()
-            )
-            self.local_projection = nn.Sequential(
-                nn.Linear(2 * d_model, projection_dim), nn.SiLU()
-            )
+            self.patch_projection = nn.Sequential(nn.Linear(patch_dim, projection_dim), nn.SiLU())
+            self.local_projection = nn.Sequential(nn.Linear(2 * d_model, projection_dim), nn.SiLU())
             self.threat_projection = nn.Sequential(
                 nn.Linear(2 * d_model, projection_dim), nn.SiLU()
             )
@@ -270,7 +333,10 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         )
         self.policy = nn.Sequential(nn.LayerNorm(d_model), nn.Linear(d_model, d_model))
         self.value_head = nn.Sequential(
-            nn.LayerNorm(d_model), nn.Linear(d_model, d_model), nn.SiLU(), nn.Linear(d_model, value_atoms)
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model),
+            nn.SiLU(),
+            nn.Linear(d_model, value_atoms),
         )
         if critic_context == "candidate_attention":
             self.value_query = nn.MultiheadAttention(d_model, transformer_heads, batch_first=True)
@@ -283,13 +349,23 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         self.candidate_wdl_head = nn.Linear(d_model, 3) if candidate_wdl else None
         self.motor_auxiliary = None
         if motor_auxiliary is not None:
-            from drmc_rl.models.policy.motor_auxiliary import MOTOR_AUXILIARY_SCHEMA, MotorAuxiliaryHead
+            from drmc_rl.models.policy.motor_auxiliary import (
+                MOTOR_AUXILIARY_SCHEMA,
+                MotorAuxiliaryHead,
+            )
+
             if motor_auxiliary != MOTOR_AUXILIARY_SCHEMA or public_context_schema is None:
                 raise ValueError("motor auxiliaries require their public-context schema")
             self.motor_auxiliary = MotorAuxiliaryHead(d_model)
-        self.register_buffer("value_support", torch.linspace(-1.0, 1.0, value_atoms), persistent=False)
-        self.register_buffer("_dr", torch.tensor([0, 1, 0, -1], dtype=torch.int64), persistent=False)
-        self.register_buffer("_dc", torch.tensor([1, 0, -1, 0], dtype=torch.int64), persistent=False)
+        self.register_buffer(
+            "value_support", torch.linspace(-1.0, 1.0, value_atoms), persistent=False
+        )
+        self.register_buffer(
+            "_dr", torch.tensor([0, 1, 0, -1], dtype=torch.int64), persistent=False
+        )
+        self.register_buffer(
+            "_dc", torch.tensor([1, 0, -1, 0], dtype=torch.int64), persistent=False
+        )
         radius = self.patch_kernel // 2
         padded_width = GRID_W + 2 * radius
         offsets = [
@@ -315,9 +391,11 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         index = center.unsqueeze(-1) + self._patch_offsets.view(1, 1, -1)
         expanded = index.unsqueeze(1).expand(-1, planes.shape[1], -1, -1).flatten(2)
         patch = flat.gather(2, expanded)
-        return patch.reshape(planes.shape[0], planes.shape[1], row.shape[1], -1).permute(
-            0, 2, 1, 3
-        ).flatten(2)
+        return (
+            patch.reshape(planes.shape[0], planes.shape[1], row.shape[1], -1)
+            .permute(0, 2, 1, 3)
+            .flatten(2)
+        )
 
     def forward(
         self,
@@ -331,7 +409,10 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         aux: Optional[torch.Tensor] = None,
         return_aux: bool = False,
         motor_geometry: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor] | Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
+    ) -> (
+        Tuple[torch.Tensor, torch.Tensor]
+        | Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]
+    ):
         if obs.ndim != 4 or obs.shape[-2:] != (GRID_H, GRID_W):
             raise ValueError(f"expected obs [B,C,16,8], got {tuple(obs.shape)}")
         if obs.shape[1] < 16:
@@ -375,9 +456,9 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                 opponent_cond = cond + self.side_condition_scale[1] * (opposite_condition - cond)
             else:
                 bottle_cond, opponent_cond = own_condition, opposite_condition
-        own = self.bottle(obs[:, :8], bottle_cond)
+        own = self.bottle_projection(self.bottle(obs[:, :8], bottle_cond))
         opponent_obs = obs[:, 8:16] if self.opponent_features else torch.zeros_like(obs[:, 8:16])
-        opponent = self.bottle(opponent_obs, opponent_cond)
+        opponent = self.bottle_projection(self.bottle(opponent_obs, opponent_cond))
         columns = torch.stack(
             (own.mean(dim=2).transpose(1, 2), opponent.mean(dim=2).transpose(1, 2)), dim=1
         )
@@ -414,7 +495,9 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         )
         raw = obs[:, :4]
         patches = torch.cat((self._patch(raw, row, col), self._patch(raw, row2, col2)), dim=-1)
-        own_local = torch.cat((self._gather_map(own, row, col), self._gather_map(own, row2, col2)), dim=-1)
+        own_local = torch.cat(
+            (self._gather_map(own, row, col), self._gather_map(own, row2, col2)), dim=-1
+        )
         col_index = col.unsqueeze(-1).expand(-1, -1, self.d_model)
         col2_index = col2.unsqueeze(-1).expand(-1, -1, self.d_model)
         threat = torch.cat(

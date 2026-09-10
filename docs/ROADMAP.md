@@ -347,8 +347,16 @@ indefinitely staged.
   source parity and recovery checks cover these paths. Broader fitting now
   requires independent policy-anchor games, groups repeated reset seeds, uses
   bounded device batches and retains held-out complete-frontier predictions.
-  Only training and anchor KL govern rollback. Useful held-out ranking, the
-  larger architectures and distillation remain to be established.
+  Only training and anchor KL govern rollback. Dense bottle growth now implements
+  384×12 and 512×12 with a fixed 320-wide token/candidate interface. Partitioned
+  normalization and identity residual/projection initialization preserve the
+  real parent's policy, value and candidate representations on 288 Mac CPU
+  decisions; gradient and reload tests exercise the added capacity. These
+  variants have 48.5M and 75.3M parameters versus the comparable 28.7M baseline.
+  A common `split_seed` keeps held-out whole games fixed across independent
+  training seeds. This is architecture and initialization evidence. Useful
+  held-out ranking, substantial independent teacher training, separate measured
+  equal-data/equal-GPU allocations and fast-student distillation remain open.
 - [ ] **Adaptive search and anticipation (E6).** Complete the public full-pair
   search experiments: candidate-dependent allocation, simultaneous-action mixed
   strategies, tactical extensions, and shared geometry with late preview

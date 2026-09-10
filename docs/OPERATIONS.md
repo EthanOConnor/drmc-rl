@@ -637,6 +637,27 @@ For the review's offline diagnostics, launch through these recipes:
   this sampling does not affect any loss or feasible frontier. `accepted_examples`
   and `examples_processed` distinguish retained updates from rollback attempts.
 
+  Optional `encoder_growth: {"channels": 384, "blocks": 12}` (or 512×12)
+  expands a dense G5 bottle encoder after public/head migration. Token width is
+  retained, so the reported architecture is bottle channels × residual blocks,
+  not a wider transformer. Initialization preserves learned outputs through
+  partitioned normalization and an identity projection. Growth cannot shrink
+  the parent or discard its learned tensors; fitted expanded models reload
+  normally, including a learned projection and repeated growth. Reports retain
+  parent/target sizes, partitions, parameter counts and growth seed. The parent
+  and caller's CPU/CUDA random state remain unchanged by construction.
+
+  Set a shared `split_seed` across all comparison arms and independent `seed`
+  values for teacher members; omitting `split_seed` retains the old `seed`
+  behavior. Use the same labels, public mode, anchors and held-out whole games
+  when comparing widths. Equal exposure and equal GPU allocation are separate
+  studies. The fitter currently records epochs, examples, attempted updates and
+  elapsed wall time; it does not enforce an exclusive GPU allocation deadline.
+  Allocate and measure that budget explicitly before describing a fit as an
+  equal-GPU-time comparison. The real-checkpoint initialization audit is under
+  `review-20260909/model-growth-audit`; CPU output parity and the focused growth/
+  streamed-fit tests passed. Check CUDA numerics before substantial teacher fits.
+
   A fitted checkpoint may initialize the next phase with the
   same mode/schema; learned heads and effective EMA weights are preserved.
   Architecture changes require a new migration from the frozen core. The

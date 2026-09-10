@@ -175,7 +175,7 @@ recipes:
     status: staged
     stage: 4
     purpose: Diagnostic critic-only, public-context-only and combined fits from complete paired terminal panels, with whole-game holdout, independent policy anchors and bounded evaluation batches.
-    requires_paths: [tools/fit_paired_quality.py, '{paired_quality_fit_config}']
+    requires_paths: [tools/fit_paired_quality.py, drmc_rl/training/model_growth.py, '{paired_quality_fit_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.fit_paired_quality, --config, '{paired_quality_fit_config}']
     produces: [Diagnostic checkpoint, source-game heldout WDL and paired-gap errors, layer update and representation diagnostics]
@@ -187,6 +187,8 @@ recipes:
       - Separate policy-anchor games are mandatory; all source/anchor/confirmation position, game and reset-seed identities must be disjoint.
       - Whole-reset-seed weighting and streamed complete-frontier metrics preserve independent-game denominators. Only training and anchor KL can control optimizer rollback.
       - Initial and final held-out predictions retain per-candidate WDL and policy probabilities for paired whole-game ranking and regret comparisons.
+      - Optional dense bottle growth preserves the starting public policy with a fixed token interface. Report bottle width/depth, parameter counts and measured allocation separately.
+      - Common split_seed values keep held-out whole games fixed across independent model seeds. Equal data and equal exclusive GPU time require separate measured comparisons.
       - Public-context inputs require the causal observation timeline; historical warped buffers cannot initialize it.
       - This fitting diagnostic does not certify WDL calibration, decision improvement or a product promotion.
   public-quality-bank:

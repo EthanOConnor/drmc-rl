@@ -286,6 +286,31 @@ checkpoints without the option retain their direct-side graph, including their
 original regularization reference on resume. New side scales and context weights
 receive outcome gradients; no history input is replaced with a fabricated value.
 
+Larger quality teachers can expand the dense bottle encoder with
+`grow_bottle_encoder`. In this comparison, 320×8, 384×12 and 512×12 explicitly
+mean bottle channels × residual blocks; token attention and the candidate
+interface remain 320 wide. Existing channels retain their original GroupNorm
+populations, added channels use separate populations, and old output channels
+initially ignore new inputs. A learned projection starts as identity on the old
+channels and zero on new channels. Added blocks start as residual identities.
+The added readouts receive gradients immediately; their random features become
+trainable without first destroying the parent policy. This is an encoder-specific
+form of function-preserving growth, motivated by
+[Net2Net](https://arxiv.org/abs/1511.05641), not a claim that normalization permits
+arbitrary prefix copying when widening the whole transformer.
+
+The real combined-head parent has 28,656,219 parameters; its grown 384×12 and
+512×12 variants have 48,532,059 and 75,338,715. All three preserved every policy
+probability, value and candidate representation on 288 unchanged public
+controller decisions in the Mac CPU FP32 audit. Small deterministic tests also
+exercise learned projections, repeated growth, all prediction heads and gradients
+into new channels/layers. CUDA numerical parity and substantive training,
+equal-data/equal-compute evaluation and distillation remain separate requirements.
+Keep training/anchor/validation banks identical across sizes: `split_seed` is
+independent of the model and optimizer `seed`. Architecture size is not evidence
+of a better teacher, and wall time under competing GPU jobs is not an exclusive
+GPU allocation comparison.
+
 Semantic bottle planes always retain capsule bonds. The frozen VS actors
 (including the public outcome bootstrap) use the historical encoding that
 hides horizontal bonds on each side's same-color pill turns. Apply that lossy

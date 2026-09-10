@@ -259,6 +259,8 @@ class SMDPPPOConfig:
     candidate_opponent_features: bool = True
     candidate_cross_ff_mult: int = 2
     candidate_bottle_block: str = "dense"
+    candidate_bottle_channels: int | None = None
+    candidate_bottle_norm_partitions: list[int] | None = None
     candidate_compact_features: bool = False
     candidate_critic_context: str = "global"
     candidate_terminal_wdl: bool = False
@@ -440,6 +442,8 @@ class SMDPPPOAdapter(AlgoAdapter):
             candidate_opponent_features=bool(ppo_cfg_dict.get("candidate_opponent_features", True)),
             candidate_cross_ff_mult=int(ppo_cfg_dict.get("candidate_cross_ff_mult", 2)),
             candidate_bottle_block=str(ppo_cfg_dict.get("candidate_bottle_block", "dense")),
+            candidate_bottle_channels=ppo_cfg_dict.get("candidate_bottle_channels"),
+            candidate_bottle_norm_partitions=ppo_cfg_dict.get("candidate_bottle_norm_partitions"),
             candidate_compact_features=bool(ppo_cfg_dict.get("candidate_compact_features", False)),
             candidate_patch_kernel=int(ppo_cfg_dict.get("candidate_patch_kernel", 3)),
             candidate_critic_context=str(ppo_cfg_dict.get("candidate_critic_context", "global")),
@@ -612,6 +616,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                     opponent_features=self.hparams.candidate_opponent_features,
                     cross_ff_mult=self.hparams.candidate_cross_ff_mult,
                     bottle_block=self.hparams.candidate_bottle_block,
+                    bottle_channels=self.hparams.candidate_bottle_channels,
+                    bottle_norm_partitions=self.hparams.candidate_bottle_norm_partitions,
                     compact_candidate_features=self.hparams.candidate_compact_features,
                     critic_context=self.hparams.candidate_critic_context,
                     terminal_wdl=self.hparams.candidate_terminal_wdl,
