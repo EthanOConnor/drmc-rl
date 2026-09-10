@@ -304,8 +304,14 @@ The real combined-head parent has 28,656,219 parameters; its grown 384×12 and
 probability, value and candidate representation on 288 unchanged public
 controller decisions in the Mac CPU FP32 audit. Small deterministic tests also
 exercise learned projections, repeated growth, all prediction heads and gradients
-into new channels/layers. CUDA numerical parity and substantive training,
-equal-data/equal-compute evaluation and distillation remain separate requirements.
+into new channels/layers. The RTX 3090 FP32 audit retained every greedy choice;
+maximum total variation was 7.83e-6 and maximum log-probability error 6.75e-5,
+within the existing 1e-4/1e-3 policy bounds. Its value and representation errors
+(5.89e-5 and 6.64e-4) exceeded the stricter initialization probe, so that failed
+probe remains recorded. The modified bottle computation matched exactly in
+FP64 on 16 bottle inputs, supporting a shape-dependent rounding explanation.
+Substantive training, equal-data/equal-compute evaluation and distillation remain
+separate requirements.
 Keep training/anchor/validation banks identical across sizes: `split_seed` is
 independent of the model and optimizer `seed`. Architecture size is not evidence
 of a better teacher, and wall time under competing GPU jobs is not an exclusive

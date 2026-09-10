@@ -655,8 +655,14 @@ For the review's offline diagnostics, launch through these recipes:
   elapsed wall time; it does not enforce an exclusive GPU allocation deadline.
   Allocate and measure that budget explicitly before describing a fit as an
   equal-GPU-time comparison. The real-checkpoint initialization audit is under
-  `review-20260909/model-growth-audit`; CPU output parity and the focused growth/
-  streamed-fit tests passed. Check CUDA numerics before substantial teacher fits.
+  `review-20260909/model-growth-audit`; CPU output parity and 41 focused growth,
+  streamed-fit, G5 and program checks passed. CUDA evidence is in its
+  `assessment-cuda.json` and the remote `model-growth-audit-cuda` directory, run
+  from immutable `teacher-growth-2e5b0bf-source`. Both expanded models retained
+  all 288 greedy choices within the unchanged 1e-4 total-variation and 1e-3
+  log-probability bounds. The stricter value/representation probe failed with
+  small FP32 errors; a 16-bottle FP64 comparison matched exactly. Keep these
+  numerical diagnostics distinct from strength or inference-latency evidence.
 
   A fitted checkpoint may initialize the next phase with the
   same mode/schema; learned heads and effective EMA weights are preserved.
