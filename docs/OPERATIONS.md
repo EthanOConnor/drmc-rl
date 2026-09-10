@@ -1400,6 +1400,21 @@ unchanged parent. The parent checkpoint is never rewritten or installed.
 Within-model reuse parity is not behavior preservation of that architectural
 change. Any useful unconditioned student still requires fitting and whole-game
 strength/latency evaluation before adoption.
+The fixed `runs/review-20260909/neural-preparation-v1` audit is complete
+under source `be89516`; former supervisor 17035 is done. Its result/config
+and independent `neural-preparation-assessment-v1.json` retain 14 distinct
+recorded reset seeds, two per 14-HI pace, 126 conditional preview comparisons
+and five timing repetitions per mode. `assess_neural_preparation_v1.py`
+groups repetitions at each root and charges preparation plus inference.
+All within-variant choices pass; maximum probability/value errors are
+9.54e-7/2.39e-7. Nine queries cost 17.90 ms fresh versus a median charged
+14.23 ms with preparation. One query with only our bottle cached costs
+8.38 versus 9.93 ms fresh; preparing both bottles and then making only one
+query costs 12.45 ms in total, despite a shorter 5.42 ms remaining decision.
+The untrained architecture changes 12/14 parent choices. Retain the current
+models; use this result to inform the planned fast-student training and
+subsequent full-game evaluation. No preparation charge, product route or
+running training source changed, and this completed audit needs no repeat.
 
 `trainer-adaptive-search-audit` compares complete queued matrices with bounded
 root allocation, and complete action vectors for unilateral P1/P2 roots.

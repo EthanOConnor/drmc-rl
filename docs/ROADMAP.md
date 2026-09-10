@@ -585,6 +585,17 @@ indefinitely staged.
   within-model reuse parity/cost from the untrained behavior change caused by
   disabling trunk conditioning. Distillation and full-game preservation of
   strength remain prerequisites; the current trained models are unchanged.
+  The fixed 14-root Metal diagnostic (two recorded 14-HI roots per pace)
+  now matches all 126 prepared preview choices, with maximum probability error
+  9.54e-7 and value error 2.39e-7. Per-root median costs are 17.90 ms for
+  nine fresh queries, 7.19 ms preparation plus 6.93 ms afterward; the median
+  charged total is 14.23 ms. One query costs 9.93 ms fresh or 8.38 ms with
+  only our bottle cached and the opponent freshly encoded. Preparation moves
+  work earlier and is not free. Turning off conditioning changes 12 of 14
+  original choices (median policy KL 3.40), so this is a fast-student option
+  for the planned distillation study, not a current-model optimization.
+  Retain this completed audit; do not spend another tiny fit on these 14 roots
+  or change the product's execution charge from an offline measurement.
   Bounded root allocation is now implemented on this same queued traversal.
   Every legal action remains represented; unknown joint values retain [-1, 1]
   intervals and null W/D/L. Two interval games guide allocation along unresolved

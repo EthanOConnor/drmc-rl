@@ -123,6 +123,11 @@ function renderOperations() {
       $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.games,run.target_games)}<div class="training-detail"><span>${count(run.games)} / ${count(run.target_games)} games</span><span>${esc(scope)}</span></div>${arms}<p class="budget-note">Measured during unchanged competitive play. Later payoff alone does not prove a construction caused it. Strength with proposal control and blind preferences remain unevaluated.<br>${ago(age(run.updated_at))}</p></div>`);
       continue;
     }
+    if(run.schema==='drmc-neural-preparation-assessment-v1'){
+      const t=run.median_ms || {}, ms=k=>`${num(t[k]).toFixed(1)} ms`;
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div><div class="training-detail"><span>Matching conditional choices</span><span>${count(run.previews)} / ${count(run.previews)}</span></div><div class="training-detail"><span>9 previews, fresh inference</span><span>${ms('full_nine_ms')}</span></div><div class="training-detail"><span>Prepare both bottles</span><span>${ms('preparation_ms')}</span></div><div class="training-detail"><span>9 previews, after preparation</span><span>${ms('prepared_nine_ms')}</span></div><div class="training-detail"><span>Preparation + 9 previews</span><span>${ms('prepared_total_nine_ms')}</span></div><div class="training-detail"><span>One decision, fresh / own bottle cached</span><span>${ms('full_one_ms')} / ${ms('own_prepared_fresh_opponent_one_ms')}</span></div><p class="budget-note">Disabling early conditioning changed ${count(run.migration_changed_choices)} of ${count(run.roots)} original choices. This architecture needs student training and strength evaluation before adoption. Shared-Mac timings.</p></div>`);
+      continue;
+    }
     if(run.schema==='drmc-adaptive-search-audit-v1'){
       const records=run.records || [], record=records.at(-1);
       const unilateral=['p1','p2'].includes(record?.root_boundary);
