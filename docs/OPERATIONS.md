@@ -724,8 +724,11 @@ For the review's offline diagnostics, launch through these recipes:
   checkpoint in the common held-out assessment; do not attach predictions from
   a later interrupted child update. Fixed epochs/equal exposure and equal
   maximum allocation are separate arms with common splits/anchors. These
-  controls have focused process and fitter tests; a substantive exclusive-GPU
-  fit and resource comparison remain to be run. They do not promote a teacher.
+  controls passed 22 focused Mac checks and 11 Linux process/checkpoint checks
+  on tf3090 from `quality-budget-07f46eb-source`. The installed NVIDIA query
+  correctly reports the main trainer and labeler as existing GPU owners. A
+  substantive exclusive-GPU fit and resource comparison remain to be run.
+  These tests do not promote a teacher or claim additional GPU training.
 - `search-frontier-benchmark`: set `search_frontier_config` with `state_bank`,
   `checkpoint`, `states`, `device`, `output`, depth/beams and batching limit.
   This uses an explicitly uncalibrated leaf link to compare exact searches,
