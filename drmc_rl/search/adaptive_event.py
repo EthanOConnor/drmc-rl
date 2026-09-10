@@ -57,6 +57,8 @@ class AdaptiveSearchResult:
     total_allocated_joint_actions: int = 0
     nested_certificates: tuple = ()
     node_budget_exhausted: bool = False
+    tactical_extensions: int = 0
+    tactical_reasons: tuple = ()
 
     def select_action(self, rng):
         if not self.certified:
@@ -86,6 +88,7 @@ class AdaptiveSearchResult:
             nested=self.nested, total_allocated_joint_actions=self.total_allocated_joint_actions,
             nested_certificates=list(self.nested_certificates),
             node_budget_exhausted=self.node_budget_exhausted,
+            tactical_extensions=self.tactical_extensions, tactical_reasons=dict(self.tactical_reasons),
             candidate_truncation=0, matrix_failures=list(self.matrix_failures),
             calibrated=False, usable_for_quality_training=False,
             scope="Response bound for the configured finite-depth critic game only.")
@@ -211,7 +214,9 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
             self._nodes, self._cache_hits, self._chance_nodes, self._chance_outcomes,
             self.inference_batches, self._matrix_games, self._matrix_solve_ms,
             rounds, allocated, discarded, tuple(self._matrix_failures),
-            total_allocated_joint_actions=allocated, node_budget_exhausted=self._budget_exhausted)
+            total_allocated_joint_actions=allocated, node_budget_exhausted=self._budget_exhausted,
+            tactical_extensions=self._tactical_extensions,
+            tactical_reasons=tuple(sorted(self._tactical_reasons.items())))
 
     def _search_nested(self, state, root_side, root_actions):
         self._cache.clear()
@@ -238,7 +243,9 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
             result['allocated'], result['discarded'], tuple(self._matrix_failures),
             nested=True, total_allocated_joint_actions=self._total_joint_actions,
             nested_certificates=tuple(self._nested_certificates),
-            node_budget_exhausted=self._budget_exhausted)
+            node_budget_exhausted=self._budget_exhausted,
+            tactical_extensions=self._tactical_extensions,
+            tactical_reasons=tuple(sorted(self._tactical_reasons.items())))
 
     def _interval_joint_child(self, state, root_side, own, other, depth, gap):
         if self._total_joint_actions >= self.max_joint_actions:
@@ -341,7 +348,7 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
                 self._chance_nodes += 1
                 self._chance_outcomes += len(outcomes)
                 children = yield from self._cooperate([self._interval_visit(
-                    item.state, max(0, depth-1), root_side, gap) for item in outcomes])
+                    item.state, self._forced_depth(depth), root_side, gap) for item in outcomes])
                 weights = np.asarray([o.probability for o in outcomes], float)
                 weights /= weights.sum()
                 lo = float(weights @ [v.lower for v in children])
@@ -353,12 +360,12 @@ class AdaptiveJointEventSearch(QueuedJointEventSearch):
                 child = self.model.advance(state)
                 if self.model.key(child) == key[0]:
                     raise RuntimeError("deterministic advance made no progress")
-                value = yield from self._interval_visit(child, max(0, depth-1), root_side, gap)
+                value = yield from self._interval_visit(child, self._forced_depth(depth), root_side, gap)
         else:
             acting = root_side if boundary == DecisionBoundary.BOTH else (
                 0 if boundary == DecisionBoundary.P1 else 1)
             yield state, acting
-            if depth <= 0:
+            if not self._expand_decision(state, depth):
                 wdl = self.model.evaluate(state, root_side)
                 value = _UtilityInterval(max(-1., wdl.utility-self.evaluation_tolerance),
                     min(1., wdl.utility+self.evaluation_tolerance), wdl)

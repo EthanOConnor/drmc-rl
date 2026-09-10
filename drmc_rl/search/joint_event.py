@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections import Counter
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, Sequence, TypeVar, runtime_checkable
 
@@ -144,8 +145,11 @@ class SearchConfig:
     matrix_gap_tolerance: float = 0.02
     matrix_solver: str = "linear_program"
     matrix_time_limit_seconds: float = 0.25
+    tactical_extension_events: int = 0
 
     def __post_init__(self) -> None:
+        if type(self.tactical_extension_events) is not int or not 0 <= self.tactical_extension_events <= 8:
+            raise ValueError("tactical extension events must be an integer in [0,8]")
         if self.depth_events < 1:
             raise ValueError("depth_events must be positive")
         if min(self.own_beam, self.opponent_beam, self.chance_beam) < 1:
@@ -193,6 +197,8 @@ class SearchResult:
     action_selection: str = "argmax"
     joint_utilities: np.ndarray | None = None
     matrix_failures: tuple[str, ...] = ()
+    tactical_extensions: int = 0
+    tactical_reasons: tuple[tuple[str, int], ...] = ()
 
     def select_action(self, rng: np.random.Generator) -> int:
         """Decode a usable result without collapsing a simultaneous mixture."""
@@ -222,12 +228,40 @@ class JointEventSearch(Generic[StateT]):
         self._equilibrium_gap = 0.0
         self._equilibrium_converged = True
         self._matrix_failures = []
+        self._tactical_extensions = 0
+        self._tactical_reasons = Counter()
+
+    @staticmethod
+    def _forced_depth(depth):
+        # Before extension starts, forced reveals/settling can reach zero but
+        # cannot spend a future tactical allowance. After an extended action,
+        # negative depth tracks events already spent and must never reset.
+        return depth - 1 if depth else 0
+
+    def _expand_decision(self, state, depth):
+        if depth > 0:
+            return True
+        if -depth >= self.config.tactical_extension_events:
+            return False
+        predicate = getattr(self.model, "tactical_reasons", None)
+        if predicate is None:
+            raise ValueError("tactical extensions require an explicit public-state predicate")
+        reasons = tuple(predicate(state))
+        if any(not isinstance(reason, str) or not reason for reason in reasons):
+            raise ValueError("tactical reasons must be nonempty public-state labels")
+        if not reasons:
+            return False
+        self._tactical_extensions += 1
+        self._tactical_reasons.update(set(reasons))
+        return True
 
     def _matrix_metadata(self):
         return dict(matrix_games=self._matrix_games, matrix_solve_ms=self._matrix_solve_ms,
                     equilibrium_gap=self._equilibrium_gap,
                     equilibrium_converged=self._equilibrium_converged,
-                    matrix_failures=tuple(self._matrix_failures))
+                    matrix_failures=tuple(self._matrix_failures),
+                    tactical_extensions=self._tactical_extensions,
+                    tactical_reasons=tuple(sorted(self._tactical_reasons.items())))
 
     def search(
         self, state: StateT, *, root_side: int, root_actions: Sequence[int] | None = None
@@ -421,14 +455,15 @@ class JointEventSearch(Generic[StateT]):
         # The event budget can end between a lock and the next spawn, including
         # before a correlated reserve reveal. Finish these forced events with
         # their exact chance expectation before asking a decision value model.
-        # No further player action is selected after the depth expires.
-        if depth <= 0 and boundary != DecisionBoundary.ADVANCE:
-            return self.model.evaluate(state, root_side)
+        # An explicit bounded public tactical predicate may extend decisions.
         cache_key = (self.model.key(state), int(depth), int(root_side))
         cached = self._cache.get(cache_key)
         if cached is not None:
             self._cache_hits += 1
             return cached
+
+        if boundary != DecisionBoundary.ADVANCE and not self._expand_decision(state, depth):
+            return self.model.evaluate(state, root_side)
 
         if boundary == DecisionBoundary.ADVANCE:
             outcomes = tuple(self.model.chance_outcomes(state))
@@ -440,7 +475,7 @@ class JointEventSearch(Generic[StateT]):
                 child = self.model.advance(state)
                 if self.model.key(child) == cache_key[0]:
                     raise RuntimeError("deterministic advance made no progress")
-                value = self._value(child, max(0, depth - 1), root_side)
+                value = self._value(child, self._forced_depth(depth), root_side)
         elif boundary == DecisionBoundary.BOTH:
             value = self._simultaneous_value(state, depth, root_side)
         elif boundary in {DecisionBoundary.P1, DecisionBoundary.P2}:
@@ -521,7 +556,7 @@ class JointEventSearch(Generic[StateT]):
         if not ordered:
             return self.model.evaluate(outcomes[0].state, root_side)  # pragma: no cover
         weights = np.asarray([item.probability for item in ordered], dtype=np.float64)
-        values = [self._value(item.state, max(0, depth - 1), root_side) for item in ordered]
+        values = [self._value(item.state, self._forced_depth(depth), root_side) for item in ordered]
         return WDL.mixture(weights, values)
 
     def _ordered_chance(self, outcomes):

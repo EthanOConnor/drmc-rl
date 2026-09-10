@@ -720,6 +720,24 @@ indefinitely staged.
   seven 14-HI paces and separate 20-HI Normal/Top Humans, using the current
   45/30-frame slow reactions. These are compatibility diagnostics under
   unchanged competitive play, not a proposal-controlled strength evaluation.
+  The allocation is complete: 256 natural games, 2,465,306 console frames,
+  25,026 observed decisions per head and 21,684 verified transitions. There
+  were no unexplained nonterminal mismatches; 3,182 garbage-interrupted
+  transitions and 117 unresolved terminal transitions remain excluded.
+  Carried/reset heads reached 428/13,546 and 503/13,573 original targets.
+  Only 172/207 were first reached after multiple placements. Their initial
+  budget was two in 13,498/13,522 plans and three in the remainder; neither
+  proposed a longer budget or a crossing-clear intent. First preferences were
+  reachable in 19,818/19,677 decisions, but agreed with the actual actor in only
+  3,090/3,141. Target cells changed in 9,256/9,045 plans. This diagnoses short,
+  frequently shifting predictions and low compatibility with unchanged play;
+  it does not measure what would happen if proposal actions controlled play.
+  Whole-seed descriptive intervals, separate pace/level results and actual
+  first-hit examples are retained in `spatial-execution-assessment-v1.json`.
+  These reused actor-evaluation seeds are not fresh strength confirmation.
+  Do not promote either head or repeat prefix fitting. The next expressive
+  work needs target-conditioned actual continuations and local quality
+  admission, followed by full-game strength and blind style comparison.
 
 This task owns the continuation; its hourly follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing

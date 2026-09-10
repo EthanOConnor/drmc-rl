@@ -180,6 +180,102 @@ class NestedMatrix(Matrix):
         self.batches.append(list(requests))
 
 
+@pytest.mark.parametrize("kind", ["recursive", "queued", "root", "nested"])
+@pytest.mark.parametrize("side", [0, 1])
+def test_public_tactical_extension_matches_independent_deeper_matrix(kind, side):
+    from drmc_rl.search.joint_event import JointEventSearch
+    from drmc_rl.search.queued_event import QueuedJointEventSearch
+
+    class Tactical(NestedMatrix):
+        def tactical_reasons(self, state):
+            return ("visible_danger",) if state.phase == "inner" else ()
+
+        def evaluate(self, state, side):
+            u = state.value * (1 - 2 * side)
+            return WDL((1 + u) / 2, 0, (1 - u) / 2)
+
+    root = np.array([[.8, -.4], [-.2, .6]])
+    config = SearchConfig(depth_events=1, tactical_extension_events=1,
+                          opponent_mode="mixed", own_beam=1, opponent_beam=1)
+    model = Tactical(root)
+    if kind in ("root", "nested"):
+        search = AdaptiveJointEventSearch(model, config, nested=kind == "nested",
+                                           allocation_batch=2, response_gap=.0001)
+    else:
+        search = (JointEventSearch if kind == "recursive" else QueuedJointEventSearch)(model, config)
+    result = search.search(State(), root_side=side, root_actions=[0, 1])
+    exact = .6 * root + .09
+    exact = exact if side == 0 else -exact.T
+    assert result.tactical_extensions > 0
+    assert dict(result.tactical_reasons) == {"visible_danger": result.tactical_extensions}
+    if kind in ("root", "nested"):
+        assert result.certified
+        assert_valid_bounds(result, exact)
+    else:
+        np.testing.assert_allclose(result.joint_utilities,
+            exact[np.ix_(result.actions, result.opponent_actions)], atol=1e-9)
+
+
+@pytest.mark.parametrize("kind", ["recursive", "queued", "root", "nested"])
+def test_extension_allowance_does_not_reset_across_forced_correlated_reveals(kind):
+    from dataclasses import replace
+    from drmc_rl.search.joint_event import JointEventSearch
+    from drmc_rl.search.queued_event import QueuedJointEventSearch
+
+    @dataclass(frozen=True)
+    class CycleState:
+        phase: str = "both"
+        actions: int = 0
+        offset: float = 0.
+
+    class Cycle(Matrix):
+        def __init__(self):
+            super().__init__(np.zeros((2, 2)))
+            self.evaluated = []
+
+        def boundary(self, state):
+            return DecisionBoundary.BOTH if state.phase == "both" else DecisionBoundary.ADVANCE
+
+        def terminal_value(self, state, side):
+            return None
+
+        def tactical_reasons(self, state):
+            return ("visible_danger",)
+
+        def apply_actions(self, state, a, b):
+            return CycleState("forced", state.actions + 1, state.offset)
+
+        def advance(self, state):
+            return replace(state, phase="reveal")
+
+        def chance_outcomes(self, state):
+            if state.phase == "reveal":
+                return [ChanceOutcome(.25, replace(state, phase="both", offset=.2)),
+                        ChanceOutcome(.75, replace(state, phase="both", offset=-.1))]
+            return []
+
+        def evaluate(self, state, side):
+            assert state.phase == "both"
+            self.evaluated.append(state.actions)
+            return WDL((1 + state.offset) / 2, 0, (1 - state.offset) / 2)
+
+    model = Cycle()
+    config = SearchConfig(depth_events=1, tactical_extension_events=2, opponent_mode="mixed", max_nodes=5000)
+    if kind in ("root", "nested"):
+        search = AdaptiveJointEventSearch(model, config, nested=kind == "nested", response_gap=.0001)
+    else:
+        search = (JointEventSearch if kind == "recursive" else QueuedJointEventSearch)(model, config)
+    result = search.search(CycleState(), root_side=0, root_actions=[0, 1])
+    assert model.evaluated and set(model.evaluated) == {2}
+    assert result.chance_outcomes == 2 * result.chance_nodes
+    if kind in ("root", "nested"):
+        assert result.certified and not result.node_budget_exhausted
+        assert_valid_bounds(result, np.full((2, 2), -.025))
+    else:
+        assert not result.budget_exhausted
+        np.testing.assert_allclose(result.joint_utilities, -.025, atol=1e-9)
+
+
 @pytest.mark.parametrize('side',[0,1])
 @pytest.mark.parametrize('chance',[False,True])
 def test_nested_bounds_cover_exact_mixed_chance_and_unilateral_values(side,chance):

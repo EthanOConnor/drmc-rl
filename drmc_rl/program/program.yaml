@@ -147,7 +147,7 @@ recipes:
   trainer-adaptive-search-audit:
     status: active
     stage: 4
-    purpose: Compare bounded root and nested joint-action allocation against complete public pair-search matrices, without quality labels or promotion.
+    purpose: Compare bounded root and nested joint-action allocation, including optional public tactical extensions, against complete public pair-search matrices without quality labels or promotion.
     requires_paths: [tools/audit_adaptive_search.py, '{adaptive_search_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.audit_adaptive_search, --config, '{adaptive_search_config}']

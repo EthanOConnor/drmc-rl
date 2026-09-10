@@ -111,6 +111,18 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(['drmc-spatial-execution-audit-v1','drmc-spatial-execution-assessment-v1'].includes(run.schema)){
+      const arms=['persistent','stateless'].map(name=>{
+        const arm=run.aggregate?.[name] || run.arms?.[name] || {};
+        const label=name==='persistent'?'Carried history':'Reset history';
+        const delayed=arm.delayed_hits===undefined?'':`<div class="training-detail"><span>First reached after multiple placements</span><span>${count(arm.delayed_hits)}</span></div>`;
+        return `<div class="training-detail"><strong>${label}</strong><span>${count(arm.original_target_hits ?? arm.root_goals_observed)} / ${count(arm.plans)} original targets observed</span></div>${delayed}<div class="training-detail"><span>First choice reachable</span><span>${count(arm.raw_preference_reachable ?? arm.raw_preferences_reachable)} / ${count(arm.decisions)} decisions</span></div>`;
+      }).join('');
+      const match=run.config?.arena?.schedule?.find(m=>m.id===run.current_condition);
+      const scope=run.status==='Complete'?'7 paces at 14 HI · 2 at 20 HI':match?conditionName(match):'';
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.games,run.target_games)}<div class="training-detail"><span>${count(run.games)} / ${count(run.target_games)} games</span><span>${esc(scope)}</span></div>${arms}<p class="budget-note">Measured during unchanged competitive play. Later payoff alone does not prove a construction caused it. Strength with proposal control and blind preferences remain unevaluated.<br>${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
     if(run.schema==='drmc-adaptive-search-audit-v1'){
       const records=run.records || [], record=records.at(-1);
       const pending=record?.order?.find(name=>!record.variants?.[name]);

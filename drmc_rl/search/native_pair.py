@@ -28,6 +28,23 @@ CAUSAL_PUBLIC_SCHEMA = "causal-settled-pair-v1"
 EVENT_PUBLIC_SCHEMA = "causal-settled-pair-v2"
 CAUSAL_PUBLIC_SCHEMAS = (CAUSAL_PUBLIC_SCHEMA, EVENT_PUBLIC_SCHEMA)
 LEGACY_PUBLIC_SCHEMA = "legacy-warp-buffer-v1"
+TACTICAL_PREDICATE = "public-top-four-or-last-four-v1"
+
+
+def public_tactical_reasons(public):
+    """Allocate extra search, never value, from visible danger/endgame evidence.
+
+    These authored thresholds are a bounded research predicate. Last-observed
+    opponent bottles remain last-observed; no future lock or pending attack is
+    consulted. The result is symmetric under a change of viewer perspective.
+    """
+    reasons = []
+    for side, visible in enumerate(public.sides):
+        if any(cell < 0xF0 for cell in visible.board[:4 * 8]):
+            reasons.append(f"p{side + 1}_top_four_rows")
+        if visible.viruses_remaining is not None and 1 <= visible.viruses_remaining <= 4:
+            reasons.append(f"p{side + 1}_last_four_viruses")
+    return tuple(reasons)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +137,11 @@ class NativePairSearchModel:
 
     def legal_actions(self, state: NativePairSearchState, side: int) -> Sequence[int]:
         return state.legal_actions_by_side[int(side)]
+
+    def tactical_reasons(self, state: NativePairSearchState):
+        if state.public_observation_schema not in CAUSAL_PUBLIC_SCHEMAS:
+            raise ValueError("tactical allocation requires an explicit causal public observation")
+        return public_tactical_reasons(state.privileged.public)
 
     def prior(
         self, state: NativePairSearchState, side: int, actions: Sequence[int]

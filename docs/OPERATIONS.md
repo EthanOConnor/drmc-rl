@@ -1723,6 +1723,20 @@ garbage and unfinished terminal transitions do not become successful plans.
 Report whole-reset-seed descriptive intervals separately by level and pace.
 This does not authorize style selection, train a model or establish strength.
 
+The fixed `spatial-execution-v1` allocation completed 256 natural games and
+2,465,306 console frames with zero censoring. `assess_spatial_execution_v1.py`
+checks all fixed seed/side pairs, model/library identities, actual move journals
+and reconstructed payoff counts; `spatial-execution-assessment-v1.json` retains
+the first-hit placement and per-condition results. No model was trained.
+
+`trainer-adaptive-search-audit` also accepts `tactical_extension_events` (0–8,
+default 0) and `compare_unextended` (default false). All complete/adaptive arms
+use the same predicate and path allowance. The optional unextended arm is a
+separate shallower comparison, never the reference matrix for extended bounds.
+Keep source, predicate, native identity, full matrices, charged work and
+independent interval checks. An improved response bound or changed policy is
+not evidence that the uncalibrated critic became accurate.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches

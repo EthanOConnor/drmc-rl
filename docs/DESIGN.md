@@ -578,7 +578,9 @@ animations remain explicit exclusions. Goal-specific cleared cells match the
 training definition. Original-target realization is recorded separately from
 success at a revised target. These measurements describe compatibility with
 unchanged competitive play, not games controlled by the proposals or evidence
-that a quality sacrifice is safe.
+that a quality sacrifice is safe. Retained analysis reconstructs each original
+target's first-hit placement. A payoff first seen on a later placement is not
+automatically evidence that preceding actions constructed it.
 
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor
@@ -755,8 +757,18 @@ Nested inference requests are combined by the same cooperative coordinator,
 so a child does not launch private inference loops. A 1e-12 outward arithmetic
 guard at interval mixtures/matrix bounds is separate from the declared learned
 evaluator tolerance. Only an explicitly checked root response bound admits
-sampling; this remains an uncalibrated finite-depth diagnostic. Tactical depth
-extensions and useful live search remain separate unfinished work.
+sampling; this remains an uncalibrated finite-depth diagnostic.
+Optional `tactical_extension_events` now extends leaf decisions in recursive,
+queued and adaptive traversal. The default is zero. The authored
+`public-top-four-or-last-four-v1` predicate checks only visible top-four-row
+occupancy or one to four remaining viruses on either side. It changes work
+allocation, never a value or action inventory; native legacy warp observations
+are rejected. Negative remaining depth records the spent path allowance and
+cannot reset across forced events or correlated reveals. Mandatory settlement
+still finishes before critic evaluation. Extension nodes consume the original
+global node/joint-action limits, preserve interval uncertainty, and report
+their public reasons. These thresholds and deeper values are research choices,
+not calibrated tactical quality. Useful live search remains unfinished.
 Its certificate applies only to the configured finite-depth critic game.
 Partial matrices never supply quality-training labels, and uncertified results
 cannot be sampled by the action decoder. A registered native audit independently

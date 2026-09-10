@@ -206,14 +206,14 @@ class QueuedJointEventSearch(JointEventSearch):
                 children = []
                 for item in outcomes:
                     children.append(
-                        (yield from self._visit(item.state, max(0, depth - 1), root_side))
+                        (yield from self._visit(item.state, self._forced_depth(depth), root_side))
                     )
                 value = WDL.mixture([o.probability for o in outcomes], children)
             else:
                 child = self.model.advance(state)
                 if self.model.key(child) == key[0]:
                     raise RuntimeError("deterministic advance made no progress")
-                value = yield from self._visit(child, max(0, depth - 1), root_side)
+                value = yield from self._visit(child, self._forced_depth(depth), root_side)
         else:
             acting = (
                 root_side
@@ -223,7 +223,7 @@ class QueuedJointEventSearch(JointEventSearch):
                 else 1
             )
             yield state, acting
-            if depth <= 0:
+            if not self._expand_decision(state, depth):
                 value = self.model.evaluate(state, root_side)
             elif boundary == DecisionBoundary.BOTH:
                 actions = self._ranked_actions(

@@ -5,7 +5,7 @@ response bounds and actual work; no resulting row is a quality-training label.
 """
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import time
@@ -18,7 +18,7 @@ from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
 from drmc_rl.search.adaptive_event import AdaptiveJointEventSearch
 from drmc_rl.search.belief_native_pair import BeliefNativePairSearchModel
 from drmc_rl.search.joint_event import SearchConfig
-from drmc_rl.search.native_pair import state_from_payload
+from drmc_rl.search.native_pair import TACTICAL_PREDICATE, state_from_payload
 from drmc_rl.search.pill_belief import PillReserveBelief
 from drmc_rl.search.queued_event import QueuedJointEventSearch
 from drmc_rl.search.strong_league import DavidsonCalibration
@@ -39,6 +39,7 @@ def audit(config):
         DavidsonCalibration(1., 0., -3., "uncalibrated-adaptive-mechanics-probe"),
         device=config.get("device", "cpu"))
     search_config = SearchConfig(depth_events=int(config.get("depth_events", 1)),
+        tactical_extension_events=config.get("tactical_extension_events", 0),
         opponent_mode="mixed", max_nodes=int(config.get("max_nodes", 100000)),
         matrix_time_limit_seconds=float(config.get("matrix_time_limit_seconds", .25)))
     batches = tuple(config.get("allocation_batches", (16, 32)))
@@ -61,12 +62,13 @@ def audit(config):
         checkpoint_sha256=sha256_file(Path(config["checkpoint"])),
         source_sha256=sha256_file(Path(config["state_bank"])),
         native_sha256=sha256_file(Path(config["native_library"])))
+    report["tactical_predicate"] = TACTICAL_PREDICATE if search_config.tactical_extension_events else None
     warmup = QueuedJointEventSearch(None, search_config)
     warmup._solve_payoffs(np.array([[1., -1.], [-1., 1.]]))
     report["matrix_cold_start_ms"] = warmup._matrix_solve_ms
     dump(output, report)
     try:
-        variants = ["complete", *allocations]
+        variants = (["unextended"] if config.get("compare_unextended", False) else []) + ["complete", *allocations]
         for row_index, row in enumerate(rows):
             state, side = state_from_payload(row), int(row["root_side"])
             continuation.batch_sizes = []
@@ -86,8 +88,10 @@ def audit(config):
                     continuation._cache.clear()
                     continuation.batch_sizes = []
                     kwargs = dict(batch_size=int(config.get("batch_size", 32)))
-                    if name == "complete":
-                        search = QueuedJointEventSearch(model, search_config, **kwargs)
+                    if name in ("complete", "unextended"):
+                        settings = (replace(search_config, tactical_extension_events=0)
+                                    if name == "unextended" else search_config)
+                        search = QueuedJointEventSearch(model, settings, **kwargs)
                     else:
                         nested, allocation_batch = allocations[name]
                         search = AdaptiveJointEventSearch(model, search_config, **kwargs,
@@ -103,8 +107,10 @@ def audit(config):
                         inference_rows=sum(continuation.batch_sizes),
                         inference_calls=len(continuation.batch_sizes),
                         largest_batch=max(continuation.batch_sizes, default=0),
-                        matrix_solve_ms=result.matrix_solve_ms)
-                    if name == "complete":
+                        matrix_solve_ms=result.matrix_solve_ms,
+                        tactical_extensions=result.tactical_extensions,
+                        tactical_reasons=dict(result.tactical_reasons))
+                    if name in ("complete", "unextended"):
                         summary.update(actions=list(result.actions),
                             opponent_actions=list(result.opponent_actions),
                             joint_utilities=result.joint_utilities.tolist(),
@@ -123,7 +129,7 @@ def audit(config):
             if complete.budget_exhausted or not complete.equilibrium_converged:
                 raise RuntimeError("complete reference did not finish with a valid equilibrium")
             record["comparisons"] = {}
-            for name in variants[1:]:
+            for name in allocations:
                 actual = results[name]
                 if set(complete.actions) != set(actual.actions) or set(
                         complete.opponent_actions) != set(actual.opponent_actions):
@@ -144,6 +150,17 @@ def audit(config):
                     interval_violation=interval_violation, bounds_hold=bounds_hold,
                     speedup=record["variants"]["complete"]["seconds"] / record["variants"][name]["seconds"])
                 record["comparisons"][name] = comparison
+            if "unextended" in results:
+                base = results["unextended"]
+                if base.budget_exhausted or not base.equilibrium_converged:
+                    raise RuntimeError("unextended comparison did not complete")
+                if base.actions != complete.actions or base.opponent_actions != complete.opponent_actions:
+                    raise RuntimeError("extension changed a root legal inventory")
+                record["tactical_comparison"] = dict(
+                    max_abs_utility_change=float(np.abs(base.joint_utilities - complete.joint_utilities).max()),
+                    policy_total_variation=float(np.abs(base.policy_target - complete.policy_target).sum() / 2),
+                    elapsed_ratio=record["variants"]["complete"]["seconds"] / record["variants"]["unextended"]["seconds"],
+                    scope="Change relative to a shallower uncalibrated critic game, not evidence of better Q or strength.")
             dump(output, report)
             print(json.dumps({k:v for k,v in record.items() if k != "variants"}), flush=True)
             if not all(c["bounds_hold"] for c in record["comparisons"].values()):
