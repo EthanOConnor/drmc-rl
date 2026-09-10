@@ -1252,6 +1252,25 @@ while retaining the stricter probability-vector comparison separately. This
 handles nonunique equilibria without loosening the neural payoff tolerance.
 `alternate_order: true` reverses recursive/queued order on alternating roots;
 solver cold-start time is recorded outside those warm comparisons.
+The completed `runs/review-20260909/mixed-native-result-v4.json` probe uses
+four additional native V2 roots and source `5b0420a`, with matching complete
+matrix certificates in both drivers. The `v1`/`v2` mirror-prox failures and
+`v3` strict-vector failure remain alongside it. The full matrices, strategies,
+cross-matrix gaps, neural rows/calls and timing are retained; none are quality
+training labels or controller tournament outcomes.
+
+The 300M milestone is running separately in
+`runs/review-20260909/controller-core-300m-mac`, launched by its saved
+`launch_core_300m_arena.py` through the registered planning-arena recipe.
+It uses the original frozen `controller-arena-0c76c0e-source` and native19f
+libraries, four-frame charge, Metal/one Torch thread/three planner workers,
+and a fixed 16,384 games against the parent and corrected-credit adapter.
+The checkpoint actually contains 301,781,835 frames and 2,988,847 decisions
+(update 241). Its 768 reserved seeds are explicitly excluded by the training
+configuration and reused from the 100M study for a learning-curve comparison;
+this is not independent confirmation. Keep all seven 14-HI paces separate,
+with Normal/Top Humans 20 HI reported separately. Assess only the completed
+allocation. The dashboard feed is `core-300m-mac`; do not duplicate its worker.
 
 ### Persistent construction diagnostics
 

@@ -494,9 +494,21 @@ indefinitely staged.
   convergence suppresses targets. Analytic asymmetric games, reversed player
   perspective, dominated actions, nested simultaneous boundaries, correlated
   reveals and target rejection pass; existing expectation/minimax checks also
-  pass. Real native/neural parity is the next check. Candidate-dependent
-  allocation, useful quality estimates and substantial strength evaluation
-  remain open.
+  pass. The initial 2,048-step mirror-prox matrix solve failed its numerical
+  gap check on a real root (about 0.06 utility); common-offset conditioning
+  did not fix it. The replacement bounded HiGHS dual-simplex solver converges
+  and retains those failed probes. On four additional V2 native 14-HI roots,
+  all 4,732 joint actions and 10,358 search nodes were covered in both drivers.
+  Maximum joint-payoff disagreement was 6.45e-6; each mixture's best-response
+  gap on the other matrix was below 3.67e-6. Three cases also met the original
+  strict vector tolerance; the fourth retains that failure, reflecting
+  mixture sensitivity to tiny neural rounding changes. Both paths evaluated
+  3,302 neural rows; cooperative batches reduced calls from 3,302 to 152 and
+  total measured time from 58.5 to 20.8 seconds on the shared Mac. Warm matrix
+  solving took 1.3–1.7 ms; its separate cold start took 174 ms. This establishes
+  numerical game equivalence, not calibrated candidate quality, exclusive
+  throughput or stronger play. Candidate-dependent allocation, useful quality
+  estimates and substantial strength evaluation remain open.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the
