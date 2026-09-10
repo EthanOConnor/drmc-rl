@@ -538,6 +538,26 @@ uses the same reserved seeds and frozen `controller-arena-0c76c0e-source`.
 `DRMARIO_REACH_LIB`; its output has a supervisor PID/log and complete move
 journals. This is a fixed milestone comparison without automatic adoption.
 The dashboard includes `public_core_100m` and the `core-100m-mac` feed.
+This allocation completed at 03:20 UTC September 10 with all 16,384 games and
+zero censoring; do not restart it. `core-100m-assessment.py/.json` verifies
+journals and uses the same 20,000 shared whole-seed bootstrap method as the
+initial/25M assessment. Sloth beats E1 in the primary simultaneous family,
+but Fast and Top Humans remain inferior; this is not a replacement across all
+speeds. `controller-core-slow-specialists-mac.json` scheduled 2,048 14-HI
+games each against `pace_final` at Sloth and `pace_f50m` at Relaxed. Its 1,024
+common reset seeds are excluded from main/adapter training, the earlier core
+studies and the reserved motor-confirmation tail. It uses the same frozen
+controller source/libraries and four-frame compute assumption, through
+`launch_core_slow_specialists_mac.py`, with its own output supervisor PID/log.
+The matching dashboard feed is `core-slow-specialists-mac`. All 4,096 games
+completed at 04:11 UTC September 10, with zero censoring. Do not restart its
+supervisor. `core-slow-specialists-assessment.py/.json` verifies complete
+seed/side coverage and scores, retaining execution details and 20,000 shared
+whole-seed bootstrap draws. Against the selected specialists, Sloth scores
+52.17% (two-condition simultaneous 95% interval 50.30–54.05%; 1,383 natural
+draws), while Relaxed scores 44.73% (41.60–47.85%; 28 draws). This supports the
+core as a Sloth candidate only; actual trainer integration and device latency
+remain separate requirements before changing the tester package.
 
 New core migrations use learned zero-initialized side-conditioning residuals
 so the network preserves its parent on equal inputs before outcome updates.
@@ -839,9 +859,35 @@ speedup. Source-bank configuration may explicitly set
 resume rejects a timeline change. The broader running bank and quality labels
 remain V1. The isolated Mac library is `build-reserve-v2/libdrmario_pool.dylib`;
 do not use the rejected `build-reserve` prototype. The V2 collector/resume checks
-and the same-frame earlier-reveal regression pass. A bounded real-checkpoint
-benchmark on fresh V2 roots, with identical policies, posterior reserves and
-order-balanced runs, and Linux checks remain to be run.
+and the same-frame earlier-reveal regression pass. The Linux verification and
+bounded real-checkpoint comparison are described below.
+
+Source `4d01da3` adds opt-in `trace_decisions` to terminal panels. Each tail
+retains a SHA-256 of every complete public input key and chosen action,
+including the forced root, plus its decision count. Private reserve and
+checkpoint bytes are excluded. Trace time is reported separately; the default
+path performs no hashing. Twelve focused Mac and twenty Linux checks pass
+with native `afaf62a`. Linux's isolated source/library is
+`/dev/shm/pp-reserve-4d01da3`; its source archives are retained under remote
+`review-20260909/reserve-v2-benchmark-v1` for recovery.
+That directory retains a completed, bounded 40-minute registered comparison: 12 fresh
+14-HI V2 source games, four roots from distinct games, full candidate/reserve
+and nine-member-pair panels, 256 slots, cache 8,192, one native/Torch worker,
+then boundary/prefilled/prefilled/boundary order. All 1,206 tails and complete
+targets agreed exactly, including traces of 43,287 public decisions per run,
+with no censored tails. Total job seconds were 300.73/273.57/266.71/300.77;
+prefilling reduced the mean by 10.2%. The rollout loop fell from 282.5 to
+252.3 seconds; native work remained about 188–189 seconds. Scheduler iterations
+fell from 508 to 255, and 42,158 boundary reveal calls became 1,206 private
+reserve installations. These counts are different work units. `assessment.json`
+records every comparison and native-library identity. The result supports
+subsequent opt-in V2 research; it does not establish broader speedups, useful
+Q ranking or match strength. `supervise.py` advances
+only registered child recipes and stops on divergence or its wall cap; it
+never terminates another job. Its `progress.json` forwards actual child
+progress changes. Main training and broad V1 labels continue, so these are
+contended throughput measurements, not an exclusive-GPU allocation comparison.
+Do not rerun a completed identity or replace either active study's library.
 
 Whole-game noninferiority uses `tools.confirm_policy_noninferiority --plan
 PLAN --games GAMES --output OUTPUT`. The plan declares `baseline`, `candidates`,
@@ -1023,6 +1069,15 @@ It transfers closed snapshots and sampled replays, excluding live `working/`
 databases and full move archives. Optional `checkpoint_mirrors` entries contain
 `source`, local `target`, and an explicit `files` allowlist; this lets local
 evaluators admit new frozen milestones without copying optimizer archives.
+
+The watch worker imports all feeds before rebuilding standings once per cycle.
+Rows are grouped by comparison once; rating mathematics and ordering are
+unchanged. A frozen 106,708-game, 305-comparison audit reproduced both rating
+views exactly, reducing their combined fit time from 8.0 to 4.4 seconds, in
+addition to removing repeated full-field fits after each individual feed.
+`runs/review-20260909/dashboard-sync-grouping-assessment.json` retains the
+measurement. Run only one sync writer for a target and preserve its existing
+SQLite database and feed history when restarting it.
 
 The experiment page at `http://127.0.0.1:8098/` presents connected standings
 first, with selectable level/pace and any rated player as the Elo reference.

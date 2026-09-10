@@ -47,7 +47,7 @@ def completed_journal_matches(report, games):
     return complete
 
 
-def sync(source: Path, target: Path, feed: str = "screen"):
+def sync(source: Path, target: Path, feed: str = "screen", *, refresh=True):
     if not feed or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for c in feed):
         raise ValueError("feed must be a simple lowercase identifier")
     report = json.loads((source / "results.json").read_text())
@@ -124,6 +124,14 @@ def sync(source: Path, target: Path, feed: str = "screen"):
     feeds = target / "feeds"
     feeds.mkdir(exist_ok=True)
     dump(feeds / f"{feed}.json", {"report": report, "games": games})
+    if refresh:
+        refresh_results(target)
+    return count
+
+
+def refresh_results(target: Path):
+    """Publish once after importing all feeds in a refresh cycle."""
+    feeds = target / "feeds"
     comparisons, records, updated, workers, entrants = {}, {}, [], [], {}
     for path in sorted(feeds.glob("*.json")):
         component = json.loads(path.read_text())
@@ -139,8 +147,11 @@ def sync(source: Path, target: Path, feed: str = "screen"):
         for game in component["games"]:
             records[(game["comparison"], game["index"])] = game
     totals = {}
+    by_comparison = {}
+    for (comparison, _), row in records.items():
+        by_comparison.setdefault(comparison, []).append(row)
     for id, match in comparisons.items():
-        rows = [r for (comparison, _), r in records.items() if comparison == id]
+        rows = by_comparison.get(id, [])
         match.update(
             played=len(rows),
             **outcome_summary(rows),
@@ -159,7 +170,6 @@ def sync(source: Path, target: Path, feed: str = "screen"):
         "workers":workers,"entrants":list(entrants.values()),
         "rating_groups": relative_ratings(comparisons, records, anchor=anchor),
         "unified_rating_groups":relative_ratings(comparisons,records,anchor=anchor,unified=True)})
-    return count
 
 
 def watch(path):
@@ -185,6 +195,7 @@ def watch(path):
                 if errors.get(key) != str(error):
                     print(f"{key}: {error}",flush=True)
                 errors[key] = str(error)
+        refresh = False
         for feed, remote in config["feeds"].items():
             source = target / f"incoming-{feed}"
             source.mkdir(parents=True, exist_ok=True)
@@ -195,7 +206,8 @@ def watch(path):
                     check=True, capture_output=True, timeout=30)
                 if not (source / "games.jsonl").is_file():
                     continue
-                count = sync(source, target, feed)
+                count = sync(source, target, feed, refresh=False)
+                refresh = True
                 if count or feed in errors:
                     print(f"{feed}: imported {count} games", flush=True)
                 errors.pop(feed, None)
@@ -204,6 +216,15 @@ def watch(path):
                 if errors.get(feed) != message:
                     print(f"{feed}: waiting for a complete remote snapshot: {message}", flush=True)
                 errors[feed] = message
+        if refresh:
+            try:
+                refresh_results(target)
+                errors.pop("standings", None)
+            except (OSError, ValueError, sqlite3.Error) as error:
+                message = str(error)
+                if errors.get("standings") != message:
+                    print(f"standings: waiting for a consistent refresh: {message}", flush=True)
+                errors["standings"] = message
         time.sleep(max(10, float(config.get("interval_seconds", 20))))
 
 

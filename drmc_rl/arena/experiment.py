@@ -68,8 +68,11 @@ def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False)
     Ratings are experiment-relative; there is no human-rating calibration.
     """
     groups = {}
+    by_comparison = {}
+    for row in records.values():
+        by_comparison.setdefault(row["comparison"], []).append(row)
     for match in comparisons.values():
-        match_rows = [r for r in records.values() if r["comparison"] == match["id"]]
+        match_rows = by_comparison.get(match["id"], ())
         if any(r.get("reason") == "timeout" or r.get("score") is None for r in match_rows):
             continue  # No strength inference from an outcome-censored edge.
         key = ("Live tournament" if unified else match.get("rating_group", "Screening"),

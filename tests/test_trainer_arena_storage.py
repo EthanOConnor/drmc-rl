@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 
 from drmc_rl.arena.store import ArenaStore, SCHEMA
-from tools.trainer_arena_sync import completed_journal_matches, sync
+from tools.trainer_arena_sync import completed_journal_matches, refresh_results, sync
 from tools.trainer_planning_arena import publish
 
 
@@ -61,7 +61,8 @@ def journal():
     return dict(updated_at="2026-09-09T00:00:00Z", tournaments=matches), games
 
 
-def test_sync_recovers_games_across_paces_and_is_idempotent(tmp_path):
+@pytest.mark.parametrize("defer", [False, True])
+def test_sync_recovers_games_across_paces_and_is_idempotent(tmp_path, defer):
     source, target = tmp_path / "source", tmp_path / "target"
     source.mkdir()
     report, games = journal()
@@ -75,8 +76,14 @@ def test_sync_recovers_games_across_paces_and_is_idempotent(tmp_path):
     original.close()
     (source / "results.json").write_text(json.dumps(report))
     (source / "games.jsonl").write_text("\n".join(map(json.dumps, games)) + "\n")
-    assert sync(source, target) == 6
+    assert sync(source, target, refresh=not defer) == 6
+    if defer:
+        assert not (target / "results.json").exists()
+        refresh_results(target)
+    before = (target / "results.json").read_text()
+    assert sum(row["played"] for row in json.loads(before)["tournaments"]) == 6
     assert sync(source, target) == 0
+    assert (target / "results.json").read_text() == before
     with closing(sqlite3.connect(target / "arena.sqlite")) as connection:
         assert connection.execute("SELECT condition_key,COUNT(*) FROM matches GROUP BY condition_key ORDER BY condition_key").fetchall() == [
             ("fast", 2), ("normal", 2), ("relaxed", 2)

@@ -326,8 +326,25 @@ indefinitely staged.
   is inconclusive at 48.9% versus the parent (paired 95% 45.4–52.3%). The core
   beats the parent at 14-HI Sloth and 20-HI Normal, but does not replace E1.
   `core-initial-25m-assessment.json` retains whole-seed intervals, execution
-  counts and natural draw rates. The separate fixed 100M study is running;
-  substantial later learning and device evidence remain pending. Sloth's many
+  counts and natural draw rates. The fixed 100M study also completed all 16,384
+  games without censoring at 03:20 UTC September 10. Against E1, its 14-HI
+  scores are Sloth 55.7%, Relaxed 52.1%, Normal 46.1%, Fast 41.3% and Top Humans
+  38.6%. Sloth improves and Fast/Top Humans lose under the simultaneous primary
+  family intervals; Relaxed/Normal remain unresolved by that family check.
+  Super Human/Frame Perfect remain near 50% against the parent. The separate
+  20-HI Normal score is 58.6% versus E1, while Top Humans scores 40.0%.
+  `core-100m-assessment.json` retains the complete allocation and whole-seed
+  uncertainty. A fixed 4,096-game follow-up compared this core with the
+  original final Sloth adapter and 50M Relaxed adapter, using 1,024 additional
+  training-excluded reset seeds not used in the earlier core studies. All games
+  finished naturally. Sloth scored 52.17% (two-condition simultaneous 95%
+  interval 50.30–54.05%), with 1,383 draws among 2,048 games; Relaxed scored
+  44.73% (41.60–47.85%). The core is a narrowly stronger Sloth candidate under
+  this execution model, but loses to the selected Relaxed specialist.
+  `core-slow-specialists-assessment.py/.json` retains whole-seed uncertainty
+  and complete execution counts. Verify live integration and actual device
+  latency before replacing the Sloth adapter in a tester build.
+  Substantial later learning and device evidence remain pending. Sloth's many
   natural simultaneous top-outs and loss of reachable actions require explicit
   attention to earlier preparation and curriculum support; merely accumulating
   forced or unplayable frames does not demonstrate strategic learning.
@@ -355,8 +372,9 @@ indefinitely staged.
   for Normal/Fast/Top Humans, and the 10M public parent at the two fastest
   paces. This is a product judgment from completed studies, not a claim that
   every selected checkpoint is a uniquely established winner; several nearby
-  rankings remain unresolved. Finish the 100M allocation before reconsidering
-  the new core. The existing V3 regret decoder remains the current 0–10 path;
+  rankings remain unresolved. The completed 100M specialist comparison now
+  supports a Sloth upgrade, subject to its live context and device checks;
+  it does not support changing Relaxed. The existing V3 regret decoder remains the current 0–10 path;
   a common-core calibrated ladder and expressive selection remain unfinished.
 - [ ] **Larger teachers and fast students (E3–E5).** Establish useful held-out
   candidate targets, then compare 320×8, 384×12 and 512×12 with separate equal-data
@@ -404,8 +422,13 @@ indefinitely staged.
   snapshot checks pass. Complete-reserve hypothesis execution and explicit V2
   source collection are now implemented as opt-in paths. Focused native and
   Python checks cover atomic private installation, complete public decision
-  parity, natural outcomes, slot reuse and source resume. The real-checkpoint
-  throughput comparison and Linux integration checks remain before adoption;
+  parity, natural outcomes, slot reuse and source resume. Twenty Linux checks
+  pass. The order-balanced real-checkpoint comparison completed on four fresh
+  V2 roots: all 1,206 complete tails, 43,287 public decisions including roots,
+  and candidate targets matched exactly across all four runs, with no censoring.
+  Prefilling reduced mean total job time from 300.8 to 270.1 seconds (10.2%)
+  while sharing the GPU with training and V1 labeling. This supports using the
+  opt-in path for subsequent V2 search experiments, not a strength claim;
   the running V1 source/label studies keep their frozen contracts.
   The initial bulk-reserve prototype changed the retained opponent bottle on
   some decisions and was rejected; its reproduction is retained under
