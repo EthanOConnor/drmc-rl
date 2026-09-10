@@ -532,6 +532,30 @@ evidence despite its improvement over random initialization. Preserve its
 fixed final report and the separate ongoing strength arena. Its confirmation
 seeds remain excluded from subsequent fitting and new confirmation selection.
 
+The fixed revision `motor-refit-v1`, source `motor-refit-d36716e-source`,
+completed on the Mac at September 10 12:14:13 UTC in 837.5 seconds. It used
+the same 1,679 training roots, 369 development roots and 1,489 public anchor
+games: 40 head-only epochs at 0.001 after training-cell prior initialization,
+then 20 shared-core epochs at 0.000003 with head rate 0.0001. Its 67,160
+head-only plus 33,580 shared-core root presentations are not outcome-training
+frames. The core state was exactly unchanged during head warmup; joint fitting
+needed no rollback and final anchor KL was 0.000920. Final development reach
+Brier was 0.06444 and clear Brier 0.01443. Reach beat the training-only prior
+in all development conditions, while Sloth clear prediction remained slightly
+worse; these descriptive results do not establish useful live prediction or
+stronger play. The immutable final checkpoint SHA-256 is
+`a7db0ca8128b2dc7506e111aff35decfc403f9d6a16e2231c5efbfa01a07c97b`.
+
+`motor-refit-confirmation-v1` now runs through `trainer-motor-confirmation`
+on Mac MPS from that same frozen source and the original native `19f292c`
+libraries. Its JSON under `runs/review-20260909/` fixes 64 fresh seeds,
+disjoint from the first confirmation and all fitting/outcome-training seeds,
+with the same nine-condition allocation of 1,152 natural games and up to
+1,728 roots. `exclude_confirmation_configs` validates the prior confirmation
+exclusion and records its config hash. Inspect its adjacent `.pid`/`.log`
+and output progress before recovery. The dashboard shows refitting and fresh
+confirmation separately; no product route changed.
+
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the
 isolated `controller-arena-0c76c0e-source` snapshot. Their 32,768 scheduled games
@@ -1413,6 +1437,22 @@ not video verification, preference or a VS-attack label. The September 10
 matches three of nine supplied passages with eight consistent candidates;
 two passages retain unresolved video IDs. All candidates remain ineligible
 for training until video, commentator referent and event labels are checked.
+
+A separate keyframe review, `commentary-fat-log-video-v1.json`, now records
+one verified broadcast example from the April 2026 Gold Speed Monthly,
+video `mzox-OAETaU`, at 01:49:44. The right player is atalito, level 16 HI;
+the commentator-referenced Fat Log is reconstructed placement 60 in
+`apr-2026|4|15|1|atalito|16`: simultaneous blue and red horizontal rows,
+zero-based rows 11–12 and columns 4–7, eight cleared cells and three viruses.
+Observed keyframes match placement 58's afterstate, placement 59's preceding
+vertical clear and falling half, the setup immediately before 60, its payoff,
+and placement 61's afterstate. The artifact retains raw bonded states for
+placements 55–61 and the exact clear cells. Earlier context and the whole
+92-placement consistent prefix are not thereby exhaustively video-verified.
+This is one concrete named example for event-driven setup/payoff modeling,
+not a universal definition of Fat Log, an outcome target, or a generalized
+preference label. Other passages and longer construction windows still need
+review; this observation has not been admitted into training.
 
 `trainer-expressive-sequences` takes `expressive_sequences_config`, a JSON with
 `db`, `fcr_root`, and a fresh `output`. Defaults are 512 randomly selected

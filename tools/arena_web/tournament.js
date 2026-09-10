@@ -111,6 +111,10 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-motor-confirmation-v1'){
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.completed_conditions,run.target_conditions)}<div class="training-detail"><span>${count(run.completed_conditions)} / ${count(run.target_conditions)} conditions complete</span><span>${esc(run.condition || '')}</span></div><p class="budget-note">${esc(run.phase)} · ${count(run.games)} source games · ${count(run.roots)} labeled positions in this condition.<br>Fresh reserved seeds. Prediction accuracy and playing strength are evaluated separately. ${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
     if(run.schema==='drmc-motor-auxiliary-study-v1'){
       const heads=num(run.target_head_epochs)>0;
       const presentations=num(run.head_accepted_examples)+num(run.accepted_examples);

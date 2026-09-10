@@ -579,6 +579,13 @@ indefinitely staged.
   recorded prefixes match, 59 stop at missing timestamps and 89 at board
   mismatches. No candidate is video-verified or eligible for training by this
   check alone; player referents, timing and the actual video still need review.
+  A subsequent broadcast keyframe review identifies atalito's praised Fat Log
+  at April Gold 01:49:44: two adjacent blue/red horizontal rows clear together
+  after a preceding vertical clear and falling half prepare the board.
+  `commentary-fat-log-video-v1.json` retains this exact payoff and reconstructed
+  earlier states; only its listed keyframes are video-verified. It is a concrete
+  construction example, not a broad motif preference or strength label, and
+  has not entered training. Continue the other passages and longer setup review.
   The final held-out assessment spans 10,814 windows from 113 sessions.
   Action NLL is 4.2125 versus 5.8331 for a training-only conditioned frequency
   prior. Automatic goal/horizon NLL is slightly worse than its prior,
