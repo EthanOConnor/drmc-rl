@@ -654,6 +654,14 @@ which preserves strategies. The earlier entropy mirror-prox variant remains
 available as an explicit diagnostic; centering prevents a large common value
 from reducing its step size, but did not cure its observed convergence failure.
 Exported utilities and convergence gaps remain in the original units.
+For numerical comparison, equilibrium vectors need not be unique or equally
+well-conditioned as values. The optional `mixed-game-certificate-v1` probe
+compares every joint payoff at the existing 1e-5 tolerance, checks both
+strategies' unregularized gaps, and evaluates each strategy pair on the other
+matrix. If the largest payoff difference is epsilon, a fixed strategy pair's
+gap can increase by at most twice epsilon. This is a numerical bound, not a
+confidence interval for the critic. Strict vector agreement is still recorded;
+earlier failed probes are retained and are not retroactively relabeled.
 
 Search begins as an offline teacher. It does not control PPO rollout behavior
 until paired same-weight evaluation opens the joint-search gate. The existing

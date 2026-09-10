@@ -19,6 +19,7 @@ from drmc_rl.arena.experiment import dump
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner
 from drmc_rl.search.belief_native_pair import BeliefNativePairSearchModel
 from drmc_rl.search.joint_event import JointEventSearch, SearchConfig, WDL
+from drmc_rl.search.matrix_check import compare_matrix_games
 from drmc_rl.search.native_pair import state_from_payload
 from drmc_rl.search.pill_belief import PillReserveBelief
 from drmc_rl.search.public_policy import PublicPolicyContinuation
@@ -51,6 +52,11 @@ def benchmark(config):
     variant_order = tuple(config.get("variant_order", ("recursive", "queued")))
     if sorted(variant_order) != ["queued", "recursive"]:
         raise ValueError("variant_order must include recursive and queued exactly once")
+    comparison_contract = config.get("comparison_contract", "strict-vector-v1")
+    if comparison_contract not in ("strict-vector-v1", "mixed-game-certificate-v1"):
+        raise ValueError("unknown search comparison contract")
+    if comparison_contract == "mixed-game-certificate-v1" and config.get("opponent_mode") != "mixed":
+        raise ValueError("matrix certificates require mixed search")
     search_config = SearchConfig(
         depth_events=int(config.get("depth_events", 2)),
         own_beam=int(config.get("own_beam", 2)),
@@ -73,6 +79,7 @@ def benchmark(config):
         calibrated=False,
         product_gates_passed=False,
         search_config=asdict(search_config),
+        comparison_contract=comparison_contract,
         native_library_sha256=(sha256_file(Path(config["native_library"]))
                                if config.get("native_library") else None),
     )
@@ -154,6 +161,12 @@ def benchmark(config):
                      and np.allclose(a.joint_utilities, b.joint_utilities, rtol=0, atol=1e-5))
             )
             record["converged"] = a.equilibrium_converged and b.equilibrium_converged
+            record["strict_vector_parity"] = record["parity"]
+            if a.joint_utilities is not None and b.joint_utilities is not None:
+                record["matrix_comparison"] = compare_matrix_games(
+                    a, b, gap_tolerance=search_config.matrix_gap_tolerance)
+                if comparison_contract == "mixed-game-certificate-v1":
+                    record["parity"] = record["matrix_comparison"]["equivalent"]
             record["speedup"] = (
                 record["variants"]["recursive"]["seconds"] / record["variants"]["queued"]["seconds"]
             )

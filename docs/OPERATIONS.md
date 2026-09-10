@@ -1245,6 +1245,13 @@ incomplete or unconverged results. The
 registered `search-frontier-benchmark` accepts these settings plus an explicit
 `native_library` and records both strategies, convergence and causal schema.
 It remains a mechanics/throughput probe with an uncalibrated value link.
+Its default comparison remains `strict-vector-v1`. New mixed-game probes can
+explicitly select `comparison_contract: mixed-game-certificate-v1`, which
+checks complete matrix agreement and cross-matrix best-response certificates
+while retaining the stricter probability-vector comparison separately. This
+handles nonunique equilibria without loosening the neural payoff tolerance.
+`alternate_order: true` reverses recursive/queued order on alternating roots;
+solver cold-start time is recorded outside those warm comparisons.
 
 ### Persistent construction diagnostics
 

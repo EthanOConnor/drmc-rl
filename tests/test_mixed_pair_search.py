@@ -178,3 +178,24 @@ def test_execution_samples_reproducible_mixture_and_rejects_failed_solver(monkey
     assert not failed.equilibrium_converged and failed.matrix_failures == ("time limit reached",)
     with pytest.raises(ValueError, match="unconverged"):
         failed.select_action(left)
+
+
+def test_matrix_certificate_handles_nonunique_strategies_but_rejects_bad_ones():
+    from dataclasses import replace
+    from drmc_rl.search.matrix_check import compare_matrix_games
+
+    result = JointEventSearch(MatrixModel(), SearchConfig(opponent_mode="mixed")).search(
+        Position(), root_side=0)
+    # Every strategy is optimal in a constant matrix. Vector identity would
+    # reject two valid equilibria despite identical values and zero regret.
+    left = replace(result, joint_utilities=np.full((3, 3), .7),
+                   policy_target=np.array([1., 0, 0]), opponent_policy=(0., 1., 0.))
+    right = replace(left, joint_utilities=np.full((3, 3), .700001),
+                    policy_target=np.array([0., 0, 1.]), opponent_policy=(1., 0, 0.))
+    report = compare_matrix_games(left, right)
+    assert report["equivalent"] and report["own_policy_total_variation"] == 1
+    assert report["bound_holds"] and report["rounding_gap_bound"] == pytest.approx(.000002)
+    bad = replace(result, policy_target=np.eye(3)[0])
+    assert not compare_matrix_games(result, bad)["equivalent"]
+    with pytest.raises(ValueError, match="normalized"):
+        compare_matrix_games(result, replace(result, opponent_policy=(float("nan"), 0, 1)))
