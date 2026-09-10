@@ -1259,6 +1259,22 @@ matrix certificates in both drivers. The `v1`/`v2` mirror-prox failures and
 cross-matrix gaps, neural rows/calls and timing are retained; none are quality
 training labels or controller tournament outcomes.
 
+`trainer-adaptive-search-audit` compares complete queued matrices with bounded
+root allocation. Supply `adaptive_search_config` with a frozen checkpoint,
+native library, causal state bank, output identity and optional allocation
+batch sizes. The diagnostic rotates variant order across roots, records cold
+solver initialization separately, and retains every completed variant even if
+a later reference or bound check fails. Defaults use depth one, neural batches
+of 32, allocation batches of 16/32, a 0.02 response-gap target and a separately
+declared 1e-5 numerical evaluator tolerance. It compares complete legal
+inventories, checks each retained interval against the full matrix, and measures
+the returned strategies' actual full-matrix response gap. Unknown entries stay
+explicit and cannot become quality labels. A completed diagnostic is not an
+adoption decision: inspect certification, real work savings and wall time for
+every root, including budget failures. Launch Metal diagnostics outside the
+restricted sandbox, which cannot expose the device, with the virtualenv's bin
+directory on PATH for the registered recipe's Python child.
+
 The 300M milestone is running separately in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved
 `launch_core_300m_arena.py` through the registered planning-arena recipe.

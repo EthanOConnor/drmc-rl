@@ -663,6 +663,25 @@ gap can increase by at most twice epsilon. This is a numerical bound, not a
 confidence interval for the critic. Strict vector agreement is still recorded;
 earlier failed probes are retained and are not retroactively relabeled.
 
+`AdaptiveJointEventSearch` allocates work at a simultaneous root while keeping
+both complete action inventories. An unexamined joint action retains utility
+interval [-1, 1] and null W/D/L; policy priors only break allocation ties. The
+lower matrix supplies our security strategy p, and the upper matrix supplies
+the opponent's security strategy q. For any matrix M within those intervals,
+its response gap is bounded by `max(U @ q) - min(p @ L)`. Allocation evaluates
+unknown entries along the currently dangerous row and column until that bound
+meets the declared tolerance or a work budget expires. A failed inner solve or
+expired traversal discards the entire unfinished allocation batch. Known cells
+retain a separately declared numerical evaluation tolerance; this is not a
+learned uncertainty estimate. Interior search, forced advancement and complete
+correlated reveals use the existing queued traversal. This root-only mechanism
+does not yet implement nested allocation or tactical depth extensions.
+Its certificate applies only to the configured finite-depth critic game.
+Partial matrices never supply quality-training labels, and uncertified results
+cannot be sampled by the action decoder. A registered native audit independently
+checks the intervals and response bound against a complete matrix and retains
+actual native nodes, neural calls and elapsed time.
+
 Search begins as an offline teacher. It does not control PPO rollout behavior
 until paired same-weight evaluation opens the joint-search gate. The existing
 own-board depth-2 search remains a diagnostic/legacy teacher; it is not the

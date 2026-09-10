@@ -302,13 +302,20 @@ class JointEventSearch(Generic[StateT]):
 
     def _solve_matrix(self, matrix):
         utilities = np.asarray([[v.utility for v in row] for row in matrix], np.float64)
+        return self._solve_payoffs(utilities)
+
+    def _solve_payoffs(self, utilities):
+        utilities = np.asarray(utilities, np.float64)
+        if (utilities.ndim != 2 or not utilities.size or not np.isfinite(utilities).all()
+                or np.abs(utilities).max() > 1 + 1e-8):
+            raise ValueError("matrix utility must be finite, nonempty and bounded by one")
+        rows, columns = utilities.shape
         self._matrix_games += 1
         if self._budget_exhausted:
             # These masses only complete diagnostic output. No solver may turn
             # unresolved branches into an apparently certified equilibrium.
             self._equilibrium_converged = False
-            return np.full(len(matrix), 1 / len(matrix)), np.full(
-                len(matrix[0]), 1 / len(matrix[0]))
+            return np.full(rows, 1 / rows), np.full(columns, 1 / columns)
         started = time.perf_counter()
         centered = utilities - utilities.mean()
         if self.config.matrix_solver == "linear_program":
@@ -348,8 +355,7 @@ class JointEventSearch(Generic[StateT]):
                 or p.sum() <= 0 or q.sum() <= 0):
             self._equilibrium_converged = False
             self._matrix_failures.append("solver returned an invalid probability distribution")
-            return np.full(len(matrix), 1 / len(matrix)), np.full(
-                len(matrix[0]), 1 / len(matrix[0]))
+            return np.full(rows, 1 / rows), np.full(columns, 1 / columns)
         # Certify the actual returned distributions. Keep the mixed root
         # probabilities at this precision. This gap is not critic uncertainty.
         p /= p.sum()

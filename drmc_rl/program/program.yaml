@@ -99,6 +99,17 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-adaptive-search-audit:
+    status: active
+    stage: 4
+    purpose: Compare bounded adaptive joint-action allocation against complete public pair-search matrices, without quality labels or promotion.
+    requires_paths: [tools/audit_adaptive_search.py, '{adaptive_search_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.audit_adaptive_search, --config, '{adaptive_search_config}']
+    produces: [Complete legal inventories, retained unknown intervals, independently checked response bounds, actual native and neural work]
+    resources:
+      preferred_host: local
+      accelerator: mps
   trainer-commentary-alignment:
     status: active
     stage: 1
