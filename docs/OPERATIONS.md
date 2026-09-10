@@ -1121,6 +1121,21 @@ implements the packaging path; it is not a newly built or validated distributabl
 The browser task owns its separate ONNX portfolio. New browser source packages
 should use the shared context fields instead of reinserting them during packaging.
 
+`runs/review-20260909/live-portfolio-audit/` retains real-weight source-process
+checks on 12 public native roots from four natural 14-HI game prefixes. All
+84 portfolio requests and 12 history-core Sloth requests matched CPU arena
+choices and controller witnesses exactly. The core's maximum measured JSONL
+round trip was 37.2 ms. Another 36 preparation requests matched all 648
+conditional branches exactly. Interleaving CPU reference preparation inflated
+GPU processing to 80–187 ms; child profiling located that time in inference,
+not serialization or geometry. The separate decide-to-prepare flow removes
+those interleaved CPU model calls: median decisions were 15–17 ms and median
+preparation 32–36 ms, with maxima 24.6/43.5 ms across the three fastest paces.
+Retain both workloads in the reports. This small shared-host source check
+supports further integration; it does not certify app render/latch timing,
+high-stack tails, final packages or a new search compute budget. The Sloth core
+still needs per-pace product routing and representative live-game verification.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

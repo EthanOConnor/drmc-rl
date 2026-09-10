@@ -371,7 +371,11 @@ indefinitely staged.
   The source CLI discovers a companion manifest, and packaging can copy and
   verify it explicitly. Existing packages and unconfigured source builds keep
   the plain parent; no new distributable has been made. Real-checkpoint device
-  checks and final package verification remain. The September 10 provisional tester-build shortlist is the
+  checks on 12 real public roots now match all 84 portfolio and 12 Sloth-core
+  choices/scripts against CPU arena references. All 648 prepared branches match.
+  With CPU reference inference separated from timing, the normal JSONL flow
+  takes 15–17 ms median per decision and 32–36 ms for preparation on Metal.
+  Actual app timing and final package verification remain. The September 10 provisional tester-build shortlist is the
   original final adapter for Sloth, the 50M adapter for Relaxed, corrected E1
   for Normal/Fast/Top Humans, and the 10M public parent at the two fastest
   paces. This is a product judgment from completed studies, not a claim that

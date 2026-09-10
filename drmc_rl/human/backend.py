@@ -240,6 +240,13 @@ class HumanBackend:
                 "observation_encoding": "legacy-vs-horizontal-bond-mask-v1",
                 "control": "quality_argmax; no absolute human rating claim",
             }
+            from drmc_rl.human.controller_context import uses_public_context
+            if uses_public_context(self.competitive):
+                from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+                self.competitive_identity.update(
+                    information_scope="public-boards-pills-controller-history-motor-v1",
+                    observation_encoding=PUBLIC_CONTEXT_SCHEMA,
+                )
         if pace_manifest is not None:
             from drmc_rl.human.pace_portfolio import PacePortfolio
             if self.competitive is None:

@@ -34,6 +34,8 @@ def test_context_competitive_core_warms_and_executes_live_history(tmp_path, pace
     backend = HumanBackend(str(human), competitive_checkpoint=str(core), seed=3)
     try:
         assert not backend.capabilities()["anticipation"]["available"]
+        assert backend.competitive_identity["observation_encoding"] == PUBLIC_CONTEXT_SCHEMA
+        assert backend.competitive_identity["information_scope"] == "public-boards-pills-controller-history-motor-v1"
         with FrameVsPool(lib_path=os.environ.get("DRMARIO_POOL_LIB")) as pool:
             pool.reset([17291])
             while not pool.states[1].falling:
