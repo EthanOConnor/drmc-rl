@@ -30,6 +30,7 @@ class QueuedJointEventSearch(JointEventSearch):
         self._budget_exhausted = False
         self._chance_nodes = 0
         self._chance_outcomes = 0
+        self._reset_matrices()
         self.inference_batches = 0
         boundary = self.model.boundary(state)
         expected = DecisionBoundary.P1 if root_side == 0 else DecisionBoundary.P2
@@ -49,6 +50,21 @@ class QueuedJointEventSearch(JointEventSearch):
             or not set(actions) <= set(self.model.legal_actions(state, root_side))
         ):
             raise ValueError("root actions must be nonempty, unique and legal")
+        if self.config.opponent_mode == "mixed":
+            if set(actions) != set(self.model.legal_actions(state, root_side)):
+                raise ValueError("mixed search requires the complete root action inventory")
+            if boundary == DecisionBoundary.BOTH:
+                opponent_actions = self._ranked_actions(
+                    state, 1 - root_side, self.config.opponent_beam, maximize=False)
+                if not opponent_actions:
+                    raise ValueError("simultaneous boundary has no opponent action")
+                generators = [self._joint_child(state, root_side, own, other,
+                                                self.config.depth_events)
+                              for own in actions for other in opponent_actions]
+                cells = self._resolve(generators)
+                width = len(opponent_actions)
+                matrix = [cells[start:start + width] for start in range(0, len(cells), width)]
+                return self._mixed_root_result(actions, opponent_actions, matrix)
 
         def root(action):
             if boundary == DecisionBoundary.BOTH:
@@ -58,8 +74,29 @@ class QueuedJointEventSearch(JointEventSearch):
             )
             return (yield from self._visit(child, self.config.depth_events - 1, root_side))
 
-        pending = [(i, root(action)) for i, action in enumerate(actions)]
-        values = [None] * len(actions)
+        values = self._resolve([root(action) for action in actions])
+        utilities = np.asarray([v.utility for v in values], np.float64)
+        policy = self._policy_target(utilities)
+        best = int(np.argmax(utilities))
+        return SearchResult(
+            tuple(actions),
+            tuple(values),
+            utilities.astype(np.float32),
+            policy.astype(np.float32),
+            int(actions[best]),
+            WDL.mixture(policy, values),
+            self._nodes,
+            self._cache_hits,
+            self.config.depth_events,
+            self._budget_exhausted,
+            self._chance_nodes,
+            self._chance_outcomes,
+            **self._matrix_metadata(),
+        )
+
+    def _resolve(self, generators):
+        pending = list(enumerate(generators))
+        values = [None] * len(generators)
         try:
             while pending:
                 waiting = []
@@ -77,23 +114,30 @@ class QueuedJointEventSearch(JointEventSearch):
         finally:
             for _, generator in pending:
                 generator.close()
-        utilities = np.asarray([v.utility for v in values], np.float64)
-        policy = self._policy_target(utilities)
-        best = int(np.argmax(utilities))
-        return SearchResult(
-            tuple(actions),
-            tuple(values),
-            utilities.astype(np.float32),
-            policy.astype(np.float32),
-            int(actions[best]),
-            WDL.mixture(policy, values),
-            self._nodes,
-            self._cache_hits,
-            self.config.depth_events,
-            self._budget_exhausted,
-            self._chance_nodes,
-            self._chance_outcomes,
-        )
+        return values
+
+    def _joint_child(self, state, root_side, own, other, depth):
+        if self._nodes >= self.config.max_nodes:
+            self._budget_exhausted = True
+            return WDL(0.5, 0.0, 0.5)
+        child = self.model.apply_actions(state, own if root_side == 0 else other,
+                                         other if root_side == 0 else own)
+        return (yield from self._visit(child, depth - 1, root_side))
+
+    def _mixed_visit(self, state, root_side, actions, depth):
+        yield state, 1 - root_side
+        opponent_actions = self._ranked_actions(
+            state, 1 - root_side, self.config.opponent_beam, maximize=False)
+        if not opponent_actions:
+            raise ValueError("simultaneous boundary has no opponent action")
+        matrix = []
+        for own in actions:
+            row = []
+            for other in opponent_actions:
+                row.append((yield from self._joint_child(state, root_side, own, other, depth)))
+            matrix.append(row)
+        p, q = self._solve_matrix(matrix)
+        return WDL.mixture(p, [WDL.mixture(q, row) for row in matrix])
 
     def _prepare(self, requests):
         prepare = getattr(self.model, "prepare_requests", None)
@@ -134,9 +178,7 @@ class QueuedJointEventSearch(JointEventSearch):
             if outcomes:
                 self._chance_nodes += 1
                 self._chance_outcomes += len(outcomes)
-                outcomes = sorted(outcomes, key=lambda o: o.probability, reverse=True)[
-                    : self.config.chance_beam
-                ]
+                outcomes = self._ordered_chance(outcomes)
                 children = []
                 for item in outcomes:
                     children.append(
@@ -163,6 +205,10 @@ class QueuedJointEventSearch(JointEventSearch):
                 actions = self._ranked_actions(
                     state, root_side, self.config.own_beam, maximize=True
                 )
+                if self.config.opponent_mode == "mixed":
+                    value = yield from self._mixed_visit(state, root_side, actions, depth)
+                    self._cache[key] = value
+                    return value
                 children = []
                 for action in actions:
                     children.append((yield from self._given(state, root_side, action, depth)))

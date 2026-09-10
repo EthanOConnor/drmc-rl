@@ -229,7 +229,7 @@ recipes:
     requires_paths: [tools/benchmark_search_frontiers.py, '{search_frontier_config}']
     requires_gates: [pair-state-v2]
     command: [python, -m, tools.benchmark_search_frontiers, --config, '{search_frontier_config}']
-    produces: [Per-root wall time, actual neural batch counts, full action utilities and parity]
+    produces: [Per-root wall time, actual neural batch counts, full action utilities and parity, optional complete mixed strategies and numerical convergence]
     resources:
       accelerator: cpu
   paired-quality-fit:

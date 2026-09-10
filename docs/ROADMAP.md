@@ -487,6 +487,16 @@ indefinitely staged.
   these paces) on the shared Mac. Keep the existing compute allowance. This
   implements exact geometry reuse with fresh scoring, not shared neural
   features, host integration or a demonstrated full-game strength gain.
+  Complete simultaneous mixed-strategy backups are now implemented in both
+  recursive and cooperative full-pair search. The opt-in mode retains all
+  actions and correlated chance support, exports both players' strategies and
+  measures the numerical saddle gap and solver time. Exhaustion or failed
+  convergence suppresses targets. Analytic asymmetric games, reversed player
+  perspective, dominated actions, nested simultaneous boundaries, correlated
+  reveals and target rejection pass; existing expectation/minimax checks also
+  pass. Real native/neural parity is the next check. Candidate-dependent
+  allocation, useful quality estimates and substantial strength evaluation
+  remain open.
 - [ ] **Persistent expressive play (E7).** Replay-align commentator windows
   and earlier construction states, then implement persistent 2–6-placement
   proposals with event termination and replanning after garbage. Train the

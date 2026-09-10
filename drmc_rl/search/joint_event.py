@@ -10,6 +10,7 @@ learner's pills.
 from __future__ import annotations
 
 import math
+import time
 from dataclasses import dataclass
 from typing import Generic, Hashable, Protocol, Sequence, TypeVar, runtime_checkable
 
@@ -134,24 +135,33 @@ class SearchConfig:
     own_beam: int = 32
     opponent_beam: int = 12
     chance_beam: int = 16
-    opponent_mode: str = "expectation"  # expectation|minimax
+    opponent_mode: str = "expectation"  # expectation|minimax|mixed
     policy_temperature: float = 0.25
     prior_floor: float = 1e-6
     max_nodes: int = 100000
+    matrix_iterations: int = 2048
+    matrix_temperature: float = 0.001
+    matrix_gap_tolerance: float = 0.02
 
     def __post_init__(self) -> None:
         if self.depth_events < 1:
             raise ValueError("depth_events must be positive")
         if min(self.own_beam, self.opponent_beam, self.chance_beam) < 1:
             raise ValueError("beam widths must be positive")
-        if self.opponent_mode not in {"expectation", "minimax"}:
-            raise ValueError("opponent_mode must be expectation or minimax")
+        if self.opponent_mode not in {"expectation", "minimax", "mixed"}:
+            raise ValueError("opponent_mode must be expectation, minimax or mixed")
         if self.policy_temperature < 0:
             raise ValueError("policy_temperature cannot be negative")
         if self.prior_floor <= 0:
             raise ValueError("prior_floor must be positive")
         if self.max_nodes < 1:
             raise ValueError("max_nodes must be positive")
+        if self.matrix_iterations < 10:
+            raise ValueError("matrix_iterations must be at least ten")
+        if not math.isfinite(self.matrix_temperature) or self.matrix_temperature <= 0:
+            raise ValueError("matrix_temperature must be finite and positive")
+        if not math.isfinite(self.matrix_gap_tolerance) or self.matrix_gap_tolerance <= 0:
+            raise ValueError("matrix_gap_tolerance must be finite and positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,6 +178,13 @@ class SearchResult:
     budget_exhausted: bool
     chance_nodes: int
     chance_outcomes: int
+    matrix_games: int = 0
+    matrix_solve_ms: float = 0.0
+    equilibrium_gap: float = 0.0
+    equilibrium_converged: bool = True
+    opponent_actions: tuple[int, ...] = ()
+    opponent_policy: tuple[float, ...] = ()
+    action_selection: str = "argmax"
 
 
 class JointEventSearch(Generic[StateT]):
@@ -180,6 +197,18 @@ class JointEventSearch(Generic[StateT]):
         self._budget_exhausted = False
         self._chance_nodes = 0
         self._chance_outcomes = 0
+        self._reset_matrices()
+
+    def _reset_matrices(self):
+        self._matrix_games = 0
+        self._matrix_solve_ms = 0.0
+        self._equilibrium_gap = 0.0
+        self._equilibrium_converged = True
+
+    def _matrix_metadata(self):
+        return dict(matrix_games=self._matrix_games, matrix_solve_ms=self._matrix_solve_ms,
+                    equilibrium_gap=self._equilibrium_gap,
+                    equilibrium_converged=self._equilibrium_converged)
 
     def search(
         self, state: StateT, *, root_side: int, root_actions: Sequence[int] | None = None
@@ -192,6 +221,7 @@ class JointEventSearch(Generic[StateT]):
         self._budget_exhausted = False
         self._chance_nodes = 0
         self._chance_outcomes = 0
+        self._reset_matrices()
         terminal = self.model.terminal_value(state, root_side)
         if terminal is not None:
             raise ValueError("cannot search from a terminal state")
@@ -212,6 +242,13 @@ class JointEventSearch(Generic[StateT]):
                 raise ValueError("explicit root actions must be unique and legal")
         if not own_actions:
             raise ValueError("root side has no legal actions")
+        if self.config.opponent_mode == "mixed":
+            if set(own_actions) != set(self.model.legal_actions(state, root_side)):
+                raise ValueError("mixed search requires the complete root action inventory")
+            if boundary == DecisionBoundary.BOTH:
+                opponent_actions, matrix = self._joint_matrix(
+                    state, root_side, own_actions, self.config.depth_events)
+                return self._mixed_root_result(own_actions, opponent_actions, matrix)
         values: list[WDL] = []
         for action in own_actions:
             if boundary == DecisionBoundary.BOTH:
@@ -241,7 +278,72 @@ class JointEventSearch(Generic[StateT]):
             budget_exhausted=self._budget_exhausted,
             chance_nodes=self._chance_nodes,
             chance_outcomes=self._chance_outcomes,
+            **self._matrix_metadata(),
         )
+
+    def _solve_matrix(self, matrix):
+        from drmc_rl.arena.meta_strategy import solve_entropy_regularized_zero_sum
+
+        utilities = np.asarray([[v.utility for v in row] for row in matrix], np.float64)
+        self._matrix_games += 1
+        if self._budget_exhausted:
+            # These masses only complete diagnostic output. No solver may turn
+            # unresolved branches into an apparently certified equilibrium.
+            self._equilibrium_converged = False
+            return np.full(len(matrix), 1 / len(matrix)), np.full(
+                len(matrix[0]), 1 / len(matrix[0]))
+        started = time.perf_counter()
+        solution = solve_entropy_regularized_zero_sum(
+            utilities, iterations=self.config.matrix_iterations,
+            temperature=self.config.matrix_temperature, floor=0.0)
+        self._matrix_solve_ms += (time.perf_counter() - started) * 1000
+        # Certify the actual returned distributions, including float32 export
+        # rounding. This is a numerical saddle gap, never critic uncertainty.
+        p = solution.row_strategy.astype(np.float64)
+        q = solution.column_strategy.astype(np.float64)
+        p /= p.sum()
+        q /= q.sum()
+        gap = max(0.0, float((utilities @ q).max() - (p @ utilities).min()))
+        self._equilibrium_gap = max(self._equilibrium_gap, gap)
+        self._equilibrium_converged &= gap <= self.config.matrix_gap_tolerance
+        return p, q
+
+    def _joint_matrix(self, state, root_side, own_actions, depth):
+        opponent_actions = self._ranked_actions(
+            state, 1 - root_side, self.config.opponent_beam, maximize=False)
+        if not opponent_actions:
+            raise ValueError("simultaneous boundary has no opponent action")
+        matrix = []
+        for own in own_actions:
+            row = []
+            for other in opponent_actions:
+                if self._nodes >= self.config.max_nodes:
+                    self._budget_exhausted = True
+                    row.append(WDL(0.5, 0.0, 0.5))
+                    continue
+                child = self.model.apply_actions(
+                    state, own if root_side == 0 else other,
+                    other if root_side == 0 else own)
+                row.append(self._value(child, depth - 1, root_side))
+            matrix.append(row)
+        return opponent_actions, matrix
+
+    def _mixed_root_result(self, actions, opponent_actions, matrix):
+        policy, opponent_policy = self._solve_matrix(matrix)
+        values = tuple(WDL.mixture(opponent_policy, row) for row in matrix)
+        return SearchResult(
+            actions=tuple(actions), values=values,
+            utilities=np.asarray([v.utility for v in values], np.float32),
+            policy_target=policy.astype(np.float32),
+            # A representative for displays only. Execution must sample the
+            # complete mixture; argmax destroys its simultaneous-game guarantee.
+            best_action=int(actions[int(np.argmax(policy))]),
+            root_value=WDL.mixture(policy, values), nodes=self._nodes,
+            cache_hits=self._cache_hits, depth_events=self.config.depth_events,
+            budget_exhausted=self._budget_exhausted, chance_nodes=self._chance_nodes,
+            chance_outcomes=self._chance_outcomes, opponent_actions=tuple(opponent_actions),
+            opponent_policy=tuple(map(float, opponent_policy)), action_selection="sample_policy",
+            **self._matrix_metadata())
 
     def _value(self, state: StateT, depth: int, root_side: int) -> WDL:
         self._nodes += 1
@@ -313,6 +415,10 @@ class JointEventSearch(Generic[StateT]):
         own_actions = self._ranked_actions(state, root_side, self.config.own_beam, maximize=True)
         if not own_actions:
             return self.model.evaluate(state, root_side)
+        if self.config.opponent_mode == "mixed":
+            _, matrix = self._joint_matrix(state, root_side, own_actions, depth)
+            policy, opponent_policy = self._solve_matrix(matrix)
+            return WDL.mixture(policy, [WDL.mixture(opponent_policy, row) for row in matrix])
         values = [
             self._simultaneous_given_own(state, root_side, action, depth) for action in own_actions
         ]
@@ -345,7 +451,7 @@ class JointEventSearch(Generic[StateT]):
         actions: Sequence[int],
         values: Sequence[WDL],
     ) -> WDL:
-        if self.config.opponent_mode == "minimax":
+        if self.config.opponent_mode in {"minimax", "mixed"}:
             return values[int(np.argmin([value.utility for value in values]))]
         weights = self._prior_weights(state, opponent_side, actions)
         return WDL.mixture(weights, values)
@@ -353,14 +459,20 @@ class JointEventSearch(Generic[StateT]):
     def _chance_value(
         self, outcomes: Sequence[ChanceOutcome[StateT]], depth: int, root_side: int
     ) -> WDL:
-        ordered = sorted(outcomes, key=lambda item: item.probability, reverse=True)[
-            : self.config.chance_beam
-        ]
+        ordered = self._ordered_chance(outcomes)
         if not ordered:
             return self.model.evaluate(outcomes[0].state, root_side)  # pragma: no cover
         weights = np.asarray([item.probability for item in ordered], dtype=np.float64)
         values = [self._value(item.state, max(0, depth - 1), root_side) for item in ordered]
         return WDL.mixture(weights, values)
+
+    def _ordered_chance(self, outcomes):
+        ordered = sorted(outcomes, key=lambda item: item.probability, reverse=True)
+        if self.config.opponent_mode == "mixed":
+            if not math.isclose(sum(o.probability for o in ordered), 1.0, abs_tol=1e-6):
+                raise ValueError("mixed search needs complete normalized chance support")
+            return ordered
+        return ordered[:self.config.chance_beam]
 
     def _ranked_actions(self, state: StateT, side: int, beam: int, *, maximize: bool) -> list[int]:
         actions = [int(action) for action in self.model.legal_actions(state, side)]
@@ -370,6 +482,10 @@ class JointEventSearch(Generic[StateT]):
         # Priors determine expansion order/beam only. Root quality comes from
         # backed-up WDL values, so a weak prior cannot directly choose the move.
         order = np.argsort(-weights, kind="stable")
+        if self.config.opponent_mode == "mixed":
+            if len(set(actions)) != len(actions):
+                raise ValueError("legal action inventory contains duplicates")
+            return [actions[int(index)] for index in order]
         return [actions[int(index)] for index in order[: min(int(beam), len(actions))]]
 
     def _prior_weights(self, state: StateT, side: int, actions: Sequence[int]) -> np.ndarray:

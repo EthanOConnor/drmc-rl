@@ -7,6 +7,7 @@ no competitive-quality evidence and cannot be used as a teacher release.
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 import json
 from pathlib import Path
 import time
@@ -52,6 +53,10 @@ def benchmark(config):
         own_beam=int(config.get("own_beam", 2)),
         opponent_beam=int(config.get("opponent_beam", 2)),
         max_nodes=int(config.get("max_nodes", 10000)),
+        opponent_mode=config.get("opponent_mode", "expectation"),
+        matrix_iterations=int(config.get("matrix_iterations", 2048)),
+        matrix_temperature=float(config.get("matrix_temperature", .001)),
+        matrix_gap_tolerance=float(config.get("matrix_gap_tolerance", .02)),
     )
     report = dict(
         schema="drmc-frontier-benchmark-v1",
@@ -62,6 +67,9 @@ def benchmark(config):
         diagnostic_only=True,
         calibrated=False,
         product_gates_passed=False,
+        search_config=asdict(search_config),
+        native_library_sha256=(sha256_file(Path(config["native_library"]))
+                               if config.get("native_library") else None),
     )
     dump(output, report)
     try:
@@ -72,8 +80,10 @@ def benchmark(config):
             continuation.infer_batch([(root, side)])  # kernel warmup, outside timings
             results = {}
             record = dict(source_id=row["id"], variants={})
-            for name in ("recursive", "queued"):
-                runner = DrMarioVsPoolRunner(num_pairs=1)
+            for name in config.get("variant_order", ("recursive", "queued")):
+                if name not in ("recursive", "queued"):
+                    raise ValueError("variant_order must name recursive or queued")
+                runner = DrMarioVsPoolRunner(num_pairs=1, lib_path=config.get("native_library"))
                 try:
                     model = BeliefNativePairSearchModel(runner, continuation=continuation)
                     model.register_belief(root, PillReserveBelief.from_dict(row["reserve_belief"]))
@@ -103,6 +113,15 @@ def benchmark(config):
                         actions=list(result.actions),
                         utilities=result.utilities.tolist(),
                         best_action=result.best_action,
+                        policy_target=result.policy_target.tolist(),
+                        opponent_actions=list(result.opponent_actions),
+                        opponent_policy=list(result.opponent_policy),
+                        matrix_games=result.matrix_games,
+                        matrix_solve_ms=result.matrix_solve_ms,
+                        equilibrium_gap=result.equilibrium_gap,
+                        equilibrium_converged=result.equilibrium_converged,
+                        public_observation_schema=root.public_observation_schema,
+                        boundary=model.boundary(root).value,
                     )
                 finally:
                     runner.close()
@@ -112,6 +131,10 @@ def benchmark(config):
                 a.actions == b.actions
                 and a.best_action == b.best_action
                 and np.allclose(a.utilities, b.utilities, rtol=0, atol=1e-5)
+                and np.allclose(a.policy_target, b.policy_target, rtol=0, atol=1e-5)
+                and a.opponent_actions == b.opponent_actions
+                and np.allclose(a.opponent_policy, b.opponent_policy, rtol=0, atol=1e-5)
+                and a.equilibrium_converged == b.equilibrium_converged
             )
             record["speedup"] = (
                 record["variants"]["recursive"]["seconds"] / record["variants"]["queued"]["seconds"]

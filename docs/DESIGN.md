@@ -633,6 +633,20 @@ joint actions, integrating the opponent policy or applying a minimax stress
 mode. Chance branches represent only information newly revealed by the game.
 Depth is measured in pair events, not the learner's pill count.
 
+The opt-in `mixed` opponent mode instead solves a simultaneous zero-sum
+matrix. Its row and column strategies are chosen together; the opponent does
+not get to observe our sampled action before choosing its own. Every legal
+action on both sides and every supported correlated reveal remains in the
+matrix/tree, regardless of beam settings. The existing entropy mirror-prox
+solver uses a small explicit regularizer and reports the unregularized
+best-response gap of its actual returned distributions. A numerical gap is
+not uncertainty in the learned values. A failed convergence check or exhausted
+tree budget withholds teacher targets. At a simultaneous root, `policy_target`
+must be sampled; `best_action` is only its most probable display representative.
+Recursive and cooperative inference drivers implement the same backups, and
+report solver wall time separately from native nodes and neural work. This
+does not certify the current critic or authorize live search.
+
 Search begins as an offline teacher. It does not control PPO rollout behavior
 until paired same-weight evaluation opens the joint-search gate. The existing
 own-board depth-2 search remains a diagnostic/legacy teacher; it is not the

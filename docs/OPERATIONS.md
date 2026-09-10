@@ -1229,6 +1229,21 @@ compute charges or certify app scheduling, high-stack tails or strength.
 
 ### Persistent construction diagnostics
 
+For offline joint-search diagnostics, `--opponent-mode mixed` selects the
+complete simultaneous-action matrix in either recursive or frontier-batched
+execution. `--matrix-iterations`, `--matrix-temperature` and
+`--matrix-gap-tolerance` control the existing entropy mirror-prox solver; the
+defaults are 2,048, 0.001 and 0.02 utility units. These numerical controls are
+not calibrated candidate uncertainty. Mixed mode ignores own/opponent/chance
+beam truncation and rejects a partial root inventory. Watch total nodes and
+solver milliseconds: the complete matrix can be much larger than a beam.
+An unconverged matrix, including an internal one, makes the entire target
+unusable. A simultaneous-root consumer must sample `policy_target`; choosing
+the reported representative action loses the mixture's protection. The
+registered `search-frontier-benchmark` accepts these settings plus an explicit
+`native_library` and records both strategies, convergence and causal schema.
+It remains a mechanics/throughput probe with an uncalibrated value link.
+
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and
 `commentary_alignment_output`. It retains unresolved video identities, matches
