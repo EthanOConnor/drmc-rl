@@ -164,8 +164,9 @@ def test_both_trained_controls_exclude_validation_and_do_not_decode_true_targets
         assert results[0]['arms'][name]['action_presentations']==12
         assert results[0]['arms'][name]['final']!=results[1]['arms'][name]['final']
     assert results[0]['paired_session_comparisons']['early_setup_nll']['sessions']==2
-    # Labels have no argument in the action path; only predicted distributions
-    # can reach the decoder. Neither trained arm modifies the competitive core.
+    # Payoff-cell/duration labels have no argument in the action path; their
+    # predicted distributions reach the decoder. The requested geometry goal
+    # conditions imitation; neither trained arm modifies the competitive core.
     assert not a['quality_admission'] and a['diagnostic_only']
     json.dumps(results[0],allow_nan=False)
 

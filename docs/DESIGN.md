@@ -557,7 +557,10 @@ remaining-duration prediction from a GRU over actual public decision inputs.
 Training unrolls only the causal prefix; future payoff, goal labels and true
 duration never enter recurrent memory. Both arms have the same parameter count,
 initialization, root-selected intent and elapsed-placement input. The stateless
-control resets only the recurrent hidden state. Repeated runtime requests
+control resets only the recurrent hidden state. Conditional imitation uses
+the observed construction goal as its requested intent; the separate
+predicted-goal evaluation holds the intent inferred at the root. Neither
+version supplies goal labels to recurrent memory. Repeated runtime requests
 replace the current decision's provisional memory, including a changed visible
 preview; an observed completed placement commits it once for the next turn.
 The original 2–6-placement cap remains fixed, and actual payoff or board
