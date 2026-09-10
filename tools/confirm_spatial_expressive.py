@@ -47,6 +47,7 @@ def run(config):
     try:
         data=prepare_data({**config,'checkpoint':str(checkpoint)},output,report)
         ids=np.arange(len(data['windows']))
+        report['evaluated_sessions']=len(set(data['windows'][:,3]))
         device=config.get('device','cpu')
         for name in ('persistent','stateless'):
             path=study_path.parent/(name+'-final.pt')

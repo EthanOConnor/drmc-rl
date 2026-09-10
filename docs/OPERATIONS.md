@@ -635,18 +635,25 @@ The fixed final checkpoint SHA256 is
 The initial v1 launch was stopped during source loading before any optimizer
 update; v2 fixes repeated NPZ decompression by loading each column once.
 
-`public-input-alignment-arena-v1` is now running on the Mac through the
-registered `trainer-planning-arena` recipe, supervisor 68616. Its config and
-launch/preparation scripts are under `runs/review-20260909`. The fixed budget
-is 16,384 games against the public parent and corrected untrained initialization:
+`public-input-alignment-arena-v1` completed on the Mac through the
+registered `trainer-planning-arena` recipe, former supervisor 68616. Its config
+and launch/preparation scripts are under `runs/review-20260909`. The fixed budget
+was 16,384 games against the public parent and corrected untrained initialization:
 seven 14-HI paces at 1,024 games per opponent, and separate 20-HI Normal/Top
 Humans at 512. It uses frozen arena `07f46eb` and the same native `19f292c`
 frame/reach libraries, one Metal/Torch worker, three planner workers and four
 charged compute frames. Its 768 distinct reserved seeds have no overlap with
 any of the 191 alignment source seeds. The bank is reused from the preceding
 initialization study, so this is not an independent confirmation study.
-Retain full seed/side journals and the fixed final epoch; do not select an
-early score or replace the active outcome-training optimizer with this fit.
+The allocation completed without censoring at September 10 11:19:46 UTC.
+`public-input-alignment-arena-assessment.py/.json` verifies every seed/side pair
+and retains 20,000 shared whole-seed resamples. No primary family comparison
+establishes a gain; Sloth versus parent scores 45.21% with simultaneous 95%
+40.53–49.90%. Faster 14-HI point estimates are near the parent, while separate
+20-HI Normal scores 43.16% versus parent and 42.77% versus corrected initial.
+Keep the current pace portfolio and the active outcome-training optimizer.
+Do not restart this completed allocation; further alignment work needs broader
+training-only pace coverage and a separately evaluated new branch.
 The existing single dashboard sync includes this arena, and a separate
 alignment card counts example presentations without inflating console frames.
 
@@ -1332,6 +1339,38 @@ paired whole-session intervals and distinct evaluated-window/action counts,
 with zero optimizer updates and no new outcome frames. These recorded-prefix
 measurements still do not establish autonomous construction completion or
 competitive noninferiority.
+
+The completed local spatial study is `runs/review-20260909/spatial-expressive-v3`
+(source `fed2bc3`, former supervisor 27144). Attempts v1/v2 failed before any
+feature extraction or optimization on path normalization and explicit
+`zero_v1_vs` support, respectively; retain their failed records. The completed
+study used 126,505 unique public feature inputs and all 48,864 development
+windows, with 38,050 training windows from 399 sessions. Each head received
+304,400 window and 1,069,520 action presentations over eight fixed epochs.
+Total feature preparation and fitting took 541.5 seconds. Persistent and
+stateless final checkpoint SHA-256 values are
+`1b2586e36d5fd84c58ec1e55874841fdc26b29fb61cb0bfd49d7eb93e32056ee`
+and `682249da62d2e0cbce15054a6c8455064e94e6b0d84e3f7232bffd679e3312d3`.
+
+`expressive-confirmation-archive-v1.zip` mirrors 256 reserved replay blobs
+from mombox, selected with seed 93517 after excluding all 512 development
+sessions and content hashes. Verification ran on the Mac through the registered
+sequence recipe and a local read-only catalogue/blob provider, avoiding another
+heavy mombox worker. `expressive-confirmation-source-v1` completed 394,902
+verified placements and 24,392 constructions/85,199 action examples in 43.3
+seconds. Its source SHA-256 is
+`2c2049a40bb44ada884b7fdcf68b9713720273f86d41f85d6969404b66c3140d`.
+`spatial-confirmation-v1` (source `ff682b1`, former supervisor 29611) completed
+in 58.5 seconds at September 10 11:19:27 UTC. All 256 sessions were reserved;
+255 yielded scored constructions. Its individual 20,000-resample paired
+session intervals confirm worse persistent action NLL (+0.0936, 95%
+0.0861–0.1012) and earlier-setup NLL (+0.0634, 0.0514–0.0756) versus the trained
+stateless control, despite both spatial predictors beating training-only
+frequency priors. Preserve the fixed models, prepared features and complete
+per-session measurements; do not retrain on these confirmation sessions or
+promote the persistent mechanism. No outcome frames were trained or arena
+entrant added. Subsequent actual planning must address changing inputs and
+quality admission before strength or preference claims.
 
 `trainer-commentary-alignment` takes `commentary_evidence`,
 `commentary_reconstruction` (accepted video-game JSON, optionally gzip), and

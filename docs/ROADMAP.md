@@ -387,11 +387,22 @@ indefinitely staged.
   The fixed eight-epoch alignment fit is now complete: 38,616 supervised
   presentations, 4,827 training positions and 1,207 whole-seed validation
   positions. Validation KL fell from 0.14333 to 0.03085; choice agreement
-  increased from 91.14% to 94.31%. A fixed 16,384-game controller tournament
-  against the parent and corrected initialization is running at all seven
-  14-HI paces, with 20 HI separate. It reuses the reserved initialization bank
-  and is not independent confirmation. No alignment checkpoint is promoted,
-  and the separate substantial outcome run keeps its own model and optimizer.
+  increased from 91.14% to 94.31%. The fixed 16,384-game controller tournament
+  against the parent and corrected initialization completed without censoring
+  at September 10 11:19:46 UTC. It reuses the reserved initialization bank and
+  is not independent confirmation. Against the parent, 14-HI scores are
+  Sloth 45.21%, Relaxed 47.66%, Normal 50.78%, Fast 48.93%, Top Humans 49.90%,
+  Super Human 47.46% and Frame Perfect 49.41%. None of the 14 primary
+  comparisons establishes a gain under the common 4.6875-point simultaneous
+  band; Sloth versus parent is below 50% (40.53–49.90%). The separate 20-HI
+  Normal results are 43.16% versus parent and 42.77% versus corrected
+  initialization, with individual whole-seed intervals below 50%; Top Humans
+  remains near 50%. `public-input-alignment-arena-assessment.py/.json` retains
+  all comparisons, natural draws and 20,000 shared seed resamples. Alignment
+  is not an all-pace replacement. A possible broader alignment revision must
+  cover every pace with training-only replay; keep the substantial outcome
+  run's model and optimizer unchanged, and await the fixed 300M comparison
+  before allocating another outcome branch.
   `HumanBackend` now supports a verified per-pace manifest with one shared
   competitive parent and small frozen residuals. Live scoring and preparation
   supply the same actual pace/gravity/delay context as the arena; preparation
@@ -574,6 +585,31 @@ indefinitely staged.
   competitive features and compare a separately trained stateless control,
   with fresh replay confirmation before persistent full-game and preference
   evaluation. Do not promote it or extend the run on validation fluctuations.
+
+  The second, spatial proposal study is complete. It uses exact colored
+  clear-location targets and frozen competitive own-bottle mean/max features,
+  with a separately optimized stateless control of the same size, initialization
+  and training order. Both arms completed eight epochs and 1,069,520 action
+  presentations each; feature extraction and fitting took 542 seconds on the
+  shared Mac. Payoff geometry/duration are labels only; both move decoders
+  consume predicted plans. The earlier development sessions are not a
+  new holdout: all 512 original sessions, including the 113 validation sessions,
+  were excluded by both session ID and replay-content hash from confirmation.
+  The fresh source covers 256 reserved sessions, 394,902 verified placements
+  and 24,392 constructions/85,199 action examples; 255 sessions have scored
+  windows. Fixed-model confirmation completed without optimizer updates.
+  Spatial prediction beats training-only goal/pill/preview frequency priors,
+  but persistence remains worse than the trained stateless control: action
+  NLL 3.7185 versus 3.6249, paired difference +0.0936 (95% 0.0861–0.1012).
+  Earlier setup placements also worsen by 0.0634 (0.0514–0.0756); selected
+  spatial-anchor hits are 14.90% versus 19.75%. These are recorded-prefix
+  predictions, not autonomous construction completion or strength. Retain
+  the learned spatial predictor and this second negative persistence result;
+  do not install the persistent head. The next bounded mechanism should use
+  current-state action features and revise or abandon spatial proposals as
+  actual pills and board events arrive, rather than freezing root features
+  in the move decoder. Calibrated local quality admission, actual persistent
+  games and blind preferences remain open; this result does not cancel E7.
 
 This task owns the continuation; its hourly follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing

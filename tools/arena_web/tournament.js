@@ -111,14 +111,17 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
-    if(run.schema==='drmc-spatial-expressive-proposer-v1'){
+    if(['drmc-spatial-expressive-proposer-v1','drmc-spatial-expressive-confirmation-v1'].includes(run.schema)){
+      const confirmation=run.schema==='drmc-spatial-expressive-confirmation-v1';
+      const evaluated=run.evaluated_sessions ?? run.paired_session_comparisons?.action_nll?.sessions;
       const target=num(run.training_windows)*num(run.config?.epochs);
       const arms=['persistent','stateless'].map(name=>{
         const arm=run.arms?.[name] || {};
         const label=name==='persistent'?'Persistent plan':'Stateless control';
+        if(confirmation)return `<div class="training-detail"><strong>${label}</strong><span>${esc(arm.status || (run.current_arm===name?'Evaluating':'Queued'))}</span></div><div class="training-detail"><span>${count(arm.evaluated_windows)} constructions</span><span>${count(arm.evaluated_actions)} actions evaluated</span></div>`;
         return `<div class="training-detail"><strong>${label}</strong><span>${esc(arm.status || 'Queued')}</span></div>${target?bar(arm.window_presentations,target):''}<div class="training-detail"><span>${count(arm.action_presentations)} action presentations</span><span>${count(arm.epochs?.length)} / ${count(run.config?.epochs)} epochs</span></div>`;
       }).join('');
-      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${run.phase==='shared_features'?`${bar(run.feature_rows,run.unique_public_inputs)}<p class="budget-note">${count(run.feature_rows)} / ${count(run.unique_public_inputs)} frozen feature inputs</p>`:''}${arms}<p class="budget-note">${esc((run.phase || '').replaceAll('_',' '))} · ${ago(age(run.updated_at))}<br>Separate trained controls on recorded human play. Strength and preference tests remain.</p></div>`);
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${run.phase==='shared_features'?`${bar(run.feature_rows,run.unique_public_inputs)}<p class="budget-note">${count(run.feature_rows)} / ${count(run.unique_public_inputs)} frozen feature inputs</p>`:''}${arms}<p class="budget-note">${esc((run.phase || '').replaceAll('_',' '))} · ${ago(age(run.updated_at))}<br>${confirmation?`${count(run.confirmation_sessions)} reserved sessions${evaluated!=null?` · ${count(evaluated)} with scored constructions`:''} · No training updates.`:'Separate trained controls on recorded human play.'} Strength and preference tests remain.</p></div>`);
       continue;
     }
     if(run.schema==='drmc-expressive-sequences-v1'){
