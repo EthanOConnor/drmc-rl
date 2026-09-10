@@ -149,6 +149,7 @@ def test_independent_anchor_can_reject_an_epoch_and_rollback_all_weights(tmp_pat
     import tools.fit_paired_quality as fitter
 
     config, parent = fit_config(tmp_path)
+    config["checkpoint_directory"] = str(tmp_path / "checkpoints")
     real_evaluate = fitter.evaluate
 
     def drifting_anchor(*args, **kwargs):
@@ -168,6 +169,13 @@ def test_independent_anchor_can_reject_an_epoch_and_rollback_all_weights(tmp_pat
     saved = torch.load(tmp_path / "fit" / "diagnostic.pt", weights_only=False)
     for name, value in original.state_dict().items():
         torch.testing.assert_close(saved["state_dict"][name], value, rtol=0, atol=0)
+    index = json.loads((tmp_path / "checkpoints/index.json").read_text())
+    assert len(index["checkpoints"]) == 1 and index["checkpoints"][0]["epoch"] == 0
+    snapshot = torch.load(
+        tmp_path / "checkpoints" / index["checkpoints"][0]["filename"], weights_only=False
+    )
+    for name, value in original.state_dict().items():
+        torch.testing.assert_close(snapshot["state_dict"][name], value, rtol=0, atol=0)
 
 
 def test_quarantined_execution_labels_are_rejected_before_fitting(tmp_path):
@@ -191,6 +199,7 @@ def test_heldout_drift_is_reported_but_cannot_control_optimizer_acceptance(tmp_p
     import tools.fit_paired_quality as fitter
 
     config, _ = fit_config(tmp_path)
+    config.update(checkpoint_directory=str(tmp_path / "checkpoints"), checkpoint_only=True)
     real_evaluate = fitter.evaluate
 
     def drifting_holdout(*args, **kwargs):
@@ -209,6 +218,12 @@ def test_heldout_drift_is_reported_but_cannot_control_optimizer_acceptance(tmp_p
         max(result["epochs"][0][k]["anchor_kl"] for k in ("train", "anchor"))
         < config["max_policy_kl"]
     )
+    assert not (tmp_path / "fit/diagnostic.pt").exists()
+    index = json.loads((tmp_path / "checkpoints/index.json").read_text())
+    snapshot = torch.load(
+        tmp_path / "checkpoints" / index["checkpoints"][-1]["filename"], weights_only=False
+    )
+    assert snapshot["training_contract"]["epochs"][0]["validation"]["anchor_kl"] == 10.0
 
 
 def test_independent_grown_teachers_share_the_fixed_whole_game_split(tmp_path):

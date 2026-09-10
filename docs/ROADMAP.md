@@ -307,7 +307,7 @@ indefinitely staged.
   0.0150; validation policy KL was 0.00101. These comparisons with the initial
   predictor are preliminary; the independent prevalence baseline, fresh-seed
   confirmation, device latency and full-game strength remain outstanding.
-  The first fresh Frame Perfect and Sloth confirmations both find reach/clear
+  Fresh Frame Perfect, Sloth, Relaxed and Normal confirmations find reach/clear
   prediction worse than the training-only pace/cell prevalence baseline. The
   random-initialization comparison therefore does not establish useful motor
   prediction. Complete the remaining conditions and strength study, and make a
@@ -318,9 +318,16 @@ indefinitely staged.
   board/context gradients, exact collection likelihoods, checkpoint reload and
   complete public replay shards. The full 320×8 core run now targets 10M learner
   decisions and 1B console frames, including at least 500k learner decisions
-  at each pace. Two Mac workers are running the 32,768-game initial/milestone
-  study described in `OPERATIONS.md`; the 25M-frame entries wait for training.
-  Representative training and strength evidence remain pending. Sloth's many
+  at each pace. The 32,768-game initial/25M study completed September 10 at
+  00:46 UTC with no censored games. The 25M core recovered over its initial
+  migration but scored only 45.2%, 44.3%, 42.2%, 41.3% and 42.0% against corrected
+  E1 from Sloth through Top Humans, respectively (1,024 games each). All five
+  remain below 50% in the simultaneous primary-family intervals. Frame Perfect
+  is inconclusive at 48.9% versus the parent (paired 95% 45.4–52.3%). The core
+  beats the parent at 14-HI Sloth and 20-HI Normal, but does not replace E1.
+  `core-initial-25m-assessment.json` retains whole-seed intervals, execution
+  counts and natural draw rates. The separate fixed 100M study is running;
+  substantial later learning and device evidence remain pending. Sloth's many
   natural simultaneous top-outs and loss of reachable actions require explicit
   attention to earlier preparation and curriculum support; merely accumulating
   forced or unplayable frames does not demonstrate strategic learning.
@@ -357,6 +364,12 @@ indefinitely staged.
   training seeds. This is architecture and initialization evidence. Useful
   held-out ranking, substantial independent teacher training, separate measured
   equal-data/equal-GPU allocations and fast-student distillation remain open.
+  A dedicated allocation supervisor now monitors GPU ownership, enforces a
+  cutoff independently of the fitter, and exports only a complete checked
+  checkpoint stored before that cutoff. Local snapshots retain two versions;
+  failures preserve recovery files. Focused process tests cover interruption,
+  contention, stalled-child termination and honest unused-budget reporting.
+  A substantial exclusive-GPU study has not yet run under this controller.
 - [ ] **Adaptive search and anticipation (E6).** Complete the public full-pair
   search experiments: candidate-dependent allocation, simultaneous-action mixed
   strategies, tactical extensions, and shared geometry with late preview

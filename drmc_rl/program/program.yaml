@@ -191,6 +191,24 @@ recipes:
       - Common split_seed values keep held-out whole games fixed across independent model seeds. Equal data and equal exclusive GPU time require separate measured comparisons.
       - Public-context inputs require the causal observation timeline; historical warped buffers cannot initialize it.
       - This fitting diagnostic does not certify WDL calibration, decision improvement or a product promotion.
+  paired-quality-fit-budgeted:
+    status: staged
+    stage: 4
+    purpose: Fit a diagnostic teacher inside a monitored CUDA time allowance, retaining only a complete policy-checked checkpoint stored before cutoff.
+    requires_paths: [tools/budgeted_quality_fit.py, tools/fit_paired_quality.py, '{paired_quality_budget_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.budgeted_quality_fit, --config, '{paired_quality_budget_config}']
+    produces: [Selected diagnostic checkpoint, actual allocation cost and checkpoint age, GPU ownership record, final selected-checkpoint counters]
+    resources:
+      preferred_host: tf3090
+      accelerator: cuda
+    notes:
+      - All paired-quality-fit data, information-boundary and policy-preservation contracts still apply.
+      - A separate watchdog ends the child at its wall-time allowance. Only snapshots stored before the cutoff are eligible, not interrupted optimizer work.
+      - Require a full physical GPU UUID, a free GPU at launch, and monitored child ownership. Other compute processes invalidate the allocation comparison and are never killed.
+      - Use fast local scratch for two atomic checkpoint versions. Export after child exit; failures retain scratch for recovery.
+      - Equal maximum GPU allocation and equal data are separate analyses. Report actual time, unused allowance, overrun and selected-checkpoint age rather than assuming equal consumed compute.
+      - These controls do not establish useful quality targets, independent-teacher strength, calibrated WDL or product promotion.
   public-quality-bank:
     status: active
     stage: 4

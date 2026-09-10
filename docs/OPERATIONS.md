@@ -516,7 +516,20 @@ milestone, preserve move traces and use the exact batched event runner.
 The four-frame compute charge is an evaluation assumption to be verified on
 deployment hardware; this tournament does not certify latency by itself.
 
-Mac worker 0 has completed its 18,432-game allocation. The separate
+Both original Mac workers are complete: 18,432 plus 14,336 games, with the last
+game at 00:46 UTC September 10. Do not restart either allocation. The audit
+`review-20260909/core-initial-25m-assessment.py` checks complete, unique seed/side
+pairs, exact schedule/journal counts and score agreement. Its JSON report
+resamples whole reset-seed pairs 20,000 times and preserves cross-pace seed
+covariance. Pointwise intervals accompany all 36 cells; simultaneous intervals
+cover the 14 primary 14-HI comparisons of the 25M core against parent and E1.
+The 25M core is inferior to E1 at Sloth through Top Humans even under those
+family intervals. Super Human/Frame Perfect use the same frozen E1/parent
+behavior; their repeated reference rows are not additional independent evidence.
+Sloth's 25M-versus-E1 cell contains 786 natural draws in 1,024 games. Retain
+the draw rates and execution details when interpreting the score.
+
+The separate
 `controller-core-100m-mac.json` study reuses its MPS capacity for 16,384 games:
 the immutable 100M checkpoint against the parent and corrected E1 adapter,
 1,024 games per 14-HI pace and 512 per 20-HI Normal/Top Humans condition. It
@@ -651,10 +664,9 @@ For the review's offline diagnostics, launch through these recipes:
   values for teacher members; omitting `split_seed` retains the old `seed`
   behavior. Use the same labels, public mode, anchors and held-out whole games
   when comparing widths. Equal exposure and equal GPU allocation are separate
-  studies. The fitter currently records epochs, examples, attempted updates and
-  elapsed wall time; it does not enforce an exclusive GPU allocation deadline.
-  Allocate and measure that budget explicitly before describing a fit as an
-  equal-GPU-time comparison. The real-checkpoint initialization audit is under
+  studies. Ordinary fitting records epochs, examples, attempted updates and
+  elapsed wall time; use the allocation supervisor below for a time-bounded
+  comparison. The real-checkpoint initialization audit is under
   `review-20260909/model-growth-audit`; CPU output parity and 41 focused growth,
   streamed-fit, G5 and program checks passed. CUDA evidence is in its
   `assessment-cuda.json` and the remote `model-growth-audit-cuda` directory, run
@@ -669,6 +681,36 @@ For the review's offline diagnostics, launch through these recipes:
   Architecture changes require a new migration from the frozen core. The
   output is a diagnostic checkpoint, never automatically installed or declared
   calibrated.
+- `paired-quality-fit-budgeted --allow-staged`: set `paired_quality_budget_config`
+  to a JSON object containing a complete nested `fit_config`, a fresh `output`,
+  `allocation_seconds`, the full physical NVIDIA `gpu_uuid`, and a fast local
+  `scratch_root` (`/dev/shm` on tf3090 when sufficient space is available).
+  `checkpoint_interval_seconds` defaults to 30. The supervisor sets the child's
+  device to the selected GPU via `CUDA_VISIBLE_DEVICES`, redirects its log, and
+  checks that no other compute process uses that GPU before launch or during
+  roughly one-second ownership polls. Schedule this separately from main
+  training and terminal labeling; their current GPU contexts correctly prevent
+  a launch. Other processes are never terminated by this tool.
+
+  An independent watchdog terminates the child at the allowance, escalating
+  only that child to a kill if it does not exit within two seconds. Initial and
+  accepted-epoch snapshots are atomic, use immutable names and retain two local
+  versions. Interrupted writes and checkpoints stored after the cutoff are
+  ineligible. The final export copies the last eligible snapshot to
+  `diagnostic.pt` after the child exits and records its SHA256. `progress.json`
+  is the supervisor's authority; the stopped child's live progress cannot imply
+  continued training. Failed runs retain their named scratch directory for
+  recovery, including a checked model if GPU monitoring failed.
+
+  Report the allowance, actual elapsed allocation, unused time, cutoff overrun,
+  selected checkpoint's age and its accepted examples/steps. A natural early
+  stop does not consume the full allowance, and last-reported child counters
+  can include work absent from the selected model. Rescore that exact selected
+  checkpoint in the common held-out assessment; do not attach predictions from
+  a later interrupted child update. Fixed epochs/equal exposure and equal
+  maximum allocation are separate arms with common splits/anchors. These
+  controls have focused process and fitter tests; a substantive exclusive-GPU
+  fit and resource comparison remain to be run. They do not promote a teacher.
 - `search-frontier-benchmark`: set `search_frontier_config` with `state_bank`,
   `checkpoint`, `states`, `device`, `output`, depth/beams and batching limit.
   This uses an explicitly uncalibrated leaf link to compare exact searches,

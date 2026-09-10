@@ -197,6 +197,22 @@ Successive supervised phases retain the learned heads and effective inference
 weights. A mode/schema change is rejected; new architecture ablations migrate
 from the same frozen core instead of silently discarding learned tensors.
 
+Compute comparisons distinguish an equal maximum GPU allocation from equal
+data exposure. `budgeted_quality_fit` gives one child process a fixed wall-time
+allowance on a named physical GPU. Startup, reference inference, updates,
+validation and local snapshots consume that allowance. An independent watchdog
+terminates the child at cutoff; only a complete checkpoint stored earlier can
+be exported. Snapshots follow successful training/anchor policy checks and
+finite descriptive validation. Holdout scores never select a snapshot or
+change the next learning rate. Partial epochs and unfinished writes cannot
+replace the last checked model. Actual allocation, unused time, cutoff overrun,
+checkpoint age and selected-model counters are retained; export to overflow
+storage happens after the GPU child exits. A process query checks ownership
+before launch and approximately every second. Detected contention invalidates
+the comparison; these sampled checks cannot exclude a transient external job
+that starts and ends between queries. Independent teacher studies must also
+schedule the GPU for exclusive use.
+
 Decision-trained critics are evaluated only at actionable boundaries. Search
 finishes forced deterministic and reserve-reveal events after the nominal
 depth expires, then evaluates an acting side and reverses calibrated W/L if

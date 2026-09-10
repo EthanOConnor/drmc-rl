@@ -15,6 +15,7 @@ import torch
 from drmc_rl.arena.experiment import dump
 from drmc_rl.teachers.counterfactual_release import sha256_file
 from drmc_rl.teachers.v3_baseline import load_source_rows
+from drmc_rl.training.quality_checkpoints import QualityCheckpoints
 from drmc_rl.training.quality_supervision import (
     assert_disjoint_sources,
     forward,
@@ -169,6 +170,8 @@ def fit(config):
         raise ValueError(
             "quality fitting requires a separate anchor_bank of independent public games"
         )
+    if config.get("checkpoint_only") and not config.get("checkpoint_directory"):
+        raise ValueError("checkpoint_only requires a checkpoint_directory")
     kl_limit = float(config.get("max_policy_kl", 0.02))
     epochs = int(config.get("epochs", 10))
     batch_size = int(config.get("batch_size", 16))
@@ -324,6 +327,29 @@ def fit(config):
             predictions=output / "initial-validation-predictions.jsonl",
         )
         progress["initial_validation"] = initial
+        if not _finite(initial):
+            raise FloatingPointError("non-finite initial quality metrics")
+        checkpoints = (
+            QualityCheckpoints(
+                config["checkpoint_directory"],
+                interval_seconds=config.get("checkpoint_interval_seconds", 30.0),
+            )
+            if config.get("checkpoint_directory")
+            else None
+        )
+
+        def checkpoint_payload():
+            return dict(
+                cfg=cfg,
+                state_dict=cpu_snapshot(net.state_dict()),
+                training_contract=dict(progress, status="Checkpoint", phase="validated"),
+                observation_schema=schema,
+                calibrated=False,
+                diagnostic_only=True,
+            )
+
+        if checkpoints:
+            checkpoints.save(checkpoint_payload, progress, force=True)
         optimizer = torch.optim.AdamW(
             net.parameters(), lr=float(config.get("lr", 1e-5)), weight_decay=0.0
         )
@@ -456,6 +482,8 @@ def fit(config):
             progress["accepted_examples"] += len(train)
             progress["accepted_optimizer_steps"] += (len(train) + batch_size - 1) // batch_size
             progress["epochs"].append(record)
+            if checkpoints:
+                checkpoints.save(checkpoint_payload, progress)
             report(force=True)
             print(json.dumps({k: v for k, v in record.items() if k != "layers"}), flush=True)
         report(force=True, phase="final_evaluation", current_split="validation", evaluated_rows=0)
@@ -469,20 +497,23 @@ def fit(config):
             predictions=output / "validation-predictions.jsonl",
         )
         progress["final_validation"] = final
+        if checkpoints:
+            checkpoints.save(checkpoint_payload, progress, force=True)
         report(force=True, phase="saving")
         contract = dict(progress, status="Complete", phase="complete")
-        torch.save(
-            dict(
-                cfg=cfg,
-                state_dict=cpu_snapshot(net.state_dict()),
-                training_contract=contract,
-                observation_schema=schema,
-                calibrated=False,
-                diagnostic_only=True,
-            ),
-            output / "diagnostic.pt.tmp",
-        )
-        (output / "diagnostic.pt.tmp").replace(output / "diagnostic.pt")
+        if not config.get("checkpoint_only"):
+            torch.save(
+                dict(
+                    cfg=cfg,
+                    state_dict=cpu_snapshot(net.state_dict()),
+                    training_contract=contract,
+                    observation_schema=schema,
+                    calibrated=False,
+                    diagnostic_only=True,
+                ),
+                output / "diagnostic.pt.tmp",
+            )
+            (output / "diagnostic.pt.tmp").replace(output / "diagnostic.pt")
         report(force=True, status="Complete", phase="complete")
     except BaseException as error:
         report(force=True, status="Failed", error=str(error))
