@@ -23,7 +23,7 @@ from drmc_rl.models.policy.controller_core import ControllerCorePolicy, write_pu
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from drmc_rl.training.motor_supervision import (
     assign_game_weights, cache_reference, evaluate_motor, load_bank, make_motor_batch,
-    upgrade_motor_model,
+    upgrade_motor_model, initialize_motor_priors,
 )
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
 from tools.build_motor_opportunity_bank import annotate_row, selected_rows
@@ -47,6 +47,16 @@ def validate_seeds(seeds, training_config, bank_config, bank_records):
             or not required.issubset(bank_config['holdout_seeds'])
             or required.intersection(row['game_seed'] for row in bank_records)):
         raise ValueError('confirmation seeds must be excluded from outcome training, auxiliary fitting and anchors')
+
+
+def validate_confirmation_exclusions(seeds, paths):
+    identities = {}
+    for path in paths:
+        previous = json.loads(Path(path).read_text())
+        if set(seeds).intersection(previous['seeds']):
+            raise ValueError('new confirmation reuses a previously inspected confirmation seed')
+        identities[str(path)] = digest(path)
+    return identities
 
 
 def opportunity_priors(rows):
@@ -166,12 +176,16 @@ def run(config):
     source_config = json.loads(Path(config['training_config']).read_text())
     validate_seeds(config['seeds'], source_config, bank_config,
                    [row['record'] for row in train + validation])
+    excluded_confirmations = validate_confirmation_exclusions(
+        config['seeds'], config.get('exclude_confirmation_configs', []))
     parent_hash = digest(config['checkpoint'])
     fitted_payload = load_checkpoint(fit / 'core-final.pt', map_location=device)
     if fitted_payload['parent_sha256'] != parent_hash:
         raise ValueError('confirmation baseline differs from the auxiliary fit parent')
     identities = dict(parent_sha256=parent_hash, fitted_sha256=digest(fit / 'core-final.pt'),
                       fit_seed=fit_config['seed'])
+    if excluded_confirmations:
+        identities['excluded_confirmations'] = excluded_confirmations
     output = Path(config['output'])
     output.mkdir(parents=True, exist_ok=True)
     for name, expected in (('config.json', config), ('identities.json', identities)):
@@ -193,6 +207,8 @@ def run(config):
         # This reconstructs the fixed initial auxiliary heads, not a new fit.
         torch.manual_seed(fit_config['seed'])
         initial, _ = upgrade_motor_model(parent, device=device)
+        if fit_config.get('head_initialization', 'legacy_random') == 'training_cell_prior':
+            initialize_motor_priors(initial, train)
         fitted, _ = upgrade_motor_model(fitted_payload, device=device)
         batch_size = int(config.get('batch_size', 16))
         cache_reference(initial, validation, batch_size=batch_size, device=device)

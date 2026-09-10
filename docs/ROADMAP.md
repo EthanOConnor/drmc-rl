@@ -307,12 +307,17 @@ indefinitely staged.
   0.0150; validation policy KL was 0.00101. These comparisons with the initial
   predictor are preliminary; the independent prevalence baseline, fresh-seed
   confirmation, device latency and full-game strength remain outstanding.
-  Fresh Frame Perfect, Sloth, Relaxed, Normal, Fast and Top Humans confirmations find reach/clear
+  Fresh confirmation completed all nine conditions, 1,152 natural games and
+  1,728 exact roots at September 10 11:38:29 UTC. Every condition finds reach/clear
   prediction worse than the training-only pace/cell prevalence baseline. The
   random-initialization comparison therefore does not establish useful motor
-  prediction. Complete the remaining conditions and strength study, and make a
-  bounded revision of initialization and auxiliary fitting using training data
-  before another independent confirmation; do not promote this first fit.
+  prediction. Complete the separate strength study and make a bounded revision
+  of initialization and auxiliary fitting using training data before another
+  independent confirmation; do not promote this first fit. The fitter now
+  supports training-only cell-prior initialization, fixed head-only epochs on
+  cached public features, and separate head/core learning rates. Core-state
+  identity must survive warmup; cached features are discarded before shared
+  updates. Useful fresh prediction and controller strength still require evidence.
   No new core has been installed. Full-network controller outcome
   learning is implemented under `trainer-controller-core`; focused tests verify
   board/context gradients, exact collection likelihoods, checkpoint reload and

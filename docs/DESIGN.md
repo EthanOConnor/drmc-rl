@@ -364,6 +364,18 @@ Same-color canonicalization belongs to the frozen actor's frontier construction;
 applying it after a context actor's choice can change the witness, timing and
 carried horizontal state despite an equivalent visible placement.
 
+Motor effect/access heads can first learn on the frozen competitive candidate
+representation. New output layers start from cell/parity prevalence and cost
+means fitted only on training games, avoiding a random 50% prior for sparse
+opportunities. A fixed head-only phase uses lossless cached public features;
+future labels remain separate targets. The core's parameters and buffers must
+remain identical throughout that phase. Joint training then discards the cache,
+recomputes actual public features and uses separate core/head learning rates
+under the existing training/anchor policy-KL limit. Neither development nor
+confirmation metrics select optimizer updates. The auxiliary heads remain
+absent from ordinary inference, and their learning cannot supply a motif reward
+or certify playing strength.
+
 Larger quality teachers can expand the dense bottle encoder with
 `grow_bottle_encoder`. In this comparison, 320×8, 384×12 and 512×12 explicitly
 mean bottle channels × residual blocks; token attention and the candidate

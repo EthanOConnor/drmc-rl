@@ -3,6 +3,7 @@ import json
 import os
 
 import numpy as np
+import pytest
 import torch
 
 from drmc_rl.envs.backends.vs_frames import FrameVsPool
@@ -14,6 +15,7 @@ from drmc_rl.models.policy.controller_core import ControllerCorePolicy, write_pu
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from drmc_rl.training.motor_supervision import (
     cache_reference, forward_motor, load_bank, make_motor_batch, motor_loss, upgrade_motor_model,
+    initialize_motor_priors, cache_motor_features, cached_motor_batch, forward_cached_motor,
 )
 from tools.build_motor_opportunity_bank import annotate_row, split_for_seed
 from tools.audit_motor_auxiliary import run as confirm_motor
@@ -108,8 +110,11 @@ def test_auxiliary_fit_updates_shared_core_and_preserves_deployment_contract(tmp
     fit_output = tmp_path / "fit"
     result = run(dict(bank=str(bank), anchor_replay_directory=str(replays), checkpoint=str(core),
                       output=str(fit_output), seed=18, epochs=1, batch_size=1, lr=1e-5,
+                      head_initialization="training_cell_prior", head_epochs=2, head_lr=1e-3,
+                      joint_head_lr=1e-4,
                       anchor_rows=1, minimum_anchor_games=1, max_policy_kl=.1))
     assert result["status"] == "Complete" and result["anchor_games"] == 1
+    assert result["head_accepted_examples"] == 2 and result["head_core_unchanged"]
     fitted = PlainPolicy(fit_output / "core-final.pt", public_only=True)
     assert not torch.equal(saved["state_dict"]["bottle.stem.weight"], fitted.net.bottle.stem.weight)
     # Auxiliary heads carry no inference cost when the normal live policy runs.
@@ -137,3 +142,61 @@ def test_auxiliary_fit_updates_shared_core_and_preserves_deployment_contract(tmp
     assert condition['seed_metrics'][0]['seed'] == 61183
     assert condition['metrics']['reach_brier']['change_ci95'] is None
     assert condition['metrics']['reach_brier']['training_prior'] >= 0
+
+
+def test_cached_motor_features_preserve_predictions_and_exclude_future_labels(tmp_path):
+    """Use an actual G5 forward; cached head updates cannot touch the core."""
+    torch.set_num_threads(1)
+    torch.manual_seed(83)
+    cfg = {"smdp_ppo": dict(candidate_architecture="g5", candidate_board_channels=16,
+        candidate_d_model=16, encoder_blocks=1, pill_embed_dim=8, candidate_hidden_dim=24,
+        candidate_cross_layers=1, candidate_interaction_layers=1, candidate_transformer_heads=2,
+        candidate_patch_kernel=3, aux_spec="zero_v1_vs")}
+    original, _, _ = _build_net_from_cfg(cfg, 20, "cpu")
+    parent_path = tmp_path / "parent.pt"
+    torch.save(dict(cfg=cfg, state_dict=original.state_dict()), parent_path)
+    actor = ControllerCorePolicy(parent_path)
+    net, _ = upgrade_motor_model(dict(cfg=actor.cfg, state_dict=actor.net.state_dict()), device="cpu")
+    rows = []
+    for n in (2, 3):
+        reachable = np.full((n, 2, 128), 65535, np.uint16)
+        reachable[..., -8:] = 31
+        rows.append(dict(record=dict(split="train"), weight=1., actions=np.arange(n),
+            root_costs=np.full(n, 20, np.float32), observation=np.zeros((16, 16, 8), np.float32),
+            pill=np.array([0, 1]), preview=np.array([1, 2]), public_context=np.zeros(net.aux_dim, np.float32),
+            controller_geometry=np.zeros(13, np.int16), after_fields=np.full((n, 128), 255, np.uint8),
+            root_terminal=np.zeros(n, np.uint8), root_viruses_cleared=np.zeros(n),
+            root_nonviruses_cleared=np.zeros(n), root_clear_events=np.zeros(n),
+            reachable_cells=reachable, clearable_cells=np.full_like(reachable, 65535)))
+    with pytest.raises(ValueError, match="training roots only"):
+        initialize_motor_priors(net, [{**rows[0], "record": {"split": "validation"}}])
+    initialize_motor_priors(net, rows)
+    torch.testing.assert_close(net.motor_auxiliary.opportunity.bias[:256].sigmoid().reshape(2, 128)[:, -8:],
+                               torch.full((2, 8), .9999))
+    cache_motor_features(net, rows, batch_size=2, device="cpu")
+    cached = cached_motor_batch(rows, device="cpu")
+    ordinary = forward_motor(net, make_motor_batch(rows, device="cpu"))
+    from_cache = forward_cached_motor(net.motor_auxiliary, cached)
+    for name in ("effect_predictions", "motor_reach_logits", "motor_clear_logits", "motor_log_cost"):
+        for i, row in enumerate(rows):
+            torch.testing.assert_close(ordinary[2][name][i, :len(row["actions"])],
+                                       from_cache[2][name][i, :len(row["actions"])] , atol=1e-6, rtol=1e-6)
+    before = {name: tensor.clone() for name, tensor in net.state_dict().items()}
+    # Flipping future supervision cannot change cached public candidate features.
+    features = [r["frozen_motor_features"].copy() for r in rows]
+    rows[0]["clearable_cells"][:] = 1
+    cache_motor_features(net, rows, batch_size=2, device="cpu")
+    for expected, row in zip(features, rows, strict=True):
+        np.testing.assert_array_equal(expected, row["frozen_motor_features"])
+    optimizer = torch.optim.AdamW(net.motor_auxiliary.parameters(), lr=.001)
+    for _ in range(3):
+        optimizer.zero_grad(set_to_none=True)
+        batch = cached_motor_batch(rows, device="cpu")
+        loss, _ = motor_loss(forward_cached_motor(net.motor_auxiliary, batch), batch)
+        loss.backward()
+        optimizer.step()
+    for name, value in net.state_dict().items():
+        if not name.startswith("motor_auxiliary."):
+            assert torch.equal(before[name], value)
+            assert dict(net.named_parameters()).get(name, torch.empty(0)).grad is None
+    assert not torch.equal(before["motor_auxiliary.opportunity.weight"], net.motor_auxiliary.opportunity.weight)

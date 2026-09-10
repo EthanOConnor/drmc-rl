@@ -225,6 +225,7 @@ recipes:
       accelerator: cuda
     notes:
       - Auxiliary labels do not change match rewards or supply candidate WDL values. Heads are skipped by ordinary inference.
+      - Optional training-only cell-prior initialization and fixed frozen-core head epochs precede shared fitting. Cached representations contain actual public inputs only and are discarded before any shared-core update; head and core learning rates are explicit.
       - Actual own controller geometry conditions the predictor; broad policy anchors exclude validation seeds and labeled decisions.
       - Only training and anchor policy KL govern optimizer rollback; holdout measurements are never optimized against.
       - A fitted core still requires fresh prediction confirmation and substantial controller strength/latency evaluation.

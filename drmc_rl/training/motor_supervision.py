@@ -201,3 +201,114 @@ def evaluate_motor(net, rows, *, batch_size, device, targets=True):
             for key, value in metrics.items():
                 totals[key] += float(value) * len(part) / len(rows)
     return dict(totals)
+
+
+def initialize_motor_priors(net, rows, *, probability_floor=1e-4):
+    """Start new heads at training-only cell prevalence, never random 50% maps.
+
+    This is a global cell/parity baseline. Pace and candidate deviations must
+    still be learned from the actual public candidate and controller inputs.
+    Zero output weights preserve the competitive core and its policy exactly.
+    """
+    if not rows or any(r["record"]["split"] != "train" for r in rows):
+        raise ValueError("motor initialization accepts training roots only")
+    if not 0 < probability_floor < .5:
+        raise ValueError("motor probability floor must lie inside (0, .5)")
+    sums = {name: torch.zeros(2, 128) for name in ("reach", "clear", "cost", "cost_mass")}
+    effect_sum = torch.zeros(len(EFFECT_TOKEN_NAMES))
+    mass = effect_mass = 0.
+    for row in rows:
+        batch = make_motor_batch([row], device="cpu")
+        weight = float(row["weight"])
+        mask, future = batch["mask"][0], batch["future_mask"][0]
+        effect_sum += weight * batch["effect_target"][0, mask].mean(0)
+        effect_mass += weight
+        if not future.any():
+            continue
+        mass += weight
+        for name in ("reach", "clear"):
+            sums[name] += weight * batch[name + "_target"][0, future].float().mean(0)
+        reachable = batch["reach_target"][0, future].float()
+        sums["cost"] += weight * (batch["cost_target"][0, future] * reachable).mean(0)
+        sums["cost_mass"] += weight * reachable.mean(0)
+    if mass <= 0:
+        raise ValueError("motor initialization needs nonterminal training candidates")
+    prior = torch.stack([torch.logit((sums[name] / mass).clamp(probability_floor, 1-probability_floor))
+                         for name in ("reach", "clear")] +
+                        [sums["cost"] / sums["cost_mass"].clamp_min(1e-12)])
+    head = net.motor_auxiliary
+    with torch.no_grad():
+        head.opportunity.weight.zero_()
+        head.opportunity.bias.copy_(prior.flatten())
+        head.effects.weight.zero_()
+        head.effects.bias.copy_(effect_sum / effect_mass)
+    return dict(schema="drmc-motor-training-cell-initialization-v1", roots=len(rows),
+                probability_floor=probability_floor, weighting="equal game, then root and candidate",
+                opportunity_bias=prior.flatten().tolist(), effect_bias=(effect_sum / effect_mass).tolist())
+
+
+def cache_motor_features(net, rows, *, batch_size, device, activity=None):
+    """Cache lossless features only while the entire competitive core is frozen.
+
+    Targets live in a separate cache entry. The feature forward receives actual
+    public inputs and no afterstate, clear map, future reach target or outcome.
+    """
+    with torch.inference_mode():
+        for start in range(0, len(rows), batch_size):
+            part = rows[start:start + batch_size]
+            batch = make_motor_batch(part, device=device, targets=False)
+            inputs = batch["inputs"]
+            logits, _, extra = net(*inputs[:6], aux=inputs[6], return_aux=True)
+            features = extra["candidate_context"].float().cpu().numpy()
+            logp = logits.float().log_softmax(-1).cpu().numpy()
+            targets = make_motor_batch(part, device="cpu")
+            for i, row in enumerate(part):
+                n = len(row["actions"])
+                row["reference_logp"] = logp[i, :n].copy()
+                row["frozen_motor_features"] = features[i, :n].copy()
+                row["frozen_motor_geometry"] = targets["geometry"][i].numpy().copy()
+                row["cached_motor_targets"] = {
+                    key: targets[key][i, :n].numpy().copy()
+                    for key in ("effect_target", "future_mask", "reach_target", "clear_target", "cost_target")}
+                row["known_effects"] = targets["known_effects"].numpy().copy()
+            if activity is not None:
+                activity(min(start + batch_size, len(rows)))
+
+
+def cached_motor_batch(rows, *, device):
+    """Pack complete frozen candidate frontiers for head-only optimization."""
+    width = max(len(row["actions"]) for row in rows)
+    count = len(rows)
+    mask = np.zeros((count, width), bool)
+    features = np.zeros((count, width, rows[0]["frozen_motor_features"].shape[-1]), np.float32)
+    reference = np.full((count, width), -1e9, np.float32)
+    targets = {key: np.zeros((count, width, *value.shape[1:]), value.dtype)
+               for key, value in rows[0]["cached_motor_targets"].items()}
+    for i, row in enumerate(rows):
+        n = len(row["actions"])
+        mask[i, :n] = True
+        features[i, :n] = row["frozen_motor_features"]
+        reference[i, :n] = row["reference_logp"]
+        for key in targets:
+            targets[key][i, :n] = row["cached_motor_targets"][key]
+    arrays = dict(features=features, geometry=np.stack([r["frozen_motor_geometry"] for r in rows]),
+                  reference_logp=reference, mask=mask,
+                  weights=np.asarray([r["weight"] for r in rows], np.float32),
+                  known_effects=rows[0]["known_effects"], **targets)
+    return {key: torch.as_tensor(value, device=device) for key, value in arrays.items()}
+
+
+def forward_cached_motor(head, batch):
+    return batch["reference_logp"], None, head(batch["features"], batch["geometry"])
+
+
+def evaluate_cached_motor(head, rows, *, batch_size, device):
+    totals = Counter()
+    with torch.inference_mode():
+        for start in range(0, len(rows), batch_size):
+            part = rows[start:start + batch_size]
+            batch = cached_motor_batch(part, device=device)
+            _, metrics = motor_loss(forward_cached_motor(head, batch), batch, anchor_weight=0.)
+            for key, value in metrics.items():
+                totals[key] += float(value) * len(part) / len(rows)
+    return dict(totals)

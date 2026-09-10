@@ -1,7 +1,10 @@
+import json
 import numpy as np
 import pytest
 
-from tools.audit_motor_auxiliary import summarize_seed_metrics, validate_seeds
+from tools.audit_motor_auxiliary import (
+    summarize_seed_metrics, validate_seeds, validate_confirmation_exclusions,
+)
 
 
 def test_confirmation_rejects_any_training_or_anchor_seed_overlap():
@@ -28,3 +31,12 @@ def test_confirmation_intervals_are_paired_by_reset_seed():
     np.testing.assert_allclose(metric['change_from_prior_ci95'], [-.1, -.1])
     with pytest.raises(ValueError, match='aggregate'):
         summarize_seed_metrics(records + records, bootstrap_seed=71)
+
+
+def test_new_confirmation_excludes_previously_inspected_seeds(tmp_path):
+    path = tmp_path / 'earlier.json'
+    path.write_text(json.dumps(dict(seeds=[11, 12])))
+    identities = validate_confirmation_exclusions([13, 14], [path])
+    assert len(identities[str(path)]) == 64
+    with pytest.raises(ValueError, match='previously inspected'):
+        validate_confirmation_exclusions([12, 13], [path])

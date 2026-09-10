@@ -111,6 +111,12 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-motor-auxiliary-study-v1'){
+      const heads=num(run.target_head_epochs)>0;
+      const presentations=num(run.head_accepted_examples)+num(run.accepted_examples);
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${heads?`<div class="training-detail"><span>Prediction heads</span><span>${count(run.head_epoch)} / ${count(run.target_head_epochs)} epochs</span></div>${bar(run.head_epoch,run.target_head_epochs)}`:''}<div class="training-detail"><span>Shared core</span><span>${count(run.epoch)} / ${count(run.target_epochs)} epochs</span></div>${bar(run.epoch,run.target_epochs)}<div class="training-detail"><span>${count(presentations)} root presentations</span><span>${count(run.anchor_games)} policy-anchor games</span></div><p class="budget-note">${esc((run.phase || '').replaceAll('_',' '))} · ${ago(age(run.updated_at))}<br>${count(run.train_roots)} training roots · ${count(run.validation_roots)} validation roots. No outcome-training frames.</p></div>`);
+      continue;
+    }
     if(['drmc-spatial-expressive-proposer-v1','drmc-spatial-expressive-confirmation-v1'].includes(run.schema)){
       const confirmation=run.schema==='drmc-spatial-expressive-confirmation-v1';
       const evaluated=run.evaluated_sessions ?? run.paired_session_comparisons?.action_nll?.sessions;

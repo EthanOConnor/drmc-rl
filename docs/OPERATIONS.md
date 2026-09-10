@@ -446,6 +446,21 @@ updates the shared representation. Exact own controller geometry conditions
 these auxiliary predictions; it is not silently added to the existing actor
 tensor contract. Ordinary policy inference skips the heads entirely. This
 phase never turns clear opportunities into match rewards or candidate WDL.
+For new heads, `head_initialization: training_cell_prior` starts the output
+biases from equal-game-weighted training cell/parity frequencies and conditional
+cost means, with zero output weights. This never reads validation or confirmation
+labels, and refuses to reset already learned heads. Optional fixed `head_epochs`
+fit only the auxiliary network at `head_lr` (default 0.0003), on `head_device`
+(default CPU). The shared core's complete public candidate features are cached
+in FP32; targets are stored separately and never enter feature extraction.
+The cache is discarded before shared-core fitting, and an exact core-state hash
+must remain unchanged through warmup. `joint_head_lr` controls the new heads'
+learning rate separately from the pretrained core's `lr`. `head-fit.json`
+records fixed-epoch development measurements; `post-head-warmup.json` checks
+the actual core forward before joint updates. Counters distinguish head-only
+and shared-core presentations. Final `condition-metrics.json` compares each
+level/pace with training-only pace/cell prevalence; holdout scores never alter
+the schedule or select a checkpoint.
 The existing exact effect tokens are targets, with unobserved attack and
 uncertainty fields masked out. Future targets keep parity conditions separate
 and exclude absorbing root terminals from access losses. Roots and candidates
@@ -504,6 +519,18 @@ condition, 8,192 total. Its complete journals, move traces and closed viewer
 database feed the common tournament. Both jobs use registered recipes and
 have their own `supervisor.pid` and `supervisor.log`; inspect these before any
 recovery. The older mombox and Mac evaluators continue their existing schedules.
+
+`motor-confirmation-v1` completed at September 10 11:38:29 UTC: all nine
+conditions, 1,152 natural games and 1,728 exact roots, with 46–54 independent
+scored reset seeds per condition. Both reach and clear Brier errors were worse
+than training-only pace/cell prevalence in every condition's paired interval.
+For 14-HI Sloth, reach was 0.08285 versus 0.01555 and clear 0.06070 versus
+0.00135; Frame Perfect was 0.14402 versus 0.12034 and 0.07274 versus 0.02047.
+The last 20-HI Top Humans condition also lost: reach 0.12263 versus 0.11500,
+clear 0.06316 versus 0.01384. This rejects the first fit as useful prediction
+evidence despite its improvement over random initialization. Preserve its
+fixed final report and the separate ongoing strength arena. Its confirmation
+seeds remain excluded from subsequent fitting and new confirmation selection.
 
 The Mac's `controller-core-eval-mac-0.json` and `controller-core-eval-mac-1.json`
 under `runs/review-20260909/` launch through `trainer-planning-arena` from the
