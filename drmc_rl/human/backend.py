@@ -209,6 +209,7 @@ class HumanBackend:
         max_frames: int = 2048,
         realtime_profile: str = "auto",
         competitive_checkpoint: str | None = None,
+        pace_manifest: str | None = None,
     ):
         started = time.perf_counter()
         schema = load_checkpoint(Path(checkpoint), map_location="cpu").get("schema")
@@ -239,6 +240,14 @@ class HumanBackend:
                 "observation_encoding": "legacy-vs-horizontal-bond-mask-v1",
                 "control": "quality_argmax; no absolute human rating claim",
             }
+        if pace_manifest is not None:
+            from drmc_rl.human.pace_portfolio import PacePortfolio
+            if self.competitive is None:
+                raise ValueError("a pace portfolio requires its competitive parent")
+            self.competitive = PacePortfolio(
+                self.competitive, pace_manifest, self.competitive_identity["sha256"],
+            )
+            self.competitive_identity["pace_opponents"] = self.competitive.identity
         self.seed = int(seed)
         if realtime_profile == "auto":
             realtime_profile = "balanced" if str(device).startswith("cuda") else "fast"
@@ -319,8 +328,13 @@ class HumanBackend:
                     observation, info = policy_request(public, 0, legal, [32] * len(legal),
                                                        context_schema=PUBLIC_CONTEXT_SCHEMA)
                 info["vs/observation_timeline"] = "causal-settled-pair-v1"
-                for batch in (1, 18):
-                    self.competitive.score(np.repeat(observation[None], batch, axis=0), [info] * batch)
+                from drmc_rl.execution.pace import BY_ID, strategy_context
+                for pace_id in getattr(self.competitive, "warmup_paces", ("frame_perfect",)):
+                    pace = BY_ID[pace_id]
+                    paced_info = {**info, "pace/id": pace_id,
+                                  "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
+                    for batch in (1, 18):
+                        self.competitive.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
 
     def capabilities(self) -> dict[str, Any]:
         from drmc_rl.human.controller_context import uses_public_context

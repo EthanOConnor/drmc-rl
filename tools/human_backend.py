@@ -68,6 +68,19 @@ def resolve_competitive_checkpoint(path: str | None, checkpoint: Path) -> Path |
     return None
 
 
+def resolve_pace_manifest(path: str | None, competitive: Path | None) -> Path | None:
+    if competitive is None:
+        if path:
+            raise ValueError("a pace portfolio requires a competitive checkpoint")
+        return None
+    candidate = Path(path).expanduser() if path else competitive.parent / "pace_opponents.json"
+    if candidate.is_file():
+        return candidate.resolve()
+    if path:
+        raise FileNotFoundError(candidate)
+    return None
+
+
 def serve(backend: HumanBackend) -> None:
     try:
         for line in sys.stdin:
@@ -140,6 +153,7 @@ def main() -> None:
     parser.add_argument("--threads", type=int, default=1, help="inference CPU threads; default 1 keeps gameplay responsive")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--competitive-checkpoint", help="optional public V5 ceiling for quality mode")
+    parser.add_argument("--pace-manifest", help="per-pace residual manifest; defaults to the competitive model's companion pace_opponents.json")
     parser.add_argument("--bench-strength", choices=("regret", "quality"), default="regret")
     parser.add_argument(
         "--realtime-profile",
@@ -153,12 +167,14 @@ def main() -> None:
     import torch
     torch.set_num_threads(args.threads)
     checkpoint = resolve_checkpoint(args.checkpoint)
+    competitive = resolve_competitive_checkpoint(args.competitive_checkpoint, checkpoint)
     backend = HumanBackend(
         checkpoint,
         device=resolve_device(args.device),
         seed=args.seed,
         realtime_profile=args.realtime_profile,
-        competitive_checkpoint=resolve_competitive_checkpoint(args.competitive_checkpoint, checkpoint),
+        competitive_checkpoint=competitive,
+        pace_manifest=resolve_pace_manifest(args.pace_manifest, competitive),
     )
     if args.bench:
         benchmark(backend, args.bench, strength_control=args.bench_strength)

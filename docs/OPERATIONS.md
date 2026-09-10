@@ -1101,6 +1101,26 @@ and only when the reaction floor does not already cover computation.
 Source and package release verification
 remain distinct; these execution experiments do not certify human calibration.
 
+The source sidecar accepts `--pace-manifest PATH`, or discovers
+`pace_opponents.json` beside its competitive checkpoint. Its
+`professor-pills-pace-opponents-v1` manifest names the parent SHA-256,
+`own-motor-gravity-v1` context, adapter paths/hashes and all seven pace routes.
+Paths are relative to the manifest directory, or absolute for source development.
+Super Human and Frame Perfect must route to `null`, retaining the exact parent.
+The optional loader shares one parent network, warms every selected residual,
+and passes the actual delay/gravity context to reactive and prepared scoring.
+With no manifest the prior plain-policy behavior remains. These adapters do not
+replace the V3 lower-skill decoder or accept the new history core as their parent.
+
+`tools.package_human_backend --pace-manifest PATH` copies the verified residuals
+into portable relative paths and checks the frozen process's loaded portfolio.
+Package verification rejects stale or mismatched selections. The four portfolio
+and ten backend/context/preparation checks pass, including exact arena scores,
+all seven controller witnesses, next-gravity preparation and relocation. This
+implements the packaging path; it is not a newly built or validated distributable.
+The browser task owns its separate ONNX portfolio. New browser source packages
+should use the shared context fields instead of reinserting them during packaging.
+
 ### Arena coordinator
 
 Exactly one host owns `arena.sqlite` on a local filesystem. Workers lease

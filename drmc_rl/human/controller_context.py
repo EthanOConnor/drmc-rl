@@ -88,6 +88,9 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
         )
         if "vs/observation_timeline" in state:
             infos[0]["vs/observation_timeline"] = state["vs/observation_timeline"]
+        from drmc_rl.execution.pace import strategy_context
+        infos[0]["pace/id"] = pace.id
+        infos[0]["pace/context"] = strategy_context(pace, state, delay)
         return observations, infos
     if (state.get("public_context_schema") != PUBLIC_CONTEXT_SCHEMA
             or state.get("vs/observation_timeline") != "causal-settled-pair-v1"):

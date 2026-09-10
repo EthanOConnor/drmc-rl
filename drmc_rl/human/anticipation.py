@@ -127,6 +127,10 @@ class NextTurnPreparer:
             candidates.append(candidate)
             obs, info = public_policy_inputs(candidate[0], candidate[1], candidate[2],
                 predicted["opponent_pill"], candidate[-1], PREVIEW_BRANCHES)
+            from drmc_rl.execution.pace import strategy_context
+            for item in info:
+                item["pace/id"] = pace.id
+                item["pace/context"] = strategy_context(pace, branch_state, 0)
             observations.append(obs)
             infos.extend(info)
         scores = score_public_inputs(self.policy, np.concatenate(observations), infos)
