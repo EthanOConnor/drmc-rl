@@ -41,6 +41,19 @@ class ConstructionObserver:
         self.states = {side: dict(frame=-1, pending=None, plans={}, counters=Counter()) for side in self.sides}
         self.decisions, self.plans, self.transitions = [], [], []
 
+    def start_proposal(self, model, inputs, frame):
+        return SpatialProposal.start(model, inputs, frame=frame)
+
+    def model_inputs(self, records):
+        boards = torch.tensor(np.stack([board_bytes_to_semantic_planes(r["board"]) for r in records]))
+        pills = torch.tensor([r["pill"] for r in records], dtype=torch.long)
+        previews = torch.tensor([r["preview"] for r in records], dtype=torch.long)
+        with torch.inference_mode():
+            features = self.encoder(boards.to(self.feature_device), pills.to(self.feature_device),
+                                    previews.to(self.feature_device)).cpu()
+        return [(boards[i:i+1], features[i:i+1], pills[i:i+1], previews[i:i+1])
+                for i in range(len(records))]
+
     def end(self, side, name, frame, reason):
         state = self.states[side]
         record = state["plans"].pop(name, None)
@@ -138,12 +151,7 @@ class ConstructionObserver:
     def decide(self, records):
         if not records:
             return
-        boards = torch.tensor(np.stack([board_bytes_to_semantic_planes(r["board"]) for r in records]))
-        pills = torch.tensor([r["pill"] for r in records], dtype=torch.long)
-        previews = torch.tensor([r["preview"] for r in records], dtype=torch.long)
-        with torch.inference_mode():
-            features = self.encoder(boards.to(self.feature_device), pills.to(self.feature_device),
-                                    previews.to(self.feature_device)).cpu()
+        inputs_by_row = self.model_inputs(records)
         for i, row in enumerate(records):
             side, frame = row["side"], row["frame"]
             state = self.states[side]
@@ -153,10 +161,10 @@ class ConstructionObserver:
             result = resolve_cascade(locked_field(np.frombuffer(row["board"], np.uint8), raw_pill, row["action"]))
             state["pending"] = dict(result=result, action=row["action"], frame=frame, locked=False,
                                     interrupted=False, tiles=0, viruses=0)
-            inputs = (boards[i:i+1], features[i:i+1], pills[i:i+1], previews[i:i+1])
+            inputs = inputs_by_row[i]
             for name, model in self.models.items():
                 if name not in state["plans"]:
-                    plan = SpatialProposal.start(model, inputs, frame=frame)
+                    plan = self.start_proposal(model, inputs, frame)
                     state["plans"][name] = dict(plan=plan, start_frame=frame, goal=plan.goal,
                         root_anchor=plan.anchor, budget=plan.remaining, root_goal_observed=False,
                         anchor_revisions=0)

@@ -91,7 +91,12 @@ class ParallelPlanning:
 
 
 def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
-                    observer=None):
+                    observer=None, controller=None):
+    if controller is not None:
+        if (not config.get("allow_unadmitted_controller_experiment") or observer is not None
+                or config.get("mixed_core_actor")):
+            raise ValueError("a proposal controller needs an explicit non-training experiment")
+        observer = controller
     if preparer is not None or any(p.get("anticipation") for p in config["variants"].values()):
         raise ValueError("event rollout currently requires reaction-covered computation")
     if config.get("replay_games", 0):
@@ -222,11 +227,30 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                         learning.update(zip(indices, records))
             measured["inference_seconds"] += time.perf_counter()-tick
             tick = time.perf_counter()
+            overrides = {}
+            if controller is not None:
+                if learning:
+                    raise ValueError("proposal controls cannot replace recorded PPO behavior")
+                public_records = []
+                for j, i in enumerate(selected_indices):
+                    side = ready[i]
+                    if side not in controller.sides:
+                        continue
+                    state = requests[i][0]
+                    public_records.append(dict(side=side, frame=int(pool.states[side].frame),
+                        board=bytes(pool.states[side].board), pill=tuple(state["pill"]),
+                        preview=tuple(state["preview"]), incumbent_action=int(scores[j].argmax()),
+                        feasible=tuple(map(int, np.flatnonzero(candidates[i][-1] != 65535)))))
+                overrides = controller.select_decisions(public_records)
+                if (set(overrides) != {r["side"] for r in public_records}
+                        or any(overrides[r["side"]] not in r["feasible"] for r in public_records)):
+                    raise ValueError("proposal controller changed the complete feasible inventory")
             observations_for_shadow = []
             for j,i in enumerate(selected_indices):
                 side = ready[i]
                 state, delay, _ = requests[i]
-                move = execution_for_action(candidates[i], int(scores[j].argmax()), pace, delay=delay)
+                baseline_action = int(scores[j].argmax())
+                move = execution_for_action(candidates[i], overrides.get(side, baseline_action), pace, delay=delay)
                 sample = learning.get(j)
                 if sample is not None and sample["action"] != move["placement"]["action"]:
                     raise RuntimeError("learning target differs from controller action")
@@ -239,6 +263,9 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     "pill":state["pill"], "preview":state["preview"], "speed_ups":state["speed_ups"]}
                 if sample is not None:
                     row["learning"] = sample
+                if side in overrides:
+                    row["unadmitted_construction"] = dict(incumbent_action=baseline_action,
+                        changed=move["placement"]["action"] != baseline_action)
                 moves[pair].append(row)
                 if observer is not None and side in observer.sides:
                     # The native script is already installed. Detached public

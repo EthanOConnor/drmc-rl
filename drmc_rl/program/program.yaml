@@ -99,6 +99,36 @@ gates:
       - Regret tails, cadence, burst statistics, and temporal error correlation match held-out humans.
 
 recipes:
+  trainer-target-construction-evaluation:
+    status: active
+    stage: 4
+    purpose: Measure actual immutable-goal proposal-controlled continuations and common-seed unchanged competitive controls before quality admission.
+    requires_paths: [tools/evaluate_target_construction.py, '{target_evaluation_config}']
+    requires_gates: []
+    command: [python, -m, tools.evaluate_target_construction, --config, '{target_evaluation_config}']
+    produces: [Complete controller tapes, verified original-target payoffs, abandoned plans, natural outcomes and whole-seed descriptive comparisons]
+    resources:
+      preferred_host: local
+      accelerator: cpu
+    notes:
+      - This is an explicit unadmitted experiment; it never changes installed product routing or PPO behavior probabilities.
+      - Keep every mechanically feasible action, exact controller witnesses, fixed original goal and budget, and event-driven interruption handling.
+      - Report every pace separately. Local quality admission, whole-game noninferiority and blind preferences remain required before product adoption.
+  trainer-target-construction-fit:
+    status: active
+    stage: 4
+    purpose: Fit actual routes to explicit immutable colored-cell goals from verified human constructions while keeping the root proposer and competitive core frozen.
+    requires_paths: [tools/fit_target_construction.py, '{target_construction_config}']
+    requires_gates: []
+    command: [python, -m, tools.fit_target_construction, --config, '{target_construction_config}']
+    produces: [Fixed-final requested-target route model, whole-session development measurements, actual supervised presentations]
+    resources:
+      preferred_host: local
+      accelerator: cpu
+    notes:
+      - Hindsight payoff cells specify a requested goal during imitation; they are not public observations of the future. The requested six-placement cap never uses true future duration.
+      - Live target proposals use only actual root inputs through a separately frozen proposer. Original targets stay fixed; route memory follows verified completions and terminates on surprises.
+      - No calibrated quality admission or product adoption is supplied by this fitting recipe. Actual proposal-controlled continuations and strength/preference gates remain separate.
   trainer-spatial-execution-audit:
     status: active
     stage: 4

@@ -444,8 +444,18 @@ indefinitely staged.
   five guarded ROM replans remain in the report. Four short visible follow-ups
   cover the missing fast display cases and revised Sloth: 140 more completed
   placements, 4,466 actual presentations, no corrections or mismatches. The explicit
-  tester manifest selects the three supported 300M routes; browser/package
-  delivery and ROM divergence investigation remain. At the user's request,
+  tester manifest selects the three supported 300M routes. The browser package
+  now serves that same lineup: full public-core selection before encoding, exact
+  ONNX parity, and per-pace preparation negotiation. Browser/source exchanges,
+  native and ROM WebGPU play, and CPU fallback passed before deployment.
+  The September 10 Apple Silicon/macOS 15 internal package also includes the
+  same portfolio. Its frozen backend matches all 42 source/browser reference
+  exchanges; three final native/ROM level-14 HI games complete 179 placements
+  without state or placement mismatches. Six missed requests and one guarded
+  ROM correction remain in the evidence. The 275 app and 115 backend/planner/
+  package checks pass. This locally signed package is not a notarized release.
+  ROM divergence investigation and the broader research program remain open.
+  At the user's request,
   live Sloth/Relaxed reaction floors are now 45/30 frames, with unchanged motor
   limits. Frozen training and tournament evidence still use 60/36, and must not
   be relabeled as revised-preset confirmation. Stage one is still open.
@@ -463,16 +473,18 @@ indefinitely staged.
   complete choices and controller scripts at all seven paces, exact fastest
   parent outputs, unchanged lower-skill decoding and portable artifact loading.
   The source CLI discovers a companion manifest, and packaging can copy and
-  verify it explicitly. Existing packages and unconfigured source builds keep
-  the plain parent; no new distributable has been made. Real-checkpoint device
+  verify it explicitly. Unconfigured source builds keep the plain parent;
+  the current browser and Mac packages select the mixed portfolio above.
+  Real-checkpoint device
   checks on 12 real public roots now match all 84 portfolio and 12 Sloth-core
   choices/scripts against CPU arena references. All 648 prepared branches match.
   With CPU reference inference separated from timing, the normal JSONL flow
   takes 15–17 ms median per decision and 32–36 ms for preparation on Metal.
-  Actual app timing and final package verification remain. The September 10 provisional tester-build shortlist is the
+  The initial September 10 provisional tester-build shortlist was the
   original final adapter for Sloth, the 50M adapter for Relaxed, corrected E1
   for Normal/Fast/Top Humans, and the 10M public parent at the two fastest
-  paces. This is a product judgment from completed studies, not a claim that
+  paces; the completed 300M evaluation and live checks above supersede its
+  Sloth and fastest-pace choices. Selection is a product judgment from completed studies, not a claim that
   every selected checkpoint is a uniquely established winner; several nearby
   rankings remain unresolved. The completed 100M specialist comparison now
   supports a Sloth upgrade, subject to its live context and device checks;
@@ -788,8 +800,19 @@ indefinitely staged.
   Do not promote either head or repeat prefix fitting. The next expressive
   work needs target-conditioned actual continuations and local quality
   admission, followed by full-game strength and blind style comparison.
+  The next mechanism now explicitly conditions route selection on an immutable
+  requested colored cell, geometry goal and six-placement cap. Hindsight cells
+  are declared training requests; the live root proposer is frozen and reads
+  only the actual board and two visible pills. Causal route memory updates after
+  verified placements, while garbage/terminal/mismatch events terminate plans.
+  A separately gated non-training controller now executes these proposals with
+  complete paced witnesses, alongside common-seed unchanged controls. Focused
+  tests verify real native tapes, exact shadow preservation, unchanging goals,
+  causal memory, whole-session fitting isolation and strict model reload.
+  Fixed exposure training and actual continuation evaluation follow; this
+  implementation alone supplies no local quality or preference permission.
 
-This task owns the continuation; its hourly follow-up checks the active studies
+This task owns the continuation; its four-hour follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing
 roadmap current with the concrete next action and evidence. Use tf3090 for large
 training, the Mac and mombox for suitable evaluation, and mombox for overflow

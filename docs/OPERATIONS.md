@@ -1644,6 +1644,30 @@ complete choices/scripts at all seven paces and reject mislabeled cores.
 
 ### Persistent construction diagnostics
 
+`trainer-target-construction-fit` takes `target_construction_config` with a
+completed recurrent proposal `study` and fresh `output`. It reuses the verified
+full-precision features and original whole-session split; defaults are eight
+fixed epochs, 32 windows per batch and one CPU thread. The prior history-reset
+head initializes a route model, while the original root-goal proposer remains
+frozen. Training rotates through actual colored payoff cells as explicit
+requests. Each entire construction has the same requested cell and a six-turn
+cap, not its observed future duration. Report window/action presentations
+separately from zero outcome-training frames. Development imitation never
+selects a checkpoint or establishes goal completion.
+
+`trainer-target-construction-evaluation` takes `target_evaluation_config` with
+the completed fit's `progress.json` under `trained`, fresh `output`, and a fixed
+side-balanced `arena`. It runs both actual goal controls and unchanged competitive
+controls on every declared seed/side pair, alternating batch order. Both use the
+same frozen root proposer, immutable targets, exact motor frontiers and verified
+event-driven termination. Retain complete controller journals, original-target
+payoffs, true completion lengths, garbage/terminal interruptions and natural
+outcomes. The explicit `allow_unadmitted_controller_experiment` flag cannot be
+used with PPO learning records, asynchronous planning or another observer.
+These are unadmitted diagnostic games, never installed product behavior or a
+noninferiority certificate. Report individual whole-seed contrasts by pace;
+later independent quality/strength and blind preferences remain necessary.
+
 `trainer-spatial-expressive-study` takes `spatial_expressive_config` with a
 verified sequence `source`, frozen public competitive `checkpoint` and fresh
 `output`. It reuses exact own-bottle mean/max features, deduplicated solely by

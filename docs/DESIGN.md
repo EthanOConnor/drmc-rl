@@ -582,6 +582,23 @@ that a quality sacrifice is safe. Retained analysis reconstructs each original
 target's first-hit placement. A payoff first seen on a later placement is not
 automatically evidence that preceding actions constructed it.
 
+The separate `target_construction` experiment makes the requested colored cell
+immutable while replanning the route from actual current inputs and committed
+causal memory. Its action model is initialized from the completed history-reset
+proposal head. During imitation, one verified payoff cell is explicitly supplied
+as a hindsight goal request and remains the same throughout the construction.
+The request always allows six placements; true future duration is not supplied.
+This is goal-conditioned supervision, not a claim that the future payoff is
+observable. A separately frozen root-only proposer chooses goals during actual
+play; no target labels enter that path. Actual payoff, garbage, mismatch,
+terminal state or the original budget ends the request. Target revisions do
+not redefine success. A gated experimental controller can execute the requested
+route over the complete motor-feasible inventory, using the existing witnesses
+and event verification. It cannot replace recorded PPO actions. Its common-seed
+controlled/shadow games expose any strength cost; they do not provide calibrated
+local quality admission or authorize deployment. Quality and blind preferences
+remain required before expressive play can enter the product.
+
 The public outcome bootstrap learned unrestricted movement. Its feasible set
 and realized costs change at live pace, but it receives no explicit motor
 envelope describing what future pills will be able to do. Pace training must
