@@ -66,6 +66,21 @@ def audit_collection(actor, records, config, *, seed, activity=None):
         measurements=measurements, optimizer_updates=0)
 
 
+def bind_initial_reference(actor, payload, initial):
+    if (initial.get("schema") != payload.get("schema")
+            or initial.get("cfg") != payload.get("cfg")
+            or initial.get("parent_sha256") != payload.get("parent_sha256")
+            or initial.get("update") != 0):
+        raise ValueError("reference must be the saved initial policy from this core lineage")
+    reconstructed = actor.reference.state_dict()
+    state = initial["state_dict"]
+    error = max(float((reconstructed[k].detach().cpu() - v).abs().max()) for k,v in state.items())
+    if error != 0:
+        raise ValueError("reconstructed regularization reference differs from the saved initial policy")
+    actor.reference.load_state_dict(state, strict=True)
+    return error
+
+
 def audit(config):
     output = Path(config["output"])
     if output.exists():
@@ -76,6 +91,7 @@ def audit(config):
     torch.backends.cudnn.allow_tf32 = False
     payload = load_checkpoint(Path(config["checkpoint"]), map_location="cpu")
     training = payload["training_config"]
+    torch.manual_seed(int(training["seed"]))
     # The diagnostic inherits the actual loss coefficients, not renamed defaults.
     loss_config = dict(training)
     loss_config.update(minibatch=int(config.get("minibatch", training.get("minibatch", 128))),
@@ -95,6 +111,8 @@ def audit(config):
     device = config.get("device", "cpu")
     actor = ControllerCorePolicy(config["parent"], device, resume=config["checkpoint"],
                                  training=True, seed=int(config["seed"]))
+    initial = load_checkpoint(Path(config["initial_reference"]), map_location="cpu")
+    reference_error = bind_initial_reference(actor, payload, initial)
     opponents = {
         "parent": PlainPolicy(Path(config["parent"]), device, public_only=True),
         "pace_corrected": PacePolicy(config["parent"], device,
@@ -108,6 +126,8 @@ def audit(config):
         checkpoint_sha256=sha256_file(Path(config["checkpoint"])),
         parent_sha256=sha256_file(Path(config["parent"])),
         adapter_sha256=sha256_file(Path(config["adapter_checkpoint"])),
+        initial_reference_sha256=sha256_file(Path(config["initial_reference"])),
+        reference_reconstruction_max_parameter_error=reference_error,
         optimizer_updates=0, training_frames=0, diagnostic_frames=0, diagnostic_games=0,
         diagnostic_decisions=0, conditions=[], product_gates_passed=False,
         scope="Fresh stochastic natural-terminal diagnostic at one frozen policy. Gradients use actual coefficients and complete-collection normalization. Separate minibatches are measured at unchanged weights, not sequential Adam updates. Gradient conflict is not proof of a strength-loss cause.")

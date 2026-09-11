@@ -148,6 +148,23 @@ def test_real_controller_gradient_audit_preserves_policy_and_sampling(parent):
     assert all(p.grad is None for p in actor.net.parameters())
 
 
+def test_gradient_audit_rejects_a_different_regularization_reference(parent):
+    from drmc_rl.models.policy.controller_core import CORE_SCHEMA
+    from tools.audit_controller_gradients import bind_initial_reference
+
+    actor = ControllerCorePolicy(parent, seed=71)
+    payload = dict(schema=CORE_SCHEMA, cfg=actor.cfg, parent_sha256=actor.parent_sha256)
+    initial = dict(payload, update=0, state_dict={k:v.detach().clone()
+                   for k,v in actor.reference.state_dict().items()})
+    assert bind_initial_reference(actor, payload, initial) == 0
+    with torch.no_grad():
+        next(actor.reference.parameters()).add_(.01)
+    with pytest.raises(ValueError, match="regularization reference differs"):
+        bind_initial_reference(actor, payload, initial)
+    with pytest.raises(ValueError, match="saved initial policy"):
+        bind_initial_reference(actor, payload, dict(initial, update=807))
+
+
 def test_controller_resume_retains_pre_residual_architecture_and_reference(parent, tmp_path):
     from copy import deepcopy
     from drmc_rl.models.policy.controller_core import CORE_SCHEMA
