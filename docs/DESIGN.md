@@ -637,6 +637,16 @@ Historical per-trajectory `1/T` actor weighting can reverse the objective's
 gradient and remains an explicit comparison option. Actor, value, entropy,
 parent-KL reductions and advantage normalization are separately named; the
 last four retain historical settings in the isolated actor experiment.
+The current trainer collects one pace per update. Its categorical KL guard
+therefore covers that pace's visited states, not retention at the other paces.
+Game count is also distinct from optimizer exposure: the larger Sloth batches
+contain far fewer controllable placements. The read-only controller gradient
+audit separates the coefficient-weighted actor, value, entropy and parent-KL
+gradients on fresh natural games, using the exact PPO loss formulas and
+complete-collection normalization. It reports full-network and shared
+actor/value parameter geometry without writing weights, gradient buffers or
+sampling state. Conflicting Euclidean gradients are diagnostic evidence, not
+an estimate of Adam's finite update or proof of the cause of a strength loss.
 Actual categorical KL is checked on all collected actions after optimization,
 with parameter and optimizer rollback when the update budget is exceeded.
 Changing objective on resume is rejected; use a weights-only initialization

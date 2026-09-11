@@ -126,6 +126,28 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
             assert restored["falling"]["frame_parity"] == infos[i]["public_controller_geometry"]["frame_parity"]
 
 
+def test_real_controller_gradient_audit_preserves_policy_and_sampling(parent):
+    from tools.audit_controller_gradients import audit_collection
+
+    actor = ControllerCorePolicy(parent, seed=739)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for i, row in enumerate(rows):
+        row.update({"return": 1. if i % 2 else -1., "weight": 1., "game_id": i})
+    before = {k:v.detach().clone() for k,v in actor.net.state_dict().items()}
+    rng = actor.rng.get_state().clone()
+    result = audit_collection(actor, rows, {"minibatch": 2, "gradient_batches": 2}, seed=315)
+    assert result["optimizer_updates"] == 0 and result["decisions"] == 4
+    assert len(result["measurements"]) == 2
+    for batch in result["measurements"]:
+        assert batch["geometry"]["groups"]["shared_actor_value"]["parameters"] > 0
+    for name,value in actor.net.state_dict().items():
+        torch.testing.assert_close(value,before[name],rtol=0,atol=0)
+    torch.testing.assert_close(actor.rng.get_state(),rng,rtol=0,atol=0)
+    assert all(p.grad is None for p in actor.net.parameters())
+
+
 def test_controller_resume_retains_pre_residual_architecture_and_reference(parent, tmp_path):
     from copy import deepcopy
     from drmc_rl.models.policy.controller_core import CORE_SCHEMA

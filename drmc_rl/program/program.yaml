@@ -313,6 +313,21 @@ recipes:
       - Every learner transition stores public model inputs, not frozen trunk features. The whole core receives outcome gradients.
       - The frozen post-migration initial policy is the explicit regularization reference; failed quality labels are excluded.
       - This experiment does not promote a model, calibrate a quality head, or complete the larger-teacher and expressive-play stages.
+  trainer-controller-gradient-audit:
+    status: active
+    stage: 3
+    purpose: Separate actor, critic and regularization gradients on fresh natural controller games under an unchanged frozen core, without optimizer updates or model promotion.
+    requires_paths: [tools/audit_controller_gradients.py, '{controller_gradient_config}']
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.audit_controller_gradients, --config, '{controller_gradient_config}']
+    produces: [Complete public diagnostic replay, actual collection probability checks, coefficient-weighted loss gradient geometry at each pace]
+    resources:
+      preferred_host: local
+      accelerator: cpu
+    notes:
+      - Whole-collection normalization and loss formulas are shared with PPO; no optimizer step, parameter mutation or additional training exposure is allowed.
+      - Use training-eligible seeds excluded from the reserved tournament bank. Keep natural diagnostic games separate from deterministic arena games.
+      - Conflicting Euclidean gradients do not by themselves establish the cause of a strength regression or predict an Adam update.
   search-frontier-benchmark:
     status: active
     stage: 4

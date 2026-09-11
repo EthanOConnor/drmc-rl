@@ -287,11 +287,10 @@ def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
     return (max(0.0, kl) if np.isfinite(kl) else kl), float(np.mean(errors))
 
 
-def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
+def prepare_training_records(records, config):
+    """Normalize each loss once over the complete natural-terminal collection."""
     if not records:
         raise RuntimeError("no natural-terminal learner decisions; cannot train")
-    if hasattr(actor, "finish_collection"):
-        actor.finish_collection(records)
     contract = objective_contract(config)
     inverse_lengths = np.asarray([r["weight"] for r in records])
     advantages, center, scale = normalize_advantages(
@@ -306,6 +305,40 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
     for i, record in enumerate(records):
         record["advantage"] = float(advantages[i])
         record.update({key + "_weight": float(weights[i]) for key, weights in reductions.items()})
+    return inverse_lengths, center, scale
+
+
+def training_loss_terms(actor, features, data, config):
+    """The same uncombined losses serve PPO and read-only gradient diagnostics."""
+    logits, values = _training_forward(actor, features)
+    log_probs = logits.log_softmax(-1)
+    chosen = log_probs.gather(1, data["slot"][:, None]).squeeze(1)
+    terms = dict(
+        policy_loss=clipped_surrogate(chosen - data["old_logprob"],
+            data["advantage"], data["actor_weight"], config.get("clip", 0.15)),
+        value_loss=(data["value_weight"] * F.smooth_l1_loss(
+            values, data["return"], reduction="none")).mean(),
+        entropy=-(data["entropy_weight"] * (log_probs.exp() * log_probs).sum(-1)).mean(),
+        parent_kl=(data["parent_kl_weight"] * categorical_kl(
+            data["parent_logp"] if "parent_logp" in data else features[3].log_softmax(-1),
+            log_probs)).mean(),
+    )
+    return log_probs, terms
+
+
+def weighted_training_terms(terms, config):
+    return dict(policy_loss=terms["policy_loss"],
+        value_loss=config.get("value_coefficient", 0.5) * terms["value_loss"],
+        entropy=-config.get("entropy", 0.003) * terms["entropy"],
+        parent_kl=config.get("parent_kl", 0.02) * terms["parent_kl"])
+
+
+def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
+    if not records:
+        raise RuntimeError("no natural-terminal learner decisions; cannot train")
+    if hasattr(actor, "finish_collection"):
+        actor.finish_collection(records)
+    inverse_lengths, center, scale = prepare_training_records(records, config)
     size = config.get("minibatch", 128)
     old_distributions, collection_agreement = _policy_snapshot(actor, records, size, activity=activity)
     rng, totals = np.random.default_rng(seed), defaultdict(list)
@@ -330,33 +363,8 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
             for start in range(0, len(indices), size):
                 rows = [records[i] for i in indices[start : start + size]]
                 features, data = _training_batch(actor, rows)
-                logits, values = _training_forward(actor, features)
-                log_probs = logits.log_softmax(-1)
-                chosen = log_probs.gather(1, data["slot"][:, None]).squeeze(1)
-                policy_loss = clipped_surrogate(
-                    chosen - data["old_logprob"],
-                    data["advantage"],
-                    data["actor_weight"],
-                    config.get("clip", 0.15),
-                )
-                value_loss = (
-                    data["value_weight"]
-                    * F.smooth_l1_loss(values, data["return"], reduction="none")
-                ).mean()
-                entropy = -(data["entropy_weight"] * (log_probs.exp() * log_probs).sum(-1)).mean()
-                base_kl = (
-                    data["parent_kl_weight"]
-                    * categorical_kl(
-                        data["parent_logp"] if "parent_logp" in data else features[3].log_softmax(-1),
-                        log_probs,
-                    )
-                ).mean()
-                loss = (
-                    policy_loss
-                    + config.get("value_coefficient", 0.5) * value_loss
-                    - config.get("entropy", 0.003) * entropy
-                    + config.get("parent_kl", 0.02) * base_kl
-                )
+                log_probs, terms = training_loss_terms(actor, features, data, config)
+                loss = sum(weighted_training_terms(terms, config).values())
                 if not torch.isfinite(loss):
                     raise RuntimeError("non-finite pace training loss")
                 optimizer.zero_grad(set_to_none=True)
@@ -374,13 +382,8 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
                     with torch.no_grad():
                         after = _training_forward(actor, features)[0].log_softmax(-1)
                         candidate_first_kl = categorical_kl(log_probs.detach(), after).mean().item()
-                for key, value in dict(
-                    policy_loss=policy_loss.item(),
-                    value_loss=value_loss.item(),
-                    entropy=entropy.item(),
-                    parent_kl=base_kl.item(),
-                    gradient_norm=norm.item(),
-                ).items():
+                for key, value in ({k: v.item() for k, v in terms.items()}
+                                   | dict(gradient_norm=norm.item())).items():
                     attempt_totals[key].append((value, len(rows)))
             measured_kl, measured_mse = _policy_snapshot(
                 actor, records, size, reference=old_distributions, activity=activity

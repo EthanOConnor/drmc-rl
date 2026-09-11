@@ -1530,6 +1530,22 @@ These are finite-critic mechanics and shared-device costs, not quality labels,
 general speedups or strength evidence. The dashboard identifies unilateral
 decisions and full-reference checks without fabricating an opponent root.
 
+`trainer-controller-gradient-audit --set controller_gradient_config=PATH`
+collects finite, fresh stochastic controller games against the frozen parent
+and corrected adapter at one immutable core. Use training-eligible seeds, with
+the core's reserved tournament bank excluded. It keeps all natural return and
+candidate records, audits the original collection probabilities, and measures
+separate coefficient-weighted loss gradients on fixed shuffled minibatches.
+Every minibatch is measured at unchanged weights; no Adam step is performed.
+`progress.json` reports diagnostic games/frames/decisions separately from
+training and arena counts, plus full and shared-parameter gradient matrices.
+Parameter versions, grad buffers and sampling RNG must remain untouched.
+The first 1B diagnostic uses the historical motor profiles, matching the frozen
+training/evaluation conditions. It investigates loss interaction; neither a
+small diagnostic sample nor a negative gradient cosine authorizes a model
+change. Complete the fixed strength allocation and compare any proposed
+training revision in its own explicitly initialized run.
+
 The 1B milestone entered the live tournament on September 11 at 15:31 UTC.
 `runs/review-20260909/controller-core-1b-mac.json` fixes 24,576 games against
 300M, corrected E1 and the frozen parent: 1,024 per opponent at each of seven
