@@ -1668,6 +1668,22 @@ These are unadmitted diagnostic games, never installed product behavior or a
 noninferiority certificate. Report individual whole-seed contrasts by pace;
 later independent quality/strength and blind preferences remain necessary.
 
+`target-construction-study-v1-control` completed both registered jobs from
+frozen source `2da2fc3` with original controller libraries `19f292c`. Its former
+supervisor 92592 has exited. The fixed fit used 304,400 window presentations and
+1,069,520 action presentations in 133 seconds, adding no outcome training.
+`target-construction-evaluation-v1` completed 512 natural games, 2,642,914 console
+frames and zero censoring in 493 seconds. `assess_target_construction_v1.py` and
+`target-construction-assessment-v1.json` retain an independent audit of every
+journal, original target, observed effect, actor/library identity and complete
+side-swapped allocation, with separate 14/20-HI whole-seed families.
+The 256 controlled games changed 2,649 of 3,187 decisions and reached none of
+802 original targets; the 256 unchanged games reached 354/5,960, including 254
+after multiple placements. No target was revised. The severe strength loss
+rejects this actor replacement; do not promote or restart the completed study.
+Better requested-goal imitation does not supply grounded autonomous routes,
+calibrated admission or preference evidence. Those parts of Stage 4 remain open.
+
 `trainer-spatial-expressive-study` takes `spatial_expressive_config` with a
 verified sequence `source`, frozen public competitive `checkpoint` and fresh
 `output`. It reuses exact own-bottle mean/max features, deduplicated solely by

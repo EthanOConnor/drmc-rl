@@ -111,6 +111,25 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
+    if(run.schema==='drmc-target-construction-v1'){
+      const target=num(run.training_windows)*num(run.config?.epochs);
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.window_presentations,target)}<div class="training-detail"><span>${count(run.action_presentations)} action presentations</span><span>${count(run.epochs?.length)} / ${count(run.config?.epochs)} epochs</span></div><p class="budget-note">Routes are trained for one fixed requested target over up to six placements. The root proposer and competitive core stay frozen. Actual controlled-game results appear separately.<br>${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
+    if(run.schema==='drmc-target-construction-evaluation-v1'){
+      const arms=['controlled','shadow'].map(name=>{
+        const arm=run.arms?.[name] || {}, label=name==='controlled'?'Proposal controls':'Competitive controls';
+        return `<div class="training-detail"><strong>${label}</strong><span>${count(arm.games)} games</span></div><div class="training-detail"><span>Original targets reached</span><span>${count(arm.verified_original_payoffs)} / ${count(arm.plans)}</span></div><div class="training-detail"><span>After multiple placements</span><span>${count(arm.multi_placement_payoffs)}</span></div>`;
+      }).join('');
+      const match=run.config?.arena?.schedule?.find(m=>m.id===run.current_condition);
+      const comparisons=(run.comparisons || []).map(item=>{
+        const condition=run.config?.arena?.schedule?.find(m=>m.id===item.condition), score=item.contrasts?.match_score;
+        if(!score) return '';
+        return `<div class="training-detail"><span>${esc(condition?conditionName(condition):item.condition)}</span><span>${(100*score.controlled_minus_shadow).toFixed(1)} pp</span></div>`;
+      }).join('');
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div>${bar(run.games,run.target_games)}<div class="training-detail"><span>${count(run.games)} / ${count(run.target_games)} games</span><span>${esc(match?conditionName(match):'')}</span></div>${arms}${comparisons?`<p class="budget-note">Match score change versus unchanged controls (percentage points)</p>${comparisons}`:''}<p class="budget-note">Experimental proposal actions run in real controller games. Strength cost is measured against unchanged controls on the same seeds; quality admission and blind preferences remain open.<br>${ago(age(run.updated_at))}</p></div>`);
+      continue;
+    }
     if(['drmc-spatial-execution-audit-v1','drmc-spatial-execution-assessment-v1'].includes(run.schema)){
       const arms=['persistent','stateless'].map(name=>{
         const arm=run.aggregate?.[name] || run.arms?.[name] || {};

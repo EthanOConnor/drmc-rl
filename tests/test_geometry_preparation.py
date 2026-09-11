@@ -83,9 +83,13 @@ def test_geometry_matches_full_fresh_frontier_for_every_preview_and_parity(pace_
             if pace_id == "sloth":
                 # A faster gravity step leaves no control after the reaction
                 # delay on this bottle. Preparation must not relax that delay.
-                state["speed_ups"] = 3
+                # The current 45-frame Sloth reaction needs a faster gravity
+                # fixture than the old 60-frame preset did. This root remains
+                # playable, but action 42 leaves no next-turn control window.
+                state["speed_ups"] = 5
                 candidate = plan_candidates(planner, state, delay, pace)
-                move = execution_for_action(candidate, int(candidate[-2].actions[0]), pace, delay=delay)
+                assert 42 in candidate[-2].actions[candidate[-2].mask]
+                move = execution_for_action(candidate, 42, pace, delay=delay)
                 assert preparer.prepare(state, move, pace, delay) is None
     finally:
         preparer.close()

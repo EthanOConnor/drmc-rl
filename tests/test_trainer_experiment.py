@@ -40,6 +40,13 @@ def test_pipeline_failure_is_visible_after_training_completed():
     assert health["message"] == "evaluation worker failed"
 
 
+def test_completed_auxiliary_pipeline_does_not_hide_running_training():
+    now = datetime.now(timezone.utc)
+    health = experiment_health({"status":"Running","updated_at":now.isoformat()},
+                               {"status":"Complete"},now)
+    assert health["status"] == "Running" and health["severity"] == "ok"
+
+
 def test_relative_ratings_anchor_connected_fields_and_complete_seed_pairs():
     comparisons = {
         "ab": {"id":"ab", "a":"faster", "b":"baseline8", "level":14},

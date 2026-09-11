@@ -146,6 +146,9 @@ def experiment_health(training, pipeline, now):
         health.update(status="Study stopped", severity="failed",
                       message=pipeline.get("error") or "The study supervisor reported a failure.")
     elif training.get("status") == "Running":
+        # A completed auxiliary study cannot mark the active outcome trainer
+        # complete. Failures above still take precedence over this live status.
+        health["status"] = "Running"
         age = health.get("training_age_seconds")
         # Allow normal long batches; do not equate a connected web server with
         # a healthy trainer or remote synchronization feed.

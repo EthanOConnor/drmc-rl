@@ -809,8 +809,27 @@ indefinitely staged.
   complete paced witnesses, alongside common-seed unchanged controls. Focused
   tests verify real native tapes, exact shadow preservation, unchanging goals,
   causal memory, whole-session fitting isolation and strict model reload.
-  Fixed exposure training and actual continuation evaluation follow; this
-  implementation alone supplies no local quality or preference permission.
+  The fixed eight-epoch fit and 512-game actual-control allocation are complete.
+  Training presented 304,400 windows/1,069,520 actions, with zero outcome frames;
+  development requested-goal NLL improved from 3.6649 to 3.5780. The final epoch
+  was retained without selecting a development minimum. That imitation gain
+  did not transfer: the controller reached zero original targets in 802 plans,
+  versus 354 in 5,960 unchanged-control plans (254 after multiple placements).
+  All targets stayed fixed and actual locks/effects/bottles were verified.
+  At 14 HI, controlled-minus-unchanged match scores were −28.1/−34.4/−65.6/
+  −59.4/−62.5/−78.1/−65.6 percentage points from Sloth through Frame Perfect.
+  Whole-seed simultaneous seven-pace intervals exclude zero for every pace
+  except Sloth. Separate 20-HI Normal/Top Humans differences were −31.3/−43.8
+  points, inconclusive under their two-condition family. This small, reused
+  actor-evaluation bank is sufficient to reject this severe regression; it is
+  not independent confirmation or a completed expressive-play stage.
+  `target-construction-assessment-v1.json` independently checks all 512 journals,
+  identities, side allocations and original payoff geometry. Reject this route
+  controller and retain the competitive lineup. The next approach must ground
+  goals/routes in actual reachable intermediate states and admit choices using
+  demonstrated competitive quality, before substantial noninferiority and blind
+  same-root preferences. Do not repeat prefix comparisons, extend imitation
+  epochs or let a target payoff compensate for losing.
 
 This task owns the continuation; its four-hour follow-up checks the active studies
 and resumes the first unfinished item. Keep the dashboard and this existing
