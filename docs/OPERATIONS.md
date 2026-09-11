@@ -439,9 +439,33 @@ stored probabilities, and leaves the 0.0001 TV/0.001 log-probability limits and
 model-version checks unchanged. Historical shards without shape metadata retain
 their previous audit path. Never search arbitrary batch sizes until one passes.
 
+The September 11 failure occurred before update 761 at 946,929,728 committed
+frames and 9,636,223 decisions. Its 3,839-decision batch exceeded the existing
+bound even against FP64 (TV 0.000154339), so that batch remains rejected and
+preserved. `controller-core-collection-shape-recovery-v1` retains the exact
+update-760 model/Adam/RNG checkpoint, SHA-256
+`d016d898c1c49e65cfac83fb672422731fce073b7e1b447b9697a5b758ec8153`.
+The new frozen snapshot `controller-core-collection-shape-e43c579-source`
+copies source `9154380` with only the two collection/audit Python files changed;
+all original pace constants, native libraries, objectives and budgets remain.
+Configuration `controller-core-live-v4-after-collection-shape-v1.json` resumes
+through the registered recipe under supervisor 3442700/child 3442701, with
+host-local log `controller-core-live-v4-collection-shape-v1.log`.
+
+Recollection completed update 761: 947,458,933 frames and 9,640,056 decisions.
+Independent replay of all 3,833 new decisions passed (maximum TV 0.000032108,
+log-probability error 0.000094414), with zero additional optimizer updates.
+Six of the eight former outlier inputs reappeared exactly; all six reproduced
+their new probabilities bit-for-bit at their recorded shape. The old batch
+had no shape metadata and was not retroactively assigned the new shape.
+Reports `recorded-shape-audit.json` and `recovery.json` are in the recovery
+directory; small local copies use the `controller-core-collection-shape-`
+prefix under `runs/review-20260909`. This is verified recovery, not changed
+training credit or evidence of stronger play.
+
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
-`configs/` directory, currently `controller-core-live-v4-after-precision-v1.json`; each
+`configs/` directory, currently `controller-core-live-v4-after-collection-shape-v1.json`; each
 checkpoint also carries that configuration. Native code is `19f292c`.
 It continues the valid updates in `controller-core-live-v2`;
 failed collection attempts remain intact. The budget is 10M learner decisions
