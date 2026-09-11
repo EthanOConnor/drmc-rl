@@ -313,6 +313,39 @@ recipes:
       - Every learner transition stores public model inputs, not frozen trunk features. The whole core receives outcome gradients.
       - The frozen post-migration initial policy is the explicit regularization reference; failed quality labels are excluded.
       - This experiment does not promote a model, calibrate a quality head, or complete the larger-teacher and expressive-play stages.
+  trainer-controller-retention-bank:
+    status: active
+    stage: 3
+    purpose: Record independent public policy anchors after frozen portfolio controllers choose their actual input tapes.
+    requires_paths:
+      - tools/build_controller_retention.py
+      - "{controller_retention_bank_config}"
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.build_controller_retention, --config, "{controller_retention_bank_config}"]
+    produces: [Complete public candidate anchors, exact frozen teacher distributions, natural game journals]
+    resources: {preferred_host: tf3090, accelerator: cuda}
+    notes:
+      - Old teachers keep their original controller input encoding and rotation inventory. Recording cannot alter their action tapes.
+      - Student inputs retain the full physical frontier; actions suppressed by an old teacher have zero reference probability, not invented quality labels.
+      - Anchors contain no PPO behavior likelihoods. Exclude arena seeds and keep their states separate from subsequent rollout collection.
+
+  trainer-controller-retention:
+    status: active
+    stage: 3
+    purpose: Compare matched 300M continuations using cycling PPO or mixed-pace episodic PPO with independent per-pace retention.
+    requires_paths:
+      - tools/train_controller_retention.py
+      - "{controller_retention_config}"
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.train_controller_retention, --config, "{controller_retention_config}"]
+    produces: [Full public core checkpoints, natural game journals, public replay, per-pace retention and update KL]
+    resources: {preferred_host: tf3090, accelerator: cuda}
+    notes:
+      - Both arms use the same initialization, per-pace seed schedule, frozen opponents, objective coefficients and placement budgets.
+      - The revised arm mixes whole games across paces before updating; every actor term retains episode-sum credit with a common per-pace game-count factor.
+      - Separate teacher KL and per-pace vetoes never replace the actual PPO behavior distribution or natural terminal returns.
+      - Restore both model and optimizer on rejection. Fresh arena evidence, larger teachers and expressive play remain separate requirements.
+
   trainer-controller-gradient-audit:
     status: active
     stage: 3

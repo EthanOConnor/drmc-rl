@@ -172,7 +172,7 @@ def _training_forward(actor, features):
 
 
 @torch.no_grad()
-def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
+def _policy_snapshot(actor, records, size, *, reference=None, activity=None, pace_kl=None):
     """Exact categorical KL on all decisions, including unchosen moves."""
     distributions, divergences, errors = [], [], []
     agreement = {}
@@ -284,6 +284,11 @@ def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
     if reference is None:
         return distributions, agreement
     kl = float(np.mean(divergences))
+    if pace_kl is not None:
+        grouped = defaultdict(list)
+        for row,value in zip(records,divergences,strict=True):
+            grouped[row["pace"]].append(value)
+        pace_kl.update({p:max(0.,float(np.mean(values))) for p,values in grouped.items()})
     return (max(0.0, kl) if np.isfinite(kl) else kl), float(np.mean(errors))
 
 
@@ -333,12 +338,18 @@ def weighted_training_terms(terms, config):
         parent_kl=config.get("parent_kl", 0.02) * terms["parent_kl"])
 
 
-def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
+def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
+                   retention=None, completed_games_by_pace=None):
     if not records:
         raise RuntimeError("no natural-terminal learner decisions; cannot train")
+    if any(r.get("anchor_only") for r in records):
+        raise ValueError("teacher anchors are not PPO behavior samples")
     if hasattr(actor, "finish_collection"):
         actor.finish_collection(records)
     inverse_lengths, center, scale = prepare_training_records(records, config)
+    if completed_games_by_pace is not None:
+        from drmc_rl.training.controller_retention import balance_pace_credit
+        balance_pace_credit(records, completed_games_by_pace)
     size = config.get("minibatch", 128)
     old_distributions, collection_agreement = _policy_snapshot(actor, records, size, activity=activity)
     rng, totals = np.random.default_rng(seed), defaultdict(list)
@@ -349,14 +360,18 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
     first_step_kl = None
     value_mse = float(np.mean([(r["old_value"] - r["return"]) ** 2 for r in records]))
     initial_mse = value_mse
+    retention_rng = np.random.default_rng(seed ^ 0x71A90)
+    retained = retention.measure() if retention is not None else {}
     # Epoch guards avoid quadratic work from a full-batch check per minibatch.
     # Rejected updates restore BOTH weights and Adam moments before retrying.
     for _epoch in range(config.get("epochs", 2)):
         indices = rng.permutation(len(records))
         saved_model = deepcopy(_training_module(actor).state_dict())
         saved_optimizer = deepcopy(optimizer.state_dict())
+        saved_retention_rng = deepcopy(retention_rng.bit_generator.state)
         rates = [group["lr"] for group in optimizer.param_groups]
         for attempt in range(config.get("kl_backtracks", 4) + 1):
+            retention_rng.bit_generator.state = deepcopy(saved_retention_rng)
             attempt_totals = defaultdict(list)
             attempt_steps = 0
             candidate_first_kl = None
@@ -365,6 +380,10 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
                 features, data = _training_batch(actor, rows)
                 log_probs, terms = training_loss_terms(actor, features, data, config)
                 loss = sum(weighted_training_terms(terms, config).values())
+                if retention is not None:
+                    retention_loss = retention.loss(retention_rng)
+                    loss = loss + retention_loss
+                    terms["retention_loss"] = retention_loss
                 if not torch.isfinite(loss):
                     raise RuntimeError("non-finite pace training loss")
                 optimizer.zero_grad(set_to_none=True)
@@ -385,10 +404,15 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
                 for key, value in ({k: v.item() for k, v in terms.items()}
                                    | dict(gradient_norm=norm.item())).items():
                     attempt_totals[key].append((value, len(rows)))
+            per_pace_kl = {} if completed_games_by_pace is not None else None
             measured_kl, measured_mse = _policy_snapshot(
-                actor, records, size, reference=old_distributions, activity=activity
+                actor, records, size, reference=old_distributions, activity=activity, pace_kl=per_pace_kl
             )
-            if np.isfinite(measured_kl) and measured_kl <= max_kl:
+            candidate_retention = retention.measure() if retention is not None else {}
+            if (np.isfinite(measured_kl) and measured_kl <= max_kl
+                    and (per_pace_kl is None or all(np.isfinite(v) and v <= max_kl for v in per_pace_kl.values()))
+                    and (retention is None or retention.accepts(candidate_retention))):
+                retained = candidate_retention
                 accepted_kl, value_mse = measured_kl, measured_mse
                 for key, values in attempt_totals.items():
                     totals[key].extend(values)
@@ -422,6 +446,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None):
         completed_learning_games=int(round(inverse_lengths.sum())),
         mean_episode_decisions=float(len(records) / inverse_lengths.sum()),
         max_episode_decisions=float(1 / inverse_lengths.min()),
+        **({"retention_kl_by_pace":retained} if retention is not None else {}),
     )
 
 

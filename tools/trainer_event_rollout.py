@@ -91,7 +91,7 @@ class ParallelPlanning:
 
 
 def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
-                    observer=None, controller=None):
+                    observer=None, controller=None, anchor_recorder=None):
     if controller is not None:
         if (not config.get("allow_unadmitted_controller_experiment") or observer is not None
                 or config.get("mixed_core_actor")):
@@ -263,6 +263,12 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     "pill":state["pill"], "preview":state["preview"], "speed_ups":state["speed_ups"]}
                 if sample is not None:
                     row["learning"] = sample
+                if anchor_recorder is not None and side in anchor_recorder.sides:
+                    # Record after the teacher's input tape is installed. A
+                    # second public view cannot change its encoding or choice.
+                    row["anchor"] = anchor_recorder.record(
+                        pool.semantic(side,public_context=True), pace, delay,
+                        int(config["variants"][actors[i]]["delay"]), scores[j].copy())
                 if side in overrides:
                     row["unadmitted_construction"] = dict(incumbent_action=baseline_action,
                         changed=move["placement"]["action"] != baseline_action)

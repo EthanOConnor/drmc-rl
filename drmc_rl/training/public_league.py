@@ -123,9 +123,10 @@ class PublicOpponentPool:
                     else PlainPolicy(checkpoint, self.device, public_only=True)
                 )
                 base = model
-            if base.aux_spec != "zero_v1_vs" or base.in_channels != 20:
+            from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+            if base.aux_spec not in ("zero_v1_vs", PUBLIC_CONTEXT_SCHEMA) or base.in_channels != 20:
                 raise ValueError(
-                    "paced league currently requires the audited public zero-aux input contract"
+                    "paced league requires an audited public input contract"
                 )
             self.loaded[name] = model
         return self.loaded[name]

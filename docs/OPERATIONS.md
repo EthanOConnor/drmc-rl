@@ -1591,6 +1591,19 @@ simultaneous 14-HI family. Preserve natural draws and report any censoring;
 do not adopt from preliminary Elo. Main training continues to the per-pace
 decision minimums. This evaluation does not change the shipped portfolio.
 
+`trainer-controller-retention-bank` takes `controller_retention_bank_config`.
+It records natural teacher games in resumable paired chunks, then writes one
+complete bank per pace. The immutable contract binds configs, teacher/opponent
+hashes and actual motor profiles. A completed shard has its game journal;
+resume verifies that contract before reuse. No capped game enters the bank.
+`trainer-controller-retention` takes `controller_retention_config`, with arm
+`cycling_control` or `mixed_retention`, a full-core initialization, fixed
+opponent panel, all pace banks, reserved seeds and decision budgets. Anchor
+seeds are excluded from rollout resets. New runs have fresh outputs and
+optimizers; recovery preserves the config, identities, game journal, optimizer,
+sampling RNG and original per-pace retention baseline. Frame and learner
+decision counts are separate; anchor collection is not PPO training exposure.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved

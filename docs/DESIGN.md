@@ -647,6 +647,24 @@ complete-collection normalization. It reports full-network and shared
 actor/value parameter geometry without writing weights, gradient buffers or
 sampling state. Conflicting Euclidean gradients are diagnostic evidence, not
 an estimate of Adam's finite update or proof of the cause of a strength loss.
+The controlled continuation keeps cycling PPO as a reference and adds a
+mixed-pace arm. Its cycle collects every pace at unchanged weights. A common
+factor based on completed game counts gives each pace equal objective weight;
+all terms along a game's trajectory remain present. Natural games without
+controllable actions contribute zero gradient but remain in that denominator.
+Teacher retention uses a separate bank and loss. Frozen portfolio controllers
+choose through their original input paths; a passive post-choice recorder
+encodes the full public student frontier. Historical same-color rotation
+suppression remains zero probability in the teacher distribution, while all
+physical student candidates are retained. Those records never masquerade as
+on-policy actions. The complete independent bank is measured separately per
+pace after each revised epoch; both parameters and Adam moments roll back if
+any pace exceeds its initial teacher KL plus the declared budget. This is a
+distribution-retention diagnostic, not a proof of strength preservation.
+Arena seeds are excluded from the bank and subsequent PPO additionally excludes
+the bank's reset seeds. Both arms share initialization, opponent bytes,
+per-pace seed schedules and placement budgets. Baseline advancement and useful
+motor/search/style integration still require whole-game evaluation.
 Actual categorical KL is checked on all collected actions after optimization,
 with parameter and optimizer rollback when the update budget is exceeded.
 Changing objective on resume is rejected; use a weights-only initialization
