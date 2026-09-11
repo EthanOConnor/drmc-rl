@@ -32,8 +32,8 @@ function readyEntrants() {
   for (const run of experiment.training_runs || []) if(run.variant_id && run.status==='Training complete' && run.final_checkpoint) ready.add(run.variant_id);
   return ready;
 }
-const conditionKey = item => `${item.level}:${item.pace || 'frame_perfect'}`;
-const conditionName = item => `${item.level} HI · ${paceNames[item.pace] || item.pace}`;
+const conditionKey = item => `${item.level}:${item.pace || 'frame_perfect'}${item.execution_key ? ':'+item.execution_key : ''}`;
+const conditionName = item => `${item.level} HI · ${paceNames[item.pace] || item.pace}${item.execution_profile ? ` · ${item.execution_profile.reaction_frames}f reaction` : ' · earlier presets'}`;
 const replayCondition = item => {
   const comparison = item.match_key?.replace(/-\d+$/,'');
   const match = experiment?.results?.tournaments?.find(m=>m.id===comparison);
@@ -52,7 +52,7 @@ function setOptions(select,entries,value) {
 function renderStandings() {
   const results = experiment.results || {}, groups = results.unified_rating_groups || results.rating_groups || [];
   const conditions = new Map();
-  for (const match of results.tournaments || []) conditions.set(conditionKey(match),{level:match.level,pace:match.pace || 'frame_perfect'});
+  for (const match of results.tournaments || []) conditions.set(conditionKey(match),{level:match.level,pace:match.pace || 'frame_perfect',execution_key:match.execution_key,execution_profile:match.execution_profile});
   if (!conditions.size) conditions.set('14:normal',{level:14,pace:'normal'});
   if (!conditions.has(condition)) condition = conditions.has('14:normal') ? '14:normal' : conditions.keys().next().value;
   const entries = [...conditions].sort((a,b)=>a[1].level-b[1].level || Object.keys(paceNames).indexOf(a[1].pace)-Object.keys(paceNames).indexOf(b[1].pace));
@@ -71,7 +71,7 @@ function renderStandings() {
     return `<tr class="${id===reference?'reference-row':''}"><td class="rank">${rating?i+1:'—'}</td><td class="player-name">${esc(entrantName(id))}<span class="player-note ${id===reference?'reference-label':''}">${note}</span></td><td class="number elo ${decisive ? delta.elo>0?'positive':'negative' : 'unrated'}">${delta?signed(delta.elo):'—'}</td><td class="number interval">${delta?`${signed(delta.low)} to ${signed(delta.high)}`:'Unrated'}</td><td class="number">${rating?count(rating.games):'—'}</td></tr>`;
   }).join('') || '<tr><td colspan="5" class="empty">The first paired results will appear here.</td></tr>';
   const games = ratings.reduce((n,r)=>n+num(r.games),0)/2;
-  $('#rating-note').textContent = `${count(games)} games at these settings · approximate 95% intervals · paired seeds. Ratings combine tournament phases, with each pace and level kept separate.`;
+  $('#rating-note').textContent = `${count(games)} games at these settings · approximate 95% intervals · paired seeds. Levels and recorded motor limits are kept separate. Earlier results retain their original grouping.`;
   const matched = group?.matchups || [];
   $('#matrix').innerHTML = ratings.length ? `<table><thead><tr><th>Row vs column</th>${ratings.map((r,i)=>`<th title="${esc(entrantName(r.id))}">${i+1}</th>`).join('')}</tr></thead><tbody>${ratings.map((a,i)=>`<tr><th>${i+1}. ${esc(entrantName(a.id))}</th>${ratings.map(b=>{
     if(a.id===b.id)return '<td>—</td>';

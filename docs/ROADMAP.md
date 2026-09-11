@@ -432,20 +432,29 @@ indefinitely staged.
   50M Relaxed adapter. The 300M core is the selected Sloth/Super Human/Frame
   Perfect candidate for representative actual-app checks before adoption;
   retain the current outcome optimizer and other pace baselines.
-  The frozen 1B milestone (update 807; 1,000,407,839 frames and 10,212,973
-  decisions) now has a fixed 24,576-game tournament against 300M, corrected
-  E1 and parent. Seven 14-HI speeds are primary, with 20-HI Normal/Top Humans
-  separate; the historical evaluator and motor profiles remain unchanged.
-  The reused reserved bank supports a learning-curve comparison, not fresh
-  confirmation. Complete the allocation and whole-seed family assessment
-  before selecting a candidate; keep main training running until every pace
-  reaches its decision minimum. See the 1B launch and recovery instructions
-  in `docs/OPERATIONS.md`.
+  The frozen 1B milestone completed all 24,576 games without censoring at
+  September 11 21:35 UTC. At 14-HI Sloth it scores 63.48% against E1 and
+  54.30% against 300M. The simultaneous 21-comparison intervals support the
+  former gain; the latter spans 49.83–58.76%. It loses to 300M at all six
+  other paces (27.05–39.45%). Preserve the shipped portfolio. The run finished
+  at update 901, 1,115,764,287 frames and 11,447,037 learner decisions,
+  including at least 500k at every pace. The final inference export preserves
+  all 185 tensors exactly. Evaluate final/1B candidates with current product
+  motor limits before selection; old 60/36 results remain historical.
+  `core-1b-assessment.json` retains the complete whole-seed assessment.
   An independent frozen-policy loss diagnostic now investigates the emerging
   1B Sloth/faster-speed tradeoff. Logged Sloth optimizer exposure is only 4.42%,
   and the existing per-update KL check covers only the current pace. Measure
   actor/critic/regularization interaction before choosing a training revision;
   do not infer a cause from game counts or preliminary tournament rankings.
+  The corrected diagnostic completed 480 natural games and 21,835 decisions
+  with zero optimizer updates. Its 14 fixed minibatches show actor/value
+  cosines between -0.087 and +0.070; no large consistent cancellation was
+  observed. This does not diagnose Adam dynamics or cross-pace interference.
+  The next controlled revision starts from 300M and tests mixed-pace outcome
+  updates plus independent per-pace retention against matched continuation.
+  Preserve actual on-policy likelihoods and whole-game reductions; teacher
+  policy anchoring must remain a separate loss, never PPO behavior data.
   V2 mixed-core live selection is implemented, including per-pace input
   encoding, warmup, anticipation capabilities and portable packaging. The
   explicit tester-300m manifest retains Relaxed/E1 routes. Six native/ROM

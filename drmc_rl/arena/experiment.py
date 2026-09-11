@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 from datetime import datetime, timezone
 from pathlib import Path
@@ -11,6 +12,13 @@ from typing import Any
 import numpy as np
 
 from drmc_rl.arena.ratings import ELO_SCALE, PairCounts, fit_laplace_ratings
+
+
+def execution_key(profile):
+    """Keep unrecorded historical presets separate from measured motor limits."""
+    if profile is None:
+        return ""
+    return hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 
 
 def dump(path, value):
@@ -73,10 +81,14 @@ def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False)
         by_comparison.setdefault(row["comparison"], []).append(row)
     for match in comparisons.values():
         match_rows = by_comparison.get(match["id"], ())
+        profile_key = execution_key(match.get("execution_profile"))
+        if profile_key and any(r.get("execution_key") != profile_key for r in match_rows):
+            raise ValueError("rating records disagree with their execution profile")
         if any(r.get("reason") == "timeout" or r.get("score") is None for r in match_rows):
             continue  # No strength inference from an outcome-censored edge.
         key = ("Live tournament" if unified else match.get("rating_group", "Screening"),
-               match["level"], match.get("pace", "frame_perfect"))
+               match["level"], match.get("pace", "frame_perfect"),
+               profile_key)
         seeds = {}
         for row in match_rows:
             seeds.setdefault(row["seed"], {})[row["side"]] = row["score"]
@@ -84,7 +96,7 @@ def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False)
             if set(sides) == {0, 1}:
                 groups.setdefault(key, []).append((match["a"], match["b"], list(sides.values())))
     result = []
-    for (label, level, pace), rows in groups.items():
+    for (label, level, pace, profile_key), rows in groups.items():
         connected = {anchor}
         while True:
             expanded = connected | {v for a,b,_ in rows if a in connected or b in connected for v in (a,b)}
@@ -123,7 +135,10 @@ def relative_ratings(comparisons, records, anchor="baseline8", *, unified=False)
                 differences[reference] = {"elo":round(float(mid)),"low":round(float(lo)),"high":round(float(hi))}
             ratings.append({"id": id, "elo": round(float(median)), "low": round(float(low)),
                             "high": round(float(high)), "games": games[id],"differences":differences})
+        profile = next((m.get("execution_profile") for m in comparisons.values()
+                        if execution_key(m.get("execution_profile")) == profile_key), None)
         result.append({"label": label, "level": level, "pace": pace, "anchor": anchor,
+            "execution_key": profile_key, "execution_profile": profile,
             "ratings": sorted(ratings, key=lambda r: -r["elo"]),
             "matchups": [{"a": agents[i], "b": agents[j], "games": sum(wdl),
                 "score": (wdl[0]+.5*wdl[1])/sum(wdl)} for (i,j),wdl in counts.items()],

@@ -6,7 +6,7 @@ const percent = value => Number.isFinite(value) ? `${(100 * value).toFixed(1)}%`
 
 function ratingViews(groups, name, openMatrices) {
   return groups.map(group => {
-    const key = JSON.stringify([group.label, group.level, group.pace]);
+    const key = JSON.stringify([group.label, group.level, group.pace, group.execution_key]);
     const ids = group.ratings.map(r => r.id);
     const signed = n => n > 0 ? `+${n}` : `${n}`;
     return `<div class="section-title"><h3>Relative Elo · ${esc(group.label)}</h3><p>L${group.level} HI · ${esc(group.pace)}</p></div>

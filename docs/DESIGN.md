@@ -664,6 +664,13 @@ cores and earlier adapters remain in the connected field. Live ratings combine
 compatible experiment phases within each level and pace, with complete
 side-swapped seeds as the observation unit; they do not collapse the motor
 settings into an uncalibrated single strength score.
+New controller arenas persist the complete actual `Pace` definition and its
+content key in comparisons and game journals. Both phase and unified ratings
+partition on that definition. Unrecorded historical presets retain a separate
+group; current constants never backfill old evidence. Launch rejects a requested
+profile that differs from the executable, and resume rejects unrecorded or
+different journal profiles. This keeps 45/30-frame product reactions separate
+from the frozen 60/36-frame studies without changing their games or ratings.
 
 Budget this experiment in both simulated console frames and actual learner
 placement decisions, reported separately for every pace. Earlier PPO `steps`

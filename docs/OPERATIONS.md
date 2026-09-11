@@ -1053,6 +1053,14 @@ directory's `progress.json`; logs remain local on tf3090. New quality fitting
 must include the quarantine guard in `6d7e05a` or later. These studies do not
 complete the independent larger-teacher and student-distillation program or
 promote a model.
+The first 48-hour supervisor reached its cap at September 11 22:44:47 UTC
+with 944/1,024 roots complete. All three prior processes exited. A new finite
+24-hour recovery, `run_broad_teacher_labels_resume_v2.py`, started at 23:25 UTC
+under `terminal-quality-broad-resume-v2` (initial supervisor 3685850). It uses
+the identical configs, frozen source, native library and output directories;
+durable complete roots are reused. Its progress records config/native hashes.
+Complete the 14-HI bank and then the 128 20-HI roots before fitting. Inspect
+the new control directory and actual child PIDs for subsequent recovery.
 
 Native `23411a5` adds `drm_vspool_settled_public`, exposed by
 `DrMarioVsPoolRunner.settled_public()`. A fresh placement reset records a native

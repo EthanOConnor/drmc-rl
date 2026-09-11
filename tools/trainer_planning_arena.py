@@ -26,7 +26,7 @@ import numpy as np
 import torch
 
 from drmc_rl.arena.store import ArenaStore
-from drmc_rl.arena.experiment import dump, outcome_summary
+from drmc_rl.arena.experiment import dump, execution_key, outcome_summary
 from drmc_rl.envs.backends.vs_frames import FrameVsPool
 from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import (
@@ -38,6 +38,15 @@ from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.vs_head_to_head import PlainPolicy
 
 FPS = 60.0988
+
+
+def bind_execution_profiles(config):
+    """Record actual limits and reject a request for another executable preset."""
+    for match in config["schedule"]:
+        actual = resolve_pace(match.get("pace", "frame_perfect")).to_dict()
+        if match.get("execution_profile", actual) != actual:
+            raise ValueError("requested execution profile differs from this evaluator's motor limits")
+        match.update(execution_profile=actual, execution_key=execution_key(actual))
 
 
 def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, activity=None):
@@ -341,6 +350,7 @@ def main():
     parser.add_argument("--config", type=Path, required=True)
     args = parser.parse_args()
     config = json.loads(args.config.read_text())
+    bind_execution_profiles(config)
     output = Path(config["output"])
     output.mkdir(parents=True, exist_ok=True)
     torch.set_num_threads(config.get("threads", 1))
@@ -380,8 +390,11 @@ def main():
     records = output / "games.jsonl"
     results = {}
     if records.exists():
+        expected = {m["id"]: m["execution_key"] for m in config["schedule"]}
         for line in records.read_text().splitlines():
             row = json.loads(line)
+            if row["comparison"] not in expected or row.get("execution_key") != expected[row["comparison"]]:
+                raise ValueError("resume journal has different or unrecorded motor limits; retain its frozen evaluator")
             results.setdefault(row["comparison"], []).append(row)
     records.touch(exist_ok=True)
     publish(config, results, output, store)
@@ -426,7 +439,8 @@ def main():
                     profile.dump_stats(output / "profile.pstats")
                 censored_seeds = {r["seed"] for r, _, _ in batch if r["reason"] == "timeout"}
                 for row, moves, replay in batch:
-                    row.update(comparison=match["id"], level=match["level"], pace=match.get("pace", "frame_perfect"))
+                    row.update(comparison=match["id"], level=match["level"], pace=match.get("pace", "frame_perfect"),
+                               execution_key=match["execution_key"])
                     results.setdefault(match["id"], []).append(row)
                     trace = output / "moves" / f"{match['id']}-{row['index']:04d}.json.gz"
                     trace.parent.mkdir(exist_ok=True)

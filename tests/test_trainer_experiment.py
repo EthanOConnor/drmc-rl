@@ -3,7 +3,43 @@ import json
 
 import pytest
 
-from drmc_rl.arena.experiment import experiment_health, read_experiment, relative_ratings
+from drmc_rl.arena.experiment import execution_key, experiment_health, read_experiment, relative_ratings
+
+
+def test_ratings_separate_exact_motor_profiles_and_unrecorded_history():
+    from dataclasses import replace
+    from drmc_rl.execution.pace import resolve_pace
+    current = resolve_pace("sloth").to_dict()
+    historical = replace(resolve_pace("sloth"), reaction_frames=60).to_dict()
+    comparisons, records = {}, {}
+    for name, profile in (("unrecorded", None), ("historical", historical),
+                          ("current", current), ("current-followup", current)):
+        comparisons[name] = dict(id=name, a="candidate", b="parent", level=14,
+                                 pace="sloth", rating_group=name, execution_profile=profile)
+        for i in range(64):
+            records[name,i] = dict(comparison=name, seed=i//2, side=i%2,
+                                  score=float(i < 40), execution_key=execution_key(profile))
+    groups = relative_ratings(comparisons, records, anchor="parent", unified=True)
+    assert len(groups) == 3
+    by_profile = {g["execution_key"]: g for g in groups}
+    assert by_profile[execution_key(current)]["matchups"][0]["games"] == 128
+    assert by_profile[execution_key(historical)]["matchups"][0]["games"] == 64
+    assert by_profile[""]["matchups"][0]["games"] == 64
+    records["current",0]["execution_key"] = execution_key(historical)
+    with pytest.raises(ValueError, match="execution profile"):
+        relative_ratings(comparisons, records, anchor="parent", unified=True)
+
+
+def test_arena_binds_actual_execution_profile_and_rejects_wrong_preset():
+    from tools.trainer_planning_arena import bind_execution_profiles
+    config = {"schedule": [dict(pace="sloth"), dict(pace="relaxed")]}
+    bind_execution_profiles(config)
+    assert [m["execution_profile"]["reaction_frames"] for m in config["schedule"]] == [45,30]
+    assert all(m["execution_key"] == execution_key(m["execution_profile"]) for m in config["schedule"])
+    bind_execution_profiles(config)
+    config["schedule"][0]["execution_profile"]["reaction_frames"] = 60
+    with pytest.raises(ValueError, match="motor limits"):
+        bind_execution_profiles(config)
 
 
 def test_failed_training_overrides_optimistic_plan(tmp_path):
