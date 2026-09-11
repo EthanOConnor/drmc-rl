@@ -1530,6 +1530,29 @@ These are finite-critic mechanics and shared-device costs, not quality labels,
 general speedups or strength evidence. The dashboard identifies unilateral
 decisions and full-reference checks without fabricating an opponent root.
 
+The 1B milestone entered the live tournament on September 11 at 15:31 UTC.
+`runs/review-20260909/controller-core-1b-mac.json` fixes 24,576 games against
+300M, corrected E1 and the frozen parent: 1,024 per opponent at each of seven
+14-HI paces, plus 512 per opponent at Normal/Top Humans 20 HI separately.
+The immutable checkpoint is update 807, 1,000,407,839 frames and 10,212,973
+decisions; SHA-256 is
+`ee246faac1f9c645c151a6dc60773ac84623e7d5b95ec51ff5f708bd0df411b2`.
+`prepare_core_1b_arena.py` checks the checkpoint, freezes every model/native
+hash and validates the allocation. `launch_core_1b_arena.py` starts the
+registered recipe through the original `controller-arena-0c76c0e-source`,
+native19f libraries, four-frame charge and historical 60/36-frame
+Sloth/Relaxed floors. One local MPS worker with three CPU planners interleaves
+32-game batches; initial supervisor PID is 55616. Keep the live product's
+45/30-frame profile separate from these historical rating conditions.
+The output directory is `controller-core-1b-mac`; the dashboard sync feed is
+`core-1b-mac` and the entrant is `public_core_1b`. Its 768 reserved reset seeds
+are training-excluded and reused from the 100M/300M learning-curve studies,
+not independent confirmation. After the complete fixed allocation, run
+`core-1b-assessment.py` for whole-seed uncertainty and the 21-comparison
+simultaneous 14-HI family. Preserve natural draws and report any censoring;
+do not adopt from preliminary Elo. Main training continues to the per-pace
+decision minimums. This evaluation does not change the shipped portfolio.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved

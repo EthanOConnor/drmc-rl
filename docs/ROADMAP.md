@@ -432,6 +432,15 @@ indefinitely staged.
   50M Relaxed adapter. The 300M core is the selected Sloth/Super Human/Frame
   Perfect candidate for representative actual-app checks before adoption;
   retain the current outcome optimizer and other pace baselines.
+  The frozen 1B milestone (update 807; 1,000,407,839 frames and 10,212,973
+  decisions) now has a fixed 24,576-game tournament against 300M, corrected
+  E1 and parent. Seven 14-HI speeds are primary, with 20-HI Normal/Top Humans
+  separate; the historical evaluator and motor profiles remain unchanged.
+  The reused reserved bank supports a learning-curve comparison, not fresh
+  confirmation. Complete the allocation and whole-seed family assessment
+  before selecting a candidate; keep main training running until every pace
+  reaches its decision minimum. See the 1B launch and recovery instructions
+  in `docs/OPERATIONS.md`.
   V2 mixed-core live selection is implemented, including per-pace input
   encoding, warmup, anticipation capabilities and portable packaging. The
   explicit tester-300m manifest retains Relaxed/E1 routes. Six native/ROM
