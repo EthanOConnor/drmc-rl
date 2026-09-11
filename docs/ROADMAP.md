@@ -567,8 +567,14 @@ indefinitely staged.
   decisions, 52 reused geometry and nine replanned after own-board changes.
   Median paired savings were small and variable (about -0.2 to 2.7 ms across
   these paces) on the shared Mac. Keep the existing compute allowance. This
-  implements exact geometry reuse with fresh scoring, not shared neural
-  features, host integration or a demonstrated full-game strength gain.
+  implements exact geometry reuse with fresh scoring. Desktop and browser host
+  integration is now committed in Professor Pills `6d786c6`: one-use tokens,
+  unchanged actual context/compute budget, capability negotiation and stale
+  response handling. Focused scheduler/browser tests and WASM compilation pass.
+  A 30-second native 14-HI Frame Perfect source-app check completed 45 placements,
+  37 geometry hits and seven ordinary misses, with no corrections or mismatches.
+  It establishes live protocol execution, not a latency or strength improvement.
+  Actual browser/ROM geometry acceptance and broader measured performance remain.
   Complete simultaneous mixed-strategy backups are now implemented in both
   recursive and cooperative full-pair search. The opt-in mode retains all
   actions and correlated chance support, exports both players' strategies and

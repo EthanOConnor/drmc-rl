@@ -118,6 +118,8 @@ def test_public_teacher_replay_has_complete_frontiers_and_separate_outcome_label
             np.testing.assert_array_equal(replay["public_context"][i], row["public_context"])
             assert replay["actions"][lo + replay["slot"][i]] == replay["action"][i]
             assert replay["game_seed"][i] == games[i]["seed"]
+            np.testing.assert_array_equal(replay["collection_shape"][i], row["collection_shape"])
+            assert replay["collection_row"][i] == i
             from drmc_rl.human.motor_opportunity import state_from_controller_replay
             restored = state_from_controller_replay(replay, i)
             np.testing.assert_array_equal(restored["board_planes"], row["observation"][:8])
@@ -317,6 +319,51 @@ def test_precise_collection_audit_uses_same_weights_and_preserves_behavior(paren
     rows[0]["old_logprob"] = float(rows[0]["behavior_logp"][rows[0]["slot"]])
     with pytest.raises(RuntimeError, match="after FP64 audit"):
         _policy_snapshot(actor, rows, 4)
+
+
+def test_recorded_collection_shape_reproduces_behavior_without_changing_the_bound(parent, monkeypatch):
+    actor = ControllerCorePolicy(parent, seed=67)
+    obs, infos = controller_requests(actor)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for row in rows:
+        row.update({"return": 1., "advantage": 1., "weight": 1.})
+    before = actor.rng.get_state().clone()
+    versions = actor._parameter_versions()
+    original = actor.training_forward
+    shape = rows[0]["collection_shape"]
+    seen = []
+
+    def shape_rounding(features):
+        actual_shape = (len(features[0]), features[3].shape[1])
+        seen.append(actual_shape)
+        logits, values = original(features)
+        if actual_shape != shape:
+            logits = logits + torch.linspace(-.01, .01, logits.shape[1])
+        return logits, values
+
+    monkeypatch.setattr(actor, "training_forward", shape_rounding)
+    actual, agreement = _policy_snapshot(actor, rows, 2)
+    assert agreement["collection_shape_rechecks"] > 0
+    assert agreement.get("collection_precision_rechecks", 0) == 0
+    assert agreement["collection_max_shape_total_variation"] <= 1e-4
+    assert agreement["collection_max_shape_logp_error"] <= 1e-3
+    assert shape in seen
+    for row, logs in zip(rows, actual):
+        np.testing.assert_array_equal(row["behavior_logp"], logs)
+    assert torch.equal(before, actor.rng.get_state())
+    assert actor._parameter_versions() == versions
+
+    shifted = torch.tensor(rows[-1]["behavior_logp"]) + torch.linspace(-.1, .1, len(rows[-1]["actions"]))
+    rows[-1]["behavior_logp"] = shifted.log_softmax(-1).numpy()
+    rows[-1]["old_logprob"] = float(rows[-1]["behavior_logp"][rows[-1]["slot"]])
+    with pytest.raises(RuntimeError, match="after FP64 audit"):
+        _policy_snapshot(actor, rows, 2)
+    invalid = {**rows[0], "collection_shape": (4, 1)}
+    with pytest.raises(ValueError, match="collection shape"):
+        actor.collection_behavior_logp(invalid)
+    historical = {k: v for k, v in rows[0].items() if k != "collection_shape"}
+    assert actor.collection_behavior_logp(historical) is None
 
 
 def test_collection_versions_detect_even_tiny_network_writes(parent):

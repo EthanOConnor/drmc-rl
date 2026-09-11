@@ -210,6 +210,29 @@ def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
                 # behavior logs. Recheck shape outliers before rejecting them.
                 for i in np.flatnonzero((variations > 1e-4) | (np.abs(old-current).max(-1) > 1e-3)):
                     if len(rows) == 1:
+                        # A single-row or FP64 evaluation does not reproduce
+                        # the original FP32 kernel dimensions. Check the one
+                        # recorded collection shape before using the independent
+                        # accurate reference. The probability bounds and actual
+                        # behavior logs remain unchanged.
+                        shape_logs = (actor.collection_behavior_logp(rows[i])
+                                      if hasattr(actor, "collection_behavior_logp") else None)
+                        if shape_logs is not None:
+                            shape_logs = np.asarray(shape_logs, dtype=np.float64)
+                            behavior = rows[i]["behavior_logp"].astype(np.float64)
+                            if shape_logs.shape != behavior.shape:
+                                raise RuntimeError("collection shape audit changed the candidate inventory")
+                            shape_tv = float(np.abs(np.exp(behavior)-np.exp(shape_logs)).sum()/2)
+                            shape_error = float(np.abs(behavior-shape_logs).max())
+                            if not np.isfinite(shape_tv) or not np.isfinite(shape_error):
+                                raise RuntimeError("nonfinite collection shape audit")
+                            agreement["collection_shape_rechecks"] = agreement.get("collection_shape_rechecks", 0) + 1
+                            agreement["collection_max_shape_total_variation"] = max(
+                                agreement.get("collection_max_shape_total_variation", 0), shape_tv)
+                            agreement["collection_max_shape_logp_error"] = max(
+                                agreement.get("collection_max_shape_logp_error", 0), shape_error)
+                            if shape_tv <= 1e-4 and shape_error <= 1e-3:
+                                continue
                         if not hasattr(actor, "precise_behavior_logp"):
                             raise RuntimeError(f"collection distribution differs from frozen update policy: total variation={variations[i]:.9g}, max logp error={error:.9g}")
                         # Two FP32 evaluations can fall on opposite sides of
@@ -238,7 +261,9 @@ def _policy_snapshot(actor, records, size, *, reference=None, activity=None):
                         recheck["collection_max_total_variation"],
                     )
                     agreement["collection_precision_rechecks"] = agreement.get("collection_precision_rechecks", 0) + recheck.get("collection_precision_rechecks", 0)
-                    for key in ("collection_max_precise_total_variation", "collection_max_precise_logp_error"):
+                    agreement["collection_shape_rechecks"] = agreement.get("collection_shape_rechecks", 0) + recheck.get("collection_shape_rechecks", 0)
+                    for key in ("collection_max_precise_total_variation", "collection_max_precise_logp_error",
+                                "collection_max_shape_total_variation", "collection_max_shape_logp_error"):
                         if key in recheck:
                             agreement[key] = max(agreement.get(key, 0), recheck[key])
             else:

@@ -316,9 +316,14 @@ microstate, observation contract and execution profile must match exactly.
 Scoring then receives the actual preview, opponent board/pill and live public
 history. Opponent changes alone do not invalidate geometry, while incoming
 garbage or other own-state changes cause ordinary fresh planning. Legacy scored
-anticipation remains unavailable for context actors. This shares native
-feasibility, not a cached neural trunk; host scheduling, larger latency studies
-and full-game evaluation of any changed compute allowance remain separate.
+anticipation remains unavailable for context actors. The desktop and browser
+hosts negotiate this capability and carry the one-use token from the preceding
+valid request. Reset/retry/stale responses cannot install a move; fresh browser
+decisions take priority over optional queued preparation. Both hosts keep the
+actual public inputs and existing execution budget. Source native acceptance
+completed 45 placements with 37 geometry hits, seven misses and no mismatches
+or corrections. Actual browser/ROM geometry acceptance, broader latency and
+full-game evaluation of any changed compute allowance remain separate.
 
 The controller outcome trainer can now update the full G5 on this input
 contract. It reuses the measured causal controller collector and episodic loss,

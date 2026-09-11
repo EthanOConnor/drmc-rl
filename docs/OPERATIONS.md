@@ -429,6 +429,16 @@ Its supervisor is 3052699, and its log is the host-local
 `19f292c` files in the earlier source snapshot. Update 379 completed after
 recovery; counts reached 472,234,760 frames and 4,739,370 learner decisions.
 
+New controller collections additionally retain their original batch size,
+candidate padding width and row index in public replay. A rare numerical outlier
+can be reevaluated once at that recorded FP32 collection shape before the
+independent FP64 check. G5 has no cross-example attention or normalization;
+repeating the row recreates kernel dimensions without retaining duplicate input
+batches. This checks the policy that actually sampled the action, preserves its
+stored probabilities, and leaves the 0.0001 TV/0.001 log-probability limits and
+model-version checks unchanged. Historical shards without shape metadata retain
+their previous audit path. Never search arbitrary batch sizes until one passes.
+
 The active full-core run is `review-20260909/controller-core-live-v4` under
 the tf3090 trainer-output mount. Its launch configuration is under the sibling
 `configs/` directory, currently `controller-core-live-v4-after-precision-v1.json`; each

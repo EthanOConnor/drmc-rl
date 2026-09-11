@@ -125,6 +125,8 @@ class ControllerCorePolicy(PlainPolicy):
                 observed_frame=int(infos[i]["public_pair_state"].frame_id),
                 viewer_side=int(infos[i]["public_acting_side"]),
                 collection_id=self._collection_id,
+                collection_shape=(len(infos), masks.shape[1]),
+                collection_row=i,
                 controller_geometry=np.asarray([
                     infos[i]["public_controller_geometry"][key]
                     for key in CONTROLLER_GEOMETRY_FIELDS
@@ -135,9 +137,13 @@ class ControllerCorePolicy(PlainPolicy):
         scores[~masks] = -np.inf
         return actions, masks, scores
 
-    def training_batch(self, records):
+    def training_batch(self, records, *, candidate_width=None):
         count = len(records)
         width = max(32, max(len(r["actions"]) for r in records))
+        if candidate_width is not None:
+            if candidate_width < width:
+                raise ValueError("collection shape cannot truncate the candidate inventory")
+            width = candidate_width
         arrays = dict(
             observation=np.stack([r["observation"] for r in records]).astype(np.float32),
             pill=np.stack([r["pill"] for r in records]).astype(np.int64),
@@ -165,6 +171,29 @@ class ControllerCorePolicy(PlainPolicy):
     def training_forward(self, features):
         logits, value = self.net(*features[:6], aux=features[6])
         return logits, value.reshape(-1)
+
+    @torch.inference_mode()
+    def collection_behavior_logp(self, record):
+        """Replay one row at its recorded collection shape and arithmetic mode.
+
+        G5 has no batch-dependent normalization or cross-example attention.
+        Repeating this public row restores the original CUDA kernel dimensions
+        without retaining every collection batch twice. This is one recorded
+        shape, never a search for a numerical result that passes the audit.
+        """
+        shape = record.get("collection_shape")
+        if shape is None:
+            return None  # Historical replay did not preserve this information.
+        count, width = shape
+        index = record["collection_row"]
+        if (not all(isinstance(x, (int, np.integer)) for x in (count, width, index))
+                or not 0 < count <= 4096 or not 32 <= width <= 512
+                or not 0 <= index < count):
+            raise ValueError("invalid recorded collection shape")
+        features, _ = self.training_batch([record] * count, candidate_width=width)
+        logits, _ = self.training_forward(features)
+        # Collection applies log_softmax on the accelerator before copying.
+        return logits.float().log_softmax(-1)[index, :len(record["actions"])].cpu().numpy().copy()
 
     @torch.no_grad()
     def precise_behavior_logp(self, record):
@@ -219,6 +248,9 @@ def write_public_replay(path, records, games, *, update, pace, level):
     payload["game_seed"] = np.asarray([games[r["game_id"]]["seed"] for r in records], np.int32)
     payload["learner_port"] = np.asarray([games[r["game_id"]]["side"] for r in records], np.int8)
     payload["controller_geometry"] = np.stack([r["controller_geometry"] for r in records])
+    if all("collection_shape" in r for r in records):
+        payload["collection_shape"] = np.asarray([r["collection_shape"] for r in records], np.int32)
+        payload["collection_row"] = np.asarray([r["collection_row"] for r in records], np.int32)
     payload["metadata"] = np.asarray(json.dumps(dict(
         schema="drmc-public-controller-replay-v2", update=update, behavior_update=update - 1,
         pace=pace, level=level,
