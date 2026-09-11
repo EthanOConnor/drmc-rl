@@ -1545,6 +1545,20 @@ training/evaluation conditions. It investigates loss interaction; neither a
 small diagnostic sample nor a negative gradient cosine authorizes a model
 change. Complete the fixed strength allocation and compare any proposed
 training revision in its own explicitly initialized run.
+The saved `controller-core-1b-update-exposure.json` covers all 805 logged
+updates 3–807 and 160,160 accepted optimizer steps; Sloth accounts for 4.42%
+of those steps. Its larger game batches do not establish dominant gradient
+exposure. `controller-gradient-1b-v2` now runs 480 diagnostic games (256 Sloth,
+64 Relaxed, 32 at each remaining pace), then two fixed 128-row minibatches
+per pace. Source `gradient-audit-5c5fff3-source` uses original native19f and
+60/36 reactions, one low-priority CPU/Torch thread and one planner worker,
+with a two-hour cap; supervisor 72678. The initial reference must reconstruct
+bit for bit from the training seed and match saved `core-initial.pt` before
+collection. V1 was stopped and rejected for unseeded reference construction;
+its raw output and `controller-gradient-1b-v1-review.json` remain. Main
+training and the tournament were unaffected. After V2 completes, run
+`assess_controller_gradient_v2.py` to verify all games, replay rows and gradient
+matrices before interpreting `controller-gradient-1b-assessment-v2.json`.
 
 The 1B milestone entered the live tournament on September 11 at 15:31 UTC.
 `runs/review-20260909/controller-core-1b-mac.json` fixes 24,576 games against

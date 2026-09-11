@@ -441,6 +441,11 @@ indefinitely staged.
   before selecting a candidate; keep main training running until every pace
   reaches its decision minimum. See the 1B launch and recovery instructions
   in `docs/OPERATIONS.md`.
+  An independent frozen-policy loss diagnostic now investigates the emerging
+  1B Sloth/faster-speed tradeoff. Logged Sloth optimizer exposure is only 4.42%,
+  and the existing per-update KL check covers only the current pace. Measure
+  actor/critic/regularization interaction before choosing a training revision;
+  do not infer a cause from game counts or preliminary tournament rankings.
   V2 mixed-core live selection is implemented, including per-pace input
   encoding, warmup, anticipation capabilities and portable packaging. The
   explicit tester-300m manifest retains Relaxed/E1 routes. Six native/ROM
