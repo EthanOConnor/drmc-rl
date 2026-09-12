@@ -1062,6 +1062,27 @@ durable complete roots are reused. Its progress records config/native hashes.
 Complete the 14-HI bank and then the 128 20-HI roots before fitting. Inspect
 the new control directory and actual child PIDs for subsequent recovery.
 
+Both broad allocations are complete. One 20-HI root initially retained two
+unknown continuations. `terminal-quality-tail-recovery-v1` replayed its full
+270-tail panel with a 16,384-event cap: both missing outcomes finished and
+all 268 previously complete outcome/event/reveal records reproduced exactly.
+The original targets remain immutable. `broad-quality-fit-v1/labels` contains
+the separately versioned complete 14-HI and repaired 20-HI releases, with
+predecessor/recovery hashes and a validity record. The structural audit verifies
+1,024 primary roots with 33,682 candidates, 128 secondary roots with 3,830
+candidates, and disjoint source, anchor and confirmation partitions.
+
+`run_broad_quality_fit_v1.py` launched the registered quality-fit recipe on
+tf3090 at September 12 16:14 UTC, frozen source `52024db`, under an eight-hour
+outer cap. Critic, context and combined modes each receive 32 fixed epochs,
+the same model/split seeds, a whole-reset-seed 75/25 split of the 14-HI roots,
+and independent policy anchors. All 128 20-HI roots remain outside fitting.
+Validation does not select epochs or control rollback. Assess final candidate
+predictions with whole-game uncertainty and separate 20-HI performance before
+claiming useful quality or beginning policy-improvement distillation. GPU use
+is shared with the controlled outcome run, not an exclusive-time comparison.
+This does not complete the independently trained larger-teacher comparison.
+
 Native `23411a5` adds `drm_vspool_settled_public`, exposed by
 `DrMarioVsPoolRunner.settled_public()`. A fresh placement reset records a native
 event timeline; `capture_native_state(..., event_public=True)` chooses the new
