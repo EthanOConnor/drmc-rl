@@ -1083,6 +1083,29 @@ claiming useful quality or beginning policy-improvement distillation. GPU use
 is shared with the controlled outcome run, not an exclusive-time comparison.
 This does not complete the independently trained larger-teacher comparison.
 
+All three fits completed their 32 epochs and 24,576 accepted root presentations
+per arm. The independent 14-HI assessment verifies 256 matched reset seeds.
+Candidate Brier errors fall from the untrained heads' .459 to .114–.117,
+but final greedy utility gains over the reference policy are -.0266, -.0492
+and -.0405 for critic/context/combined. All three simultaneous intervals
+include zero. Gap-error improvements are also unresolved. These models have
+not demonstrated useful move improvement; do not distill their greedy choices
+or promote them based on the large error reduction against untrained heads.
+The separate 128-game 20-HI evaluation used zero optimizer updates and verified
+exclusion from all fit, validation and anchor games. Greedy gains are -.0655,
+-.0742 and -.0750; none supports a gain. Preserve
+`broad-quality-fit-v1/assessment-{14hi,20hi}.json` and candidate predictions.
+Investigate within-position action discrimination and comparative larger
+teachers; this negative result does not cancel the quality/search program.
+
+The original `motor-auxiliary-arena-v1` also completed all 8,192 natural games
+with zero censoring. Its seven-condition simultaneous 14-HI assessment supports
+a Top Humans gain over its original 25M parent: 54.79%, interval 51.07–58.50%.
+Other primary conditions are unresolved. This is a historical motor-profile
+comparison against the older parent, not evidence for replacing the current
+portfolio. `motor-auxiliary-arena-assessment-v1.json` retains every paired
+condition and separate 20-HI results; do not rerun this completed allocation.
+
 Native `23411a5` adds `drm_vspool_settled_public`, exposed by
 `DrMarioVsPoolRunner.settled_public()`. A fresh placement reset records a native
 event timeline; `capture_native_state(..., event_public=True)` chooses the new
