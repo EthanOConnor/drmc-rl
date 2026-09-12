@@ -442,6 +442,18 @@ indefinitely staged.
   all 185 tensors exactly. Evaluate final/1B candidates with current product
   motor limits before selection; old 60/36 results remain historical.
   `core-1b-assessment.json` retains the complete whole-seed assessment.
+  The current-profile final-core evaluation also completed all 26,624 games
+  with zero censoring. Against the shipped 14-HI opponent, the final core
+  scores 50.88% at Sloth, 33.89% Relaxed, 36.43% Normal, 37.50% Fast,
+  44.04% Top Humans, 39.06% Super Human and 34.47% Frame Perfect. The
+  simultaneous 23-comparison family leaves Sloth unresolved and establishes
+  losses at the other six paces (Top Humans is narrowly below 50%). The final
+  core improves over 1B at Normal and faster paces, but does not justify a
+  product replacement. Preserve the current portfolio and continue the
+  controlled 300M restart. Separate 20-HI results are descriptive secondary
+  evidence. `controller-product-arena-assessment-v1.json` retains all paired
+  outcomes, execution totals and uncertainty; its reset bank is reused from
+  the learning curve, not fresh confirmation.
   An independent frozen-policy loss diagnostic investigated the
   1B Sloth/faster-speed tradeoff. Logged Sloth optimizer exposure is only 4.42%,
   and the previous per-update KL check covered only the current pace. Do not
