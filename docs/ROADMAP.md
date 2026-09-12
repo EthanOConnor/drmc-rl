@@ -442,19 +442,23 @@ indefinitely staged.
   all 185 tensors exactly. Evaluate final/1B candidates with current product
   motor limits before selection; old 60/36 results remain historical.
   `core-1b-assessment.json` retains the complete whole-seed assessment.
-  An independent frozen-policy loss diagnostic now investigates the emerging
+  An independent frozen-policy loss diagnostic investigated the
   1B Sloth/faster-speed tradeoff. Logged Sloth optimizer exposure is only 4.42%,
-  and the existing per-update KL check covers only the current pace. Measure
-  actor/critic/regularization interaction before choosing a training revision;
-  do not infer a cause from game counts or preliminary tournament rankings.
+  and the previous per-update KL check covered only the current pace. Do not
+  infer a cause from game counts or preliminary tournament rankings.
   The corrected diagnostic completed 480 natural games and 21,835 decisions
   with zero optimizer updates. Its 14 fixed minibatches show actor/value
   cosines between -0.087 and +0.070; no large consistent cancellation was
   observed. This does not diagnose Adam dynamics or cross-pace interference.
-  The next controlled revision starts from 300M and tests mixed-pace outcome
+  The controlled revision now starts from 300M and tests mixed-pace outcome
   updates plus independent per-pace retention against matched continuation.
   Preserve actual on-policy likelihoods and whole-game reductions; teacher
   policy anchoring must remain a separate loss, never PPO behavior data.
+  Its completed 3,584-game reference bank covers all seven paces. Each arm
+  receives at least 3M learner decisions and 150k at each pace; a predeclared
+  51,200-game final-checkpoint comparison follows. Retention diagnostics alone
+  cannot authorize promotion. These are substantial controlled continuations,
+  not completion of the larger-teacher, adaptive-search or expressive stages.
   V2 mixed-core live selection is implemented, including per-pace input
   encoding, warmup, anticipation capabilities and portable packaging. The
   explicit tester-300m manifest retains Relaxed/E1 routes. Six native/ROM

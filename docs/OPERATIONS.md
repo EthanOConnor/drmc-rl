@@ -1604,6 +1604,35 @@ optimizers; recovery preserves the config, identities, game journal, optimizer,
 sampling RNG and original per-pace retention baseline. Frame and learner
 decision counts are separate; anchor collection is not PPO training exposure.
 
+The current controlled allocation is `controller-retention-study-v1` on
+tf3090, launched September 11 at 23:58 UTC from frozen `52024db` with the
+original native19f libraries and current 45/30 reaction floors. Its fixed
+48-hour supervisor runs the registered bank, cycling-control and mixed-retention
+recipes sequentially. The bank completed 3,584 natural games, 37,602,133
+diagnostic frames and 14,316 reference decisions from 1,792 independent reset
+seeds. Both arms start from 300M with new optimizers, matching per-pace reset
+and opponent schedules, and require 3M learner decisions plus 150k at every
+pace. The revised arm balances completed-game credit across paces and adds
+separate teacher-policy retention, with a maximum KL increase of .03 over the
+initial baseline at each pace. The control measures the same bank without
+anchor gradients or veto. Compare actual accepted optimizer steps and exposure;
+reference-policy KL is not a playing-strength estimate.
+
+`controller-retention-arena-v1.json` predeclares 51,200 games for the final
+allocation-complete checkpoints: 1,024 per 14-HI matchup, 512 per separate
+20-HI Normal/Top Humans matchup. Compare the two arms directly and each with
+300M, its selected product opponent and parent, deduplicating identical
+opponents. The primary family contains 43 comparisons, with 14 secondary
+comparisons. Use 20,000 shared whole-reset-seed bootstrap resamples and keep
+paces separate. The 768 reserved reset seeds are excluded from training and
+anchors but reused from the learning curve, not fresh confirmation. The 1M
+milestones are diagnostics, not checkpoints selected by arena scores. Complete
+the current 26,624-game final-core/product arena before starting another Mac
+MPS worker; verify immutable final inference exports and adequate storage.
+Any selected gain needs separately reserved confirmation before adoption.
+The evaluation allocation and prerequisites are in
+`runs/review-20260909/controller-retention-evaluation-plan-v1.json`.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved
