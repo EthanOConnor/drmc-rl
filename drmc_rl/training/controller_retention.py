@@ -83,12 +83,15 @@ def save_anchor_bank(path, records, metadata):
 
 class PaceRetention:
     def __init__(self, actor, bank_paths, *, excluded_seeds, paces, max_kl_increase=.03,
-                 coefficient=.1, batch_size=64):
+                 coefficient=.1, batch_size=64, pressure_strength=0.):
         if (not np.isfinite(max_kl_increase) or max_kl_increase < 0
                 or not np.isfinite(coefficient) or coefficient <= 0 or batch_size < 1):
             raise ValueError("invalid retention budget")
         self.actor,self.coefficient,self.batch_size = actor,float(coefficient),int(batch_size)
         self.max_kl_increase=float(max_kl_increase)
+        if not np.isfinite(pressure_strength) or pressure_strength < 0:
+            raise ValueError("invalid retention pressure")
+        self.pressure_strength=float(pressure_strength)
         self.records,self.identities,self.by_pace=[],{},{}
         excluded=set(map(int,excluded_seeds))
         for name in bank_paths:
@@ -116,6 +119,14 @@ class PaceRetention:
             counts=Counter((r["game_seed"],r["learner_port"]) for r in rows)
             self.weights[pace]=np.asarray([1/(len(counts)*counts[r["game_seed"],r["learner_port"]]) for r in rows])
         self.baseline=self.measure()
+        self.set_pressure(self.baseline)
+
+    def set_pressure(self, measured):
+        # Increase the soft restoring force before a pace reaches the unchanged
+        # hard limit. Use accepted weights only, never a rejected trial.
+        self.pressure={p:1+self.pressure_strength*float(np.clip(
+            (measured[p]-self.baseline[p])/max(self.max_kl_increase,1e-12),0,1))**2
+            for p in self.paces}
 
     def _kl(self, rows):
         features,data=self.actor.training_batch(rows)
@@ -131,7 +142,12 @@ class PaceRetention:
             rows=self.by_pace[pace]
             ids=rng.choice(len(rows),per_pace,replace=True,p=self.weights[pace])
             selected.extend(rows[i] for i in ids)
-        return self.coefficient*self._kl(selected).mean()
+        values=self._kl(selected)
+        if self.pressure_strength == 0:
+            return self.coefficient*values.mean()
+        values=values.reshape(len(self.paces),per_pace).mean(-1)
+        weights=values.new_tensor([self.pressure[p] for p in self.paces])
+        return self.coefficient*(values*weights).mean()
 
     @torch.no_grad()
     def measure(self):

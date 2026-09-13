@@ -78,7 +78,8 @@ def main():
     opponents=PublicOpponentPool(config['opponent_pool'],parent,config['opponent_parent'],device)
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
         paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
-        coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64))
+        coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
+        pressure_strength=config.get('retention_pressure_strength',0.))
     available=np.setdiff1d(np.arange(1,65536),list(set(config['holdout_seeds'])|retention.seeds))
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
@@ -197,6 +198,8 @@ def main():
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput')}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
+            if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):
+                raise RuntimeError('learning rate fell below the declared useful floor; preserve the checkpoint and review retention')
             del records,games,batch,shards
         if not target_met(progress,config): raise RuntimeError('safety update cap reached before learning allocation')
         progress.update(status='Training complete',final_checkpoint='core-final.pt',updated_at=datetime.now(UTC).isoformat())

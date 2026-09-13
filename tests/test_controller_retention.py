@@ -18,6 +18,19 @@ from tools.train_pace_strategy import prepare_training_records, update_adapter
 from tools.vs_head_to_head import PlainPolicy
 
 
+def test_retention_pressure_uses_pace_relative_budget_without_relaxing_guard():
+    r=PaceRetention.__new__(PaceRetention)
+    r.paces=('slow','fast'); r.baseline={'slow':.4,'fast':0.}
+    r.max_kl_increase=.03; r.pressure_strength=31.
+    r.set_pressure({'slow':.3,'fast':.03})
+    assert r.pressure=={'slow':1.,'fast':32.}
+    assert r.accepts({'slow':.4,'fast':.03})
+    assert not r.accepts({'slow':.4,'fast':.030001})
+    r.set_pressure({'slow':.415,'fast':0.})
+    assert r.pressure['slow']==pytest.approx(8.75)
+    assert r.pressure['fast']==1.
+
+
 def test_mixed_and_cycling_arms_have_identical_per_pace_game_schedules():
     from tools.train_controller_retention import collection_schedule
     from drmc_rl.training.public_league import PublicOpponentPool
@@ -82,6 +95,7 @@ def test_registered_retention_training_runs_a_natural_update_and_recovers(parent
         seed=317,paces=paces,holdout_seeds=[40000],games_per_pace={},games_per_update=2,
         output=str(tmp_path/'training'),anchor_banks=[str(bank)],lr=3e-6,epochs=1,minibatch=32,
         retention_batch_size=4,max_update_kl=.03,max_anchor_kl_increase=.03,
+        retention_pressure_strength=31.,reset_update_lr=True,minimum_learning_rate=1e-8,
         target_decisions=1,minimum_decisions_per_pace=0,updates=2,rollout_games=2,planner_workers=1,
         level20_fraction=0.,max_game_frames=120000,native_library=os.environ.get('DRMC_FRAME_LIBRARY'))
     config=tmp_path/'config.json'; config.write_text(json.dumps(cfg))
@@ -190,5 +204,17 @@ def test_retention_rejection_restores_parameters_and_optimizer(parent,tmp_path):
                           39,retention=Reject(),completed_games_by_pace={'normal':4})
     assert result['optimizer_steps']==0 and result['early_kl_stop']
     assert optimizer.state_dict()==opt
+    for k,v in actor.net.state_dict().items():
+        torch.testing.assert_close(v,before[k],rtol=0,atol=0)
+    optimizer.param_groups[0]['lr']=3e-13
+    actor.net.eval(); actor.score(obs,infos)
+    records=actor.learning_records
+    for i,r in enumerate(records):
+        r.update(pace='normal',weight=1.,**{'return':float(i%2)*2-1})
+    reset=update_adapter(actor,optimizer,records,
+        dict(epochs=1,minibatch=2,kl_backtracks=0,reset_update_lr=True,lr=3e-6),
+        39,retention=Reject(),completed_games_by_pace={'normal':4})
+    assert reset['optimizer_steps']==0
+    assert reset['effective_learning_rate']==3e-6
     for k,v in actor.net.state_dict().items():
         torch.testing.assert_close(v,before[k],rtol=0,atol=0)

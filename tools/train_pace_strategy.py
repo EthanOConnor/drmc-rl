@@ -362,6 +362,11 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
     initial_mse = value_mse
     retention_rng = np.random.default_rng(seed ^ 0x71A90)
     retained = retention.measure() if retention is not None else {}
+    if retention is not None and hasattr(retention, "set_pressure"):
+        retention.set_pressure(retained)
+    if config.get("reset_update_lr", False):
+        for group in optimizer.param_groups:
+            group["lr"] = config["lr"]
     # Epoch guards avoid quadratic work from a full-batch check per minibatch.
     # Rejected updates restore BOTH weights and Adam moments before retrying.
     for _epoch in range(config.get("epochs", 2)):
@@ -413,6 +418,8 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
                     and (per_pace_kl is None or all(np.isfinite(v) and v <= max_kl for v in per_pace_kl.values()))
                     and (retention is None or retention.accepts(candidate_retention))):
                 retained = candidate_retention
+                if retention is not None and hasattr(retention, "set_pressure"):
+                    retention.set_pressure(retained)
                 accepted_kl, value_mse = measured_kl, measured_mse
                 for key, values in attempt_totals.items():
                     totals[key].extend(values)
@@ -441,6 +448,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
         advantage_center=center,
         advantage_scale=scale,
         optimizer_steps=steps,
+        effective_learning_rate=min(group["lr"] for group in optimizer.param_groups),
         kl_backtracks=rejected,
         early_kl_stop=stopped,
         completed_learning_games=int(round(inverse_lengths.sum())),

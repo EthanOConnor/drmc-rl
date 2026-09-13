@@ -1677,6 +1677,20 @@ Any selected gain needs separately reserved confirmation before adoption.
 The evaluation allocation and prerequisites are in
 `runs/review-20260909/controller-retention-evaluation-plan-v1.json`.
 
+The first mixed arm was stopped after cumulative backtracking reduced its
+learning rate to 3.58e-13. Updates 28–29 changed tensors by at most 1.33e-10
+despite recording hundreds of optimizer steps. Preserve that failed trial and
+the completed 3M-placement control. New trials may explicitly enable
+`reset_update_lr`, restoring the declared starting rate per collection, and
+`retention_pressure_strength`, increasing the soft restoring loss as each
+pace approaches its unchanged hard KL limit. A strength of 31 gives up to
+32 times the base retention coefficient. Pressure uses only accepted weights;
+rejected trials still restore model and Adam. `minimum_learning_rate` aborts
+below a declared useful floor, and effective rates are reported. These options
+default off for historical recipes. A replacement is a new trial from 300M,
+not a relabeling or silent repair of the stalled run; it must complete the same
+decision allocation and full strength evaluation.
+
 The 300M milestone completed all 16,384 natural games at September 10
 13:10:09 UTC in
 `runs/review-20260909/controller-core-300m-mac`, launched by its saved
