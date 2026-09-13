@@ -14,10 +14,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, PUBLIC_CONTEXT_DIMS
 from drmc_rl.training.quality_supervision import upgrade_public_model
 from drmc_rl.training.utils.checkpoint_io import load_checkpoint
-from tools.eval_policy import _make_aux_builder
+from tools.eval_policy import _make_aux_builder, _build_net_from_cfg
 from tools.vs_head_to_head import PlainPolicy
 
 CORE_SCHEMA = "drmc-public-controller-core-v1"
@@ -30,12 +30,13 @@ CONTROLLER_GEOMETRY_FIELDS = (
 
 
 class ControllerCorePolicy(PlainPolicy):
-    def __init__(self, parent, device="cpu", *, resume=None, training=True, seed=0):
+    def __init__(self, parent, device="cpu", *, resume=None, training=True, seed=0,
+                 progress_schema=None):
         super().__init__(Path(parent), device, public_only=True)
         self.parent_sha256 = hashlib.sha256(Path(parent).read_bytes()).hexdigest()
         payload = load_checkpoint(Path(parent), map_location=device)
         saved = load_checkpoint(Path(resume), map_location=device) if resume is not None else None
-        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+        if self.aux_spec in PUBLIC_CONTEXT_DIMS:
             self.cfg = deepcopy(payload["cfg"])
         else:
             # Reconstruct the original regularization reference when resuming
@@ -48,7 +49,25 @@ class ControllerCorePolicy(PlainPolicy):
                 payload, mode="context", device=device, preserve_policy=preserve_policy,
             )
         self.cfg.setdefault("env", {})["public_observations"] = True
-        self.aux_spec = PUBLIC_CONTEXT_SCHEMA
+        schema = self.cfg.get("smdp_ppo", self.cfg)["aux_spec"]
+        if progress_schema is not None and progress_schema != schema:
+            if schema != PUBLIC_CONTEXT_SCHEMA or progress_schema not in PUBLIC_CONTEXT_DIMS:
+                raise ValueError("progress migration requires the original public core")
+            self.cfg.get("smdp_ppo", self.cfg)["aux_spec"] = progress_schema
+            upgraded, _, _ = _build_net_from_cfg(self.cfg, 20, device)
+            old, new = self.net.state_dict(), upgraded.state_dict()
+            for key, value in new.items():
+                if value.shape == old[key].shape:
+                    value.copy_(old[key])
+                elif key == "condition.0.weight":
+                    value.zero_()
+                    value[:, :old[key].shape[1]].copy_(old[key])
+                else:
+                    raise ValueError(f"unexpected progress migration tensor: {key}")
+            upgraded.load_state_dict(new, strict=True)
+            self.net = upgraded
+            schema = progress_schema
+        self.aux_spec = schema
         self.aux_shim = _make_aux_builder(self.net.aux_dim, aux_spec=self.aux_spec)
         self.aux_dim = self.net.aux_dim
         self.requires_causal_observations = True
@@ -57,7 +76,7 @@ class ControllerCorePolicy(PlainPolicy):
         if saved is not None:
             if (saved.get("schema") != CORE_SCHEMA
                     or saved.get("parent_sha256") != self.parent_sha256
-                    or saved.get("observation_schema") != PUBLIC_CONTEXT_SCHEMA
+                    or saved.get("observation_schema") != self.aux_spec
                     or saved["cfg"] != self.cfg):
                 raise ValueError("controller-core resume changed its parent or input/model contract")
             self.net.load_state_dict(saved["state_dict"], strict=True)
@@ -131,6 +150,7 @@ class ControllerCorePolicy(PlainPolicy):
                     infos[i]["public_controller_geometry"][key]
                     for key in CONTROLLER_GEOMETRY_FIELDS
                 ], dtype=np.int32),
+                observation_schema=self.aux_spec,
             )
             self.learning_records.append(row)
             scores[i, slot] = scores[i, masks[i]].max() + 1
@@ -218,7 +238,7 @@ class ControllerCorePolicy(PlainPolicy):
         torch.save(dict(
             schema=CORE_SCHEMA, cfg=self.cfg,
             state_dict={k: v.detach().cpu() for k, v in self.net.state_dict().items()},
-            parent_sha256=self.parent_sha256, observation_schema=PUBLIC_CONTEXT_SCHEMA,
+            parent_sha256=self.parent_sha256, observation_schema=self.aux_spec,
             regularization_reference="fixed-post-migration-initial-policy",
             calibrated=False, diagnostic_only=True, **metadata,
         ), temporary)
@@ -232,6 +252,10 @@ def write_public_replay(path, records, games, *, update, pace, level):
     Outcome labels apply to the observed continuation, not every alternative.
     """
     import json
+
+    schemas = {r.get("observation_schema", PUBLIC_CONTEXT_SCHEMA) for r in records}
+    if len(schemas) != 1:
+        raise ValueError("replay cannot mix observation schemas")
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,7 +278,7 @@ def write_public_replay(path, records, games, *, update, pace, level):
     payload["metadata"] = np.asarray(json.dumps(dict(
         schema="drmc-public-controller-replay-v2", update=update, behavior_update=update - 1,
         pace=pace, level=level,
-        observation_schema=PUBLIC_CONTEXT_SCHEMA, actor_inputs=INPUT_FIELDS,
+        observation_schema=schemas.pop(), actor_inputs=INPUT_FIELDS,
         controller_geometry_fields=CONTROLLER_GEOMETRY_FIELDS,
         controller_geometry_scope="observed-own-controller-boundary-for-conditional-labels",
         outcome_scope="natural-terminal-observed-policy-continuation",

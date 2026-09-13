@@ -22,6 +22,49 @@ from drmc_rl.game.public_context import (
 from drmc_rl.search.public_policy import policy_request
 
 
+def test_progress_decodes_bcd_and_counts_actual_gravity_changes():
+    from drmc_rl.game.public_context import progress_features
+    from drmc_rl.planning.fast_reach import compute_speed_threshold
+
+    for count in (1, 9, 10, 99, 100, 999, 1000, 9999):
+        bcd = int(str(count), 16)
+        feature = progress_features(14, bcd, 2, 0)
+        assert feature[0] == pytest.approx(.7)
+        assert feature[1] == pytest.approx(np.log1p(count) / np.log1p(1000))
+    for speed in range(3):
+        for ups in range(50):
+            for count in (9, 10, 19):
+                features = progress_features(20, int(str(count), 16), speed, ups, countdown=True)
+                # Independently advance future spawns, following the ROM's
+                # every-tenth-spawn increment and saturated speed-up counter.
+                future_ups, expected = ups, 0
+                for spawns in range(1, 501):
+                    if (count + spawns) % 10 == 0:
+                        future_ups = min(49, future_ups + 1)
+                    if compute_speed_threshold(speed, future_ups) < compute_speed_threshold(speed, ups):
+                        expected = spawns
+                        break
+                assert features[2] == bool(expected)
+                assert features[3] == pytest.approx(expected / 100)
+    with pytest.raises(ValueError, match="BCD"):
+        progress_features(14, 0x1A, 2, 0)
+
+
+def test_progress_preserves_existing_timer_and_requires_observed_counters():
+    from drmc_rl.game.public_context import PROGRESS_CONTEXT_SCHEMA, CONTEXT_FEATURE_NAMES
+    public = public_state()
+    _, info = policy_request(public, 0, [0], [1], context_schema=PUBLIC_CONTEXT_SCHEMA)
+    original = context_from_info(info)
+    info["public_context_schema"] = PROGRESS_CONTEXT_SCHEMA
+    with pytest.raises(KeyError):
+        context_from_info(info)
+    info["public_progress"] = dict(level=14, pill_counter_bcd=0x19, speed=2, speed_ups=1)
+    extended = context_from_info(info)
+    np.testing.assert_array_equal(extended[:PUBLIC_CONTEXT_DIM], original)
+    info["public_pair_state"] = replace(public, frame_id=180)
+    assert context_from_info(info)[CONTEXT_FEATURE_NAMES.index("game_age")] > extended[CONTEXT_FEATURE_NAMES.index("game_age")]
+
+
 def public_state():
     board = bytearray([255] * 128)
     board[120], board[121] = 0x60, 0x70

@@ -30,7 +30,7 @@ except ImportError:
     get_ema_multi_avg_fn = None  # type: ignore
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
-from drmc_rl.game.public_context import PUBLIC_CONTEXT_DIM, PUBLIC_CONTEXT_SCHEMA, context_from_info
+from drmc_rl.game.public_context import PUBLIC_CONTEXT_DIM, PUBLIC_CONTEXT_SCHEMA, PUBLIC_CONTEXT_DIMS, context_from_info
 from drmc_rl.models.policy.candidate_packing import (
     candidate_bucket_width,
     pack_feasible_candidates_tensor_batch,
@@ -84,7 +84,7 @@ _AUX_V1_VS_DIM = _AUX_V1_DIM + _AUX_V1_VS_EXTRA  # 72
 _AUX_GARBAGE_PENDING_NORM = 4.0
 
 _AUX_DIM_BY_SPEC = {
-    PUBLIC_CONTEXT_SCHEMA: PUBLIC_CONTEXT_DIM,
+    **PUBLIC_CONTEXT_DIMS,
     _AUX_SPEC_V1: _AUX_V1_DIM,
     _AUX_SPEC_V1_VS: _AUX_V1_VS_DIM,
     # Preserve the corpus-distilled network's width without exposing private
@@ -506,7 +506,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         self.aux_spec = aux_spec_norm
         self.aux_dim = int(_AUX_DIM_BY_SPEC.get(self.aux_spec, 0))
         if (
-            self.aux_spec in {_AUX_SPEC_ZERO_V1_VS, PUBLIC_CONTEXT_SCHEMA}
+            self.aux_spec in {_AUX_SPEC_ZERO_V1_VS, *PUBLIC_CONTEXT_DIMS}
             and getattr(self.env, "opponent_obs", False)
             and not getattr(self.env, "public_observations", False)
         ):
@@ -624,8 +624,8 @@ class SMDPPPOAdapter(AlgoAdapter):
                     candidate_wdl=self.hparams.candidate_wdl,
                     motor_auxiliary=self.hparams.candidate_motor_auxiliary,
                     context_residual=self.hparams.candidate_context_residual,
-                    public_context_schema=PUBLIC_CONTEXT_SCHEMA
-                    if self.aux_spec == PUBLIC_CONTEXT_SCHEMA
+                    public_context_schema=self.aux_spec
+                    if self.aux_spec in PUBLIC_CONTEXT_DIMS
                     else None,
                 ).to(self.device)
             elif architecture == "g4":
@@ -854,7 +854,7 @@ class SMDPPPOAdapter(AlgoAdapter):
 
         if self._sd_runner is not None or self._teacher_net is not None:
             raise ValueError("causal native PPO requires separately aligned distillation targets")
-        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+        if self.aux_spec in PUBLIC_CONTEXT_DIMS:
             raise ValueError(
                 "native PPO public context requires a complete live history/motor emitter"
             )
@@ -2010,7 +2010,7 @@ class SMDPPPOAdapter(AlgoAdapter):
             return None
 
     def _build_aux(self, obs: np.ndarray, info: Dict[str, Any]) -> np.ndarray:
-        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+        if self.aux_spec in PUBLIC_CONTEXT_DIMS:
             return context_from_info(info)
         if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
             return np.zeros((self.aux_dim,), dtype=np.float32)
@@ -2045,7 +2045,7 @@ class SMDPPPOAdapter(AlgoAdapter):
         Must stay output-identical to per-env `_build_aux_v1` (covered by
         tests); scalar info lookups remain per-env, plane math is batched.
         """
-        if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+        if self.aux_spec in PUBLIC_CONTEXT_DIMS:
             return np.stack([context_from_info(info) for info in infos])
         if self.aux_spec == _AUX_SPEC_ZERO_V1_VS:
             return np.zeros((len(obs_arr), self.aux_dim), dtype=np.float32)

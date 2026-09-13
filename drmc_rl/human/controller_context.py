@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, PublicExecutionContext
+from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, PUBLIC_CONTEXT_DIMS, PublicExecutionContext
 from drmc_rl.human.anticipation import public_policy_inputs
 from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.search.public_policy import policy_request
@@ -71,7 +71,7 @@ def live_controller_state(state):
 
 
 def uses_public_context(policy):
-    return getattr(policy, "aux_spec", None) == PUBLIC_CONTEXT_SCHEMA
+    return getattr(policy, "aux_spec", None) in PUBLIC_CONTEXT_DIMS
 
 
 def controller_policy_inputs(policy, candidate, state, pace, delay, compute_frames):
@@ -111,6 +111,12 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
         public, public.viewer_side, legal, costs[legal].tolist(),
         context_schema=PUBLIC_CONTEXT_SCHEMA, execution=execution,
     )
+    if policy.aux_spec != PUBLIC_CONTEXT_SCHEMA:
+        info["public_context_schema"] = policy.aux_spec
+        info["public_progress"] = dict(
+            level=int(state["level"]), pill_counter_bcd=int(state["pill_counter_total"]),
+            speed=int(state["speed"]), speed_ups=int(state["speed_ups"]),
+        )
     info["vs/observation_timeline"] = state["vs/observation_timeline"]
     # Preserve the exact own controller boundary for later deterministic motor
     # labels. This is archival metadata, not another network input or a native

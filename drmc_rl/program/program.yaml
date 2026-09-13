@@ -310,6 +310,7 @@ recipes:
       accelerator: cuda
     notes:
       - Set training_model to public_core and use the causal frame/event collector. All seven authored paces are supported.
+      - Optional progress_schema selects public_pair_progress_v1 or public_pair_progress_countdown_v1; keep a matched original-input control and follow the public progress experiment in OPERATIONS.md. Existing game_age already supplies the level timer.
       - Every learner transition stores public model inputs, not frozen trunk features. The whole core receives outcome gradients.
       - The frozen post-migration initial policy is the explicit regularization reference; failed quality labels are excluded.
       - This experiment does not promote a model, calibrate a quality head, or complete the larger-teacher and expressive-play stages.

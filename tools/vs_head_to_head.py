@@ -150,9 +150,9 @@ class PlainPolicy:
                         _CANON_TO_RAW[int(pv["second_color"])])
         aux = None
         if self.aux_shim is not None:
-            from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+            from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, PUBLIC_CONTEXT_DIMS
 
-            if self.aux_spec == PUBLIC_CONTEXT_SCHEMA:
+            if self.aux_spec in PUBLIC_CONTEXT_DIMS:
                 # V3 must be explicitly supplied; zero filling would silently
                 # turn a new public-context checkpoint into a different actor.
                 aux = self.aux_shim._build_aux_batch(obs.astype(np.float32), infos)

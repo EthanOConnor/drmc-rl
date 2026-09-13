@@ -1,5 +1,38 @@
 # Operations
 
+## Public progress input experiment
+
+`trainer-controller-core` accepts optional `progress_schema` in its training
+config: `public_pair_progress_v1` appends own level and decoded spawn count;
+`public_pair_progress_countdown_v1` also appends an available flag and future
+spawns until the next actual gravity-period decrease. Omit the option for the
+unchanged `public_pair_context_v3` control. All three already receive elapsed
+level frames through `game_age`; do not duplicate that timer or use wall time.
+Native `pill_counter_total` is packed BCD, includes the current pill, and caps
+at 9999. Decode it before normalization. Speed-table plateaus and the gravity
+cap must not be represented as an imminent increase.
+
+Migration copies every old parameter and zeroes only the appended columns of
+the global conditioner. Checkpoints and public replay retain distinct schemas;
+missing progress is an error, never silent zero filling. Controller training and
+controller arenas support these schemas. Offline search and product deployment
+are not yet certified for them. Historical replay lacks the new counters and
+must not be relabeled or padded to masquerade as observed progress.
+
+Run a separate three-arm study after the active retention trial releases the
+GPU: common 300M parent, initialization seed, public opponent mixture, reserved
+seed exclusions, seven paces, 3M learner decisions and at least 150k per pace.
+Use the same cycling controller-core recipe for all arms, not the historical
+retention control (which has a different collection schedule). Keep 14-HI
+primary and 20-HI secondary. Freeze final checkpoints at the declared budget,
+report actual exposure and accepted optimizer steps, then evaluate all three
+pairs with 1024 side-balanced games per primary pace and 512 per secondary
+Normal/Top Humans cell: 24,576 games. Use shared whole-reset-seed intervals
+across the 21 primary comparisons; follow any promising result with independent
+training seeds and reserved-game confirmation against the shipped portfolio.
+This input ablation does not replace the pending retention arena or the required
+larger-teacher, adaptive-search and expressive-play work.
+
 ## Authority and supported entrypoints
 
 Run this before any work:

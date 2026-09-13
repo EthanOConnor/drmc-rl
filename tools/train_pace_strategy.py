@@ -482,7 +482,8 @@ def main():
         if config.get("init_adapter"):
             raise ValueError("full-core learning takes core weights; a frozen-feature adapter is not a core")
         actor = ControllerCorePolicy(config["checkpoint"], config["device"],
-                                     resume=config.get("resume"), seed=config["seed"])
+                                     resume=config.get("resume"), seed=config["seed"],
+                                     progress_schema=config.get("progress_schema"))
     else:
         if config.get("training_model", "pace_adapter") != "pace_adapter":
             raise ValueError("training_model must be pace_adapter or public_core")

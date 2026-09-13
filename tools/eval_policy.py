@@ -61,10 +61,10 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
         patch_kernel=int(g("candidate_patch_kernel", 9)),
     )
     architecture = str(g("candidate_architecture", "g4")).strip().lower()
-    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
+    from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA, PUBLIC_CONTEXT_DIMS
 
     public_schema = (
-        PUBLIC_CONTEXT_SCHEMA if g("aux_spec", "none") == PUBLIC_CONTEXT_SCHEMA else None
+        g("aux_spec", "none") if g("aux_spec", "none") in PUBLIC_CONTEXT_DIMS else None
     )
     if public_schema and architecture != "g5":
         raise ValueError("public_pair_context_v3 requires its G5 architecture contract")

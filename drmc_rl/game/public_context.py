@@ -78,6 +78,44 @@ CONTEXT_FEATURE_NAMES = (
     ),
 )
 PUBLIC_CONTEXT_DIM = len(CONTEXT_FEATURE_NAMES)
+PROGRESS_CONTEXT_SCHEMA = "public_pair_progress_v1"
+COUNTDOWN_CONTEXT_SCHEMA = "public_pair_progress_countdown_v1"
+PUBLIC_CONTEXT_DIMS = {
+    PUBLIC_CONTEXT_SCHEMA: PUBLIC_CONTEXT_DIM,
+    PROGRESS_CONTEXT_SCHEMA: PUBLIC_CONTEXT_DIM + 2,
+    COUNTDOWN_CONTEXT_SCHEMA: PUBLIC_CONTEXT_DIM + 4,
+}
+
+
+def progress_features(level, pill_counter_bcd, speed, speed_ups, *, countdown=False):
+    """Own public level and spawn count; the existing game_age is the timer.
+
+    Native and ROM counters are packed BCD, including the current falling pill.
+    Countdown measures future spawns to an actual gravity-period decrease,
+    skipping repeated speed-table entries. Zero plus a false mask means capped.
+    """
+    from drmc_rl.planning.fast_reach import compute_speed_threshold
+
+    if (type(level) is not int or not 0 <= level <= 255
+            or type(pill_counter_bcd) is not int or not 0 <= pill_counter_bcd <= 0x9999
+            or type(speed) is not int or speed not in (0, 1, 2)
+            or type(speed_ups) is not int or not 0 <= speed_ups <= 49):
+        raise ValueError("invalid public progress counters")
+    digits = [(pill_counter_bcd >> shift) & 15 for shift in (0, 4, 8, 12)]
+    if any(d > 9 for d in digits):
+        raise ValueError("pill counter must be packed BCD")
+    count = sum(d * 10 ** i for i, d in enumerate(digits))
+    result = [level / 20., np.log1p(count) / np.log1p(1000.)]
+    if countdown:
+        current = compute_speed_threshold(speed, speed_ups)
+        next_change = next((i for i in range(speed_ups + 1, 50)
+                            if compute_speed_threshold(speed, i) < current), None)
+        remaining = (10 - count % 10 + 10 * (next_change - speed_ups - 1)
+                     if next_change is not None else 0)
+        if remaining and count + remaining > 9999:
+            next_change, remaining = None, 0
+        result += [float(next_change is not None), remaining / 100.]
+    return np.asarray(result, dtype=np.float32)
 
 
 @dataclass(frozen=True)
@@ -188,9 +226,17 @@ def encode_public_context(
 
 
 def context_from_info(info):
-    if info.get("public_context_schema") != PUBLIC_CONTEXT_SCHEMA:
+    schema = info.get("public_context_schema")
+    if schema not in PUBLIC_CONTEXT_DIMS:
         raise ValueError("public context checkpoint requires its versioned input contract")
     public = info["public_pair_state"]
-    return encode_public_context(
+    encoded = encode_public_context(
         public, int(info["public_acting_side"]), info.get("public_execution")
     )
+    if schema != PUBLIC_CONTEXT_SCHEMA:
+        progress = info["public_progress"]
+        if int(info["public_acting_side"]) != public.viewer_side:
+            raise ValueError("progress is known only for the public viewer")
+        encoded = np.concatenate((encoded, progress_features(
+            **progress, countdown=schema == COUNTDOWN_CONTEXT_SCHEMA)))
+    return encoded

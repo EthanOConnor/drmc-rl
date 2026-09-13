@@ -334,8 +334,8 @@ def variant_policy(config, params, parent):
         actor = PacePolicy(checkpoint,device,adapter_path=params["adapter_checkpoint"])
     elif checkpoint != config["checkpoint"]:
         actor = PlainPolicy(Path(checkpoint),device,public_only=True)
-        from drmc_rl.game.public_context import PUBLIC_CONTEXT_SCHEMA
-        if actor.aux_dim and actor.aux_spec not in ("zero_v1_vs", PUBLIC_CONTEXT_SCHEMA):
+        from drmc_rl.game.public_context import PUBLIC_CONTEXT_DIMS
+        if actor.aux_dim and actor.aux_spec not in ("zero_v1_vs", *PUBLIC_CONTEXT_DIMS):
             raise ValueError("historical public opponents must have a public auxiliary-input contract")
     else:
         return parent

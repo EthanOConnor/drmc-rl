@@ -54,6 +54,37 @@ def controller_requests(actor):
         planner.close()
 
 
+@pytest.mark.parametrize("schema", ["public_pair_progress_v1", "public_pair_progress_countdown_v1"])
+def test_progress_core_migration_learning_and_resume(parent, tmp_path, schema):
+    base = ControllerCorePolicy(parent, training=False)
+    saved_parent = tmp_path / "public.pt"
+    base.save(saved_parent)
+    actor = ControllerCorePolicy(saved_parent, progress_schema=schema)
+    obs, infos = controller_requests(actor)
+    old_infos = [{k: v for k, v in i.items() if k != "public_progress"} for i in infos]
+    for info in old_infos:
+        info["public_context_schema"] = base.aux_spec
+    for a, b in zip(actor.score_and_value(obs, infos), base.score_and_value(obs, old_infos)):
+        np.testing.assert_allclose(a, b, atol=2e-6, rtol=2e-6)
+    actor.score(obs, infos)
+    rows = actor.learning_records
+    for i, row in enumerate(rows):
+        row.update({"return": float(i % 2), "weight": 1., "game_id": i})
+    features, _ = actor.training_batch(rows)
+    _, values = actor.training_forward(features)
+    values.sum().backward()
+    assert actor.net.condition[0].weight.grad[:, -2:].abs().sum() > 0
+    path = tmp_path / "progress.pt"
+    actor.save(path)
+    actor.training = False
+    for restored in (PlainPolicy(path, public_only=True),
+                     ControllerCorePolicy(saved_parent, resume=path, progress_schema=schema, training=False)):
+        for a, b in zip(actor.score(obs, infos), restored.score(obs, infos)):
+            np.testing.assert_array_equal(a, b)
+    with pytest.raises(ValueError, match="contract"):
+        ControllerCorePolicy(saved_parent, resume=path)
+
+
 def test_outcome_gradients_reach_the_full_core_and_saved_policy_reloads(parent, tmp_path):
     actor = ControllerCorePolicy(parent, seed=491)
     observations, infos = controller_requests(actor)
@@ -452,7 +483,8 @@ def test_activity_reports_real_work_without_inflating_completed_counters(tmp_pat
     assert json.loads(path.read_text())["phase"] == "optimizing"
 
 
-def test_controller_training_command_finishes_with_activity_reporting(parent, tmp_path):
+@pytest.mark.parametrize("progress_schema", [None, "public_pair_progress_v1", "public_pair_progress_countdown_v1"])
+def test_controller_training_command_finishes_with_activity_reporting(parent, tmp_path, progress_schema):
     import subprocess
     import sys
 
@@ -465,6 +497,8 @@ def test_controller_training_command_finishes_with_activity_reporting(parent, tm
                   training_model="public_core", public_replay=True,
                   rollout_backend="events", async_planning=False, planner_workers=1,
                   epochs=1, minibatch=32, lr=3e-6, checkpoint_keep_last=1)
+    if progress_schema:
+        config["progress_schema"] = progress_schema
     path = tmp_path / "config.json"
     path.write_text(json.dumps(config))
     result = subprocess.run([sys.executable, "-m", "tools.train_pace_strategy", "--config", str(path)],
@@ -476,3 +510,7 @@ def test_controller_training_command_finishes_with_activity_reporting(parent, tm
     assert state["activity"] is None
     assert (output / "core-final.pt").is_file()
     assert (output / "public-replay/update-00001.npz").is_file()
+    payload = torch.load(output / "core-final.pt", weights_only=True)
+    assert payload["observation_schema"] == (progress_schema or "public_pair_context_v3")
+    with np.load(output / "public-replay/update-00001.npz") as replay:
+        assert json.loads(str(replay["metadata"]))["observation_schema"] == payload["observation_schema"]

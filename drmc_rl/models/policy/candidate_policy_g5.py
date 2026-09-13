@@ -234,11 +234,11 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         if public_context_schema is not None:
             from drmc_rl.game.public_context import (
                 PUBLIC_CONTEXT_SCHEMA,
-                PUBLIC_CONTEXT_DIM,
+                PUBLIC_CONTEXT_DIMS,
                 SIDE_FEATURE_DIM,
             )
 
-            if public_context_schema != PUBLIC_CONTEXT_SCHEMA or aux_dim != PUBLIC_CONTEXT_DIM:
+            if public_context_schema not in PUBLIC_CONTEXT_DIMS or aux_dim != PUBLIC_CONTEXT_DIMS[public_context_schema]:
                 raise ValueError("public context schema and auxiliary width must match")
             self.public_side_dim = SIDE_FEATURE_DIM
             self.side_condition = nn.Sequential(
