@@ -112,8 +112,9 @@ function renderOperations() {
     $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>Movement prediction confirmation</strong><span>${esc(pipeline.status)}</span></div>${bar(pipeline.completed_conditions,pipeline.target_conditions)}<div class="training-detail"><span>${count(pipeline.completed_conditions)} / ${count(pipeline.target_conditions)} conditions complete</span><span>${esc(pipeline.condition || '')}</span></div><p class="budget-note">${esc(pipeline.phase)} · ${count(pipeline.games)} source games · ${count(pipeline.roots)} labeled positions.<br>Reserved game seeds. Prediction errors are evaluated separately from playing strength. ${ago(age(pipeline.updated_at))}</p></div>`);
   }
   for(const run of experiment.research_runs || []){
-    if(run.schema==='drmc-controller-retention-study-v1'){
-      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div><p class="budget-note">${esc((run.phase || '').replaceAll('_',' '))} · ${count(run.completed_jobs?.length)} / 3 stages complete.<br>Frozen teacher games, then the cycling control and mixed-pace retention run. ${compact(run.target_decisions_per_arm)} placements per arm, at least ${compact(run.minimum_decisions_per_pace)} at each speed.</p></div>`);
+    if(['drmc-controller-retention-study-v1','drmc-controller-retention-mixed-study-v2'].includes(run.schema)){
+      const replacement=run.schema==='drmc-controller-retention-mixed-study-v2';
+      $('#training').insertAdjacentHTML('beforeend',`<div class="training-body"><div class="training-detail"><strong>${esc(run.label)}</strong><span>${esc(run.status)}</span></div><p class="budget-note">${esc((run.phase || '').replaceAll('_',' '))} · ${count(run.completed_jobs?.length)} / ${replacement?1:3} stages complete.<br>${replacement?'Replacement mixed trial; completed control retained.':'Frozen teacher games, then the cycling control and mixed-pace retention run.'} ${compact(run.target_decisions_per_arm)} placements per arm, at least ${compact(run.minimum_decisions_per_pace)} at each speed.</p></div>`);
       continue;
     }
     if(run.schema==='drmc-controller-retention-collection-v1'){
