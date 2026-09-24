@@ -167,6 +167,34 @@ def test_anchor_wrapper_preserves_reference_controller_actions(parent, adapted):
         parallel.close()
 
 
+@pytest.mark.parametrize('pace',['fast','frame_perfect'])
+def test_event_rollout_executes_human_movement_like_the_frame_arena(parent, pace):
+    reference=PlainPolicy(parent,public_only=True)
+    config=dict(native_library=os.environ.get('DRMC_FRAME_LIBRARY'),
+                variants={'a':{'delay':4,'movement':'human'},'b':{'delay':4,'movement':'human'}},
+                max_game_frames=1500,replay_games=0)
+    match=dict(a='a',b='b',games=2,level=14,pace=pace)
+    jobs=[(17291,0,0),(17291,1,1)]
+    planner=NativeReachabilityRunner()
+    parallel=ParallelPlanning(1)
+    try:
+        expected,_=run_batch(config,match,jobs,None,planner,None,policies={'a':reference,'b':reference})
+        actual,_=run_event_batch(config,match,jobs,None,parallel,None,policies={'a':reference,'b':reference})
+        for (eg,em,_),(ag,am,_) in zip(expected,actual):
+            for key in ('a_stats','b_stats'):
+                # The runners differ in which zero counters they materialize, and the frame
+                # runner can count one more lock at a frame cap.
+                keep=lambda d:{k:v for k,v in d.items() if v and k!='locks'}
+                assert keep(eg[key])==keep(ag[key])
+            strip=lambda g:{k:v for k,v in g.items() if k not in ('a_stats','b_stats')}
+            assert strip(eg)==strip(ag) and em==am
+            human=sum(v for k,v in eg['a_stats'].items() if k.startswith('human_route_'))
+            assert human==(0 if pace=='frame_perfect' else eg['a_stats']['decisions'])
+    finally:
+        planner.close()
+        parallel.close()
+
+
 def test_retention_guard_checks_each_pace_and_rejects_eval_seeds(parent,tmp_path):
     actor=ControllerCorePolicy(parent)
     obs,infos=controller_requests(actor)

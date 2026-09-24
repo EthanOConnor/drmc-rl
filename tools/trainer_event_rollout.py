@@ -20,6 +20,10 @@ from drmc_rl.human.anticipation import execution_for_action, score_public_inputs
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.early_decision import network_execution_frames, validate_timing_params
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+from drmc_rl.human.movement import (
+    MovementAblation, human_execution_for_action, movement_for_pace, movement_seed, steering_split,
+)
+from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import ByteCache
 
@@ -113,6 +117,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
     moves = [[] for _ in jobs]
     statistics = [Counter() for _ in range(2*len(jobs))]
     pending = {}
+    # Human-movement sides: (profile, per-decision draws, ablation, earliest start).
+    movements = {}
     asynchronous = config.get("async_planning", False)
     if observer is not None and asynchronous:
         raise ValueError("shadow observers require deterministic synchronous decision batches")
@@ -153,7 +159,21 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 statistics[side]["decisions"] += 1
                 actor = policy if policies is None else policies[id]
                 state = pool.semantic(side, public_context=uses_public_context(actor))
-                requests.append((state, delay, pace))
+                human = movement_for_pace(pace.id) if params.get("movement", "exact") == "human" else None
+                if human is None:
+                    movements.pop(side, None)
+                    requests.append((state, delay, pace))
+                else:
+                    # As in the frame arena: the sampled reaction counts from spawn, and the
+                    # feasible set is the named pace's after it.
+                    ablation = MovementAblation.from_dict(params.get("movement_ablation"))
+                    decision = human.decide(movement_seed(jobs[pair][0], physical, id),
+                        statistics[side]["decisions"],
+                        threshold=compute_speed_threshold(state["speed"], state["speed_ups"]))
+                    reaction = pace.reaction_frames if ablation.reaction == "pace" else decision.reaction_frames
+                    delay = max(int(params["delay"]), reaction)
+                    movements[side] = (human, decision, ablation, int(params["delay"]))
+                    requests.append((state, delay, human.planning))
                 actors.append(id)
             tick = time.perf_counter()
             if asynchronous:
@@ -179,15 +199,28 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 candidates = planner.plan(requests)
             else:
                 candidates = []
-                for state, delay, _ in requests:
+                for state, delay, planning in requests:
                     try:
-                        candidates.append(plan_candidates(planner, state, delay, pace))
+                        candidates.append(plan_candidates(planner, state, delay, planning))
                     except NoReachablePlacement:
                         candidates.append(None)
             measured["planning_seconds"] += time.perf_counter()-tick
             observations, infos, selected_indices = [], [], []
             for i, candidate in enumerate(candidates):
                 side = ready[i]
+                if candidate is None and side in movements:
+                    # A sampled reaction the pill cannot survive: react sooner, never before
+                    # computation is available.
+                    state, delay, planning = requests[i]
+                    floor = movements[side][3]
+                    while candidate is None and delay > floor:
+                        delay = max(floor, delay // 2)
+                        statistics[side]["human_reaction_shortened"] += 1
+                        try:
+                            candidate = plan_candidates(getattr(planner, "planner", planner), state, delay, planning)
+                        except NoReachablePlacement:
+                            candidate = None
+                    candidates[i], requests[i] = candidate, (state, delay, planning)
                 if candidate is None:
                     statistics[side]["no_reachable_after_delay"] += 1
                     pool.install(side)
@@ -256,7 +289,21 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 side = ready[i]
                 state, delay, _ = requests[i]
                 baseline_action = int(scores[j].argmax())
-                move = execution_for_action(candidates[i], overrides.get(side, baseline_action), pace, delay=delay)
+                if side in movements:
+                    human, decision, ablation, _ = movements[side]
+                    move = human_execution_for_action(candidates[i], overrides.get(side, baseline_action), human,
+                                                      decision, delay=delay, ablation=ablation)
+                    info = move["timing"]["movement"]
+                    statistics[side]["human_route_" + info["route"]] += 1
+                    statistics[side]["human_reaction_frames"] += decision.reaction_frames
+                    statistics[side]["human_hesitation_frames"] += info.get("hesitation_frames", 0)
+                    statistics[side]["human_execution_frames"] += move["timing"]["execution_frames"]
+                    statistics[side]["planner_cost_frames"] += move["timing"]["planner_cost_frames"]
+                else:
+                    move = execution_for_action(candidates[i], overrides.get(side, baseline_action), pace, delay=delay)
+                steering, total = steering_split(move)
+                statistics[side]["execution_frames"] += total
+                statistics[side]["steering_frames"] += steering
                 sample = learning.get(j)
                 if sample is not None and sample["action"] != move["placement"]["action"]:
                     raise RuntimeError("learning target differs from controller action")

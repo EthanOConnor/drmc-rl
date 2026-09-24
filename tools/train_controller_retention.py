@@ -3,6 +3,11 @@
 Both arms use natural controller games, the same per-pace game schedules and
 frozen opponent population. Only the revised arm mixes a cycle before updating
 and applies independent teacher retention. Outcome targets remain unchanged.
+
+``movement: human`` executes every entrant's chosen placements through the
+fitted human movement generator at each pace that has a profile (Frame Perfect
+stays exact); ``retention_paces`` limits teacher retention to a subset of the
+training paces, e.g. only those whose execution is unchanged.
 """
 from __future__ import annotations
 
@@ -76,14 +81,23 @@ def main():
     actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],resume=config.get('resume'))
     parent=PlainPolicy(Path(config['opponent_parent']),device,public_only=True)
     opponents=PublicOpponentPool(config['opponent_pool'],parent,config['opponent_parent'],device)
+    if config.get('movement','exact') not in ('exact','human'):
+        raise ValueError('movement must be exact or human')
+    retention_paces=config.get('retention_paces',config['paces'])
+    if not set(retention_paces)<=set(config['paces']):
+        raise ValueError('retention paces must be training paces')
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
-        paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
+        paces=retention_paces,max_kl_increase=config.get('max_anchor_kl_increase',.03),
         coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
         pressure_strength=config.get('retention_pressure_strength',0.))
     available=np.setdiff1d(np.arange(1,65536),list(set(config['holdout_seeds'])|retention.seeds))
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
                     execution_profiles={p:resolve_pace(p).to_dict() for p in config['paces']})
+    if config.get('movement','exact')=='human':
+        from drmc_rl.human.movement import movement_for_pace
+        identities['human_movement']={p:m.to_dict() for p in config['paces']
+                                      for m in [movement_for_pace(p)] if m is not None}
     from drmc_rl.planning.native_reach import resolve_library_path as reach_path
     from drmc_rl.envs.backends.drmario_pool import resolve_library_path as pool_path
     identities['native_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
@@ -117,7 +131,8 @@ def main():
     else:
         actor.save(output/'core-initial.pt',update=0,training_config=config)
         dump(output/'config.json',config)
-    runtime=dict(config,variants={id:{'delay':4} for id in ('learner',*opponents.names)},
+    movement={'movement':'human'} if config.get('movement','exact')=='human' else {}
+    runtime=dict(config,variants={id:{'delay':4,**movement} for id in ('learner',*opponents.names)},
                  replay_games=0,mixed_core_actor=None,reactive_compute_frames=4,preparation_compute_frames=6)
     planner=ParallelPlanning(config.get('planner_workers',4))
     activity=TrainingActivity(output/'training.json',progress)

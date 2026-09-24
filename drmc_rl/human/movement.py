@@ -82,6 +82,38 @@ class MovementDecision:
         return np.random.default_rng(np.random.SeedSequence([*self.seed, 0xA77E, attempt]))
 
 
+@dataclass(frozen=True)
+class MovementAblation:
+    """Diagnostic and training switches that keep parts of exact planner execution.
+
+    The default is the complete human generator. ``reaction="pace"`` starts at the named pace's
+    reaction with no depth hesitation; ``steering="planner"`` keeps the planner witness's steering
+    prefix; ``descent="prompt"`` holds Down as soon as steering ends; ``corrections`` and
+    ``pauses`` switch those sampled behaviours off.
+    """
+
+    reaction: str = "human"
+    steering: str = "human"
+    corrections: bool = True
+    pauses: bool = True
+    descent: str = "human"
+
+    def __post_init__(self):
+        if (self.reaction not in ("human", "pace") or self.steering not in ("human", "planner")
+                or self.descent not in ("human", "prompt")):
+            raise ValueError("unknown human movement ablation")
+
+    @classmethod
+    def from_dict(cls, value: dict | None) -> "MovementAblation":
+        return cls(**(value or {}))
+
+    def to_dict(self) -> dict:
+        return {k: v for k, v in asdict(self).items() if v != getattr(FULL_MOVEMENT, k)}
+
+
+FULL_MOVEMENT = MovementAblation()
+
+
 class HumanMovement:
     """One pace's fitted human movement profile."""
 
@@ -147,7 +179,8 @@ class HumanMovement:
 
     # --------------------------------------------------------------- planning
     def _plan(self, decision: MovementDecision, rng: np.random.Generator, start: FrameState,
-              target: tuple[int, int, int], threshold: int, level: int, execution_delay: int) -> dict:
+              target: tuple[int, int, int], threshold: int, level: int, execution_delay: int,
+              ablation: MovementAblation = FULL_MOVEMENT) -> dict:
         p, lat = self.profile, decision.latent
         g = gravity_cell(threshold)
         tx, ty, trot = target
@@ -165,7 +198,7 @@ class HumanMovement:
         das = adx >= 1 and flag("das", p["das_p"].get(f"{adx}{'w' if wall else ''}", p["das_p"].get(str(adx), 0.0)))
         if adx == 1 and not wall:
             das = False  # a held single step only reads as auto-repeat when pushed into a wall
-        corrected = level < 1 and flag("correction", p["correction_p"][g])
+        corrected = level < 1 and ablation.corrections and flag("correction", p["correction_p"][g])
         kind = None
         if corrected:
             mix = p["correction_mix"]
@@ -199,7 +232,7 @@ class HumanMovement:
             steps, x = steps + (1 if das else abs(w - x)), w
         presses = len(rotations) + steps
         pause_at = None
-        if level < 2 and presses >= 2 and flag("pause", p["pause_p"][f"{g}|{depth}"]):
+        if level < 2 and ablation.pauses and presses >= 2 and flag("pause", p["pause_p"][f"{g}|{depth}"]):
             pause_at = int(rng.integers(1, presses))  # the gap after this press becomes a pause
         # One latent orders the whole descent: the slowest draws never soft drop.
         slack_u = u_of("slack")
@@ -209,11 +242,12 @@ class HumanMovement:
             "late": late, "late_down": int(rng.integers(2, 9)), "rot_first": rng.random() < p["rot_first_p"],
             "gap": gap, "pause_at": pause_at,
             # Frames of hesitation after the start delay: the depth-conditioned reaction not yet spent.
-            "hesitation": 0 if level >= 2 else max(0, self._reaction(lat, threshold, depth) - execution_delay),
+            "hesitation": 0 if level >= 2 or ablation.reaction == "pace"
+            else max(0, self._reaction(lat, threshold, depth) - execution_delay),
             "pause": max(self.model["cells"]["pause_gap"], int(self._q(p["pause"], float(rng.random())) + 0.5)),
             "hold_lat": lambda: max(1, int(self._q(p["hold"]["lateral"], float(rng.random())) * speed + 0.5)),
             "hold_rot": lambda: max(1, int(self._q(p["hold"]["rotation"], float(rng.random())) * speed + 0.5)),
-            "slack": (lambda rows: 0 if level >= 3 else None
+            "slack": (lambda rows: 0 if level >= 3 or ablation.descent == "prompt" else None
                       if slack_u > 1.0 - no_down_p[f"{g}|{rows_cell(rows)}"] else
                       max(0, int(self._q(p["slack"][f"{g}|{rows_cell(rows)}"],
                                          slack_u / max(1e-6, 1.0 - no_down_p[f"{g}|{rows_cell(rows)}"])) + 0.5))),
@@ -312,8 +346,12 @@ class HumanMovement:
             step(held_dir * 6 + held_rot)
         if state.locked or t >= MAX_FRAMES:
             return None
-        # Descent: neutral wait, then hold Down to the lock, closest to the sampled slack.
-        base = state
+        return self._descend(cols, actions, state, target, threshold, plan)
+
+    def _descend(self, cols, actions, base, target, threshold: int, plan: dict):
+        """Neutral wait, then hold Down to the lock, closest to the sampled slack."""
+        tx, ty, trot = target
+        t = len(actions)
         probe, drop = base, 0
         while not probe.locked and drop < MAX_FRAMES:
             probe = simulate_frame(cols, probe, DOWN, speed_threshold=threshold)
@@ -349,6 +387,20 @@ class HumanMovement:
         return np.concatenate((np.asarray(actions, dtype=np.uint8),
                                np.zeros(wait, dtype=np.uint8), np.full(more, DOWN, dtype=np.uint8)))
 
+    def _planner_steering(self, cols, start: FrameState, target, threshold: int, plan: dict, witness):
+        """The witness's exact steering prefix, then this plan's descent; None if not exact."""
+        state, final, aligned = start, 0, start
+        for index, action in enumerate(witness, 1):
+            previous = state
+            state = simulate_frame(cols, state, int(action), speed_threshold=threshold)
+            if (state.x, state.rot) != (previous.x, previous.rot):
+                final, aligned = index, state
+            if state.locked:
+                break
+        if aligned.locked:
+            return np.asarray(witness[:final], dtype=np.uint8)
+        return self._descend(cols, [int(a) for a in witness[:final]], aligned, target, threshold, plan)
+
     @staticmethod
     def _next_gap(plan: dict, presses: int) -> int:
         if plan["pause_at"] is not None and presses == plan["pause_at"]:
@@ -358,7 +410,7 @@ class HumanMovement:
     # ------------------------------------------------------------ generation
     def generate(self, decision: MovementDecision, cols: np.ndarray, start: FrameState,
                  target: tuple[int, int, int], *, speed_threshold: int, witness,
-                 execution_delay: int) -> tuple[np.ndarray, dict]:
+                 execution_delay: int, ablation: MovementAblation = FULL_MOVEMENT) -> tuple[np.ndarray, dict]:
         """Human-like script from ``start`` (after the full reaction delay) to an exact lock at ``target``.
 
         ``witness`` is the planner's route for the same target from the same start. The returned
@@ -369,20 +421,26 @@ class HumanMovement:
         threshold = int(speed_threshold)
         info = {"algorithm": "human-movement-v1", "model": self.model.get("id"),
                 "reaction_frames": decision.reaction_frames, "start_delay_frames": int(execution_delay)}
+        if ablation != FULL_MOVEMENT:
+            info["ablation"] = ablation.to_dict()
+        base = np.asarray(witness, dtype=np.uint8).reshape(-1)
         for attempt in range(ATTEMPTS):
             level = min(attempt, 3)  # 0 full, 1 no correction, 2 no pause, 3 quick taps + prompt drop
             rng = decision.rng(attempt)
-            plan = self._plan(decision, rng, start, target, threshold, level, int(execution_delay))
-            script = self._realize(columns, start, target, threshold, plan)
+            plan = self._plan(decision, rng, start, target, threshold, level, int(execution_delay), ablation)
+            if ablation.steering == "planner":
+                script = self._planner_steering(columns, start, target, threshold, plan, base)
+            else:
+                script = self._realize(columns, start, target, threshold, plan)
             if script is None:
                 continue
             audit = self._audit(columns, start, script, threshold, target, execution_delay)
             if audit is not None:
-                return script, {**info, "route": "human", "attempts": attempt + 1,
+                return script, {**info, "route": "human" if ablation.steering == "human" else "planner_steering",
+                                "attempts": attempt + 1,
                                 "correction": plan["correction"], "das": bool(plan["das"]),
                                 "hesitation_frames": plan["hesitation"],
                                 "paused": plan["pause_at"] is not None, **audit}
-        base = np.asarray(witness, dtype=np.uint8).reshape(-1)
         from drmc_rl.human.cadence import _retime_planner_route
         rng = decision.rng(ATTEMPTS)
         slack_table = self.profile["slack"]
@@ -419,6 +477,21 @@ class HumanMovement:
         return {"validated": True, "unrestricted_fallback": False, "execution_frames": int(len(script)), **limits}
 
 
+def steering_split(move: dict) -> tuple[int, int]:
+    """Frames through the last sideways or rotation change of a move, and its whole script."""
+    states = move["controller_states"]
+    lock = move["lock_state"]
+    poses = [(s["x"], s["rotation"]) for s in states] + [(lock["x"], lock["rotation"])]
+    last = max((i for i in range(1, len(poses)) if poses[i] != poses[i - 1]), default=0)
+    return last, len(states)
+
+
+def movement_seed(seed: int, physical: int, variant: str) -> int:
+    """One style draw per game, side and entrant; independent of the opponent's variant."""
+    digest = hashlib.blake2b(f"{seed}:{physical}:{variant}".encode(), digest_size=6).digest()
+    return int.from_bytes(digest, "little")
+
+
 @lru_cache(maxsize=16)
 def movement_for_pace(pace_id: str) -> HumanMovement | None:
     """The pace's human profile, or None for Frame Perfect (exact machine movement)."""
@@ -427,7 +500,8 @@ def movement_for_pace(pace_id: str) -> HumanMovement | None:
 
 
 def human_execution_for_action(candidate, action: int, movement: HumanMovement,
-                               decision: MovementDecision, *, delay: int, frame_id: int = 0) -> dict:
+                               decision: MovementDecision, *, delay: int, frame_id: int = 0,
+                               ablation: MovementAblation = FULL_MOVEMENT) -> dict:
     """Human-like counterpart of ``anticipation.execution_for_action`` for a planned candidate.
 
     ``candidate`` must be planned with ``movement.planning`` from the state ``delay`` frames
@@ -445,7 +519,8 @@ def human_execution_for_action(candidate, action: int, movement: HumanMovement,
     columns = _columns(own)
     threshold = compute_speed_threshold(speed, ups)
     script, info = movement.generate(decision, columns, start, (x, y, rot), speed_threshold=threshold,
-                                     witness=np.asarray(witness).copy(), execution_delay=delay)
+                                     witness=np.asarray(witness).copy(), execution_delay=delay,
+                                     ablation=ablation)
     frame, trace = start, []
     for buttons in script:
         trace.append(_frame_payload(frame))
@@ -463,5 +538,5 @@ def human_execution_for_action(candidate, action: int, movement: HumanMovement,
     }
 
 
-__all__ = ["HumanMovement", "MOVEMENT_MODES", "MovementDecision", "human_execution_for_action", "load_model",
+__all__ = ["FULL_MOVEMENT", "HumanMovement", "MOVEMENT_MODES", "MovementAblation", "MovementDecision", "movement_seed", "steering_split", "human_execution_for_action", "load_model",
            "movement_for_pace"]

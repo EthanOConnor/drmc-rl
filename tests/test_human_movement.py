@@ -202,3 +202,62 @@ def test_backend_human_movement_option(tmp_path, pace):
         assert again["controller_frames"] == result["controller_frames"]
     finally:
         backend.close()
+
+
+@native
+@pytest.mark.parametrize("ablation", [
+    {"steering": "planner", "descent": "prompt"}, {"steering": "planner"}, {"descent": "prompt"},
+    {"reaction": "pace"}, {"corrections": False, "pauses": False},
+])
+def test_ablated_movement_still_locks_exactly(ablation):
+    from drmc_rl.human.movement import MovementAblation
+    from drmc_rl.planning.native_reach import NativeReachabilityRunner
+
+    mv, switches = movement_for_pace("fast"), MovementAblation.from_dict(ablation)
+    runner = NativeReachabilityRunner()
+    rng = np.random.default_rng(23)
+    checked, routes = 0, set()
+    try:
+        while checked < 30:
+            cols, threshold, start = _situation(rng)
+            decision = mv.decide(int(rng.integers(1 << 30)), checked, threshold=threshold)
+            reach = runner.bfs_full(cols, start, speed_threshold=threshold, **mv.planning.planner_args(0))
+            poses = np.flatnonzero(reach.costs_u16 != 0xFFFF)
+            if not len(poses):
+                continue
+            pose = int(rng.choice(poses))
+            target = (pose & 7, (pose >> 3) & 15, (pose >> 7) & 3)
+            witness = reach.script_for_pose(*target).copy()
+            script, info = mv.generate(decision, cols, start, target, speed_threshold=threshold,
+                                       witness=witness, execution_delay=4, ablation=switches)
+            state = start
+            for action in script:
+                state = simulate_frame(cols, state, int(action), speed_threshold=threshold)
+            assert state.locked and (state.x, state.y, state.rot) == target
+            assert info["ablation"] == ablation
+            if switches.reaction == "pace":
+                assert info.get("hesitation_frames", 0) == 0
+            if switches.steering == "planner" and switches.descent == "prompt":
+                assert len(script) <= len(witness) + 1
+            routes.add(info["route"])
+            checked += 1
+    finally:
+        runner.close()
+    assert routes & {"human", "planner_steering"}
+
+
+def test_arena_keys_movement_ablations_and_context():
+    from tools.trainer_planning_arena import bind_execution_profiles
+
+    def config(**extra):
+        return {"variants": {"a": {"movement": "human", **extra}, "b": {}},
+                "schedule": [{"id": "x", "a": "a", "b": "b", "pace": "fast"}]}
+    keys = set()
+    for extra in ({}, {"movement_ablation": {"descent": "prompt"}}, {"context_pace": "normal"}):
+        c = config(**extra)
+        bind_execution_profiles(c)
+        keys.add(c["schedule"][0]["execution_key"])
+    assert len(keys) == 3
+    with pytest.raises(ValueError):
+        bind_execution_profiles({"variants": {"a": {"context_pace": "normal"}, "b": {}},
+                                 "schedule": [{"id": "x", "a": "a", "b": "b", "pace": "fast"}]})

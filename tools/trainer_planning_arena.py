@@ -12,6 +12,7 @@ import argparse
 import cProfile
 from collections import Counter
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 import gzip
 import json
@@ -38,7 +39,10 @@ from drmc_rl.human.early_decision import (
     network_execution_frames, validate_timing_params, with_own_preview,
 )
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
-from drmc_rl.human.movement import MOVEMENT_MODES, human_execution_for_action, movement_for_pace
+from drmc_rl.human.movement import (
+    MOVEMENT_MODES, MovementAblation, human_execution_for_action, movement_for_pace,
+    movement_seed as human_movement_seed, steering_split,
+)
 from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_stopping import ComparisonStopping
@@ -60,19 +64,20 @@ def bind_execution_profiles(config):
             if mode not in MOVEMENT_MODES:
                 raise ValueError(f"movement must be one of {MOVEMENT_MODES}")
             human = movement_for_pace(pace.id) if mode == "human" else None
+            params = config["variants"][match[side]]
+            ablation = MovementAblation.from_dict(params.get("movement_ablation")).to_dict()
+            if (ablation or "context_pace" in params or "planning_pace" in params) and human is None:
+                raise ValueError("movement ablations and context paces apply to human movement only")
             if human is not None:
-                movement[match[side]] = human.to_dict()
+                movement[match[side]] = {**human.to_dict(), **({"ablation": ablation} if ablation else {}),
+                    **({"context_pace": resolve_pace(params["context_pace"]).to_dict()}
+                       if "context_pace" in params else {}),
+                    **({"planning_pace": resolve_pace(params["planning_pace"]).to_dict()}
+                       if "planning_pace" in params else {})}
         keyed = actual if not movement else {**actual, "human_movement": movement}
         match.update(execution_profile=actual, execution_key=execution_key(keyed))
         if movement:
             match["movement_profiles"] = movement
-
-
-def human_movement_seed(seed, physical, variant):
-    """One style draw per game, side and entrant; independent of the opponent's variant."""
-    import hashlib
-    digest = hashlib.blake2b(f"{seed}:{physical}:{variant}".encode(), digest_size=6).digest()
-    return int.from_bytes(digest, "little")
 
 
 def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, activity=None):
@@ -147,14 +152,21 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 if params.get("own_board_only", False):
                     state = own_board_only(state)
                 human = (movement_for_pace(pace.id) if params.get("movement", "exact") == "human" else None)
+                ablation = MovementAblation.from_dict(params.get("movement_ablation"))
+                # Diagnostic: the network may be told another pace's motor context.
+                context = resolve_pace(params["context_pace"]) if "context_pace" in params else pace
                 decision = None
+                # Diagnostic: restrict the feasible set to another pace's motor limits.
+                planning = (None if human is None else human.planning if "planning_pace" not in params
+                            else replace(resolve_pace(params["planning_pace"]), reaction_frames=0))
                 if human is not None:
                     if params.get("anticipation", False):
                         raise ValueError("human movement samples reaction per decision; preparation is unsupported")
                     decision = human.decide(
                         human_movement_seed(jobs[pair][0], physical, variant), statistics[side]["decisions"],
                         threshold=compute_speed_threshold(state["speed"], state["speed_ups"]))
-                reaction = pace.reaction_frames if decision is None else decision.reaction_frames
+                reaction = (pace.reaction_frames if decision is None or ablation.reaction == "pace"
+                            else decision.reaction_frames)
                 anticipates = (params.get("anticipation", False) and pace.reaction_frames <= 6
                                and pace.reaction_frames < int(params["delay"]))
                 if anticipates and policies is not None:
@@ -175,7 +187,8 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                                   lead_frames=frame - request["frame"])
                 if selected:
                     controllers[side] = (frame, selected)
-                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None, (None, None)))
+                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None,
+                                  (None, None, None)))
                 else:
                     floor_delay = delay if decision is None else (
                         early_start_delay(request["frame"], frame, int(params["delay"]), 0)
@@ -184,7 +197,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     while candidate is None:
                         try:
                             candidate = plan_candidates(planner, state, delay,
-                                                        pace if human is None else human.planning)
+                                                        pace if human is None else planning)
                         except NoReachablePlacement:
                             if delay <= floor_delay:
                                 break
@@ -216,10 +229,10 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                             timing["branch"] = PREVIEWS.index(tuple(state["preview"]))
                     for view in views:
                         obs, info = controller_policy_inputs(
-                            actor, candidate, state, pace, delay, compute_input,
+                            actor, candidate, state, context, delay, compute_input,
                             public=view, decision_delay_frames=delay_input,
                         )
-                        info[0]["pace/context"] = strategy_context(pace, state, delay)
+                        info[0]["pace/context"] = strategy_context(context, state, delay)
                         observations.append(obs)
                         infos.extend(info)
                         policy_ids.append(variant)
@@ -227,7 +240,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     statistics[side]["feasible_candidates"] += legal_count
                     statistics[side]["forced_placements"] += int(legal_count == 1)
                     fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing,
-                                  (human, decision)))
+                                  (human, decision, ablation)))
             learning = {}
             if infos:
                 obs_batch = np.concatenate(observations)
@@ -258,11 +271,16 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                         selected = execution_for_action(candidate, action, pace, delay=delay)
                     else:
                         selected = human_execution_for_action(candidate, action, movement[0], movement[1],
-                                                              delay=delay)
-                        route = selected["timing"]["movement"]["route"]
-                        statistics[side]["human_route_" + route] += 1
+                                                              delay=delay, ablation=movement[2])
+                        info = selected["timing"]["movement"]
+                        statistics[side]["human_route_" + info["route"]] += 1
                         statistics[side]["human_reaction_frames"] += movement[1].reaction_frames
+                        statistics[side]["human_hesitation_frames"] += info.get("hesitation_frames", 0)
                         statistics[side]["human_execution_frames"] += selected["timing"]["execution_frames"]
+                        statistics[side]["planner_cost_frames"] += selected["timing"]["planner_cost_frames"]
+                    steering, total = steering_split(selected)
+                    statistics[side]["execution_frames"] += total
+                    statistics[side]["steering_frames"] += steering
                     sample = learning.get(score_index)
                     if sample is not None and sample["action"] != selected["placement"]["action"]:
                         raise RuntimeError("learning record differs from the executed action")
