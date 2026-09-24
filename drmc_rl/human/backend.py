@@ -197,6 +197,36 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
     return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
 
 
+def early_marginal_scores(policy, candidate, state, pace, delay, compute_frames):
+    """Log preview-marginal policy over all 512 actions for a pre-spawn decision.
+
+    The host sends the predicted spawn view frozen at its request frame; the
+    after-next preview is not public yet, so the policy is averaged uniformly
+    over the nine possible previews (``early_decision.marginal_action``).
+    """
+    from drmc_rl.human.anticipation import score_public_inputs
+    from drmc_rl.human.controller_context import controller_policy_inputs, live_controller_state
+    from drmc_rl.human.early_decision import PREVIEWS, marginal_action
+
+    live = state.get("public_live_context") or {}
+    observations, infos = [], []
+    for preview in PREVIEWS:
+        sides = [dict(side) for side in live.get("sides", ())]
+        if len(sides) == 2:
+            sides[1]["preview"] = list(preview)
+        view = live_controller_state({**state, "preview": list(preview),
+                                      "public_live_context": {**live, "sides": sides}})
+        observation, info = controller_policy_inputs(policy, candidate, view, pace, delay, compute_frames)
+        observations.append(observation)
+        infos.extend(info)
+    scores = score_public_inputs(policy, np.concatenate(observations), infos).astype(np.float64)
+    shifted = np.where(np.isfinite(scores), scores - scores.max(axis=1, keepdims=True), -np.inf)
+    probabilities = np.exp(shifted)
+    probabilities /= probabilities.sum(axis=1, keepdims=True)
+    with np.errstate(divide="ignore"):
+        return marginal_action(scores), np.log(probabilities.mean(axis=0))
+
+
 class HumanBackend:
     """Synchronous worker intended to be supervised off the gameplay thread."""
 
@@ -273,6 +303,7 @@ class HumanBackend:
         self.geometry_preparer = None
         self.prepared_geometry = OrderedDict()
         self.planner = NativeReachabilityRunner(max_frames=max_frames)
+        self.warm_batch_ms: dict[int, float] = {}
         self.warmup()
         self.ready = True
         self.started_at = time.time()
@@ -357,19 +388,26 @@ class HumanBackend:
                           "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
             # Live decisions score one position; only next-pill anticipation scores
             # its 18 preview/parity branches, and public-context cores decline it.
-            for batch in (1,) if uses_public_context(policy) else (1, 18):
+            # Pre-spawn (early) decisions score the nine unrevealed previews at once.
+            for batch in (1, 9) if uses_public_context(policy) else (1, 18):
+                started = time.perf_counter()
                 policy.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
+                self.warm_batch_ms[batch] = (time.perf_counter() - started) * 1e3
 
     def capabilities(self) -> dict[str, Any]:
         from drmc_rl.human.controller_context import uses_public_context
         anticipation_paces = [p.id for p in PACES if self.competitive is not None
                               and not uses_public_context(self._competitive_for_pace(p.id))]
+        public_core = self.competitive is not None and all(
+            uses_public_context(self._competitive_for_pace(p.id)) for p in PACES)
         return {
             "schema": PROTOCOL_SCHEMA,
             "request_types": ["hello", "health", "decide", "coach", "prepare_next", "prepare_geometry", "cancel", "shutdown"],
             "anticipation": {"version": 1, "available": bool(anticipation_paces), "supported_paces": anticipation_paces,
                              "preview_branches": 9, "frame_parities": 2,
                              "public_information_only": True, "opponent_ablation": True},
+            "early_decision": {"version": 1, "available": public_core, "preview": "marginal",
+                               "previews": 9, "points": ["lock", "settled"]},
             "geometry_preparation": {"version": 1, "available": self.competitive is not None,
                                      "frame_parities": 2, "max_entries": 2,
                                      "fresh_context_required": True,
@@ -472,6 +510,12 @@ class HumanBackend:
         from drmc_rl.human.controller_context import (
             controller_policy_inputs, live_controller_state, uses_public_context,
         )
+        early = request.get("early_decision")
+        if early is not None and (early != {"version": 1, "preview": "marginal"}
+                                  or competitive is None or not uses_public_context(competitive)
+                                  or request.get("strength_control") != "quality"):
+            raise ValueError("early decisions need version 1 marginal previews and a public-context core at quality")
+        request_state = state
         if (competitive is not None and uses_public_context(competitive)
                 and request.get("strength_control") == "quality"):
             state = live_controller_state(state)
@@ -609,20 +653,31 @@ class HumanBackend:
                 if competitive is not None:
                     candidate = (planes, opponent_planes, pill, preview, speed, speed_ups,
                                  frame, reach, packed, costs512)
-                    observed, infos = controller_policy_inputs(
-                        competitive, candidate, state, pace, execution_delay,
-                        int((state.get("public_live_context") or {}).get("compute_frames", execution_delay)),
-                    )
-                    actions, masks, logits = competitive.score(observed, infos)
-                    if set(actions[0, masks[0]]) != set(valid_actions):
-                        raise RuntimeError("competitive policy changed candidate coverage")
-                    by_action = np.full(512, -np.inf, dtype=np.float32)
-                    by_action[actions[0, masks[0]]] = logits[0, masks[0]]
+                    compute_frames = int((state.get("public_live_context") or {}).get("compute_frames", execution_delay))
+                    if early is None:
+                        observed, infos = controller_policy_inputs(
+                            competitive, candidate, state, pace, execution_delay, compute_frames,
+                        )
+                        actions, masks, logits = competitive.score(observed, infos)
+                        if set(actions[0, masks[0]]) != set(valid_actions):
+                            raise RuntimeError("competitive policy changed candidate coverage")
+                        by_action = np.full(512, -np.inf, dtype=np.float32)
+                        by_action[actions[0, masks[0]]] = logits[0, masks[0]]
+                    else:
+                        early_action, by_action = early_marginal_scores(
+                            competitive, candidate, request_state, pace, execution_delay, compute_frames)
+                        if set(np.flatnonzero(np.isfinite(by_action))) != set(valid_actions):
+                            raise RuntimeError("competitive policy changed candidate coverage")
                     scores = np.where(packed.mask, by_action[packed.actions.clip(min=0)], -np.inf)
                     comp = scores[packed.mask]
-                packed_slot = self.runtime.choose_quality(scores, packed.mask)
+                if early is None:
+                    packed_slot = self.runtime.choose_quality(scores, packed.mask)
+                else:
+                    # The arena's marginal argmax over all 512 actions (lowest action on ties).
+                    packed_slot = int(np.flatnonzero(packed.mask & (packed.actions == early_action))[0])
                 strength = {"control": "quality", "chosen_regret": 0.0,
                             "rating_calibrated": False,
+                            **({} if early is None else {"early_decision": {"preview": "marginal", "previews": 9}}),
                             "competitive_model": {**(self.competitive_identity or {}), "selected_pace": pace.id}}
             else:
                 packed_slot, strength = self.runtime.choose_strength(
