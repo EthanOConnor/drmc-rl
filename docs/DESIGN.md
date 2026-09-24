@@ -443,6 +443,32 @@ These authored product presets are not corpus-certified ExecutionProfiles;
 Top Humans is a setting name, not a validated percentile. Sustained burst,
 correction, and human-distribution calibration gates remain separate.
 
+### Afterstate public core
+
+`drmc-afterstate-core-v1` (`drmc_rl/models/policy/afterstate_core.py`) is a
+candidate core on the unchanged `public_pair_context_v3` actor contract. For
+every planner-feasible pose, `drmc_rl.game.afterstate` locks the pill into the
+acting side's semantic bottle and runs the ROM drop/match cascade. The result
+is the exact settled own bottle plus facts: tiles and viruses cleared, matched
+lines (the ROM combo counter), cascade rounds, the garbage count and colours
+that combo stores (two or more lines, first four colours), spawn blockage,
+remaining viruses and win. Incoming garbage is hidden and never applied. The
+function takes only the public model tensors, so spawn, predicted pre-spawn
+(`lock_safe`/`commit_safe`) and browser decisions share it; it matches the
+native engine exactly on every non-terminal candidate tested.
+
+Both bottles pass through one FiLM-conditioned dense trunk of 256 channels by
+6 blocks with per-side public conditioning, then column interaction, candidate
+attention and a 51-atom value head as in G5. The candidate token replaces G5's
+9×9 raw patches with a 32-channel, two-block afterstate CNN over settled
+planes, the changed-cell mask and a 16-channel projection of the root trunk,
+plus the fact vector. Pose, cost, root features at both halves and opponent
+column features remain. Callers without afterstates receive them computed on
+the host from the same inputs (with a bounded row cache); ONNX export passes
+`after_tiles [B,K,128]` and `facts [B,K,16]` explicitly. The model has 15.4M
+parameters and 4.2–4.6 GFLOP at 32–56 candidates, against 28.1M and 7.9–8.1
+GFLOP for the 320×8 public core.
+
 ### Anticipatory execution
 
 Maximum can prepare the next turn while its committed controller script runs.

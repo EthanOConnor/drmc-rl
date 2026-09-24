@@ -1,5 +1,42 @@
 # Operations
 
+## Afterstate core experiment
+
+The afterstate core (`docs/DESIGN.md#afterstate-public-core`) is trained in two
+steps, then evaluated only with pre-registered seeds.
+
+1. `trainer-afterstate-core-dataset` streams
+   `controller-retention-mixed-v2/public-replay` shards into parts under
+   `trainer-output/afterstate-core-v1/dataset-v1`, scoring each state's
+   complete frontier with the frozen champion (retention-mixed v2) and storing
+   exact afterstate deltas and facts. Host memory stays near one part; do not
+   load all shards at once on tf3090 (15 GB RAM, shared).
+2. `trainer-afterstate-core-distill` fits policy KL and the 51-atom value
+   distribution to the teacher. Reset seeds with `seed % 50 == 0` are held out.
+   Agreement is diagnostic, never strength evidence.
+3. Outcome PPO reuses `trainer-controller-retention` with the config from
+   `runs/review-20260909/prepare_afterstate_ppo_v1.py`: the mixed-v2 recipe,
+   the student as initialization, the champion in the opponent pool, every
+   registered evaluation seed in `holdout_seeds`, and a snapshot every 50M
+   frames. Set `DRMARIO_REACH_LIB` and `DRMARIO_POOL_LIB` to the 19f292c
+   libraries.
+
+`runs/review-20260909/prepare_afterstate_tournament_v1.py` owns the seeds. The
+16-bit reset-seed space is nearly exhausted by training journals, so its fresh
+seeds exclude every evaluation, arena and anchor journal, the champion lineage's
+and distillation source's training games, fresh-v1 seeds and the mixed-v2
+holdout; globally unseen seeds are used first and the rest appear only in
+unrelated study arms' training games. Groups: `quick` (normal and
+frame_perfect, 128 games each), `panel` (seven paces, 896 games, reused for
+every PPO snapshot; stop after two consecutive snapshots that do not improve the
+best pooled panel score), and `tournament` (seven paces, 3584 games, one
+candidate only). Write a config with
+`prepare_afterstate_tournament_v1.py {quick|panel|tournament} --candidate PATH --label NAME`,
+run `python -m tools.trainer_planning_arena --config ...` on the Mac (MPS,
+events backend), and assess with `assess_afterstate_tournament_v1.py CONFIG`
+(`--partial` for an interim read). Only the tournament config carries the
+PROMOTE/PARITY/REJECT rule.
+
 ## Public progress input experiment
 
 `trainer-controller-core` accepts optional `progress_schema` in its training
