@@ -12,6 +12,12 @@ Analysis of the Fightcade human corpus (fightcadeRatings docs/HUMAN_CORPUS.md) r
 3. `timing_report.py OUT.parquet RATINGS.parquet REPORT.json`: rating-band tables per speed,
    regressions with geometry controls, player profiles, and style clusters.
 
+4. `movement_features.py SLACK.parquet RATINGS.parquet FEATURES.parquet WORKERS`: per-placement
+   reaction, press gaps, auto-repeat, steering end, descent slack and corrections.
+5. `fit_movement_model.py FEATURES.parquet SLACK.parquet OUT.json`: the pace profiles used by
+   `drmc_rl/human/movement.py` (`--holdout-folds`/`--top-split` for a validation fit).
+6. `validate_movement.py stats|correctness`: held-out distribution comparison and exact-lock checks.
+
 `timing_stats.py` is the earlier timing-only version. `report-2026-09-24.json` is the output
 for the 1,167,065-placement sample (25,000 per month, 49 months).
 Script paths inside slack.py assume the drmc-rl checkout at /Users/ethan/dev/drmario/drmc-rl.

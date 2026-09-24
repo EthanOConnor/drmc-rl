@@ -2354,6 +2354,31 @@ accepts chunks whose settings and content hashes match. Production releases
 reject search-budget exhaustion; `--allow-budget-exhausted` is diagnostic-only.
 Single-teacher pilots report uncertainty as unavailable rather than zero.
 
+## Human movement model
+
+The pace profiles for `movement: human` are refitted from a placement sample
+(`tools/human_movement/README.md` covers sampling and the fastest-route pass):
+
+```bash
+python -m tools.human_movement.movement_features SLACK.parquet RATINGS.parquet FEATURES.parquet 6
+python -m tools.human_movement.fit_movement_model FEATURES.parquet SLACK.parquet \
+  drmc_rl/human/movement_model_v1.json
+# Validation fit without player folds 0-3 and with half of the top-band players:
+python -m tools.human_movement.fit_movement_model FEATURES.parquet SLACK.parquet TRAIN.json \
+  --holdout-folds 0,1,2,3 --top-split
+python -m tools.human_movement.validate_movement stats FEATURES.parquet SLACK.parquet TRAIN.json REPORT.json
+python -m tools.human_movement.validate_movement correctness CORRECTNESS.json --cases 100000
+```
+
+Keep the parquet inputs outside git. `stats --insample` checks the fitted
+players (mechanism); the default compares held-out players. `correctness` must
+report every case exact, deterministic and within the script limits. For a
+strength read, give an arena variant `"movement": "human"` beside an otherwise
+identical motor-limit variant at the same pace; the execution key includes the
+movement model, so journals cannot mix. Human variants do not prepare the next
+turn. Hosts send `movement`, a per-game `movement_seed`, and a compute-only
+`execution_delay_frames`; the backend samples reaction and pads the script.
+
 ## Execution profiles and style
 
 Fit a named profile from raw frame-indexed scripts:

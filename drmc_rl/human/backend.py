@@ -16,6 +16,7 @@ from drmc_rl.human.afterstate_model import HUMAN_AFTERSTATE_SCHEMA
 from drmc_rl.human.afterstate_runtime import AfterstatePolicyRuntime
 from drmc_rl.human.coach import analyze_choice
 from drmc_rl.execution.pace import PACES, Pace, resolve_pace
+from drmc_rl.human.movement import MOVEMENT_MODES, load_model as load_movement_model, movement_for_pace
 from drmc_rl.human.runtime import HumanPolicyRuntime
 from drmc_rl.human.search import (
     HumanValueSearch,
@@ -140,25 +141,28 @@ class NoReachablePlacement(ValueError):
     """The valid motor/physics envelope leaves no controllable lock pose."""
 
 
+def falling_frame(state: Mapping[str, Any]) -> FrameState:
+    """The observed falling pill and controller microstate of a request state."""
+    falling = state.get("falling", {})
+    return FrameState(
+        x=int(falling.get("x", 3)),
+        y=int(falling.get("y", 0)),
+        rot=int(falling.get("rotation", 0)) & 3,
+        speed_counter=int(falling.get("speed_counter", 0)),
+        hor_velocity=int(falling.get("horizontal_velocity", 0)) & 0x0F,
+        hold_dir=HoldDir(int(falling.get("hold_dir", 0))),
+        frame_parity=int(falling.get("frame_parity", 0)) & 1,
+        rot_hold=Rotation(int(falling.get("rotation_hold", 0))),
+    )
+
+
 def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: int = 0,
                 pace: Pace | None = None):
     planes = _board_planes(state["board_planes"])
     opponent_planes = _board_planes(state["opponent_board_planes"])
     pill = _pair(state["pill"], "pill")
     preview = _pair(state["preview"], "preview")
-    falling = state.get("falling", {})
-    hold = HoldDir(int(falling.get("hold_dir", 0)))
-    rotation_hold = Rotation(int(falling.get("rotation_hold", 0)))
-    frame = FrameState(
-        x=int(falling.get("x", 3)),
-        y=int(falling.get("y", 0)),
-        rot=int(falling.get("rotation", 0)) & 3,
-        speed_counter=int(falling.get("speed_counter", 0)),
-        hor_velocity=int(falling.get("horizontal_velocity", 0)) & 0x0F,
-        hold_dir=hold,
-        frame_parity=int(falling.get("frame_parity", 0)) & 1,
-        rot_hold=rotation_hold,
-    )
+    frame = falling_frame(state)
     speed = int(state.get("speed", 2))
     speed_ups = int(state.get("speed_ups", 0))
     columns = _columns(planes)
@@ -398,6 +402,20 @@ class HumanBackend:
                 "unrestricted_fallback": False,
                 "profiles": [pace.to_dict() for pace in PACES],
             },
+            "movement": {
+                "modes": list(MOVEMENT_MODES),
+                "default": "exact",
+                "human_paces": [p.id for p in PACES if movement_for_pace(p.id) is not None],
+                "model": load_movement_model().get("id"),
+                "request_fields": {"movement": "exact | human",
+                                   "movement_seed": "integer per game and side; selects the style draw",
+                                   "movement_key": "integer per decision within the game (default frame_id)",
+                                   "execution_delay_frames": "compute availability only; human reaction is sampled"},
+                "reaction": "sampled per decision and counted from the request state's spawn; frames beyond "
+                            "execution_delay_frames are leading neutral controller frames",
+                "placement": "the named pace's motor-feasible set; only the script is human-like",
+                "exact_pace": "frame_perfect always executes exact machine movement",
+            },
             "search": {
                 "available": True,
                 "exact_afterstate": self.afterstate_v3,
@@ -481,12 +499,26 @@ class HumanBackend:
         max_delay = max(30, pace.reaction_frames)
         if not 0 <= execution_delay <= max_delay:
             raise ValueError(f"execution_delay_frames must be in [0,{max_delay}]")
+        mode = request.get("movement", "exact")
+        if mode not in MOVEMENT_MODES:
+            raise ValueError(f"movement must be one of {list(MOVEMENT_MODES)}")
+        human = movement_for_pace(pace.id) if mode == "human" else None
+        decision, host_delay = None, execution_delay
+        if human is not None:
+            decision = human.decide(
+                int(request.get("movement_seed", self.seed)),
+                int(request.get("movement_key", request.get("frame_id", 0))),
+                threshold=compute_speed_threshold(int(state.get("speed", 2)), int(state.get("speed_ups", 0))))
+            # Reaction counts from the observed spawn; computation may already cover it.
+            execution_delay = max(host_delay, decision.reaction_frames)
         if not np.isfinite(rating) or not np.isfinite(temperature) or temperature < 0:
             raise ValueError(
                 "rating and temperature must be finite; temperature must be non-negative"
             )
         candidate, geometry_status = None, "not_requested"
         token = request.get("geometry_token")
+        if human is not None:
+            token, geometry_status = None, "human_movement"
         if token is not None:
             if not isinstance(token, str):
                 raise ValueError("geometry_token must be a string")
@@ -496,6 +528,14 @@ class HumanBackend:
             geometry_status = "unavailable"
             if prepared is not None:
                 candidate, geometry_status = prepared.select(state, pace, execution_delay)
+        while candidate is None and human is not None:
+            try:
+                candidate = self._candidates(state, execution_delay, human.planning)
+            except NoReachablePlacement:
+                if execution_delay <= host_delay:
+                    raise
+                # The pill would not survive the sampled reaction: react sooner.
+                execution_delay = max(host_delay, execution_delay // 2)
         if candidate is None:
             candidate = self._candidates(state, execution_delay, pace)
         (
@@ -668,18 +708,40 @@ class HumanBackend:
             speed_ups=speed_ups,
             candidate_count=packed.count,
         )
-        motor_audit = pace.validate(
-            _columns(planes), frame, script,
-            speed_threshold=compute_speed_threshold(speed, speed_ups),
-            execution_delay=execution_delay,
-        )
-        timing.update(
-            execution_profile=pace.to_dict(),
-            movement={"algorithm": "constrained-frame-search-v1", "validated": True,
-                      "unrestricted_fallback": False, **motor_audit},
-            planner_cost_frames=int(packed.cost[packed_slot]),
-            cost_semantics="duration of selected profile-valid witness",
-        )
+        if human is None:
+            motor_audit = pace.validate(
+                _columns(planes), frame, script,
+                speed_threshold=compute_speed_threshold(speed, speed_ups),
+                execution_delay=execution_delay,
+            )
+            timing.update(
+                execution_profile=pace.to_dict(),
+                movement={"algorithm": "constrained-frame-search-v1", "validated": True,
+                          "unrestricted_fallback": False, **motor_audit},
+                planner_cost_frames=int(packed.cost[packed_slot]),
+                cost_semantics="duration of selected profile-valid witness",
+            )
+        else:
+            threshold = compute_speed_threshold(speed, speed_ups)
+            generated, info = human.generate(
+                decision, _columns(planes), frame, (x, y, rotation), speed_threshold=threshold,
+                witness=np.asarray(script).copy(), execution_delay=execution_delay)
+            # The host starts at its own delay; the rest of the sampled reaction is neutral input.
+            pad = execution_delay - host_delay
+            script = np.concatenate((np.zeros(pad, dtype=np.uint8), generated))
+            frame = falling_frame(state)
+            for _ in range(host_delay):
+                frame = simulate_frame(_columns(planes), frame, 0, speed_threshold=threshold)
+            audit = human.floor.validate(_columns(planes), frame, script, speed_threshold=threshold,
+                                         execution_delay=host_delay)
+            timing.update(
+                execution_profile=human.to_dict(),
+                movement={**info, **audit, "validated": True, "unrestricted_fallback": False,
+                          "reaction_pad_frames": int(pad), "first_input_delay_frames": int(execution_delay)},
+                planner_cost_frames=int(packed.cost[packed_slot]),
+                cost_semantics="duration of the named pace's witness; the executed script is human-like",
+            )
+            execution_delay = host_delay
         replay = frame
         controller_states = []
         for buttons in script:

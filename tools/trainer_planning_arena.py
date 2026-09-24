@@ -38,6 +38,8 @@ from drmc_rl.human.early_decision import (
     network_execution_frames, validate_timing_params, with_own_preview,
 )
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+from drmc_rl.human.movement import MOVEMENT_MODES, human_execution_for_action, movement_for_pace
+from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.vs_head_to_head import PlainPolicy
 
@@ -47,10 +49,29 @@ FPS = 60.0988
 def bind_execution_profiles(config):
     """Record actual limits and reject a request for another executable preset."""
     for match in config["schedule"]:
-        actual = resolve_pace(match.get("pace", "frame_perfect")).to_dict()
+        pace = resolve_pace(match.get("pace", "frame_perfect"))
+        actual = pace.to_dict()
         if match.get("execution_profile", actual) != actual:
             raise ValueError("requested execution profile differs from this evaluator's motor limits")
-        match.update(execution_profile=actual, execution_key=execution_key(actual))
+        movement = {}
+        for side in ("a", "b"):
+            mode = config["variants"][match[side]].get("movement", "exact")
+            if mode not in MOVEMENT_MODES:
+                raise ValueError(f"movement must be one of {MOVEMENT_MODES}")
+            human = movement_for_pace(pace.id) if mode == "human" else None
+            if human is not None:
+                movement[match[side]] = human.to_dict()
+        keyed = actual if not movement else {**actual, "human_movement": movement}
+        match.update(execution_profile=actual, execution_key=execution_key(keyed))
+        if movement:
+            match["movement_profiles"] = movement
+
+
+def human_movement_seed(seed, physical, variant):
+    """One style draw per game, side and entrant; independent of the opponent's variant."""
+    import hashlib
+    digest = hashlib.blake2b(f"{seed}:{physical}:{variant}".encode(), digest_size=6).digest()
+    return int.from_bytes(digest, "little")
 
 
 def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, activity=None):
@@ -119,6 +140,15 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 state = pool.semantic(side, public_context=contextual)
                 if params.get("own_board_only", False):
                     state = own_board_only(state)
+                human = (movement_for_pace(pace.id) if params.get("movement", "exact") == "human" else None)
+                decision = None
+                if human is not None:
+                    if params.get("anticipation", False):
+                        raise ValueError("human movement samples reaction per decision; preparation is unsupported")
+                    decision = human.decide(
+                        human_movement_seed(jobs[pair][0], physical, variant), statistics[side]["decisions"],
+                        threshold=compute_speed_threshold(state["speed"], state["speed_ups"]))
+                reaction = pace.reaction_frames if decision is None else decision.reaction_frames
                 anticipates = (params.get("anticipation", False) and pace.reaction_frames <= 6
                                and pace.reaction_frames < int(params["delay"]))
                 if anticipates and policies is not None:
@@ -131,19 +161,32 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     else:
                         reason = "not_ready"
                     statistics[side]["cache_" + reason] += 1
-                delay = 0 if selected else max(int(params["delay"]), pace.reaction_frames)
+                delay = 0 if selected else max(int(params["delay"]), reaction)
                 timing = None
                 if request is not None:
-                    delay = early_start_delay(request["frame"], frame, int(params["delay"]), pace.reaction_frames)
+                    delay = early_start_delay(request["frame"], frame, int(params["delay"]), reaction)
                     timing = dict(point=point, kind=request["kind"], request_frame=request["frame"],
                                   lead_frames=frame - request["frame"])
                 if selected:
                     controllers[side] = (frame, selected)
-                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None))
+                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None, (None, None)))
                 else:
-                    try:
-                        candidate = plan_candidates(planner, state, delay, pace)
-                    except NoReachablePlacement:
+                    floor_delay = delay if decision is None else (
+                        early_start_delay(request["frame"], frame, int(params["delay"]), 0)
+                        if request is not None else int(params["delay"]))
+                    candidate = None
+                    while candidate is None:
+                        try:
+                            candidate = plan_candidates(planner, state, delay,
+                                                        pace if human is None else human.planning)
+                        except NoReachablePlacement:
+                            if delay <= floor_delay:
+                                break
+                            # A sampled reaction the pill cannot survive: react sooner, never
+                            # before computation is available.
+                            delay = max(floor_delay, delay // 2)
+                            statistics[side]["human_reaction_shortened"] += 1
+                    if candidate is None:
                         statistics[side]["no_reachable_after_delay"] += 1
                         prepared[side] = None
                         continue
@@ -177,7 +220,8 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     legal_count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                     statistics[side]["feasible_candidates"] += legal_count
                     statistics[side]["forced_placements"] += int(legal_count == 1)
-                    fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing))
+                    fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing,
+                                  (human, decision)))
             learning = {}
             if infos:
                 obs_batch = np.concatenate(observations)
@@ -193,7 +237,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 scored = iter(enumerate(all_scores))
             else:
                 scored = iter(())
-            for side, state, candidate, selected, delay, reason, anticipates, rows, timing in fresh:
+            for side, state, candidate, selected, delay, reason, anticipates, rows, timing, movement in fresh:
                 sample = None
                 if selected is None:
                     block = [next(scored) for _ in range(rows)]
@@ -204,7 +248,15 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                         score_index, action = None, int(block[timing["branch"]][1].argmax())
                     else:
                         score_index, action = None, marginal_action(np.stack([s for _, s in block]))
-                    selected = execution_for_action(candidate, action, pace, delay=delay)
+                    if movement[0] is None:
+                        selected = execution_for_action(candidate, action, pace, delay=delay)
+                    else:
+                        selected = human_execution_for_action(candidate, action, movement[0], movement[1],
+                                                              delay=delay)
+                        route = selected["timing"]["movement"]["route"]
+                        statistics[side]["human_route_" + route] += 1
+                        statistics[side]["human_reaction_frames"] += movement[1].reaction_frames
+                        statistics[side]["human_execution_frames"] += selected["timing"]["execution_frames"]
                     sample = learning.get(score_index)
                     if sample is not None and sample["action"] != selected["placement"]["action"]:
                         raise RuntimeError("learning record differs from the executed action")
