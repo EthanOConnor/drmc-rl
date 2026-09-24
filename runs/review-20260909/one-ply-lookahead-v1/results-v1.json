@@ -1,0 +1,693 @@
+{
+ "schema": "drmc-one-ply-lookahead-v1",
+ "champion": "controller-retention-mixed-v2/core-final-inference.pt",
+ "source": "trainer/one-ply-lookahead",
+ "arena": {
+  "qr-sloth-sloth-la-k4f1-value-c11": {
+   "pace": "sloth",
+   "games": 256,
+   "score": 0.62890625,
+   "ci": [
+    0.5426022523113976,
+    0.71484375
+   ],
+   "wins": 160,
+   "losses": 94,
+   "draws": 2,
+   "censored": 0,
+   "lookahead_decisions": 2262,
+   "changed_rate": 0.432,
+   "value_auc": 0.6059,
+   "q_spread_median": 0.302,
+   "value_step_median": 0.1517
+  },
+  "qr-sloth-sloth-la-k6f1-value-c13": {
+   "pace": "sloth",
+   "games": 256,
+   "score": 0.55859375,
+   "ci": [
+    0.47210962313232174,
+    0.6416633898043768
+   ],
+   "wins": 142,
+   "losses": 112,
+   "draws": 2,
+   "censored": 0,
+   "lookahead_decisions": 2124,
+   "changed_rate": 0.472,
+   "value_auc": 0.6316,
+   "q_spread_median": 0.3785,
+   "value_step_median": 0.1601
+  },
+  "qr-normal-normal-la-k4f1-value-c11": {
+   "pace": "normal",
+   "games": 256,
+   "score": 0.06640625,
+   "ci": [
+    0.02734375,
+    0.12337940609994402
+   ],
+   "wins": 17,
+   "losses": 239,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 19190,
+   "changed_rate": 0.557,
+   "value_auc": 0.8194,
+   "q_spread_median": 0.1389,
+   "value_step_median": 0.0676
+  },
+  "qr-normal-normal-la-k6f1-value-c13": {
+   "pace": "normal",
+   "games": 256,
+   "score": 0.03125,
+   "ci": [
+    0.0078125,
+    0.07759763126135902
+   ],
+   "wins": 8,
+   "losses": 248,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 15477,
+   "changed_rate": 0.582,
+   "value_auc": 0.8786,
+   "q_spread_median": 0.1746,
+   "value_step_median": 0.0586
+  },
+  "qr-fp-frame_perfect-la-k4f1-value-c0": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0078125,
+   "ci": [
+    0.0,
+    0.07054814139079493
+   ],
+   "wins": 1,
+   "losses": 127,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 17894,
+   "changed_rate": 0.589,
+   "value_auc": 0.9386,
+   "q_spread_median": 0.0713,
+   "value_step_median": 0.0303
+  },
+  "qr-fp-frame_perfect-la-k4f1-value-c11": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0,
+   "ci": [
+    0.0,
+    0.05662405979280239
+   ],
+   "wins": 0,
+   "losses": 128,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 12011,
+   "changed_rate": 0.572,
+   "value_auc": 0.9648,
+   "q_spread_median": 0.0449,
+   "value_step_median": 0.023
+  },
+  "qr-fp-frame_perfect-la-k6f1-value-c0": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0,
+   "ci": [
+    0.0,
+    0.05662405979280239
+   ],
+   "wins": 0,
+   "losses": 128,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 17582,
+   "changed_rate": 0.63,
+   "value_auc": 0.963,
+   "q_spread_median": 0.0635,
+   "value_step_median": 0.0233
+  },
+  "qr-fp-frame_perfect-la-k6f1-value-c13": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0,
+   "ci": [
+    0.0,
+    0.05662405979280239
+   ],
+   "wins": 0,
+   "losses": 128,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 10734,
+   "changed_rate": 0.613,
+   "value_auc": 0.9596,
+   "q_spread_median": 0.0615,
+   "value_step_median": 0.0203
+  },
+  "qr-cheap-sloth-la-k4f1-root_value-c7": {
+   "pace": "sloth",
+   "games": 128,
+   "score": 0.4921875,
+   "ci": [
+    0.3736645251086443,
+    0.6115952258256182
+   ],
+   "wins": 60,
+   "losses": 62,
+   "draws": 6,
+   "censored": 0,
+   "lookahead_decisions": 974,
+   "changed_rate": 0.437,
+   "value_auc": 0.5899,
+   "q_spread_median": 0.2315,
+   "value_step_median": 0.1708
+  },
+  "qr-cheap-normal-la-k4f1-root_value-c7": {
+   "pace": "normal",
+   "games": 128,
+   "score": 0.0703125,
+   "ci": [
+    0.015625,
+    0.16016733738686123
+   ],
+   "wins": 9,
+   "losses": 119,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 7591,
+   "changed_rate": 0.576,
+   "value_auc": 0.8032,
+   "q_spread_median": 0.1177,
+   "value_step_median": 0.0685
+  },
+  "qr-cheap-frame_perfect-la-k4f1-root_value-c0": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0,
+   "ci": [
+    0.0,
+    0.05662405979280239
+   ],
+   "wins": 0,
+   "losses": 128,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 16589,
+   "changed_rate": 0.622,
+   "value_auc": 0.9324,
+   "q_spread_median": 0.0561,
+   "value_step_median": 0.0299
+  },
+  "qr-cheap-frame_perfect-la-k4f1-root_value-c7": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.0,
+   "ci": [
+    0.0,
+    0.05662405979280239
+   ],
+   "wins": 0,
+   "losses": 128,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 14235,
+   "changed_rate": 0.627,
+   "value_auc": 0.9611,
+   "q_spread_median": 0.0347,
+   "value_step_median": 0.0212
+  },
+  "qr-cheap-normal-la-k4f1-value-c11-p0.1": {
+   "pace": "normal",
+   "games": 128,
+   "score": 0.515625,
+   "ci": [
+    0.3958160147858043,
+    0.6336644833456706
+   ],
+   "wins": 66,
+   "losses": 62,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 12675,
+   "changed_rate": 0.119,
+   "value_auc": 0.7203,
+   "q_spread_median": 0.1144,
+   "value_step_median": 0.0792
+  },
+  "conf-sloth-sloth-la-k4f1-value-c11": {
+   "pace": "sloth",
+   "games": 512,
+   "score": 0.591796875,
+   "ci": [
+    0.5306632859095172,
+    0.65234375
+   ],
+   "wins": 297,
+   "losses": 203,
+   "draws": 12,
+   "censored": 0,
+   "lookahead_decisions": 4218,
+   "changed_rate": 0.451,
+   "value_auc": 0.6214,
+   "q_spread_median": 0.3142,
+   "value_step_median": 0.1517
+  },
+  "qr-v17-sloth-la-k4f1-value-c11-v17": {
+   "pace": "sloth",
+   "games": 128,
+   "score": 0.5546875,
+   "ci": [
+    0.4296875,
+    0.6698966501026166
+   ],
+   "wins": 69,
+   "losses": 55,
+   "draws": 4,
+   "censored": 0,
+   "lookahead_decisions": 948,
+   "changed_rate": 0.419,
+   "value_auc": 0.5705,
+   "q_spread_median": 0.2581,
+   "value_step_median": 0.1435
+  },
+  "qr-v17-normal-la-k4f1-value-c11-v17": {
+   "pace": "normal",
+   "games": 128,
+   "score": 0.0390625,
+   "ci": [
+    0.0,
+    0.1181408918758299
+   ],
+   "wins": 5,
+   "losses": 123,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 6243,
+   "changed_rate": 0.558,
+   "value_auc": 0.8416,
+   "q_spread_median": 0.0993,
+   "value_step_median": 0.0638
+  },
+  "qr-v17-frame_perfect-la-k4f1-value-c11-v17": {
+   "pace": "frame_perfect",
+   "games": 128,
+   "score": 0.1328125,
+   "ci": [
+    0.0625,
+    0.2369940424159367
+   ],
+   "wins": 17,
+   "losses": 111,
+   "draws": 0,
+   "censored": 0,
+   "lookahead_decisions": 7547,
+   "changed_rate": 0.644,
+   "value_auc": 0.8285,
+   "q_spread_median": 0.0829,
+   "value_step_median": 0.0515
+  }
+ },
+ "counterfactual": {
+  "frame_perfect": {
+   "decisions": 274,
+   "seeds": 9,
+   "decisions_with_outcome_spread": 201,
+   "root_argmax_win_rate": 0.27007299270072993,
+   "kept_mean_win_rate": 0.40997566909975675,
+   "logit": {
+    "gain": 0.0,
+    "gain_se": 0.0,
+    "changed": 0.0,
+    "pairwise": 0.42,
+    "pairs": 1500
+   },
+   "value_f1": {
+    "gain": 0.1752,
+    "gain_se": 0.0875,
+    "changed": 0.745,
+    "pairwise": 0.495,
+    "pairs": 1500
+   },
+   "value_f2": {
+    "gain": 0.1606,
+    "gain_se": 0.0889,
+    "changed": 0.737,
+    "pairwise": 0.4903,
+    "pairs": 1500
+   },
+   "settled_value": {
+    "gain": 0.1387,
+    "gain_se": 0.0827,
+    "changed": 0.719,
+    "pairwise": 0.5127,
+    "pairs": 1500
+   },
+   "followup_logit": {
+    "gain": 0.1861,
+    "gain_se": 0.0953,
+    "changed": 0.726,
+    "pairwise": 0.528,
+    "pairs": 1500
+   },
+   "value_f1+0.02": {
+    "gain": 0.0985,
+    "gain_se": 0.0667,
+    "changed": 0.412,
+    "pairwise": 0.466,
+    "pairs": 1500
+   },
+   "value_f1+0.05": {
+    "gain": 0.0474,
+    "gain_se": 0.051,
+    "changed": 0.255,
+    "pairwise": 0.4473,
+    "pairs": 1500
+   },
+   "value_f1+0.1": {
+    "gain": 0.0146,
+    "gain_se": 0.0272,
+    "changed": 0.135,
+    "pairwise": 0.4387,
+    "pairs": 1500
+   },
+   "value_f1+0.2": {
+    "gain": 0.0219,
+    "gain_se": 0.0162,
+    "changed": 0.08,
+    "pairwise": 0.4313,
+    "pairs": 1500
+   },
+   "settled_value+0.02": {
+    "gain": 0.0839,
+    "gain_se": 0.0482,
+    "changed": 0.38,
+    "pairwise": 0.4633,
+    "pairs": 1500
+   },
+   "settled_value+0.05": {
+    "gain": 0.0657,
+    "gain_se": 0.0355,
+    "changed": 0.223,
+    "pairwise": 0.4513,
+    "pairs": 1500
+   },
+   "settled_value+0.1": {
+    "gain": 0.0438,
+    "gain_se": 0.0261,
+    "changed": 0.142,
+    "pairwise": 0.45,
+    "pairs": 1500
+   },
+   "settled_value+0.2": {
+    "gain": 0.0292,
+    "gain_se": 0.0173,
+    "changed": 0.095,
+    "pairwise": 0.4407,
+    "pairs": 1500
+   },
+   "root_value_auc": 0.6311,
+   "root_value_brier": 0.3016
+  },
+  "normal": {
+   "decisions": 219,
+   "seeds": 12,
+   "decisions_with_outcome_spread": 173,
+   "root_argmax_win_rate": 0.6073059360730594,
+   "kept_mean_win_rate": 0.4923896499238964,
+   "logit": {
+    "gain": 0.0,
+    "gain_se": 0.0,
+    "changed": 0.0,
+    "pairwise": 0.5791,
+    "pairs": 1233
+   },
+   "value_f1": {
+    "gain": -0.1553,
+    "gain_se": 0.1281,
+    "changed": 0.753,
+    "pairwise": 0.4972,
+    "pairs": 1233
+   },
+   "value_f2": {
+    "gain": -0.1507,
+    "gain_se": 0.107,
+    "changed": 0.731,
+    "pairwise": 0.4708,
+    "pairs": 1233
+   },
+   "settled_value": {
+    "gain": -0.1142,
+    "gain_se": 0.1037,
+    "changed": 0.703,
+    "pairwise": 0.5057,
+    "pairs": 1233
+   },
+   "followup_logit": {
+    "gain": -0.0822,
+    "gain_se": 0.106,
+    "changed": 0.708,
+    "pairwise": 0.5462,
+    "pairs": 1233
+   },
+   "value_f1+0.02": {
+    "gain": -0.0411,
+    "gain_se": 0.0632,
+    "changed": 0.406,
+    "pairwise": 0.5539,
+    "pairs": 1233
+   },
+   "value_f1+0.05": {
+    "gain": -0.0228,
+    "gain_se": 0.0505,
+    "changed": 0.283,
+    "pairwise": 0.5645,
+    "pairs": 1233
+   },
+   "value_f1+0.1": {
+    "gain": -0.0228,
+    "gain_se": 0.0335,
+    "changed": 0.169,
+    "pairwise": 0.5702,
+    "pairs": 1233
+   },
+   "value_f1+0.2": {
+    "gain": -0.0183,
+    "gain_se": 0.0131,
+    "changed": 0.091,
+    "pairwise": 0.5726,
+    "pairs": 1233
+   },
+   "settled_value+0.02": {
+    "gain": -0.0411,
+    "gain_se": 0.0524,
+    "changed": 0.411,
+    "pairwise": 0.5474,
+    "pairs": 1233
+   },
+   "settled_value+0.05": {
+    "gain": -0.0137,
+    "gain_se": 0.0299,
+    "changed": 0.242,
+    "pairwise": 0.558,
+    "pairs": 1233
+   },
+   "settled_value+0.1": {
+    "gain": -0.032,
+    "gain_se": 0.0208,
+    "changed": 0.142,
+    "pairwise": 0.5572,
+    "pairs": 1233
+   },
+   "settled_value+0.2": {
+    "gain": -0.0183,
+    "gain_se": 0.014,
+    "changed": 0.082,
+    "pairwise": 0.5693,
+    "pairs": 1233
+   },
+   "root_value_auc": 0.6934,
+   "root_value_brier": 0.2478
+  }
+ },
+ "followup_state_diagnostic": {
+  "normal": {
+   "transitions": 396,
+   "mae_constructed": 0.0721,
+   "mae_persistence": 0.1064,
+   "value_change_after_clearing": -0.0134,
+   "value_change_after_non_clearing": 0.0095
+  },
+  "frame_perfect": {
+   "transitions": 502,
+   "mae_constructed": 0.1046,
+   "mae_persistence": 0.1473,
+   "value_change_after_clearing": -0.0219,
+   "value_change_after_non_clearing": 0.0364
+  }
+ },
+ "cost_model": {
+  "factors": {
+   "webgpu": 3.080943154717836,
+   "wasm_cpu": 3.2110996153245632,
+   "wasm_native": 1.5,
+   "pyodide": 2.0
+  },
+  "root_mps_ms": 14.605917000153568,
+  "root_cpu4_ms": 24.913584000387345,
+  "model": {
+   "k4_f1_value_webgpu": {
+    "median_ms": 139.4,
+    "p95_ms": 180.7,
+    "charge_frames": 11
+   },
+   "k4_f1_value_wasm_cpu": {
+    "median_ms": 393.4,
+    "p95_ms": 456.1,
+    "charge_frames": 28
+   },
+   "k4_f1_value_mac_mps": {
+    "median_ms": 54.8,
+    "p95_ms": 73.6,
+    "charge_frames": 5
+   },
+   "k4_f1_value_mac_cpu4": {
+    "median_ms": 133.1,
+    "p95_ms": 169.1,
+    "charge_frames": 11
+   },
+   "k4_f1_value_mac_cpu1": {
+    "median_ms": 212.4,
+    "p95_ms": 246.8,
+    "charge_frames": 15
+   },
+   "k4_f1_root_value_webgpu": {
+    "median_ms": 84.5,
+    "p95_ms": 108.3,
+    "charge_frames": 7
+   },
+   "k4_f1_root_value_wasm_cpu": {
+    "median_ms": 213.8,
+    "p95_ms": 261.6,
+    "charge_frames": 16
+   },
+   "k4_f1_root_value_mac_mps": {
+    "median_ms": 36.7,
+    "p95_ms": 52.8,
+    "charge_frames": 4
+   },
+   "k4_f1_root_value_mac_cpu4": {
+    "median_ms": 76.0,
+    "p95_ms": 104.9,
+    "charge_frames": 7
+   },
+   "k4_f1_root_value_mac_cpu1": {
+    "median_ms": 115.8,
+    "p95_ms": 147.3,
+    "charge_frames": 9
+   },
+   "k4_f2_value_webgpu": {
+    "median_ms": 158.3,
+    "p95_ms": 203.7,
+    "charge_frames": 13
+   },
+   "k4_f2_value_wasm_cpu": {
+    "median_ms": 515.1,
+    "p95_ms": 602.1,
+    "charge_frames": 37
+   },
+   "k4_f2_value_mac_mps": {
+    "median_ms": 61.0,
+    "p95_ms": 85.2,
+    "charge_frames": 6
+   },
+   "k4_f2_value_mac_cpu4": {
+    "median_ms": 170.1,
+    "p95_ms": 210.9,
+    "charge_frames": 13
+   },
+   "k4_f2_value_mac_cpu1": {
+    "median_ms": 294.5,
+    "p95_ms": 336.2,
+    "charge_frames": 21
+   },
+   "k6_f1_value_webgpu": {
+    "median_ms": 162.0,
+    "p95_ms": 207.0,
+    "charge_frames": 13
+   },
+   "k6_f1_value_wasm_cpu": {
+    "median_ms": 575.2,
+    "p95_ms": 677.4,
+    "charge_frames": 41
+   },
+   "k6_f1_value_mac_mps": {
+    "median_ms": 65.4,
+    "p95_ms": 95.5,
+    "charge_frames": 6
+   },
+   "k6_f1_value_mac_cpu4": {
+    "median_ms": 194.5,
+    "p95_ms": 240.6,
+    "charge_frames": 15
+   },
+   "k6_f1_value_mac_cpu1": {
+    "median_ms": 303.6,
+    "p95_ms": 354.0,
+    "charge_frames": 22
+   },
+   "k6_f1_root_value_webgpu": {
+    "median_ms": 99.2,
+    "p95_ms": 147.2,
+    "charge_frames": 9
+   },
+   "k6_f1_root_value_wasm_cpu": {
+    "median_ms": 309.9,
+    "p95_ms": 378.3,
+    "charge_frames": 23
+   },
+   "k6_f1_root_value_mac_mps": {
+    "median_ms": 45.0,
+    "p95_ms": 74.9,
+    "charge_frames": 5
+   },
+   "k6_f1_root_value_mac_cpu4": {
+    "median_ms": 109.8,
+    "p95_ms": 148.7,
+    "charge_frames": 9
+   },
+   "k6_f1_root_value_mac_cpu1": {
+    "median_ms": 165.3,
+    "p95_ms": 208.9,
+    "charge_frames": 13
+   },
+   "k6_f2_value_webgpu": {
+    "median_ms": 186.1,
+    "p95_ms": 236.9,
+    "charge_frames": 15
+   },
+   "k6_f2_value_wasm_cpu": {
+    "median_ms": 728.7,
+    "p95_ms": 846.6,
+    "charge_frames": 51
+   },
+   "k6_f2_value_mac_mps": {
+    "median_ms": 73.4,
+    "p95_ms": 106.4,
+    "charge_frames": 7
+   },
+   "k6_f2_value_mac_cpu4": {
+    "median_ms": 243.0,
+    "p95_ms": 286.0,
+    "charge_frames": 18
+   },
+   "k6_f2_value_mac_cpu1": {
+    "median_ms": 435.3,
+    "p95_ms": 486.6,
+    "charge_frames": 30
+   }
+  }
+ }
+}

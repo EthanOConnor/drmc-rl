@@ -23,7 +23,7 @@ NL = "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-arena-0c7
 pace = resolve_pace(sys.argv[1] if len(sys.argv) > 1 else "frame_perfect")
 seeds = [int(s) for s in sys.argv[2].split(",")] if len(sys.argv) > 2 else [915, 3040]
 builders = dict(stale=L._follow_state)
-if len(sys.argv) > 3:
+if len(sys.argv) > 3 and sys.argv[3]:
     import importlib
     builders.update(importlib.import_module(sys.argv[3]).BUILDERS)
 policy = PlainPolicy(Path(CH), "mps", public_only=True)
@@ -50,7 +50,8 @@ for seed in seeds:
                     actual_board = bytes(state["public_pair_state"].sides[0].board)
                     row = dict(seed=seed, frame=int(pool.states[0].frame), elapsed=int(pool.states[0].frame) - prev["frame"],
                                v_root=prev["v"], v_actual=float(values[0]), exact_board=actual_board == prev["after"],
-                               true_preview=tuple(state["preview"]), next_pill=tuple(state["pill"]))
+                               true_preview=tuple(state["preview"]), next_pill=tuple(state["pill"]),
+                               viruses_cleared=int(prev["facts"][0]), tiles_cleared=int(prev["facts"][1]))
                     for name, build in builders.items():
                         for preview_mode in ("repeat", "true"):
                             root = prev["root"]
@@ -76,5 +77,9 @@ for k in keys:
     d = np.array([r[k] - r["v_actual"] for r in exact])
     c = np.corrcoef([r[k] for r in exact], [r["v_actual"] for r in exact])[0, 1]
     print(f"{k:24s} bias {d.mean():+.3f}  mae {np.abs(d).mean():.3f}  corr {c:.3f}")
+for label, subset in (("clearing", [r for r in exact if r["tiles_cleared"]]), ("non-clearing", [r for r in exact if not r["tiles_cleared"]])):
+    if subset:
+        print(label, len(subset), "bias stale_true", round(float(np.mean([r["v_stale_true"] - r["v_actual"] for r in subset])), 4),
+              "root->actual", round(float(np.mean([r["v_actual"] - r["v_root"] for r in subset])), 4))
 for k in [k for k in rows[0] if k.startswith("same_action")]:
     print(k, np.mean([r[k] for r in exact]))

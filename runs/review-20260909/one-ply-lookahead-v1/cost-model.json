@@ -1,0 +1,162 @@
+{
+ "factors": {
+  "webgpu": 3.080943154717836,
+  "wasm_cpu": 3.2110996153245632,
+  "wasm_native": 1.5,
+  "pyodide": 2.0
+ },
+ "root_mps_ms": 14.605917000153568,
+ "root_cpu4_ms": 24.913584000387345,
+ "model": {
+  "k4_f1_value_webgpu": {
+   "median_ms": 139.4,
+   "p95_ms": 180.7,
+   "charge_frames": 11
+  },
+  "k4_f1_value_wasm_cpu": {
+   "median_ms": 393.4,
+   "p95_ms": 456.1,
+   "charge_frames": 28
+  },
+  "k4_f1_value_mac_mps": {
+   "median_ms": 54.8,
+   "p95_ms": 73.6,
+   "charge_frames": 5
+  },
+  "k4_f1_value_mac_cpu4": {
+   "median_ms": 133.1,
+   "p95_ms": 169.1,
+   "charge_frames": 11
+  },
+  "k4_f1_value_mac_cpu1": {
+   "median_ms": 212.4,
+   "p95_ms": 246.8,
+   "charge_frames": 15
+  },
+  "k4_f1_root_value_webgpu": {
+   "median_ms": 84.5,
+   "p95_ms": 108.3,
+   "charge_frames": 7
+  },
+  "k4_f1_root_value_wasm_cpu": {
+   "median_ms": 213.8,
+   "p95_ms": 261.6,
+   "charge_frames": 16
+  },
+  "k4_f1_root_value_mac_mps": {
+   "median_ms": 36.7,
+   "p95_ms": 52.8,
+   "charge_frames": 4
+  },
+  "k4_f1_root_value_mac_cpu4": {
+   "median_ms": 76.0,
+   "p95_ms": 104.9,
+   "charge_frames": 7
+  },
+  "k4_f1_root_value_mac_cpu1": {
+   "median_ms": 115.8,
+   "p95_ms": 147.3,
+   "charge_frames": 9
+  },
+  "k4_f2_value_webgpu": {
+   "median_ms": 158.3,
+   "p95_ms": 203.7,
+   "charge_frames": 13
+  },
+  "k4_f2_value_wasm_cpu": {
+   "median_ms": 515.1,
+   "p95_ms": 602.1,
+   "charge_frames": 37
+  },
+  "k4_f2_value_mac_mps": {
+   "median_ms": 61.0,
+   "p95_ms": 85.2,
+   "charge_frames": 6
+  },
+  "k4_f2_value_mac_cpu4": {
+   "median_ms": 170.1,
+   "p95_ms": 210.9,
+   "charge_frames": 13
+  },
+  "k4_f2_value_mac_cpu1": {
+   "median_ms": 294.5,
+   "p95_ms": 336.2,
+   "charge_frames": 21
+  },
+  "k6_f1_value_webgpu": {
+   "median_ms": 162.0,
+   "p95_ms": 207.0,
+   "charge_frames": 13
+  },
+  "k6_f1_value_wasm_cpu": {
+   "median_ms": 575.2,
+   "p95_ms": 677.4,
+   "charge_frames": 41
+  },
+  "k6_f1_value_mac_mps": {
+   "median_ms": 65.4,
+   "p95_ms": 95.5,
+   "charge_frames": 6
+  },
+  "k6_f1_value_mac_cpu4": {
+   "median_ms": 194.5,
+   "p95_ms": 240.6,
+   "charge_frames": 15
+  },
+  "k6_f1_value_mac_cpu1": {
+   "median_ms": 303.6,
+   "p95_ms": 354.0,
+   "charge_frames": 22
+  },
+  "k6_f1_root_value_webgpu": {
+   "median_ms": 99.2,
+   "p95_ms": 147.2,
+   "charge_frames": 9
+  },
+  "k6_f1_root_value_wasm_cpu": {
+   "median_ms": 309.9,
+   "p95_ms": 378.3,
+   "charge_frames": 23
+  },
+  "k6_f1_root_value_mac_mps": {
+   "median_ms": 45.0,
+   "p95_ms": 74.9,
+   "charge_frames": 5
+  },
+  "k6_f1_root_value_mac_cpu4": {
+   "median_ms": 109.8,
+   "p95_ms": 148.7,
+   "charge_frames": 9
+  },
+  "k6_f1_root_value_mac_cpu1": {
+   "median_ms": 165.3,
+   "p95_ms": 208.9,
+   "charge_frames": 13
+  },
+  "k6_f2_value_webgpu": {
+   "median_ms": 186.1,
+   "p95_ms": 236.9,
+   "charge_frames": 15
+  },
+  "k6_f2_value_wasm_cpu": {
+   "median_ms": 728.7,
+   "p95_ms": 846.6,
+   "charge_frames": 51
+  },
+  "k6_f2_value_mac_mps": {
+   "median_ms": 73.4,
+   "p95_ms": 106.4,
+   "charge_frames": 7
+  },
+  "k6_f2_value_mac_cpu4": {
+   "median_ms": 243.0,
+   "p95_ms": 286.0,
+   "charge_frames": 18
+  },
+  "k6_f2_value_mac_cpu1": {
+   "median_ms": 435.3,
+   "p95_ms": 486.6,
+   "charge_frames": 30
+  }
+ }
+}
