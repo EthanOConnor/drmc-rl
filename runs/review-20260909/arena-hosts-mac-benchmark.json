@@ -1,0 +1,101 @@
+{
+ "schema": "drmc-arena-host-benchmark-v1",
+ "host": "Ethans-MBP.lan (Apple M3 Max, 12P+4E cores, 48 GB)",
+ "source": "trainer/arena-distributed",
+ "natives": "controller-arena-0c76c0e-source/native-libraries (19f292c)",
+ "model": "controller-retention-mixed-v2/core-final-inference.pt (both sides)",
+ "note": "Unrelated GNSS/compile jobs kept the load average between 27 and 158 throughout; absolute rates are lower bounds and noisy. Games/h = games / wall seconds of the batch.",
+ "runs": [
+  {
+   "run": "s_ls1",
+   "games": 32,
+   "wall_seconds": 335,
+   "games_per_hour": 344,
+   "load_start": "80.88 81.65 80.76",
+   "load_end": "63.12 67.96 74.44",
+   "setup": "frames lock_safe vs spawn, frame_perfect, MPS, pairs 16, 1 process (trainer_planning_arena)",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "s_ls3",
+   "games": 48,
+   "wall_seconds": 237,
+   "games_per_hour": 729,
+   "load_start": "63.12 67.96 74.44",
+   "load_end": "121.95 94.78 84.53",
+   "setup": "same, local --workers 3 (MPS each)",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "s_ls4",
+   "games": 64,
+   "wall_seconds": 288,
+   "games_per_hour": 800,
+   "load_start": "121.95 94.78 84.53",
+   "load_end": "71.28 88.63 85.58",
+   "setup": "same, local --workers 4",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "s_ls6",
+   "games": 96,
+   "wall_seconds": 356,
+   "games_per_hour": 971,
+   "load_start": "71.28 88.63 85.58",
+   "load_end": "74.48 100.38 94.13",
+   "setup": "same, local --workers 6",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "s_sp1",
+   "games": 64,
+   "wall_seconds": 148,
+   "games_per_hour": 1557,
+   "load_start": "74.48 100.38 94.13",
+   "load_end": "75.48 89.56 90.63",
+   "setup": "events spawn delay6 vs delay4, frame_perfect, MPS, pairs 32, async, 3 planner threads, 1 process",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "s_sp3",
+   "games": 128,
+   "wall_seconds": 171,
+   "games_per_hour": 2695,
+   "load_start": "75.48 89.56 90.63",
+   "load_end": "75.00 83.12 87.77",
+   "setup": "same, local --workers 3",
+   "wall_includes": "process start, model load, all batches"
+  },
+  {
+   "run": "ls_mps_8",
+   "setup": "frames lock_safe, frame_perfect, MPS, pairs 8, 1 process",
+   "games": 8,
+   "wall_seconds": 80.8,
+   "games_per_hour": 356,
+   "profile": "MPS sync (.cpu) 35.6 s, native BFS 9.5 s, network total 64 s of 81 s"
+  },
+  {
+   "run": "ls_cpu_8",
+   "setup": "same seeds, CPU 1 thread",
+   "games": 8,
+   "wall_seconds": 737.5,
+   "games_per_hour": 39,
+   "profile": "conv2d 663 s of 738 s",
+   "journal": "identical moves to MPS"
+  },
+  {
+   "run": "series1",
+   "setup": "frames lock_safe pairs 16 MPS concurrent plain processes (per-process batch walls)",
+   "rates": {
+    "1": 378,
+    "2": 1060,
+    "3": 1440
+   },
+   "load": "50-158, noisy"
+  }
+ ],
+ "reference": {
+  "retention_fresh_v1": "event runner MPS pairs 32 async (logged): 3,184 games/h over 3,584 games, frame_perfect 1,847",
+  "timing_contract_v2_P3": "frames lock_safe MPS pairs 128: 128 games / 1,334 s = 345 games/h"
+ }
+}

@@ -66,6 +66,10 @@ class ComparisonStopping:
         """Games in the next batch: finish a pending probe, otherwise one look."""
         if self._static(match) == "probe" and match["id"] not in self.probes:
             return max(2, self.probe_games - len(rows))
+        return self.steady_batch_games(match, default)
+
+    def steady_batch_games(self, match, default):
+        """Batch size once any identity probe has been resolved."""
         if self.rule(match) is not None:
             look = int(self._setting(match, "look_games", default))
             if look < 2 or look % 2:
