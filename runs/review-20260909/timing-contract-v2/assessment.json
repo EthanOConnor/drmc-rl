@@ -1,0 +1,849 @@
+{
+ "comparisons": {
+  "V2-fast-commit_branch": {
+   "games": 128,
+   "score": 0.4765625,
+   "ci95": [
+    0.3984375,
+    0.5625
+   ],
+   "censored": 0,
+   "decisions": 18345,
+   "mean_frames_spawn_to_first_input": 11.994112837285364,
+   "spawn_fallback_share": 0.02714636140637776,
+   "mismatch_rate": 0.020310698797826206,
+   "mismatch_reasons": {
+    "commit_garbage": 370
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 5047,
+    "early_lock_unsafe": 5050
+   },
+   "commit": {
+    "share_of_decisions": 0.699809212319433,
+    "mean_lead_frames": 63.66030534351145,
+    "mean_lead_ms": 1059.260839542744,
+    "lead_histogram": {
+     "lt64": 7532,
+     "lt32": 1236,
+     "ge128": 1143,
+     "lt128": 2927
+    }
+   },
+   "lock": {
+    "share_of_decisions": 5.451076587626056e-05,
+    "mean_lead_frames": 24.0,
+    "mean_lead_ms": 399.3424161547319,
+    "lead_histogram": {
+     "lt32": 1
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.2729899155083129,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 5008
+    }
+   }
+  },
+  "V2-fast-commit_marg": {
+   "games": 128,
+   "score": 0.4921875,
+   "ci95": [
+    0.40625,
+    0.578125
+   ],
+   "censored": 0,
+   "decisions": 17555,
+   "mean_frames_spawn_to_first_input": 11.995898604386214,
+   "spawn_fallback_share": 0.02660210766163486,
+   "mismatch_rate": 0.019452573592700983,
+   "mismatch_reasons": {
+    "commit_garbage": 339
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 4641,
+    "early_lock_unsafe": 4644
+   },
+   "commit": {
+    "share_of_decisions": 0.7111364283679863,
+    "mean_lead_frames": 63.54926305671259,
+    "mean_lead_ms": 1057.413177246677,
+    "lead_histogram": {
+     "lt64": 7394,
+     "lt32": 1181,
+     "ge128": 1079,
+     "lt128": 2830
+    }
+   },
+   "lock": {
+    "share_of_decisions": 5.696382796923953e-05,
+    "mean_lead_frames": 22.0,
+    "mean_lead_ms": 366.0638814751709,
+    "lead_histogram": {
+     "lt32": 1
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.2622045001424096,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 4603
+    }
+   }
+  },
+  "V2-fast-commit_repeat": {
+   "games": 128,
+   "score": 0.5078125,
+   "ci95": [
+    0.4375,
+    0.578125
+   ],
+   "censored": 0,
+   "decisions": 19577,
+   "mean_frames_spawn_to_first_input": 11.996935179036624,
+   "spawn_fallback_share": 0.024569648056392706,
+   "mismatch_rate": 0.018150033420741427,
+   "mismatch_reasons": {
+    "commit_garbage": 353
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 5480,
+    "early_lock_unsafe": 5484
+   },
+   "commit": {
+    "share_of_decisions": 0.6975532512642386,
+    "mean_lead_frames": 63.66842413591095,
+    "mean_lead_ms": 1059.3959302999554,
+    "lead_histogram": {
+     "lt64": 8015,
+     "lt32": 1307,
+     "ge128": 1230,
+     "lt128": 3103,
+     "lt16": 1
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.00010216069877917965,
+    "mean_lead_frames": 19.5,
+    "mean_lead_ms": 324.4657131257197,
+    "lead_histogram": {
+     "lt32": 2
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.27777493998058944,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 5438
+    }
+   }
+  },
+  "V2-fast-lock_safe": {
+   "games": 128,
+   "score": 0.4921875,
+   "ci95": [
+    0.40625,
+    0.578125
+   ],
+   "censored": 0,
+   "decisions": 17525,
+   "mean_frames_spawn_to_first_input": 11.994522111269616,
+   "spawn_fallback_share": 0.007303851640513552,
+   "mismatch_rate": 0.0,
+   "mismatch_reasons": {},
+   "unsafe_skips": {
+    "early_lock_unsafe": 10074
+   },
+   "lock": {
+    "share_of_decisions": 0.4231098430813124,
+    "mean_lead_frames": 18.30883344571814,
+    "mean_lead_ms": 304.64557438281867,
+    "lead_histogram": {
+     "lt16": 1560,
+     "lt32": 5855
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.569586305278174,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 9982
+    }
+   }
+  },
+  "V2-frame_perfect-commit_branch": {
+   "games": 384,
+   "score": 0.6067708333333334,
+   "ci95": [
+    0.5442708333333334,
+    0.6692708333333334
+   ],
+   "censored": 0,
+   "decisions": 57326,
+   "mean_frames_spawn_to_first_input": 0.37323378571677773,
+   "spawn_fallback_share": 0.02175278233262394,
+   "mismatch_rate": 0.015155772540479787,
+   "mismatch_reasons": {
+    "commit_garbage": 863
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16578,
+    "early_lock_unsafe": 16551
+   },
+   "commit": {
+    "share_of_decisions": 0.6915186826221958,
+    "mean_lead_frames": 58.50476767065234,
+    "mean_lead_ms": 973.4764699237313,
+    "lead_histogram": {
+     "lt32": 8176,
+     "ge128": 2797,
+     "lt64": 20031,
+     "lt128": 8637,
+     "lt16": 1
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.0005058786588982312,
+    "mean_lead_frames": 18.17241379310345,
+    "mean_lead_ms": 302.3756513125628,
+    "lead_histogram": {
+     "lt32": 23,
+     "lt16": 6
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.28622265638628197,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16408
+    }
+   }
+  },
+  "V2-frame_perfect-commit_marg": {
+   "games": 384,
+   "score": 0.6119791666666666,
+   "ci95": [
+    0.5494791666666666,
+    0.671875
+   ],
+   "censored": 0,
+   "decisions": 57899,
+   "mean_frames_spawn_to_first_input": 0.3833399540579285,
+   "spawn_fallback_share": 0.021865662619388937,
+   "mismatch_rate": 0.015335129966095802,
+   "mismatch_reasons": {
+    "commit_garbage": 882
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 17286,
+    "early_lock_unsafe": 17265
+   },
+   "commit": {
+    "share_of_decisions": 0.6818597903245307,
+    "mean_lead_frames": 58.12259682362775,
+    "mean_lead_ms": 967.1174270306188,
+    "lead_histogram": {
+     "lt32": 8099,
+     "ge128": 2666,
+     "lt64": 20113,
+     "lt128": 8601
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.0003972434757076979,
+    "mean_lead_frames": 17.565217391304348,
+    "mean_lead_ms": 292.2723480552748,
+    "lead_histogram": {
+     "lt16": 5,
+     "lt32": 18
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.29587730358037273,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 17131
+    }
+   }
+  },
+  "V2-frame_perfect-commit_repeat": {
+   "games": 384,
+   "score": 0.6197916666666666,
+   "ci95": [
+    0.5572916666666666,
+    0.6796875
+   ],
+   "censored": 0,
+   "decisions": 58265,
+   "mean_frames_spawn_to_first_input": 0.3782545267313138,
+   "spawn_fallback_share": 0.021608169570067795,
+   "mismatch_rate": 0.015117223268430055,
+   "mismatch_reasons": {
+    "commit_garbage": 875
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 17160,
+    "early_lock_unsafe": 17130
+   },
+   "commit": {
+    "share_of_decisions": 0.6860379301467433,
+    "mean_lead_frames": 58.31507054938457,
+    "mean_lead_ms": 970.3200488093702,
+    "lead_histogram": {
+     "lt32": 8355,
+     "ge128": 2730,
+     "lt64": 20090,
+     "lt128": 8792,
+     "lt16": 5
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.0005320518321462284,
+    "mean_lead_frames": 18.903225806451612,
+    "mean_lead_ms": 314.53582777778615,
+    "lead_histogram": {
+     "lt16": 5,
+     "lt32": 26
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.29182184845104264,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 17003
+    }
+   }
+  },
+  "V2-frame_perfect-lock": {
+   "games": 128,
+   "score": 0.578125,
+   "ci95": [
+    0.46875,
+    0.6875
+   ],
+   "censored": 0,
+   "decisions": 19593,
+   "mean_frames_spawn_to_first_input": 0.5844944623079671,
+   "spawn_fallback_share": 0.14612361557699177,
+   "mismatch_rate": 0.1405086051888004,
+   "mismatch_reasons": {
+    "lock_garbage": 2735
+   },
+   "unsafe_skips": {},
+   "lock": {
+    "share_of_decisions": 0.8538763844230082,
+    "mean_lead_frames": 39.41099820681411,
+    "mean_lead_ms": 655.7701352907895,
+    "lead_histogram": {
+     "lt32": 9058,
+     "lt16": 1975,
+     "ge128": 609,
+     "lt64": 2276,
+     "lt128": 2812
+    }
+   }
+  },
+  "V2-frame_perfect-lock_safe": {
+   "games": 384,
+   "score": 0.6744791666666666,
+   "ci95": [
+    0.6145833333333334,
+    0.734375
+   ],
+   "censored": 0,
+   "decisions": 59384,
+   "mean_frames_spawn_to_first_input": 0.60359692846558,
+   "spawn_fallback_share": 0.006466388252728008,
+   "mismatch_rate": 0.0,
+   "mismatch_reasons": {},
+   "unsafe_skips": {
+    "early_lock_unsafe": 34640
+   },
+   "lock": {
+    "share_of_decisions": 0.41580223629260404,
+    "mean_lead_frames": 18.574518062530373,
+    "mean_lead_ms": 309.06637175002453,
+    "lead_histogram": {
+     "lt32": 20233,
+     "lt16": 4459
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.5777313754546679,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 34308
+    }
+   }
+  },
+  "V2-super_human-commit_branch": {
+   "games": 384,
+   "score": 0.5286458333333334,
+   "ci95": [
+    0.4661458333333333,
+    0.5911458333333334
+   ],
+   "censored": 0,
+   "decisions": 57625,
+   "mean_frames_spawn_to_first_input": 2.044945770065076,
+   "spawn_fallback_share": 0.02247288503253796,
+   "mismatch_rate": 0.01591516570290526,
+   "mismatch_reasons": {
+    "commit_garbage": 911
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16757,
+    "early_lock_unsafe": 16743
+   },
+   "commit": {
+    "share_of_decisions": 0.6890238611713666,
+    "mean_lead_frames": 62.40327414683289,
+    "mean_lead_ms": 1038.344761406765,
+    "lead_histogram": {
+     "lt32": 4954,
+     "lt128": 8946,
+     "lt64": 22543,
+     "ge128": 3262
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.00024295010845986985,
+    "mean_lead_frames": 17.857142857142858,
+    "mean_lead_ms": 297.1297739246517,
+    "lead_histogram": {
+     "lt32": 8,
+     "lt16": 6
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.28826030368763556,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16611
+    }
+   }
+  },
+  "V2-super_human-commit_marg": {
+   "games": 384,
+   "score": 0.5338541666666666,
+   "ci95": [
+    0.46875,
+    0.5963541666666666
+   ],
+   "censored": 0,
+   "decisions": 58682,
+   "mean_frames_spawn_to_first_input": 2.0456357997341605,
+   "spawn_fallback_share": 0.022817899867080195,
+   "mismatch_rate": 0.016381350989742357,
+   "mismatch_reasons": {
+    "commit_garbage": 955
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16694,
+    "early_lock_unsafe": 16683
+   },
+   "commit": {
+    "share_of_decisions": 0.6949490474080638,
+    "mean_lead_frames": 62.34354233589171,
+    "mean_lead_ms": 1037.3508678358255,
+    "lead_histogram": {
+     "lt32": 5073,
+     "lt128": 9166,
+     "lt64": 23184,
+     "ge128": 3358
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.00017041000647558023,
+    "mean_lead_frames": 19.4,
+    "mean_lead_ms": 322.8017863917416,
+    "lead_histogram": {
+     "lt32": 8,
+     "lt16": 2
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.28206264271838044,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16552
+    }
+   }
+  },
+  "V2-super_human-commit_repeat": {
+   "games": 384,
+   "score": 0.5677083333333334,
+   "ci95": [
+    0.5026041666666666,
+    0.6328125
+   ],
+   "censored": 0,
+   "decisions": 57212,
+   "mean_frames_spawn_to_first_input": 2.045969377053765,
+   "spawn_fallback_share": 0.02298468852688247,
+   "mismatch_rate": 0.016382769057506862,
+   "mismatch_reasons": {
+    "commit_garbage": 931
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16332,
+    "early_lock_unsafe": 16316
+   },
+   "commit": {
+    "share_of_decisions": 0.693788016500035,
+    "mean_lead_frames": 62.48479580782506,
+    "mean_lead_ms": 1039.7012221179968,
+    "lead_histogram": {
+     "lt32": 5014,
+     "lt128": 8903,
+     "lt64": 22444,
+     "ge128": 3332
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.00022722505768020695,
+    "mean_lead_frames": 20.615384615384617,
+    "mean_lead_ms": 343.02489592778255,
+    "lead_histogram": {
+     "lt32": 12,
+     "lt16": 1
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.2830000699154024,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16191
+    }
+   }
+  },
+  "V2-super_human-lock_safe": {
+   "games": 384,
+   "score": 0.5598958333333334,
+   "ci95": [
+    0.4973958333333333,
+    0.6223958333333334
+   ],
+   "censored": 0,
+   "decisions": 57517,
+   "mean_frames_spawn_to_first_input": 2.0133525740215936,
+   "spawn_fallback_share": 0.006676287010796808,
+   "mismatch_rate": 0.0,
+   "mismatch_reasons": {},
+   "unsafe_skips": {
+    "early_lock_unsafe": 33592
+   },
+   "lock": {
+    "share_of_decisions": 0.4150946676634734,
+    "mean_lead_frames": 18.555015706806284,
+    "mean_lead_ms": 308.7418668393759,
+    "lead_histogram": {
+     "lt16": 4425,
+     "lt32": 19450
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.5782290453257298,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 33258
+    }
+   }
+  },
+  "V2-top_humans-commit_branch": {
+   "games": 384,
+   "score": 0.5234375,
+   "ci95": [
+    0.4765625,
+    0.5703125
+   ],
+   "censored": 0,
+   "decisions": 57505,
+   "mean_frames_spawn_to_first_input": 6.0,
+   "spawn_fallback_share": 0.024971741587688025,
+   "mismatch_rate": 0.01841704451952872,
+   "mismatch_reasons": {
+    "commit_garbage": 1052
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16651,
+    "early_lock_unsafe": 16639
+   },
+   "commit": {
+    "share_of_decisions": 0.6877488914007478,
+    "mean_lead_frames": 63.281878176439356,
+    "mean_lead_ms": 1052.9640887411956,
+    "lead_histogram": {
+     "lt64": 22925,
+     "lt32": 4136,
+     "lt128": 9029,
+     "ge128": 3459
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.0002608468828797496,
+    "mean_lead_frames": 19.066666666666666,
+    "mean_lead_ms": 317.25536394514813,
+    "lead_histogram": {
+     "lt32": 13,
+     "lt16": 2
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.28701852012868445,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16505
+    }
+   }
+  },
+  "V2-top_humans-commit_marg": {
+   "games": 384,
+   "score": 0.5078125,
+   "ci95": [
+    0.4583333333333333,
+    0.5572916666666666
+   ],
+   "censored": 0,
+   "decisions": 57990,
+   "mean_frames_spawn_to_first_input": 5.999896533885153,
+   "spawn_fallback_share": 0.025694085187101225,
+   "mismatch_rate": 0.019199388952539666,
+   "mismatch_reasons": {
+    "commit_garbage": 1106
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16544,
+    "early_lock_unsafe": 16536
+   },
+   "commit": {
+    "share_of_decisions": 0.6911881358854975,
+    "mean_lead_frames": 63.284117559004045,
+    "mean_lead_ms": 1053.0013504263654,
+    "lead_histogram": {
+     "lt64": 23306,
+     "lt32": 4193,
+     "lt128": 9081,
+     "ge128": 3502
+    }
+   },
+   "lock": {
+    "share_of_decisions": 0.00024142093464390413,
+    "mean_lead_frames": 20.357142857142858,
+    "mean_lead_ms": 338.727942274103,
+    "lead_histogram": {
+     "lt32": 14
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.2828763579927574,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16404
+    }
+   }
+  },
+  "V2-top_humans-commit_repeat": {
+   "games": 384,
+   "score": 0.5286458333333334,
+   "ci95": [
+    0.4765625,
+    0.5807291666666666
+   ],
+   "censored": 0,
+   "decisions": 57116,
+   "mean_frames_spawn_to_first_input": 5.9998949506267945,
+   "spawn_fallback_share": 0.02552699768891379,
+   "mismatch_rate": 0.018931114714799406,
+   "mismatch_reasons": {
+    "commit_garbage": 1074
+   },
+   "unsafe_skips": {
+    "early_commit_unsafe": 16195,
+    "early_lock_unsafe": 16195
+   },
+   "commit": {
+    "share_of_decisions": 0.693413404300021,
+    "mean_lead_frames": 63.04087867693473,
+    "mean_lead_ms": 1048.9540336401847,
+    "lead_histogram": {
+     "lt64": 22987,
+     "lt32": 4233,
+     "lt128": 9006,
+     "ge128": 3379
+    }
+   },
+   "lock": {
+    "share_of_decisions": 8.754114433783878e-05,
+    "mean_lead_frames": 20.6,
+    "mean_lead_ms": 342.76890719947824,
+    "lead_histogram": {
+     "lt32": 5
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.2809720568667274,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 16048
+    }
+   }
+  },
+  "V2-top_humans-lock_safe": {
+   "games": 128,
+   "score": 0.5546875,
+   "ci95": [
+    0.46875,
+    0.640625
+   ],
+   "censored": 0,
+   "decisions": 18556,
+   "mean_frames_spawn_to_first_input": 6.0,
+   "spawn_fallback_share": 0.006898038370338435,
+   "mismatch_rate": 0.0,
+   "mismatch_reasons": {},
+   "unsafe_skips": {
+    "early_lock_unsafe": 10879
+   },
+   "lock": {
+    "share_of_decisions": 0.41275059280017246,
+    "mean_lead_frames": 18.424467946207077,
+    "mean_lead_ms": 306.56964775015604,
+    "lead_histogram": {
+     "lt16": 1461,
+     "lt32": 6198
+    }
+   },
+   "settled": {
+    "share_of_decisions": 0.5803513688294891,
+    "mean_lead_frames": 3.0,
+    "mean_lead_ms": 49.91780201934149,
+    "lead_histogram": {
+     "lt4": 10769
+    }
+   }
+  }
+ },
+ "contrasts": {
+  "V2-frame_perfect-commit_branch-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.010416666666666666,
+   "ci95": [
+    -0.09375,
+    0.07552083333333333
+   ]
+  },
+  "V2-frame_perfect-commit_marg-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.005208333333333333,
+   "ci95": [
+    -0.08854166666666667,
+    0.078125
+   ]
+  },
+  "V2-frame_perfect-commit_repeat-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": 0.0026041666666666665,
+   "ci95": [
+    -0.07552083333333333,
+    0.08072916666666667
+   ]
+  },
+  "V2-frame_perfect-lock-minus-v1-settled": {
+   "seed_pairs": 64,
+   "difference": -0.0390625,
+   "ci95": [
+    -0.1796875,
+    0.1015625
+   ]
+  },
+  "V2-frame_perfect-lock_safe-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": 0.057291666666666664,
+   "ci95": [
+    -0.028645833333333332,
+    0.14322916666666666
+   ]
+  },
+  "V2-super_human-commit_branch-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.0625,
+   "ci95": [
+    -0.14322916666666666,
+    0.018229166666666668
+   ]
+  },
+  "V2-super_human-commit_marg-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.057291666666666664,
+   "ci95": [
+    -0.13541666666666666,
+    0.0234375
+   ]
+  },
+  "V2-super_human-commit_repeat-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.0234375,
+   "ci95": [
+    -0.109375,
+    0.06510416666666667
+   ]
+  },
+  "V2-super_human-lock_safe-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.03125,
+   "ci95": [
+    -0.078125,
+    0.015625
+   ]
+  },
+  "V2-top_humans-commit_branch-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": 0.013020833333333334,
+   "ci95": [
+    -0.052083333333333336,
+    0.078125
+   ]
+  },
+  "V2-top_humans-commit_marg-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": -0.0026041666666666665,
+   "ci95": [
+    -0.0625,
+    0.0546875
+   ]
+  },
+  "V2-top_humans-commit_repeat-minus-v1-settled": {
+   "seed_pairs": 192,
+   "difference": 0.018229166666666668,
+   "ci95": [
+    -0.044270833333333336,
+    0.08072916666666667
+   ]
+  },
+  "V2-top_humans-lock_safe-minus-v1-settled": {
+   "seed_pairs": 64,
+   "difference": -0.03125,
+   "ci95": [
+    -0.09375,
+    0.03125
+   ]
+  }
+ }
+}

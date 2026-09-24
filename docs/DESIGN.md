@@ -443,6 +443,36 @@ These authored product presets are not corpus-certified ExecutionProfiles;
 Top Humans is a setting name, not a validated percentile. Sustained burst,
 correction, and human-distribution calibration gates remain separate.
 
+### Human-like movement
+
+`movement: human` (backend request, arena variant) keeps the pace names and
+changes only how the chosen placement is executed. Each pace other than Frame
+Perfect has a profile in `drmc_rl/human/movement_model_v1.json`, fitted from
+sampled corpus placements (`tools/human_movement/`). Internally a profile is a
+rating band — Relaxed 1100–1300, Normal 1550–1700, Fast 1900–2050, Top Humans
+2250+ — with Sloth and Super Human extrapolated 300 points beyond the ends
+along the measured log-linear trends; no rating reaches a UI string. Tables
+condition on gravity, fall depth and rows left to fall: reaction, press
+rhythm, pauses, auto-repeat versus tapping, rotation order, tap holds, a
+no-soft-drop probability and descent slack, and corrections (overshoot,
+wrong-way start, extra rotation pair, late sideways move). A per-game style
+draw from the between-player covariance shifts all of them through one
+Gaussian copula.
+
+Placement choice is unchanged: the planner and core see the named pace's
+motor-feasible set after the sampled reaction. Reaction still counts from
+spawn: execution starts at `spawn + max(reaction, request + compute − spawn,
+0)`. The planning reaction is the draw's quantile at the quickest depth; the
+remainder for the chosen depth becomes in-script hesitation. `generate`
+replays every frame and returns only a script that locks exactly at the
+target and satisfies the profile's script limits; a failed draw is redrawn
+with simpler behaviour, then the named pace's witness with a human descent,
+then the witness itself. Output is deterministic for a game seed and
+decision key. The backend returns sampled reaction beyond the host's delay as
+leading neutral frames, so the host start frame is unchanged. These are
+distribution fits, not certified ExecutionProfiles; the validation report
+separates held-out-player comparisons from in-sample mechanism checks.
+
 ### Anticipatory execution
 
 Maximum can prepare the next turn while its committed controller script runs.

@@ -1,0 +1,9 @@
+python -m tools.trainer_planning_arena --config /dev/shm/timing-contract/config-C-tf3090.json
+{"comparison": "C-frame_perfect-premarg-b0", "games": 128, "target": 128, "wins": 63, "losses": 65, "draws": 0, "censored": 0, "observed_score": 0.4921875, "score_bounds": [0.4921875, 0.4921875], "score_ci": [0.3736645251086443, 0.6115952258256182], "batch_seconds": 1215.6}
+{"comparison": "C-top_humans-premarg-b0", "games": 128, "target": 128, "wins": 77, "losses": 51, "draws": 0, "censored": 0, "observed_score": 0.6015625, "score_bounds": [0.6015625, 0.6015625], "score_ci": [0.47917108685389176, 0.7124521510006953], "batch_seconds": 906.7}
+python -m tools.trainer_planning_arena --config /dev/shm/timing-contract/config-C-tf3090.json
+{"comparison": "C-super_human-premarg-b0", "games": 128, "target": 128, "wins": 62, "losses": 66, "draws": 0, "censored": 0, "observed_score": 0.484375, "score_bounds": [0.484375, 0.484375], "score_ci": [0.3663355166543294, 0.6041839852141957], "batch_seconds": 859.48}
+[W924 00:03:06.846948303 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 7312769024 bytes (free: 2105278464, total: 25293225984).
+[W924 00:03:06.966797257 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 7312769024 bytes (free: 7207649280, total: 25293225984).
+{"comparison": "C-frame_perfect-premarg-b1", "games": 256, "target": 256, "wins": 128, "losses": 128, "draws": 0, "censored": 0, "observed_score": 0.5, "score_bounds": [0.5, 0.5], "score_ci": [0.4146522462605095, 0.5853477537394906], "batch_seconds": 2151.35}
+{"comparison": "C-super_human-premarg-b1", "games": 256, "target": 256, "wins": 133, "losses": 123, "draws": 0, "censored": 0, "observed_score": 0.51953125, "score_bounds": [0.51953125, 0.51953125], "score_ci": [0.4336776564244557, 0.6042466812211105], "batch_seconds": 1511.43}
