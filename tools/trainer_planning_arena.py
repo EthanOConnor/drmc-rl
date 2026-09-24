@@ -73,6 +73,8 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
         pool.reset([job[0] for job in jobs], level=match["level"])
         for frame in range(max_frames):
             states = pool.states
+            if hasattr(planner, "prefetch"):
+                planner.prefetch(config, match, jobs, pool)
             if activity and (time.perf_counter() >= next_activity or all(s.terminal for s in states[::2])):
                 activity(dict(
                     games=sum(s.terminal for s in states[::2]),
@@ -374,6 +376,9 @@ def main():
         from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
         planner = ParallelPlanning(config.get("planner_workers", 4))
         rollout = run_event_batch
+    elif backend == "frames" and config.get("frame_planning_workers"):
+        from tools.trainer_frame_prefetch import PrefetchingPlanner
+        planner = PrefetchingPlanner(config["frame_planning_workers"])
     elif backend == "frames":
         planner = NativeReachabilityRunner()
     else:
@@ -381,7 +386,7 @@ def main():
     if config.get("memoize", False):
         from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
         policy = MemoPolicy(policy)
-        if backend == "frames":
+        if backend == "frames" and not hasattr(planner, "prefetch"):
             planner = MemoPlanner(planner)
     mixed = any("adapter_checkpoint" in p or "checkpoint" in p for p in config["variants"].values())
     if mixed and anticipation:

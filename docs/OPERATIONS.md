@@ -1359,6 +1359,33 @@ aborts on a script/microstate mismatch. Keep level 14 HI primary; report level
 20 HI and slower paces separately. The default 60,000-frame cap bounds only
 unfinished games; completed rounds stop naturally.
 
+Two opt-in knobs answer a comparison before its full `games` budget, which
+stays the maximum. `sequential` (config default; a schedule row may override
+it or disable it with `null`) is `{"question": "threshold", "threshold": 0.45}`
+or `{"question": "equivalence", "margin": 0.05}` with optional `alpha`
+(one-sided, default 0.025), `early_alpha` (default `alpha/5`) and
+`look_games` (default `pairs`). After each look the arena evaluates
+`drmc_rl.arena.sequential`: interim looks use an always-valid betting
+confidence sequence on whole side-swapped seed scores at `early_alpha`; the
+budget look uses the fixed-sample Student bound at `alpha - early_alpha`, so
+each one-sided error stays at most `alpha` however often it looks. Divide
+`alpha` by the family size for simultaneous claims. An unresolved threshold
+question at the budget reads as the pre-registered FAIL. A pre-registration
+that uses early stopping must name this rule; fixed-budget assessment scripts
+that require every scheduled game do not apply to a stopped comparison.
+`skip_identical: true` records a comparison as exactly 0.5 without play when
+both entrants have the same model bytes and settings and the same charged
+delay `max(delay, reaction_frames)` at that pace. When only
+network-input-only settings differ (raw `delay`, `compute_input_frames`), it
+first plays `identity_probe_games` (default 16) and requires every seed's two
+games to have byte-identical move journals; otherwise the comparison continues
+normally. `results.json` reports each verdict under `stopping`, with games
+used and the budget. Verdicts are recomputed from `games.jsonl` and `moves/`
+on resume. For the frame runner, `frame_planning_workers` submits each newly
+spawned pill's spawn-time planner request to worker threads at the start of
+the frame; the runner's own request reads the shared exact answer, so traces
+are unchanged.
+
 The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
 measurement. Reject a deployment deadline that fails the real host check even
 if it wins offline. `trainer-planning-analysis` replays saved `trainer_planning_moves`
