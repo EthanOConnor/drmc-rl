@@ -201,7 +201,9 @@ PREREGISTRATION = dict(
         REJECT='otherwise (pooled upper bound < 0.50, or any pace clearly below 0.45)',
     ),
     censoring='timeouts are reported and scored as recorded; any censored game flags the report',
-    single_candidate='exactly one candidate plays the tournament seeds; checkpoint selection uses only the panel seeds',
+    single_candidate='exactly one candidate plays the tournament seeds: the snapshot with the best pooled panel score '
+                     'among the distilled student (snapshot 0) and the outcome-PPO 50M-frame snapshots, selected when '
+                     'the stop rule fires (two consecutive non-improving snapshots) or PPO ends; panel seeds only',
     assessment_script=str(HERE / 'assess_afterstate_tournament_v1.py'),
 )
 

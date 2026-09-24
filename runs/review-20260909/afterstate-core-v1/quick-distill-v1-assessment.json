@@ -1,0 +1,94 @@
+{
+  "schema": "drmc-afterstate-arena-assessment-v1",
+  "config": "/Users/ethan/dev/drmario/drmc-rl-afterstate/runs/review-20260909/afterstate-core-v1/quick-distill-v1.json",
+  "complete": true,
+  "games": 256,
+  "expected_games": 256,
+  "candidate": {
+    "name": "Afterstate core \u00b7 distill-v1",
+    "delay": 4,
+    "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/student-final-inference.pt"
+  },
+  "champion": {
+    "name": "Mixed-pace retention v2 \u00b7 3M placements",
+    "delay": 4,
+    "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt"
+  },
+  "pooled_score": 0.52734375,
+  "pooled_ci95": [
+    0.45703125,
+    0.59765625
+  ],
+  "pooled_elo": 19.019359271422424,
+  "simultaneous_critical_value": 2.1979503896796575,
+  "comparisons": [
+    {
+      "pace": "normal",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 62,
+      "losses": 66,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.484375,
+      "marginal_score_ci95": [
+        0.390625,
+        0.578125
+      ],
+      "elo_difference": -10.86089841744591,
+      "seed_standard_error": 0.049762269664303464,
+      "reasons": {
+        "topout": 69,
+        "clear": 59
+      },
+      "candidate_execution": {
+        "validated_input_frames": 333548,
+        "locks": 12952,
+        "unplanned_locks": 60,
+        "decisions": 12976,
+        "feasible_candidates": 348337,
+        "forced_placements": 0,
+        "spawn_wait_frames": 284152,
+        "no_reachable_after_delay": 60
+      },
+      "simultaneous_score_ci95": [
+        0.375,
+        0.59375
+      ]
+    },
+    {
+      "pace": "frame_perfect",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 73,
+      "losses": 55,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.5703125,
+      "marginal_score_ci95": [
+        0.46875,
+        0.671875
+      ],
+      "elo_difference": 49.184068250484835,
+      "seed_standard_error": 0.05207403190753663,
+      "reasons": {
+        "clear": 119,
+        "topout": 9
+      },
+      "candidate_execution": {
+        "validated_input_frames": 323340,
+        "locks": 18203,
+        "unplanned_locks": 0,
+        "decisions": 18222,
+        "feasible_candidates": 585651,
+        "forced_placements": 0,
+        "spawn_wait_frames": 72888
+      },
+      "simultaneous_score_ci95": [
+        0.455856361276639,
+        0.684768638723361
+      ]
+    }
+  ],
+  "censored_games": 0
+}

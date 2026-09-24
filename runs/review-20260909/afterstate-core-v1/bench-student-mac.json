@@ -1,0 +1,38 @@
+{
+ "threads": 4,
+ "repeats": 60,
+ "parameters": {
+  "afterstate": 15405417,
+  "teacher": 28142617
+ },
+ "widths": {
+  "32": {
+   "candidates": 32,
+   "afterstate_gflops": 4.234068992,
+   "teacher_gflops": 7.912018688,
+   "torch_afterstate_ms_median": 77.18089600029998,
+   "torch_teacher_ms_median": 114.98925000023519,
+   "torch_host_afterstate_ms_median": 2.9878334999011713,
+   "onnx_afterstate_fp16w_mb": 31.058087,
+   "onnx_afterstate_max_logit_error": 0.0011119842529296875,
+   "onnx_teacher_fp16w_mb": 56.668113,
+   "onnx_teacher_max_logit_error": 0.0036063194274902344,
+   "onnx_afterstate_ms_median": 48.81666649998806,
+   "onnx_teacher_ms_median": 83.86506249962622
+  },
+  "56": {
+   "candidates": 56,
+   "afterstate_gflops": 4.649994752,
+   "teacher_gflops": 8.120178944,
+   "torch_afterstate_ms_median": 75.14747900040675,
+   "torch_teacher_ms_median": 104.77189599987469,
+   "torch_host_afterstate_ms_median": 3.4873959998549253,
+   "onnx_afterstate_fp16w_mb": 31.058087,
+   "onnx_afterstate_max_logit_error": 0.0010752677917480469,
+   "onnx_teacher_fp16w_mb": 56.668113,
+   "onnx_teacher_max_logit_error": 0.0028057098388671875,
+   "onnx_afterstate_ms_median": 49.6223334998831,
+   "onnx_teacher_ms_median": 79.7262710002542
+  }
+ }
+}
