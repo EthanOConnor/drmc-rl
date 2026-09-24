@@ -38,6 +38,7 @@ from drmc_rl.human.early_decision import (
     network_execution_frames, validate_timing_params, with_own_preview,
 )
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+from drmc_rl.human.lookahead import Root, charged, lookahead_params, score_with_value, select_lookahead
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_stopping import ComparisonStopping
 from tools.vs_head_to_head import PlainPolicy
@@ -119,6 +120,19 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 last_spawn[side] = key
                 statistics[side]["decisions"] += 1
                 request = early.resolve(side, point, frame, current, states[side ^ 1], statistics[side])
+                block = lookahead_params(params)
+                looking = False
+                if block is not None:
+                    if block["when"] == "always":
+                        looking = True
+                    elif request is not None:
+                        # v17: look ahead only when the pre-spawn lead absorbs its compute.
+                        base = int(params["delay"])
+                        looking = (early_start_delay(request["frame"], frame, base, pace.reaction_frames)
+                                   == early_start_delay(request["frame"], frame, base + block["charge_frames"],
+                                                        pace.reaction_frames))
+                    statistics[side]["lookahead_" + ("active" if looking else "fallback_plain")] += 1
+                params = charged(params, looking)
                 contextual = uses_public_context(actor)
                 if contextual and (params.get("own_board_only") or params.get("anticipation")):
                     raise ValueError("public-context actors require fresh complete context; legacy ablation/preparation is incompatible")
@@ -145,7 +159,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                                   lead_frames=frame - request["frame"])
                 if selected:
                     controllers[side] = (frame, selected)
-                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None))
+                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None, None))
                 else:
                     try:
                         candidate = plan_candidates(planner, state, delay, pace)
@@ -183,8 +197,16 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     legal_count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                     statistics[side]["feasible_candidates"] += legal_count
                     statistics[side]["forced_placements"] += int(legal_count == 1)
-                    fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing))
+                    look = None
+                    if looking:
+                        if len(views) != 1:
+                            raise ValueError("lookahead requires a single root view")
+                        public = state["public_pair_state"] if views[0] is None else views[0]
+                        look = (Root(actor, state, candidate, None, pace, delay, public, compute_input,
+                                     delay_input, block), variant)
+                    fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing, look))
             learning = {}
+            root_values = np.full(len(infos), np.nan, np.float32)
             if infos:
                 obs_batch = np.concatenate(observations)
                 all_scores = np.empty((len(infos),512), np.float32)
@@ -192,18 +214,37 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 for id in groups:
                     indices = [i for i,v in enumerate(policy_ids) if id is None or v == id]
                     actor = policy if id is None else policies[id]
-                    all_scores[indices] = score_public_inputs(actor, obs_batch[indices], [infos[i] for i in indices])
+                    if getattr(actor, "learning_records", None) is None:
+                        all_scores[indices], root_values[indices] = score_with_value(
+                            actor, obs_batch[indices], [infos[i] for i in indices])
+                    else:
+                        all_scores[indices] = score_public_inputs(actor, obs_batch[indices], [infos[i] for i in indices])
                     records = getattr(actor, "learning_records", None)
                     if records is not None:
                         learning.update(zip(indices,records))
                 scored = iter(enumerate(all_scores))
             else:
                 scored = iter(())
-            for side, state, candidate, selected, delay, reason, anticipates, rows, timing in fresh:
+            looked, roots, offset = {}, [], 0
+            for n, entry in enumerate(fresh):
+                if entry[-1] is not None:
+                    entry[-1][0].scores = all_scores[offset]
+                    roots.append((n, entry[-1][0]))
+                offset += entry[7]
+            if roots:
+                chosen = select_lookahead([r for _, r in roots], _planning(planner), controller_inputs)
+                looked = {n: c for (n, _), c in zip(roots, chosen)}
+            for n, (side, state, candidate, selected, delay, reason, anticipates, rows, timing, look) in enumerate(fresh):
                 sample = None
                 if selected is None:
                     block = [next(scored) for _ in range(rows)]
-                    if rows == 1:
+                    if n in looked:
+                        score_index, action = block[0][0], looked[n][0]
+                        diagnostics = looked[n][1]
+                        statistics[side]["lookahead_decisions"] += 1
+                        statistics[side]["lookahead_kept"] += diagnostics["kept"]
+                        statistics[side]["lookahead_changed"] += int(diagnostics.get("changed", False))
+                    elif rows == 1:
                         score_index, scores = block[0]
                         action = int(scores.argmax())
                     elif timing is not None and "branch" in timing:
@@ -223,6 +264,10 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     "pill": state["pill"], "preview": state["preview"], "speed_ups": state["speed_ups"]})
                 if sample is not None:
                     moves[pair][-1]["learning"] = sample
+                if rows == 1 and np.isfinite(root_values[block[0][0]]):
+                    moves[pair][-1]["value"] = round(float(root_values[block[0][0]]), 5)
+                if n in looked:
+                    moves[pair][-1]["lookahead"] = looked[n][1]
                 if timing is not None:
                     moves[pair][-1]["timing"] = timing
                 early.on_commit(side, points[match["a"] if physical == jobs[pair][1] else match["b"]],
@@ -293,6 +338,25 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
             }
             output.append((row, moves[pair], replays[pair]))
     return output, time.perf_counter() - begun
+
+
+def controller_inputs(actor, candidate, state, pace, delay, compute_input, public, delay_input):
+    obs, info = controller_policy_inputs(actor, candidate, state, pace, delay, compute_input,
+                                         public=public, decision_delay_frames=delay_input)
+    info[0]["pace/context"] = strategy_context(pace, state, delay)
+    return obs, info
+
+
+def _planning(planner):
+    def plan(requests):
+        out = []
+        for state, delay, pace in requests:
+            try:
+                out.append(plan_candidates(planner, state, delay, pace))
+            except NoReachablePlacement:
+                out.append(None)
+        return out
+    return plan
 
 
 def publish(config, results, output, store):

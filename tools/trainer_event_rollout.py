@@ -20,6 +20,7 @@ from drmc_rl.human.anticipation import execution_for_action, score_public_inputs
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.early_decision import network_execution_frames, validate_timing_params
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+from drmc_rl.human.lookahead import Root, charged, lookahead_params, score_with_value, select_lookahead
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import ByteCache
 
@@ -149,6 +150,9 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 params = config["variants"][id]
                 if params.get("own_board_only"):
                     raise ValueError("own-board ablation is not a pace-training setting")
+                block = lookahead_params(params)
+                # A spawn-time lookahead is charged its compute as decision delay.
+                params = charged(params, block is not None and block["when"] == "always")
                 delay = max(int(params["delay"]), pace.reaction_frames)
                 statistics[side]["decisions"] += 1
                 actor = policy if policies is None else policies[id]
@@ -195,7 +199,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 state, delay, _ = requests[i]
                 actor = policy if policies is None else policies[actors[i]]
                 delay_input, compute_input = network_execution_frames(
-                    config["variants"][actors[i]], pace, delay)
+                    _decision_params(config["variants"][actors[i]]), pace, delay)
                 obs, info = controller_policy_inputs(
                     actor, candidate, state, pace, delay, compute_input,
                     decision_delay_frames=delay_input,
@@ -211,6 +215,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 continue
             obs = np.concatenate(observations)
             scores = np.empty((len(infos),512), np.float32)
+            root_values = np.full(len(infos), np.nan, np.float32)
             learning = {}
             tick = time.perf_counter()
             mixed = config.get("mixed_core_actor")
@@ -227,7 +232,11 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 for id in sorted(set(actors[i] for i in selected_indices)):
                     indices = [j for j,i in enumerate(selected_indices) if actors[i] == id]
                     actor = policy if policies is None else policies[id]
-                    scores[indices] = score_public_inputs(actor, obs[indices], [infos[j] for j in indices])
+                    if getattr(actor, "learning_records", None) is None:
+                        scores[indices], root_values[indices] = score_with_value(
+                            actor, obs[indices], [infos[j] for j in indices])
+                    else:
+                        scores[indices] = score_public_inputs(actor, obs[indices], [infos[j] for j in indices])
                     records = getattr(actor, "learning_records", None)
                     if records is not None:
                         learning.update(zip(indices, records))
@@ -251,11 +260,34 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 if (set(overrides) != {r["side"] for r in public_records}
                         or any(overrides[r["side"]] not in r["feasible"] for r in public_records)):
                     raise ValueError("proposal controller changed the complete feasible inventory")
+            looked = {}
+            roots, root_rows = [], []
+            for j, i in enumerate(selected_indices):
+                params = config["variants"][actors[i]]
+                block = lookahead_params(params)
+                if block is None or block["when"] != "always" or ready[i] in overrides:
+                    continue
+                state, delay, _ = requests[i]
+                delay_input, compute_input = network_execution_frames(_decision_params(params), pace, delay)
+                roots.append(Root(policy if policies is None else policies[actors[i]], state, candidates[i],
+                                  scores[j], pace, delay, state["public_pair_state"], compute_input,
+                                  delay_input, block))
+                root_rows.append(j)
+            if roots:
+                tick_lookahead = time.perf_counter()
+                chosen = select_lookahead(roots, _planning(planner, pace), controller_inputs)
+                measured["lookahead_seconds"] += time.perf_counter() - tick_lookahead
+                looked = dict(zip(root_rows, chosen))
             observations_for_shadow = []
             for j,i in enumerate(selected_indices):
                 side = ready[i]
                 state, delay, _ = requests[i]
                 baseline_action = int(scores[j].argmax())
+                if j in looked:
+                    baseline_action, diagnostics = looked[j]
+                    statistics[side]["lookahead_decisions"] += 1
+                    statistics[side]["lookahead_kept"] += diagnostics["kept"]
+                    statistics[side]["lookahead_changed"] += int(diagnostics.get("changed", False))
                 move = execution_for_action(candidates[i], overrides.get(side, baseline_action), pace, delay=delay)
                 sample = learning.get(j)
                 if sample is not None and sample["action"] != move["placement"]["action"]:
@@ -269,6 +301,10 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     "pill":state["pill"], "preview":state["preview"], "speed_ups":state["speed_ups"]}
                 if sample is not None:
                     row["learning"] = sample
+                if np.isfinite(root_values[j]):
+                    row["value"] = round(float(root_values[j]), 5)
+                if j in looked:
+                    row["lookahead"] = looked[j][1]
                 if anchor_recorder is not None and side in anchor_recorder.sides:
                     # Record after the teacher's input tape is installed. A
                     # second public view cannot change its encoding or choice.
@@ -322,3 +358,30 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
         metrics.update(measured)
         metrics["other_seconds"] = elapsed-sum(measured.values())
     return output, elapsed
+
+
+def _decision_params(params):
+    block = lookahead_params(params)
+    return charged(params, block is not None and block["when"] == "always")
+
+
+def controller_inputs(actor, candidate, state, pace, delay, compute_input, public, delay_input):
+    obs, info = controller_policy_inputs(actor, candidate, state, pace, delay, compute_input,
+                                         public=public, decision_delay_frames=delay_input)
+    info[0]["pace/context"] = strategy_context(pace, state, delay)
+    return obs, info
+
+
+def _planning(planner, pace):
+    """Follow-up planning with the arena's planner (parallel when it has a pool)."""
+    def plan(requests):
+        if hasattr(planner, "plan"):
+            return planner.plan(requests)
+        out = []
+        for state, delay, request_pace in requests:
+            try:
+                out.append(plan_candidates(planner, state, delay, request_pace))
+            except NoReachablePlacement:
+                out.append(None)
+        return out
+    return plan

@@ -64,6 +64,13 @@ class MemoPolicy:
         self.aux_spec = getattr(policy, "aux_spec", None)
 
     def score(self, observations, infos):
+        scores, _ = self.score_values(observations, infos)
+        return np.broadcast_to(np.arange(512), scores.shape), np.isfinite(scores), scores
+
+    def score_values(self, observations, infos):
+        """Complete 512-wide scores and the value head, memoized together."""
+        from drmc_rl.human.lookahead import score_with_value
+
         keys = [np.ascontiguousarray(obs, dtype=np.float32).tobytes() +
             json.dumps(info, sort_keys=True, separators=(",", ":"), default=_public_json).encode()
             for obs,info in zip(observations, infos)]
@@ -75,19 +82,15 @@ class MemoPolicy:
         computed = {}
         if missing:
             indices = list(missing.values())
-            actions,masks,logits = self.policy.score(observations[indices], [infos[i] for i in indices])
-            for row,(key,_) in enumerate(missing.items()):
-                scores = np.full(512, -np.inf, np.float32)
-                selected = actions[row,masks[row]]
-                legal = np.flatnonzero(np.asarray(infos[indices[row]]["placements/feasible_mask"]).reshape(512))
-                if set(selected) != set(legal) or len(selected) != len(legal):
-                    raise RuntimeError("memoized policy changed feasible candidate coverage")
-                scores[selected] = logits[row,masks[row]]
-                scores.flags.writeable = False
-                computed[key] = scores
-                self.cache.put(key, scores, scores.nbytes)
-        scores = np.stack([value if value is not None else computed[key] for key,value in zip(keys,values)])
-        return np.broadcast_to(np.arange(512), scores.shape), np.isfinite(scores), scores
+            scores, heads = score_with_value(self.policy, observations[indices], [infos[i] for i in indices])
+            for row,key in enumerate(missing):
+                entry = scores[row].copy(), np.float32(heads[row])
+                entry[0].flags.writeable = False
+                computed[key] = entry
+                self.cache.put(key, entry, entry[0].nbytes + 4)
+        entries = [value if value is not None else computed[key] for key,value in zip(keys,values)]
+        return (np.stack([e[0] for e in entries]) if entries else np.empty((0, 512), np.float32),
+                np.asarray([e[1] for e in entries], np.float32))
 
 
 def _public_json(value):
