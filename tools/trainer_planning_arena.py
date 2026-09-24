@@ -421,10 +421,17 @@ def main():
     if backend == "events":
         if anticipation or config.get("replay_games", 0):
             raise ValueError("event arenas require reactive decisions; use frames for full-frame replay capture")
-        from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
-        planner = ParallelPlanning(config.get("planner_workers", 4))
+        from tools.trainer_event_rollout import ParallelPlanning, PlannerRouter, planner_backend, run_event_batch
+        workers = config.get("planner_workers", 4)
+        if {planner_backend(config)} | {planner_backend(config, id) for id in config["variants"]} == {"cpu"}:
+            planner = ParallelPlanning(workers)
+        else:
+            planner = PlannerRouter(config, workers)
         rollout = run_event_batch
     elif backend == "frames":
+        from tools.trainer_event_rollout import planner_backend
+        if any(planner_backend(config, id) != "cpu" for id in config["variants"]):
+            raise ValueError("planner_backend cuda requires rollout_backend events")
         planner = NativeReachabilityRunner()
     else:
         raise ValueError("rollout_backend must be frames or events")
@@ -551,6 +558,7 @@ def main():
                             **outcome_summary(rows),
                             **stopping.progress(match, rows),
                             "batch_seconds": round(elapsed, 2),
+                            **({"planner": planner.stats()} if hasattr(planner, "stats") else {}),
                         }
                     ),
                     flush=True,

@@ -6,6 +6,7 @@ player while its opponent advances. No speculative preparation is performed.
 """
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import queue
 import threading
 import time
 import json
@@ -19,7 +20,7 @@ from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import execution_for_action, score_public_inputs
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.early_decision import network_execution_frames, validate_timing_params
-from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
+from drmc_rl.human.backend import NoReachablePlacement, candidates_from_reach, plan_candidates, planning_root
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import ByteCache
 
@@ -91,6 +92,214 @@ class ParallelPlanning:
             Path(self.planner.capture_path).write_text(json.dumps(list(self.planner.roots.values())))
 
 
+def planner_backend(config, variant=None):
+    """``cpu`` (default) or ``cuda``; a variant may override the config value."""
+    params = config["variants"].get(variant, {}) if variant is not None else {}
+    backend = params.get("planner_backend", config.get("planner_backend", "cpu"))
+    if backend not in ("cpu", "cuda"):
+        raise ValueError("planner_backend must be cpu or cuda")
+    return backend
+
+
+def unconstrained(planner_args):
+    """Profiles the CUDA twin of ``drm_reach_bfs_full`` answers exactly."""
+    return not (planner_args.get("reaction_frames", 0) or planner_args.get("edge_interval", 0)
+                or planner_args.get("motion_interval", 0) or planner_args.get("max_buttons", 3) < 3)
+
+
+def _root_key(columns, spawn, kwargs):
+    micro = tuple(int(getattr(v,"value",v)) for v in (spawn.x,spawn.y,spawn.rot,spawn.speed_counter,
+        spawn.hor_velocity,spawn.hold_dir,spawn.rot_hold,spawn.frame_parity,spawn.locked))
+    return np.asarray(columns,dtype=np.uint16).tobytes()+repr((micro,sorted(kwargs.items()))).encode()
+
+
+class CudaPlanning:
+    """Batched exact planning: unconstrained roots on CUDA, everything else on CPU.
+
+    One owner thread drains every request submitted since its last launch and
+    solves the unconstrained ones in a single ``CudaReachFull`` batch, whose
+    answers equal ``drm_reach_bfs_full`` byte for byte. Paced profiles and any
+    instance the kernel flags (capacity, chain check) go to the CPU planner and
+    are counted by route; nothing is silently approximated.
+    """
+    def __init__(self, cpu_workers=2, cache=True, max_batch=1024, **cuda_options):
+        self.cpu = ParallelPlanning(max(1, cpu_workers))
+        self.cache = ByteCache(64*1024*1024) if cache else None
+        self.max_batch = int(max_batch)
+        self.cuda_options = cuda_options
+        self.routes = Counter()
+        self.last_routes = []
+        self.batch_sizes = Counter()
+        self.gpu_seconds = 0.0
+        self.inbox = queue.SimpleQueue()
+        self.ready = threading.Event()
+        self.error = None
+        self.thread = threading.Thread(target=self._serve, name="cuda-planner", daemon=True)
+        self.thread.start()
+        self.ready.wait()
+        if self.error is not None:
+            raise self.error
+
+    def _serve(self):
+        try:
+            from drmc_rl.planning.cuda.full import CudaReachFull
+            self.solver = CudaReachFull(**self.cuda_options)
+        except BaseException as error:
+            self.error = error
+            self.ready.set()
+            return
+        self.ready.set()
+        try:
+            stop = False
+            while not stop:
+                items = self.inbox.get()
+                if items is None:
+                    break
+                items = list(items)
+                while len(items) < self.max_batch:
+                    try:
+                        more = self.inbox.get_nowait()
+                    except queue.Empty:
+                        break
+                    if more is None:
+                        stop = True
+                        break
+                    items.extend(more)
+                try:
+                    self._solve(items)
+                except BaseException as error:
+                    for _, future in items:
+                        if not future.done():
+                            future.set_exception(error)
+        finally:
+            self.solver.close()
+
+    def _solve(self, items):
+        """items: [(request, future)]; every future receives candidates or None."""
+        gpu = []
+        for request, future in items:
+            state, delay, pace = request
+            try:
+                root = planning_root(state, delay, pace)
+            except NoReachablePlacement:
+                self._route(future, "no_reachable")
+                future.set_result(None)
+                continue
+            columns, frame, threshold, args = root[6:]
+            if not unconstrained(args):
+                self._route(future, "cpu_paced")
+                self._on_cpu(root, state, future)
+                continue
+            key = _root_key(columns, frame, dict(args, speed_threshold=threshold))
+            cached = self.cache.get(key) if self.cache is not None else None
+            if cached is not None:
+                self._route(future, "cuda_cache")
+                self._finish(future, root, cached, state)
+                continue
+            gpu.append((root, state, future, key))
+        if not gpu:
+            return
+        unique = {}
+        for root, _, _, key in gpu:
+            unique.setdefault(key, root)
+        roots = list(unique.values())
+        tick = time.perf_counter()
+        instances = self.solver.pack(np.stack([r[6] for r in roots]), [r[7] for r in roots],
+                                     [r[8] for r in roots])
+        batch = self.solver.solve(instances)
+        self.gpu_seconds += time.perf_counter()-tick
+        self.batch_sizes[len(roots)] += 1
+        answers = {}
+        for i, key in enumerate(unique):
+            if batch.status[i] != 0:
+                self.routes[f"status_{int(batch.status[i])}"] += 1
+                continue
+            reach = batch.reach(i)
+            arrays = (reach.costs_u16, reach.offsets_u16, reach.lengths_u16, reach.script_buf)
+            for array in arrays:
+                array.flags.writeable = False
+            answers[key] = reach
+            if self.cache is not None:
+                self.cache.put(key, reach, sum(a.nbytes for a in arrays))
+        for root, state, future, key in gpu:
+            if key in answers:
+                self._route(future, "cuda")
+                self._finish(future, root, answers[key], state)
+            else:
+                self._route(future, "cpu_fallback")
+                self._on_cpu(root, state, future)
+
+    def _route(self, future, route):
+        future.route = route
+        self.routes[route] += 1
+
+    @staticmethod
+    def _finish(future, root, reach, state):
+        try:
+            future.set_result(candidates_from_reach(root, reach, state))
+        except NoReachablePlacement:
+            future.set_result(None)
+        except BaseException as error:
+            future.set_exception(error)
+
+    def _on_cpu(self, root, state, future):
+        """Run the CPU planner on the already-decoded root; relay into ``future``."""
+        def work():
+            try:
+                columns, frame, threshold, args = root[6:]
+                reach = self.cpu.planner.bfs_full(columns, frame, speed_threshold=threshold, **args)
+            except BaseException as error:
+                future.set_exception(error)
+                return
+            self._finish(future, root, reach, state)
+        self.cpu.executor.submit(work)
+
+    def submit(self, request):
+        future = Future()
+        self.inbox.put([(request, future)])
+        return future
+
+    def plan(self, requests):
+        futures = [Future() for _ in requests]
+        self.inbox.put(list(zip(requests, futures)))
+        results = [f.result() for f in futures]
+        self.last_routes = [f.route for f in futures]
+        return results
+
+    def stats(self):
+        launches = sum(self.batch_sizes.values())
+        return dict(routes=dict(self.routes), gpu_seconds=round(self.gpu_seconds, 3), launches=launches,
+                    mean_batch=round(sum(k*v for k, v in self.batch_sizes.items())/max(1, launches), 2))
+
+    def close(self):
+        self.inbox.put(None)
+        self.thread.join()
+        self.cpu.close()
+
+
+class PlannerRouter:
+    """Per-variant planner selection (for CPU-versus-CUDA mirror checks)."""
+    def __init__(self, config, workers):
+        self.backends = {}
+        wanted = {planner_backend(config)} | {planner_backend(config, id) for id in config["variants"]}
+        for backend in sorted(wanted):
+            if backend == "cuda":
+                self.backends[backend] = CudaPlanning(cpu_workers=workers, **config.get("cuda_planner", {}))
+            else:
+                self.backends[backend] = ParallelPlanning(workers)
+        self.config = config
+
+    def for_variant(self, variant):
+        return self.backends[planner_backend(self.config, variant)]
+
+    def stats(self):
+        return {name: planner.stats() for name, planner in self.backends.items() if hasattr(planner, "stats")}
+
+    def close(self):
+        for planner in self.backends.values():
+            planner.close()
+
+
 def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
                     observer=None, controller=None, anchor_recorder=None):
     if controller is not None:
@@ -116,7 +325,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
     asynchronous = config.get("async_planning", False)
     if observer is not None and asynchronous:
         raise ValueError("shadow observers require deterministic synchronous decision batches")
-    if asynchronous and not hasattr(planner,"submit"):
+    route = planner.for_variant if hasattr(planner, "for_variant") else (lambda _: planner)
+    if asynchronous and not all(hasattr(route(id), "submit") for id in (match["a"], match["b"])):
         raise ValueError("asynchronous rollout requires a submitting planner")
     with EventVsPool(len(jobs), lib_path=config.get("native_library")) as pool:
         pool.reset([job[0] for job in jobs], level=match["level"])
@@ -158,7 +368,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
             tick = time.perf_counter()
             if asynchronous:
                 for side, request, actor in zip(ready,requests,actors):
-                    pending[side] = planner.submit(request), request, actor
+                    pending[side] = route(actor).submit(request), request, actor
                 # A difficult position must not stall unrelated matches. Both
                 # sides of its own pair stay parked in frame_advance until the
                 # missing decision arrives, so its public snapshot stays valid.
@@ -175,15 +385,22 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 candidates = [p[0].result() for p in completed]
                 requests = [p[1] for p in completed]
                 actors = [p[2] for p in completed]
-            elif hasattr(planner, "plan"):
-                candidates = planner.plan(requests)
             else:
-                candidates = []
-                for state, delay, _ in requests:
-                    try:
-                        candidates.append(plan_candidates(planner, state, delay, pace))
-                    except NoReachablePlacement:
-                        candidates.append(None)
+                candidates = [None]*len(requests)
+                for target in {id(route(a)): route(a) for a in actors}.values():
+                    indices = [i for i, a in enumerate(actors) if route(a) is target]
+                    if hasattr(target, "plan"):
+                        answers = target.plan([requests[i] for i in indices])
+                    else:
+                        answers = []
+                        for i in indices:
+                            state, delay, _ = requests[i]
+                            try:
+                                answers.append(plan_candidates(target, state, delay, pace))
+                            except NoReachablePlacement:
+                                answers.append(None)
+                    for i, answer in zip(indices, answers):
+                        candidates[i] = answer
             measured["planning_seconds"] += time.perf_counter()-tick
             observations, infos, selected_indices = [], [], []
             for i, candidate in enumerate(candidates):

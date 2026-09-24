@@ -140,8 +140,13 @@ class NoReachablePlacement(ValueError):
     """The valid motor/physics envelope leaves no controllable lock pose."""
 
 
-def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: int = 0,
-                pace: Pace | None = None):
+def planning_root(state: Mapping[str, Any], execution_delay_frames: int = 0, pace: Pace | None = None):
+    """Decode one planning request into the exact planner root.
+
+    Returns ``(planes, opponent_planes, pill, preview, speed, speed_ups,
+    columns, frame, speed_threshold, planner_args)``; raises
+    :class:`NoReachablePlacement` if the pill locks during the charged delay.
+    """
     planes = _board_planes(state["board_planes"])
     opponent_planes = _board_planes(state["opponent_board_planes"])
     pill = _pair(state["pill"], "pill")
@@ -172,12 +177,14 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
         )
         if frame.locked:
             raise NoReachablePlacement("pill locks before scheduled execution")
-    reach = planner.bfs_full(
-        columns,
-        frame,
-        speed_threshold=speed_threshold,
-        **({} if pace is None else pace.planner_args(execution_delay_frames)),
-    ).copy()
+    planner_args = {} if pace is None else pace.planner_args(execution_delay_frames)
+    return (planes, opponent_planes, pill, preview, speed, speed_ups, columns, frame,
+            speed_threshold, planner_args)
+
+
+def candidates_from_reach(root, reach, state: Mapping[str, Any]):
+    """Pack an owned reachability answer for ``root`` into the candidate tuple."""
+    planes, opponent_planes, pill, preview, speed, speed_ups, _, frame, _, _ = root
     costs = np.full(512, 0xFFFF, dtype=np.uint16)
     for pose in np.flatnonzero(reach.costs_u16 != 0xFFFF):
         action = int(POSE_TO_ACTION[pose])
@@ -195,6 +202,14 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
     if packed.count == 0:
         raise NoReachablePlacement("no reachable placement")
     return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
+
+
+def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: int = 0,
+                pace: Pace | None = None):
+    root = planning_root(state, execution_delay_frames, pace)
+    columns, frame, speed_threshold, planner_args = root[6:]
+    reach = planner.bfs_full(columns, frame, speed_threshold=speed_threshold, **planner_args).copy()
+    return candidates_from_reach(root, reach, state)
 
 
 class HumanBackend:
