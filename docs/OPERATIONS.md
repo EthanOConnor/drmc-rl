@@ -1475,13 +1475,16 @@ uses normal fresh planning with the same requested motor limits. Neither
 native buffers nor speculative history are serialized. Existing app/browser
 schedulers continue using their prior protocol until explicitly integrated.
 
-`capabilities.early_decision` (version 1, `preview: marginal`, nine previews)
-announces pre-spawn decisions for a public-context core at quality strength. A
-`decide` carrying `early_decision: {"version": 1, "preview": "marginal"}` supplies
-the predicted spawn state with `frame_id` set to the predicted spawn frame and
-the public view frozen at the request frame, own side replaced as in
-`early_public_view` (preview placeholder). The backend scores all nine previews
-and executes the arena's `marginal_action`. The host owns the request point
+`capabilities.early_decision` (version 1, `preview: repeat`, one row;
+`preview_modes` lists the accepted modes and their rows) announces pre-spawn
+decisions for a public-context core at quality strength. A `decide` carrying
+`early_decision: {"version": 1, "preview": "repeat"}` supplies the predicted
+spawn state with `frame_id` set to the predicted spawn frame and the public view
+frozen at the request frame, own side replaced as in `early_public_view`
+(preview placeholder). `repeat` scores one pass with the next pill's colours as
+the preview and executes its argmax, as the arena's `early_preview: repeat`;
+`marginal` scores all nine previews and executes `marginal_action`. Warm-up
+times one row, which is what a live or repeat decision scores. The host owns the request point
 (lock when `garbage_risk` is None, else the settled phase), the start delay
 `max(reaction, request + compute - spawn, 0)` and validation at spawn.
 
