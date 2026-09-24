@@ -30,6 +30,7 @@ from drmc_rl.arena.store import ArenaStore
 from drmc_rl.execution.pace import BY_ID
 from drmc_rl.models.policy.pace_adapter import PacePolicy
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from drmc_rl.program.seed_reserve import training_seed_pool
 from drmc_rl.training.episodic_objective import (
     categorical_kl,
     clipped_surrogate,
@@ -575,7 +576,7 @@ def main():
         minimum_decisions_per_pace=config.get("minimum_decisions_per_pace", 0),
         games_per_pace=config.get("games_per_pace", {}),
     )
-    available = np.setdiff1d(np.arange(1,65536),config["holdout_seeds"])
+    available = training_seed_pool(config["holdout_seeds"], config=config)
     config["variants"] = {id: {"delay": 4} for id in ("learner", *opponents.names)}
     config["replay_games"] = 0
     store = ArenaStore(config["working_db"],replay_dir=output/"replays")

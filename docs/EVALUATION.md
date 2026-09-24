@@ -32,6 +32,35 @@ Report clear wins, topout wins, draws, horizon truncations, pills, pair-clock
 frames, garbage, virus progress, and invalid/candidate-drop counts. Elo is a
 summary, never the only result.
 
+### Evaluation seeds
+
+A reset seed `s` is the NES RNG register (`rng_state = (s & 0xFF, s >> 8)`).
+At a fixed level and speed it is the only source of game variety. The first
+RNG step drops bit 0 of `rng_state[1]`, so `s` and `s ^ 0x100` play
+byte-identical games. The 65,535 nonzero seeds therefore hold only 32,767
+distinct games. Each one has a single hardware-reachable seed on the console
+orbit. This cap cannot be raised without changing the level or speed. Hold-outs
+that list `s` but not `s ^ 0x100` do not hold that game out.
+
+New strength studies take seeds only from the permanent reserve
+(`drmc_rl/program/seed_reserve.py`, `eval_seed_reserve.json`): 4,096 games, one
+orbit seed each. Both seeds of every reserved game (8,192) are removed from
+every training draw.
+
+```bash
+python -m drmc_rl.program.seed_reserve allocate STUDY COUNT --purpose "..." --out runs/.../seeds.json
+python -m drmc_rl.program.seed_reserve check runs/... --study STUDY
+python -m drmc_rl.program.seed_reserve show
+```
+
+Allocations are contiguous, never reissued, and recorded in
+`eval_seed_allocations.json`, which is committed with the study. One seed
+serves one side-swapped pair. Reuse a study's slice across paces unless the
+design needs independent seeds per pace; a 256-seed-per-pace, seven-pace
+layout uses 1,792 seeds. Report the allocation's `status_at_creation`. Every
+reserve game was already in some training journal when the reserve was built
+(see `docs/OPERATIONS.md#evaluation-seed-reserve`).
+
 ## Correctness gates
 
 ### Planner

@@ -14,6 +14,7 @@ import torch
 
 from drmc_rl.arena.experiment import dump
 from drmc_rl.execution.pace import resolve_pace
+from drmc_rl.program.seed_reserve import require_training_seeds
 from drmc_rl.training.controller_retention import RetentionRecorder, save_anchor_bank, select_game_anchors
 from drmc_rl.training.public_league import PublicOpponentPool
 from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
@@ -67,6 +68,7 @@ def main():
             seeds=config['seeds'][pace]
             if len(set(seeds))!=len(seeds) or set(seeds)&set(config['holdout_seeds']):
                 raise ValueError('anchor seeds overlap evaluation or repeat within a pace')
+            require_training_seeds(seeds,config=config,what=f'{pace} anchor seeds')
             reference=variant_policy(config,config['references'][pace],parent)
             totals=Counter(); retained=[]; journal=[]
             pairs=int(config.get('pairs',32))

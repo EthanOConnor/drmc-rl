@@ -292,9 +292,13 @@ def load_parts(directory, device):
 
 
 def _split(data, holdout_mod):
+    """Train on non-held-out seeds outside the evaluation reserve; validate on the held-out ones."""
+    from drmc_rl.program.seed_reserve import load_reserve
+
     seeds = data["game_seed"].astype(np.int64)
     held = (seeds % holdout_mod) == 0
-    return np.flatnonzero(~held), np.flatnonzero(held)
+    reserved = np.isin(seeds, np.fromiter(load_reserve().blocked, dtype=np.int64))
+    return np.flatnonzero(~held & ~reserved), np.flatnonzero(held)
 
 
 def evaluate(net, batcher, rows, batch=256):

@@ -56,7 +56,7 @@ def test_registered_anchor_bank_recovers_without_changing_frozen_teacher_games(p
     config=dict(checkpoint=str(parent),encoder_checkpoint=str(initialized),device='cpu',threads=1,
         opponent_pool=[dict(id='parent',weight=1.,checkpoint=str(parent))],
         references={'normal':{},'frame_perfect':{'checkpoint':str(initialized)}},
-        paces=['normal','frame_perfect'],seeds={'normal':[17291,39577],'frame_perfect':[19071,20655]},
+        paces=['normal','frame_perfect'],seeds={'normal':[17291,39577],'frame_perfect':[19071,20656]},
         holdout_seeds=[50000],output=str(tmp_path/'bank'),seed=841,pairs=2,
         minimum_seeds_per_pace=1,rows_per_game=3,planner_workers=1,max_game_frames=120000,
         native_library=os.environ.get('DRMC_FRAME_LIBRARY'))

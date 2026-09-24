@@ -42,6 +42,7 @@ drmc_rl = [
     "envs/libretro/seeds/*.json",
     "planning/cuda/*.cu",
     "program/*.yaml",
+    "program/*.json",
     "training/configs/*.yaml",
 ]
 
