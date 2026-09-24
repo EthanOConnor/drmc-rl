@@ -147,6 +147,71 @@ def stage_seeds():
     print('excluded', len(excluded), 'unseen', len(unseen), 'reused', len(reused), 'seed sha', sha(seed_file))
 
 
+CONFIRMATION = dict(per_pace=64, rng=20260926)
+SHIPPED_TIMING = dict(decision_point='lock_safe', early_preview='repeat')
+
+
+def stage_confirmation_seeds():
+    """Addendum seeds: disjoint from every registered list and every training journal (fresh audit)."""
+    path = OUT / 'confirmation-seeds.json'
+    assert not path.exists(), 'confirmation seeds already registered'
+    local, remote = audit()
+    for name, value in (('local', local), ('tf3090', remote)):
+        with gzip.open(OUT / f'confirmation-seed-audit-{name}.json.gz', 'wt') as handle:
+            json.dump(value, handle)
+    earlier = json.load(gzip.open(MAIN / 'runs/review-20260909/controller-retention-fresh-v1/audit/seed-audit-tf3090.json.gz', 'rt'))
+    journals = {**earlier['journals'], **json.load(gzip.open(OUT / 'seed-audit-tf3090.json.gz', 'rt'))['journals'],
+                **json.load(gzip.open(OUT / 'seed-audit-local.json.gz', 'rt'))['journals'],
+                **remote['journals'], **local['journals']}
+    union = lambda paths: set().union(set(), *[set(journals[p]['seeds']) for p in paths])
+    training = {p for p in journals if 'training-games' in p}
+    registered = set(training_holdout()) | set(earlier['mixed_v2_holdout'])
+    for seed_list in Path('/Users/ethan/dev/drmario').glob('drmc-rl*/runs/review-20260909/**/*.json'):
+        if seed_list.name in ('seeds.json',) or seed_list.name.startswith('early-preview'):
+            try:
+                value = json.loads(seed_list.read_text())
+            except ValueError:
+                continue
+            stack = [value]
+            while stack:
+                item = stack.pop()
+                if isinstance(item, dict):
+                    stack.extend(item.values())
+                elif isinstance(item, list):
+                    if item and all(type(x) is int for x in item):
+                        registered |= set(item)
+                    else:
+                        stack.extend(item)
+    related = {p for p in training if any(k in p for k in (*LINEAGE, 'afterstate'))}
+    blocked = registered | union(related)
+    trained, evaluated = union(training - related), union(set(journals) - training)
+    unseen = sorted(set(range(1, 65536)) - blocked - evaluated - trained)
+    evaluated_only = sorted(evaluated - blocked - trained)
+    unrelated_training = sorted(trained - blocked)
+    need = CONFIRMATION['per_pace'] * len(PACES)
+    rng = np.random.default_rng(CONFIRMATION['rng'])
+    chosen, tiers = [], {}
+    for name, pool in (('unseen', unseen), ('evaluation_only', evaluated_only), ('unrelated_training_only', unrelated_training)):
+        take = [int(x) for x in rng.permutation(np.asarray(pool, dtype=np.int64))[:need - len(chosen)]]
+        tiers[name] = dict(available=len(pool), selected=len(take))
+        chosen += take
+    assert len(chosen) == need
+    chosen = [int(x) for x in rng.permutation(np.asarray(chosen, dtype=np.int64))]
+    seeds = {'confirmation': {p: sorted(chosen[i * CONFIRMATION['per_pace']:(i + 1) * CONFIRMATION['per_pace']])
+                              for i, p in enumerate(PACES)}}
+    assert len({s for v in seeds['confirmation'].values() for s in v}) == need
+    path.write_text(json.dumps(seeds, indent=1) + '\n')
+    (OUT / 'confirmation-seed-audit.json').write_text(json.dumps(dict(
+        created_at=datetime.now(timezone.utc).isoformat(), rng=CONFIRMATION['rng'], need=need,
+        rule='exclude every registered seed list under drmc-rl*/runs/review-20260909 (seeds.json files and early-preview '
+             'configs), the mixed-v2 holdout, and training games of the champion lineage and every afterstate arm '
+             '(fresh audit of both hosts, including running PPO); then take never-seen seeds, seeds seen only in '
+             'evaluation journals, and finally seeds seen only in unrelated study arms\' training games',
+        tiers=tiers,
+        seed_file_sha256=sha(path)), indent=1) + '\n')
+    print('unseen', len(unseen), 'evaluated-only', len(evaluated_only), 'seed sha', sha(path))
+
+
 def training_holdout():
     """Every registered evaluation seed: pass as holdout_seeds to any continuation."""
     seeds = json.loads((OUT / 'seeds.json').read_text())
@@ -154,7 +219,8 @@ def training_holdout():
 
 
 def arena_config(group, candidate, label, device, output):
-    seeds = json.loads((OUT / 'seeds.json').read_text())[group]
+    seed_file = OUT / ('confirmation-seeds.json' if group == 'confirmation' else 'seeds.json')
+    seeds = json.loads(seed_file.read_text())[group]
     blocks = 4 if group == 'tournament' else 1
     schedule = []
     for b in range(blocks):
@@ -182,9 +248,14 @@ def arena_config(group, candidate, label, device, output):
         'source': f'drmc-rl trainer/afterstate-core {subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"], capture_output=True, text=True).stdout.strip()}',
         'native_commit': '19f292c',
         'model_sha256': {str(candidate): sha(candidate), str(CHAMPION): CHAMPION_SHA, str(OUTCOME): sha(OUTCOME)},
-        'seed_file': str(OUT / 'seeds.json'), 'seed_file_sha256': sha(OUT / 'seeds.json'),
+        'seed_file': str(seed_file), 'seed_file_sha256': sha(seed_file),
         'schedule': schedule,
-    }
+    } | (CONFIRMATION_BACKEND if group == 'confirmation' else {})
+
+
+# The shipped browser contract (v17/v18) decides early on both sides; early
+# decision points need the frame-accurate runner, as in early-preview-v1.
+CONFIRMATION_BACKEND = dict(rollout_backend='frames', async_planning=False, pairs=16)
 
 
 PREREGISTRATION = dict(
@@ -208,22 +279,44 @@ PREREGISTRATION = dict(
 )
 
 
+CONFIRMATION_PREREGISTRATION = dict(
+    schema='drmc-afterstate-shipped-timing-confirmation-v1',
+    purpose='Addendum (registered before any tournament game): before any core ships, the tournament winner plays the '
+            'champion under the shipped browser timing contract. The spawn-contract tournament remains the primary test.',
+    champion=dict(path=str(CHAMPION), sha256=CHAMPION_SHA),
+    timing=dict(SHIPPED_TIMING, sides='both candidate and champion', source='early-preview-v1 variant lock_safe_repeat; '
+                'browser v17/v18'),
+    level='14 HI', seeds='confirmation-seeds.json: 64 per pace at all seven paces, sides swapped (896 games)',
+    analysis='as the tournament: whole-seed bootstrap, pooled equal-pace score with 95% interval',
+    decision=dict(FAIL='pooled 95% lower bound < 0.45', PASS='otherwise'),
+    applies_to='whichever arm (A, B or C) wins its tournament; the same seeds and rule for every arm',
+)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('stage', choices=('seeds', 'quick', 'panel', 'tournament', 'holdout'))
+    parser.add_argument('stage', choices=('seeds', 'confirmation-seeds', 'quick', 'panel', 'tournament', 'confirmation', 'holdout'))
     parser.add_argument('--candidate')
     parser.add_argument('--label')
     parser.add_argument('--device', default='mps')
     args = parser.parse_args()
     if args.stage == 'seeds':
         return stage_seeds()
+    if args.stage == 'confirmation-seeds':
+        return stage_confirmation_seeds()
     if args.stage == 'holdout':
         return print(json.dumps(training_holdout()))
     candidate = Path(args.candidate).resolve()
-    name = f'{args.stage}-{args.label}' if args.stage != 'tournament' else 'tournament'
+    name = f'{args.stage}-{args.label}' if args.stage not in ('tournament', 'confirmation') else args.stage
     path = OUT / f'{name}.json'
     assert not path.exists(), f'{path.name} already registered'
     config = arena_config(args.stage, candidate, args.label, args.device, OUT / name)
+    if args.stage == 'confirmation':
+        for variant in config['variants'].values():
+            variant.update(SHIPPED_TIMING)
+        config['preregistration'] = dict(CONFIRMATION_PREREGISTRATION, created_at=datetime.now(timezone.utc).isoformat(),
+                                         candidate=dict(path=str(candidate), sha256=sha(candidate), label=args.label),
+                                         total_games=sum(m['games'] for m in config['schedule']))
     if args.stage == 'tournament':
         config['preregistration'] = dict(PREREGISTRATION, created_at=datetime.now(timezone.utc).isoformat(),
                                          candidate=dict(path=str(candidate), sha256=sha(candidate), label=args.label),

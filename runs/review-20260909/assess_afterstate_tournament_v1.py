@@ -91,7 +91,9 @@ def assess(config_path, *, allow_partial=False):
     if pre is not None:
         assert complete, 'a pre-registered verdict requires the complete schedule'
         clear_regression = any(r['simultaneous_score_ci95'][1] < .45 for r in summaries)
-        if pooled_ci[0] > .50 and not clear_regression:
+        if pre['schema'] == 'drmc-afterstate-shipped-timing-confirmation-v1':
+            verdict = 'FAIL' if pooled_ci[0] < .45 else 'PASS'
+        elif pooled_ci[0] > .50 and not clear_regression:
             verdict = 'PROMOTE'
         elif pooled_ci[0] <= .50 <= pooled_ci[1] and not clear_regression:
             verdict = 'PARITY'

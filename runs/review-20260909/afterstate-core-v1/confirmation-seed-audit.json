@@ -1,0 +1,21 @@
+{
+ "created_at": "2026-09-24T20:40:44.042835+00:00",
+ "rng": 20260926,
+ "need": 448,
+ "rule": "exclude every registered seed list under drmc-rl*/runs/review-20260909 (seeds.json files and early-preview configs), the mixed-v2 holdout, and training games of the champion lineage and every afterstate arm (fresh audit of both hosts, including running PPO); then take never-seen seeds, seeds seen only in evaluation journals, and finally seeds seen only in unrelated study arms' training games",
+ "tiers": {
+  "unseen": {
+   "available": 0,
+   "selected": 0
+  },
+  "evaluation_only": {
+   "available": 125,
+   "selected": 125
+  },
+  "unrelated_training_only": {
+   "available": 578,
+   "selected": 323
+  }
+ },
+ "seed_file_sha256": "9e3753be98b791ffd3cc77544efc333ad17c7a0bb21d570798b7e0fad1cbc3ba"
+}

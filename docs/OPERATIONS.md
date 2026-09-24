@@ -35,7 +35,14 @@ candidate only). Write a config with
 run `python -m tools.trainer_planning_arena --config ...` on the Mac (MPS,
 events backend), and assess with `assess_afterstate_tournament_v1.py CONFIG`
 (`--partial` for an interim read). Only the tournament config carries the
-PROMOTE/PARITY/REJECT rule.
+PROMOTE/PARITY/REJECT rule. A pre-registered addendum applies before any core
+ships: the tournament winner (any afterstate arm) plays the champion under the
+shipped browser timing contract (`lock_safe` with `early_preview: repeat` on
+both sides, frames backend) on `confirmation-seeds.json` (896 games, all seven
+paces); `prepare_afterstate_tournament_v1.py confirmation --candidate ...`
+writes it, and it fails only if the pooled 95% lower bound is below 0.45.
+Pre-spawn decisions score the predicted spawn bottle, so its afterstates are
+computed from that bottle.
 
 ## Public progress input experiment
 
