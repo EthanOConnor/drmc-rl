@@ -72,6 +72,10 @@ def run_panel(label, checkpoint):
         return assess(config)
     except (AssertionError, FileNotFoundError):
         pass
+    # The Mac is shared and memory is tight: never run alongside another arm's panel workers.
+    while subprocess.run(['pgrep', '-f', 'trainer_arena_distributed.*afterstate-core-v1/'],
+                         capture_output=True).returncode == 0:
+        time.sleep(120)
     env = dict(PYTHONPATH=str(REPO), PATH='/usr/bin:/bin:/usr/local/bin', HOME=str(Path.home()),
                DRMARIO_REACH_LIB=str(NATIVE / 'libdrm_reach_full.dylib'), DRMARIO_POOL_LIB=str(NATIVE / 'libdrmario_pool.dylib'))
     with (DATA / f'panel-{label}.log').open('a') as handle:
