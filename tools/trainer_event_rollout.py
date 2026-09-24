@@ -387,7 +387,11 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 actors = [p[2] for p in completed]
             else:
                 candidates = [None]*len(requests)
-                for target in {id(route(a)): route(a) for a in actors}.values():
+                targets = []
+                for actor in actors:
+                    if not any(route(actor) is t for t in targets):
+                        targets.append(route(actor))
+                for target in targets:
                     indices = [i for i, a in enumerate(actors) if route(a) is target]
                     if hasattr(target, "plan"):
                         answers = target.plan([requests[i] for i in indices])

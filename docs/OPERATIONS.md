@@ -1396,6 +1396,31 @@ TF32, bf16, `cudnn.benchmark`, `channels_last` and `torch.compile` are not
 bit-identical to strict FP32, and at the arena's small batches only compile
 was faster (1.37x on inference alone); keep `strict_fp32`.
 
+`planner_backend: "cuda"` (config default, or per variant for mirror checks;
+event runner only) plans unconstrained roots on the GPU. One owner thread
+collects every pending request and solves them in one
+`drmc_rl.planning.cuda.full.CudaReachFull` batch, whose costs, offsets,
+lengths and script bytes equal `drm_reach_bfs_full` for all 512 poses; it
+reproduces the CPU's first-discovery tie order. Only Frame Perfect has no motor
+limits. Every other pace, and any instance the kernel flags (frontier or
+script capacity, parent-chain check), is sent to the CPU planner and counted
+in the batch line's `planner.routes`. Optional `cuda_planner` passes
+`block_threads`, `blocks_per_sm`, `max_batch` and `cache`. `planner_workers`
+then sizes only the CPU pool. Parity checks are
+`tools.test_reach_full_cuda_parity` (fuzzed roots),
+`tools.trainer_planner_parity capture|compare` (recorded arena requests:
+native arrays, packed candidates and `execution_for_action` output) and a
+mirror arena with one CUDA-planned and one CPU-planned variant, which must
+produce byte-identical side-swapped journals. September 2026 evidence is in
+`runs/review-20260909/arena-gpu-planner/`. On tf3090 the same 256 Frame
+Perfect games ran at 3,323 games per hour on the CPU (pairs 256, 4 workers)
+and 5,172 with CUDA planning (pairs 256, 1 worker), with byte-identical move
+journals. The main Python thread is then the limit, so run two or three
+arena processes. Two and three 256-pair processes measured 8,545 and 9,948
+games per hour (GPU 65% and 83% busy); 128 pairs or two 512-pair processes
+were slower. Use three `pairs: 256` processes with `planner_workers: 1` for
+Frame Perfect arenas; paced arenas keep the CPU settings above.
+
 The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
 measurement. Reject a deployment deadline that fails the real host check even
 if it wins offline. Timing-contract experiments use opt-in variant keys

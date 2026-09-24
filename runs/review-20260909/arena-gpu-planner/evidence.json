@@ -1,0 +1,50 @@
+{
+ "schema": "arena-gpu-planner-evidence-v1",
+ "host": "tf3090 (4 cores, RTX 3090)",
+ "commit_kernel": "9dcf631 (final); f0481a9 (initial)",
+ "root_parity_captured": {
+  "roots": 53526,
+  "paces": [
+   "frame_perfect"
+  ],
+  "levels": [
+   14,
+   20
+  ],
+  "speed_thresholds": "2-13",
+  "byte_identical": 53526,
+  "flagged": 0,
+  "cpu_ms_per_root": 8.97,
+  "cuda_ms_per_root_batched": 0.213,
+  "source": "224 CPU-planned event arena games (capture-config), every plan request"
+ },
+ "root_parity_fuzz": [
+  {
+   "cases": 3000,
+   "seed": 1,
+   "identical": 3000
+  },
+  {
+   "cases": 1500,
+   "seed": 2,
+   "identical": 1500
+  },
+  {
+   "cases": 4000,
+   "seed": 11,
+   "identical": 4000,
+   "note": "final kernel; thresholds 0-39, random microstates"
+  }
+ ],
+ "replay_parity": "replay-parity.json (candidate tuples + execution_for_action over every feasible action on every 6th request)",
+ "mirror_arena": "mirror.txt (CUDA-planned vs CPU-planned variant, same checkpoint, frame_perfect)",
+ "full_arena_identity": "bench cpu-p256-w4-async vs cuda-p256-w1-async: 256/256 move journals and games.jsonl byte-identical",
+ "throughput": "throughput.jsonl (bench_arena: games/hour from summed batch seconds, mean GPU/CPU utilisation)",
+ "cuda_kernel_latency_ms": {
+  "batch_1": 8.5,
+  "batch_8": 16.0,
+  "batch_128": 40.9,
+  "batch_2048": 481,
+  "block_threads": 1024
+ }
+}

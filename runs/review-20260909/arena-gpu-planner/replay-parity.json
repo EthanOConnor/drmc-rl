@@ -1,0 +1,27 @@
+{
+ "schema": "trainer-planner-parity-v1",
+ "sources": [
+  "/dev/shm/gpu-planner/capture/requests-a.pkl.gz"
+ ],
+ "requests": 63368,
+ "compared": 53526,
+ "cpu_fallback": 9842,
+ "no_reachable": 0,
+ "executions_compared": 275054,
+ "mismatches": 0,
+ "by_pace": {
+  "frame_perfect": {
+   "compared": 53526,
+   "cpu_fallback": 0
+  },
+  "super_human": {
+   "compared": 0,
+   "cpu_fallback": 9842
+  }
+ },
+ "first_mismatches": [],
+ "cpu_seconds": 508.187,
+ "cuda_seconds": 29.375,
+ "executions": "all",
+ "execution_stride": 6
+}

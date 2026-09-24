@@ -63,3 +63,34 @@ def test_cuda_full_matches_cpu_bytes():
         actual = batch.reach(i)
         for field in ("costs_u16", "offsets_u16", "lengths_u16", "script_buf"):
             assert getattr(expected, field).tobytes() == getattr(actual, field).tobytes(), (i, field)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("backends", [("cuda", "cuda"), ("cuda", "cpu")])
+def test_cuda_event_arena_reproduces_reference_games(asynchronous, backends):
+    import os
+
+    from drmc_rl.planning.native_reach import NativeReachabilityRunner
+    from tests.test_event_rollout import FixedPolicy
+    from tools.trainer_event_rollout import PlannerRouter, run_event_batch
+    from tools.trainer_planning_arena import run_batch
+
+    _cuda().close()
+    config = {"native_library": os.environ.get("DRMC_FRAME_LIBRARY"), "max_game_frames": 3000,
+              "variants": {"a": {"delay": 4, "planner_backend": backends[0]},
+                           "b": {"delay": 6, "planner_backend": backends[1]}},
+              "replay_games": 0, "async_planning": asynchronous}
+    match = {"a": "a", "b": "b", "games": 4, "level": 14, "pace": "frame_perfect"}
+    jobs = [(19071, 0, 0), (19071, 1, 1), (17291, 0, 2), (17291, 1, 3)]
+    planner, router, actor = NativeReachabilityRunner(), PlannerRouter(config, 1), FixedPolicy()
+    try:
+        reference, _ = run_batch(config, match, jobs, actor, planner, None)
+        batched, _ = run_event_batch(config, match, jobs, actor, router, None)
+        for (expected, moves, _), (actual, event_moves, _) in zip(reference, batched):
+            assert event_moves == moves
+            assert actual["score"] == expected["score"] and actual["frames"] == expected["frames"]
+        routes = router.backends["cuda"].stats()["routes"]
+        assert routes.get("cuda", 0) > 0 and not any(k.startswith(("status", "cpu")) for k in routes)
+    finally:
+        router.close()
+        planner.close()
