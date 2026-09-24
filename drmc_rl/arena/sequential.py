@@ -98,15 +98,14 @@ def seed_scores(rows):
     """Complete side-swapped seeds in schedule order: (lower, upper, censored games).
 
     Incomplete seeds are ignored until their partner game arrives. Order is
-    the scheduled game index, which is fixed before any outcome is seen.
+    the journal order, which follows the schedule fixed before any outcome.
     """
     seeds = {}
     for row in rows:
         seeds.setdefault(row["seed"], {})[row["side"]] = row
-    complete = sorted((min(r["index"] for r in games.values()), games)
-                      for games in seeds.values() if set(games) == {0, 1})
+    complete = [games for games in seeds.values() if set(games) == {0, 1}]
     lower, upper, censored = [], [], 0
-    for _, games in complete:
+    for games in complete:
         low = high = 0.0
         for row in games.values():
             if row.get("score") is None or row.get("reason") == "timeout":
