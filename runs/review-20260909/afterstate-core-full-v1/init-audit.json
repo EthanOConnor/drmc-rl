@@ -1,0 +1,32 @@
+{
+ "schema": "drmc-afterstate-full-init-audit-v1",
+ "champion": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt",
+ "champion_sha256": "fae04a599635cbf600914e5dede2f5dcdfeff7e5436dd53053c7d9fc1c85b3a3",
+ "init": "/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data/init-arm-c.pt",
+ "init_sha256": "a0e67f92fbc16c685f44352174be7fc13bb139b2bccf7418d0c765d176f4ad59",
+ "shards": [
+  "/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data/shards/update-00111-frame_perfect.npz",
+  "/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data/shards/update-00111-normal.npz",
+  "/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data/shards/update-00111-sloth.npz",
+  "/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data/shards/update-00111-top_humans.npz"
+ ],
+ "decisions": 512,
+ "candidates": 12550,
+ "max_abs_difference": {
+  "logits": 0.0,
+  "value": 0.0,
+  "value_logits": 0.0,
+  "candidate_wdl": 0.0,
+  "state_wdl": 0.0
+ },
+ "bitwise_identical_logits_and_values": true,
+ "tolerance": 1e-06,
+ "champion_tensors_unchanged": 185,
+ "parameters": {
+  "champion": 28142617,
+  "full": 28461353,
+  "branch": 318736
+ },
+ "zero_projection_gradient_l1": 75.41595458984375,
+ "upstream_stem_gradient_l1": 0.0
+}

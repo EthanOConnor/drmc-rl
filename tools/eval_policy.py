@@ -66,7 +66,7 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     public_schema = (
         g("aux_spec", "none") if g("aux_spec", "none") in PUBLIC_CONTEXT_DIMS else None
     )
-    if public_schema and architecture not in ("g5", "afterstate"):
+    if public_schema and architecture not in ("g5", "afterstate", "g5_afterstate"):
         raise ValueError("public_pair_context_v3 requires its G5 or afterstate architecture contract")
     if architecture == "afterstate":
         from drmc_rl.models.policy.afterstate_core import build_afterstate_core
@@ -74,11 +74,25 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
         if not public_schema:
             raise ValueError("the afterstate core is defined only on a public context schema")
         net = build_afterstate_core(sp, in_channels, aux_dim).to(device)
-    elif architecture == "g5":
+    elif architecture in ("g5", "g5_afterstate"):
         from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 
-        net = G5CandidatePlacementPolicyNet(
+        cls, extra = G5CandidatePlacementPolicyNet, {}
+        if architecture == "g5_afterstate":
+            from drmc_rl.models.policy.afterstate_full_core import (
+                AFTERSTATE_FULL_SCHEMA,
+                AfterstateFullCorePolicyNet,
+            )
+
+            if not public_schema or g("afterstate_schema", None) != AFTERSTATE_FULL_SCHEMA:
+                raise ValueError("the full afterstate core requires its public schema contract")
+            cls = AfterstateFullCorePolicyNet
+            extra = dict(after_channels=int(g("afterstate_channels", 32)),
+                         after_blocks=int(g("afterstate_blocks", 2)),
+                         root_projection=int(g("afterstate_root_projection", 16)))
+        net = cls(
             **common,
+            **extra,
             interaction_layers=int(g("candidate_interaction_layers", 2)),
             value_atoms=int(g("candidate_value_atoms", 51)),
             conditioned_trunk=bool(g("candidate_conditioned_trunk", True)),

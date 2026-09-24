@@ -53,6 +53,27 @@ def collection_schedule(config, update, available, opponents):
     return result
 
 
+def optimizer_groups(net,config):
+    """One group, or trunk plus a separately scheduled newly initialized branch."""
+    prefix=config.get('new_branch_prefix')
+    if not prefix: return [dict(params=list(net.parameters()))]
+    named=list(net.named_parameters())
+    branch=[p for n,p in named if n.startswith(prefix)]
+    if not branch: raise ValueError(f'no parameters under the new branch prefix {prefix!r}')
+    return [dict(params=[p for n,p in named if not n.startswith(prefix)],name='trunk'),
+            dict(params=branch,name='new_branch')]
+
+
+def set_learning_rates(optimizer,config,update):
+    """Per-update base rates: the branch ramps linearly to its multiplier, never below the trunk."""
+    for group in optimizer.param_groups:
+        rate=config['lr']
+        if group.get('name')=='new_branch':
+            ramp=min(1.,update/max(1,config.get('new_branch_warmup_updates',1)))
+            rate*=max(1.,config.get('new_branch_lr_multiplier',1.)*ramp)
+        group['update_lr']=group['lr']=rate
+
+
 def target_met(progress,config):
     return (progress['decisions']>=config['target_decisions'] and
             all(progress['paces'].get(p,{}).get('learning_decisions',0)>=config['minimum_decisions_per_pace']
@@ -88,7 +109,7 @@ def main():
     from drmc_rl.envs.backends.drmario_pool import resolve_library_path as pool_path
     identities['native_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
                                for p in (reach_path(),pool_path(config.get('native_library')))}
-    optimizer=torch.optim.AdamW(actor.net.parameters(),lr=config['lr'],weight_decay=.001)
+    optimizer=torch.optim.AdamW(optimizer_groups(actor.net,config),lr=config['lr'],weight_decay=.001)
     progress=dict(status='Running',schema='drmc-controller-retention-training-v1',arm=config['arm'],
         updates=0,games=0,frames=0,decisions=0,paces={},checkpoints=[],
         optimizer_steps=0,consecutive_stalled_updates=0,
@@ -161,6 +182,7 @@ def main():
                         selected,games,update=update,pace=match['pace'],level=match['level'])
             tick=time.monotonic()
             revised=config['arm']=='mixed_retention'
+            set_learning_rates(optimizer,config,update)
             losses=update_adapter(actor,optimizer,records,config,config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
             progress['optimizer_steps']+=losses['optimizer_steps']

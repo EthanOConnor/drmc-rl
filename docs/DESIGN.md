@@ -469,6 +469,22 @@ the host from the same inputs (with a bounded row cache); ONNX export passes
 parameters and 4.2–4.6 GFLOP at 32–56 candidates, against 28.1M and 7.9–8.1
 GFLOP for the 320×8 public core.
 
+### Full afterstate public core
+
+`drmc-afterstate-full-core-v1` (`drmc_rl/models/policy/afterstate_full_core.py`,
+`candidate_architecture: g5_afterstate`) is the unchanged 320×8 G5 public core
+with an additive afterstate branch. Each candidate's exact settled own bottle
+(the same `drmc_rl.game.afterstate` function), its changed-cell mask and a
+16-channel projection of the root trunk pass through a 32-channel, two-block
+CNN; the pooled result is fused with the 16 facts and added to the G5
+candidate token before candidate attention through a zero-initialized
+projection. The 9×9 patches stay. Built from a G5 checkpoint
+(`tools/build_afterstate_full_init.py`), it loads every tensor unchanged and
+computes that checkpoint's logits and values bit for bit until training moves
+the projection. It adds 0.32M parameters, about 5% FLOPs and 7–9% ONNX CPU
+time at batch 1; ONNX export takes `after_tiles [B,K,128]` (uint8) and
+`facts [B,K,16]` in addition to the G5 inputs.
+
 ### Anticipatory execution
 
 Maximum can prepare the next turn while its committed controller script runs.
