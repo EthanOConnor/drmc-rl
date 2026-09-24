@@ -1381,10 +1381,20 @@ first plays `identity_probe_games` (default 16) and requires every seed's two
 games to have byte-identical move journals; otherwise the comparison continues
 normally. `results.json` reports each verdict under `stopping`, with games
 used and the budget. Verdicts are recomputed from `games.jsonl` and `moves/`
-on resume. For the frame runner, `frame_planning_workers` submits each newly
-spawned pill's spawn-time planner request to worker threads at the start of
-the frame; the runner's own request reads the shared exact answer, so traces
-are unchanged.
+on resume.
+
+On tf3090 (4 cores, RTX 3090) arena throughput is bound by native planning and
+the main Python thread, not the GPU (about 22% busy). A September 2026 sweep of
+Frame Perfect event games measured 2,531/2,900/2,978/3,351 games per hour at
+`pairs` 32/64/128/256 with async planning (3, 3, 3 and 4 workers), 2,179 and
+3,238 at `pairs: 128` with 2 and 4 workers, 2,475 synchronously, and 3,278 for
+two 64-pair two-worker processes together. Use `rollout_backend: events`,
+`async_planning: true`, `planner_workers: 4` and `pairs` 128–256; use smaller
+`look_games` only when sequential stopping needs finer looks. The frame
+runner measured 763 games per hour for one process and 1,979 for three.
+TF32, bf16, `cudnn.benchmark`, `channels_last` and `torch.compile` are not
+bit-identical to strict FP32, and at the arena's small batches only compile
+was faster (1.37x on inference alone); keep `strict_fp32`.
 
 The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
 measurement. Reject a deployment deadline that fails the real host check even
