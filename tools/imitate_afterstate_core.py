@@ -109,8 +109,11 @@ class Selection:
         return rating, math.exp((rating - self.args.rating_pivot) / self.args.rating_scale)
 
     def fit(self, months):
+        from array import array
+
         args = self.args
-        weights, splits, players, units = [], [], [], []
+        weights, splits, player_ids, units = array("d"), array("b"), array("i"), array("d")
+        index = {}
         scanned = 0
         for month in months:
             for batch in self.corpus.batches("decisions", columns=_SELECT_COLUMNS, months=[month], batch_size=65536):
@@ -122,12 +125,13 @@ class Selection:
                         continue
                     weights.append(got[1])
                     splits.append(_split_of(data["random_split"][i], data["player_fold"][i], self.holdout))
-                    players.append(data["player"][i])
+                    player_ids.append(index.setdefault(data["player"][i], len(index)))
                     units.append(_stable_unit(decision, args.seed))
-        weights = np.asarray(weights)
-        splits = np.asarray(splits, dtype=np.int8)
-        players = np.asarray(players, dtype=object)
-        units = np.asarray(units)
+        names_by_id = np.asarray(sorted(index, key=index.get), dtype=object)
+        weights = np.frombuffer(weights, dtype=np.float64)
+        splits = np.frombuffer(splits, dtype=np.int8)
+        players = names_by_id[np.frombuffer(player_ids, dtype=np.int32)] if len(player_ids) else np.asarray([], object)
+        units = np.frombuffer(units, dtype=np.float64)
         targets = {0: args.train_rows, 1: args.eval_rows, 2: args.eval_rows, 3: args.eval_rows}
         rule, report = {}, {}
         for split, target in targets.items():
@@ -419,7 +423,7 @@ def build(args):
             game_ids = table["game_id"].to_pylist()
             bounds = [0] + [i for i in range(1, len(game_ids)) if game_ids[i] != game_ids[i - 1]] + [len(game_ids)]
             spans = list(zip(bounds, bounds[1:]))
-            per_slice = args.games_per_task * args.workers * 4
+            per_slice = args.games_per_task * args.workers * 2
             tasks_done = 0
             for s0 in range(0, len(spans), per_slice):
                 tasks, chunk = [], []
