@@ -206,16 +206,19 @@ def early_marginal_scores(policy, candidate, state, pace, delay, compute_frames)
     """
     from drmc_rl.human.anticipation import score_public_inputs
     from drmc_rl.human.controller_context import controller_policy_inputs, live_controller_state
-    from drmc_rl.human.early_decision import PREVIEWS, marginal_action
+    from drmc_rl.human.early_decision import PREVIEWS, marginal_action, with_own_preview
 
     live = state.get("public_live_context") or {}
+    sides = [dict(side) for side in live.get("sides", ())]
+    if len(sides) == 2:
+        sides[1]["preview"] = list(PREVIEWS[0])
+    # Decode and audit the wire view once; the nine views differ only in the preview.
+    base = live_controller_state({**state, "preview": list(PREVIEWS[0]),
+                                  "public_live_context": {**live, "sides": sides}})
     observations, infos = [], []
     for preview in PREVIEWS:
-        sides = [dict(side) for side in live.get("sides", ())]
-        if len(sides) == 2:
-            sides[1]["preview"] = list(preview)
-        view = live_controller_state({**state, "preview": list(preview),
-                                      "public_live_context": {**live, "sides": sides}})
+        view = {**base, "preview": list(preview),
+                "public_pair_state": with_own_preview(base["public_pair_state"], preview)}
         observation, info = controller_policy_inputs(policy, candidate, view, pace, delay, compute_frames)
         observations.append(observation)
         infos.extend(info)
