@@ -19,7 +19,6 @@ import hashlib
 import json
 import math
 from multiprocessing import get_context
-import os
 from pathlib import Path
 import time
 
@@ -63,10 +62,35 @@ def _afterstate_chunk(args):
     return facts, counts, np.concatenate(cells), np.concatenate(values)
 
 
+def _sample_shard(path, fraction, rng):
+    from drmc_rl.game.afterstate import planes_to_fields
+
+    with np.load(path) as z:
+        meta = json.loads(str(z["metadata"]))
+        if meta["schema"] != "drmc-public-controller-replay-v2" or meta["observation_schema"] != "public_pair_context_v3":
+            raise ValueError(f"unexpected replay contract in {path}")
+        take = np.flatnonzero(rng.random(len(z["pill"])) < fraction)
+        if not len(take):
+            return None
+        obs = z["observation"][take]
+        off = z["offsets"]
+        index = np.concatenate([np.arange(off[i], off[i + 1]) for i in take])
+        return dict(
+            own=planes_to_fields(obs[:, :8]), opp=planes_to_fields(obs[:, 8:16]),
+            pill=z["pill"][take], preview=z["preview"][take], game_seed=z["game_seed"][take],
+            port=z["learner_port"][take], ctx=z["public_context"][take].astype(np.float16),
+            ret=z["return"][take].astype(np.float32),
+            pace=np.full(len(take), PACES.index(meta["pace"]), np.int8),
+            update=np.full(len(take), meta["update"], np.int16),
+            counts=(off[take + 1] - off[take]).astype(np.int32),
+            actions=z["actions"][index], costs=z["costs"][index], obs_check=obs[:2],
+        )
+
+
 def build(args):
+    """Stream replay shards into self-contained dataset parts (bounded host memory)."""
     import torch
 
-    from drmc_rl.game.afterstate import planes_to_fields
     from tools.vs_head_to_head import PlainPolicy
 
     out = Path(args.out)
@@ -74,98 +98,71 @@ def build(args):
     shards = sorted(glob.glob(args.shards))
     if not shards:
         raise SystemExit("no replay shards")
-    rng = np.random.default_rng(args.seed)
     sizes = []
     for path in shards:
         with np.load(path) as z:
             sizes.append(len(z["pill"]))
-    total = int(sum(sizes))
-    fraction = min(1.0, args.max_states / total)
-    parts = {k: [] for k in ("own", "opp", "pill", "preview", "ctx", "counts", "actions", "costs",
-                             "game_seed", "pace", "update", "ret", "port", "obs_check")}
-    for path, size in zip(shards, sizes):
-        with np.load(path) as z:
-            meta = json.loads(str(z["metadata"]))
-            if meta["schema"] != "drmc-public-controller-replay-v2" or meta["observation_schema"] != "public_pair_context_v3":
-                raise ValueError(f"unexpected replay contract in {path}")
-            take = np.flatnonzero(rng.random(size) < fraction)
-            if not len(take):
-                continue
-            obs = z["observation"][take]
-            off = z["offsets"]
-            parts["own"].append(planes_to_fields(obs[:, :8]))
-            parts["opp"].append(planes_to_fields(obs[:, 8:16]))
-            for key, src in (("pill", "pill"), ("preview", "preview"), ("game_seed", "game_seed"),
-                             ("port", "learner_port")):
-                parts[key].append(z[src][take])
-            parts["ctx"].append(z["public_context"][take].astype(np.float16))
-            parts["ret"].append(z["return"][take].astype(np.float32))
-            parts["pace"].append(np.full(len(take), PACES.index(meta["pace"]), np.int8))
-            parts["update"].append(np.full(len(take), meta["update"], np.int16))
-            counts = (off[take + 1] - off[take]).astype(np.int32)
-            parts["counts"].append(counts)
-            index = np.concatenate([np.arange(off[i], off[i + 1]) for i in take])
-            parts["actions"].append(z["actions"][index])
-            parts["costs"].append(z["costs"][index])
-            parts["obs_check"].append(obs[:: max(1, len(obs) // 4)])
-    data = {k: np.concatenate(v) for k, v in parts.items()}
-    obs_check = data.pop("obs_check")
-    n = len(data["pill"])
-    offsets = np.concatenate(([0], np.cumsum(data["counts"]))).astype(np.int64)
-    print(f"{n} states, {offsets[-1]} candidates from {len(shards)} shards", flush=True)
-
-    # Exact afterstates, in parallel chunks.
-    started = time.monotonic()
-    chunk = 2048
-    jobs = []
-    for s0 in range(0, n, chunk):
-        s1 = min(n, s0 + chunk)
-        jobs.append((data["own"][s0:s1], data["pill"][s0:s1],
-                     offsets[s0:s1 + 1] - offsets[s0], data["actions"][offsets[s0]:offsets[s1]]))
-    with get_context("spawn").Pool(args.workers) as pool:
-        results = pool.map(_afterstate_chunk, jobs, chunksize=1)
-    data["facts"] = np.concatenate([r[0] for r in results])
-    delta_counts = np.concatenate([r[1] for r in results])
-    data["delta_offsets"] = np.concatenate(([0], np.cumsum(delta_counts))).astype(np.int64)
-    data["delta_cells"] = np.concatenate([r[2] for r in results])
-    data["delta_values"] = np.concatenate([r[3] for r in results])
-    print(f"afterstates {time.monotonic() - started:.0f}s; mean changed cells {delta_counts.mean():.2f}, "
-          f"max {delta_counts.max()}", flush=True)
-
-    # Teacher scores on its own original inputs.
-    started = time.monotonic()
+    fraction = min(1.0, args.max_states / int(sum(sizes)))
+    rng = np.random.default_rng(args.seed)
     torch.backends.cuda.matmul.allow_tf32 = bool(args.tf32)
     torch.backends.cudnn.allow_tf32 = bool(args.tf32)
     teacher = PlainPolicy(Path(args.teacher), args.device, public_only=True)
     net = teacher.net.eval()
-    logits = np.zeros(offsets[-1], np.float32)
-    value_logits = np.zeros((n, net.value_atoms), np.float16)
-    batch = args.teacher_batch
-    loader = _Batcher(data, offsets, args.device)
-    for s0 in range(0, n, batch):
-        rows = np.arange(s0, min(n, s0 + batch))
-        inputs, aux, valid = loader.inputs(rows, width_floor=32)
-        with torch.inference_mode():
-            lg, _v, extra = net(*inputs, aux=aux, return_aux=True)
-        lg = lg.float().cpu().numpy()
-        value_logits[rows] = extra["value_logits"].float().cpu().numpy().astype(np.float16)
-        m = valid.cpu().numpy()
-        logits[offsets[rows[0]]:offsets[rows[-1] + 1]] = lg[m]
-        if s0 // batch % 200 == 0:
-            print(f"teacher {s0}/{n} {time.monotonic() - started:.0f}s", flush=True)
-    data["teacher_logits"] = logits
-    data["teacher_value_logits"] = value_logits
-    data["offsets"] = offsets
-    # Reconstruction check: the teacher's rebuilt observation is the recorded one.
-    rebuilt_ok = _check_reconstruction(obs_check)
+    teacher_sha = sha256(args.teacher)
+    started = time.monotonic()
+    parts_written = []
+    with get_context("spawn").Pool(args.workers) as pool:
+        for part, s0 in enumerate(range(0, len(shards), args.shards_per_part)):
+            path = out / f"part-{part:03d}.npz"
+            group = shards[s0:s0 + args.shards_per_part]
+            sampled = [x for x in (_sample_shard(p, fraction, rng) for p in group) if x is not None]
+            if path.exists():  # resumable: sampling above keeps the RNG stream identical
+                parts_written.append(path.name)
+                continue
+            data = {k: np.concatenate([x[k] for x in sampled]) for k in sampled[0]}
+            obs_check = data.pop("obs_check")
+            _check_reconstruction(obs_check)
+            n = len(data["pill"])
+            offsets = np.concatenate(([0], np.cumsum(data["counts"]))).astype(np.int64)
+            jobs = []
+            for a in range(0, n, 1024):
+                b = min(n, a + 1024)
+                jobs.append((data["own"][a:b], data["pill"][a:b], offsets[a:b + 1] - offsets[a],
+                             data["actions"][offsets[a]:offsets[b]]))
+            results = pool.map(_afterstate_chunk, jobs, chunksize=1)
+            data["facts"] = np.concatenate([r[0] for r in results])
+            delta_counts = np.concatenate([r[1] for r in results])
+            data["delta_offsets"] = np.concatenate(([0], np.cumsum(delta_counts))).astype(np.int64)
+            data["delta_cells"] = np.concatenate([r[2] for r in results])
+            data["delta_values"] = np.concatenate([r[3] for r in results])
+            del results, jobs
+            data["offsets"] = offsets
+            loader = _Batcher(data, offsets, args.device)
+            logits = np.zeros(offsets[-1], np.float32)
+            value_logits = np.zeros((n, net.value_atoms), np.float16)
+            for a in range(0, n, args.teacher_batch):
+                rows = np.arange(a, min(n, a + args.teacher_batch))
+                inputs, aux, valid = loader.inputs(rows, width_floor=32)
+                with torch.inference_mode():
+                    lg, _v, extra = net(*inputs, aux=aux, return_aux=True)
+                logits[offsets[rows[0]]:offsets[rows[-1] + 1]] = lg.float().cpu().numpy()[valid.cpu().numpy()]
+                value_logits[rows] = extra["value_logits"].float().cpu().numpy().astype(np.float16)
+            del loader
+            data["teacher_logits"] = logits
+            data["teacher_value_logits"] = value_logits
+            tmp = path.with_suffix(".next.npz")
+            np.savez(tmp, **data)
+            tmp.replace(path)
+            parts_written.append(path.name)
+            print(json.dumps(dict(part=part, states=n, candidates=int(offsets[-1]),
+                                  mean_changed=float(delta_counts.mean()), max_changed=int(delta_counts.max()),
+                                  seconds=round(time.monotonic() - started))), flush=True)
+            del data
     meta = dict(schema=DATASET_SCHEMA, created_at=datetime.now(UTC).isoformat(),
-                teacher=str(args.teacher), teacher_sha256=sha256(args.teacher),
+                teacher=str(args.teacher), teacher_sha256=teacher_sha,
                 shards=len(shards), shard_glob=args.shards, sampled_fraction=fraction,
-                selection_seed=args.seed, states=int(n), candidates=int(offsets[-1]),
-                tf32=bool(args.tf32), reconstruction_check=rebuilt_ok,
-                fact_offset=FACT_OFFSET, paces=PACES,
-                pace_states={p: int((data["pace"] == i).sum()) for i, p in enumerate(PACES)})
-    np.savez(out / "dataset.npz", metadata=np.asarray(json.dumps(meta)), **data)
+                selection_seed=args.seed, tf32=bool(args.tf32), fact_offset=FACT_OFFSET, paces=PACES,
+                parts=parts_written, reconstruction_check="semantic planes round-trip exactly on two rows per shard")
     (out / "dataset.json").write_text(json.dumps(meta, indent=1) + "\n")
     print(json.dumps(meta), flush=True)
 
@@ -196,15 +193,20 @@ class _Batcher:
         import torch
 
         self.device = device
-        t = lambda a, dtype=None: torch.as_tensor(np.ascontiguousarray(a), device=device, dtype=dtype)
+
+        def t(a, dtype=None):
+            if not isinstance(a, torch.Tensor):
+                a = torch.from_numpy(np.ascontiguousarray(a))
+            return a.to(device=device, dtype=dtype)
+
         self.own = t(data["own"])
         self.opp = t(data["opp"])
         self.pill = t(data["pill"], torch.long)
         self.preview = t(data["preview"], torch.long)
         self.ctx = t(data["ctx"])
-        self.offsets = t(offsets)
-        self.actions = t(data["actions"].astype(np.int32))
-        self.costs = t(data["costs"].astype(np.int32))
+        self.offsets = t(offsets, torch.long)
+        self.actions = t(data["actions"], torch.int32)
+        self.costs = t(data["costs"], torch.int32)
         self.table = t(_plane_table())
         if "facts" in data:
             from drmc_rl.game.afterstate import _FACT_SCALE, FACT_NAMES
@@ -214,12 +216,13 @@ class _Batcher:
             shift[FACT_NAMES.index("height_change")] = FACT_OFFSET
             self.fact_shift = t(shift)
             self.fact_scale = t(_FACT_SCALE)
-            self.delta_offsets = t(data["delta_offsets"])
-            self.delta_cells = t(data["delta_cells"].astype(np.int64))
+            self.delta_offsets = t(data["delta_offsets"], torch.long)
+            self.delta_cells = t(data["delta_cells"], torch.long)
             self.delta_values = t(data["delta_values"])
         for key in ("teacher_logits", "teacher_value_logits"):
             if key in data:
                 setattr(self, key, t(data[key]))
+
 
     def candidates(self, rows, width_floor=32):
         import torch
@@ -262,6 +265,30 @@ class _Batcher:
         facts = torch.zeros((batch, width, self.facts.shape[1]), device=self.device)
         facts[valid] = (self.facts[flat_candidates].float() - self.fact_shift) / self.fact_scale
         return inputs, aux, valid, (after, facts), index
+
+
+def load_parts(directory, device):
+    """Concatenate dataset parts on the device, rebasing ragged offsets."""
+    import torch
+
+    meta = json.loads((Path(directory) / "dataset.json").read_text())
+    ragged = ("offsets", "delta_offsets")
+    pieces, host = {}, {"game_seed": [], "pace": []}
+    base = {"offsets": 0, "delta_offsets": 0}
+    for name in meta["parts"]:
+        with np.load(Path(directory) / name) as z:
+            for key in z.files:
+                value = z[key]
+                if key in ragged:
+                    value = value[:-1] + base[key]
+                    base[key] += int(z[key][-1])
+                if key in host:
+                    host[key].append(value)
+                pieces.setdefault(key, []).append(torch.from_numpy(np.ascontiguousarray(value)).to(device))
+    data = {k: torch.cat(v) for k, v in pieces.items()}
+    for key in ragged:
+        data[key] = torch.cat((data[key], torch.tensor([base[key]], device=device, dtype=data[key].dtype)))
+    return meta, data, {k: np.concatenate(v) for k, v in host.items()}
 
 
 def _split(data, holdout_mod):
@@ -327,12 +354,10 @@ def train(args):
     torch.backends.cudnn.allow_tf32 = True
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    with np.load(args.dataset) as z:
-        data = {k: z[k] for k in z.files if k != "metadata"}
-        meta = json.loads(str(z["metadata"]))
-    train_rows, held_rows = _split(data, args.holdout_mod)
+    meta, data, host = load_parts(args.dataset, args.device)
+    train_rows, held_rows = _split(host, args.holdout_mod)
     batcher = _Batcher(data, data["offsets"], args.device)
-    batcher.pace_np = data["pace"]
+    batcher.pace_np = host["pace"]
     del data
     cfg = afterstate_core_config()
     net, _aux, _ = _build_net_from_cfg(cfg, 20, args.device)
@@ -415,8 +440,9 @@ def main():
     b.add_argument("--device", default="cuda")
     b.add_argument("--teacher-batch", type=int, default=512)
     b.add_argument("--tf32", type=int, default=0)
+    b.add_argument("--shards-per-part", type=int, default=64)
     t = sub.add_parser("train")
-    t.add_argument("--dataset", required=True)
+    t.add_argument("--dataset", required=True, help="directory holding dataset.json and its parts")
     t.add_argument("--out", required=True)
     t.add_argument("--device", default="cuda")
     t.add_argument("--steps", type=int, default=30000)
