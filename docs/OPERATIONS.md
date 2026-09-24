@@ -69,6 +69,15 @@ human players instead of distillation of the champion.
    registered in `afterstate-core-human-v1/threeway-preregistration.json`
    (`prepare_afterstate_threeway_v1.py`, `assess_afterstate_threeway_v1.py`).
 
+On green (Pascal 1080 Ti) use a separate clone with
+`uv sync --locked --extra inference --extra corpus --group dev`, then install
+the sm_61-capable wheel from the cu126 index alone:
+`uv pip install --python .venv/bin/python --index-url https://download.pytorch.org/whl/cu126 --reinstall-package torch "torch==2.14.0"`.
+Do not add PyPI as an extra index: uv's first-index strategy then resolves the
+PyPI cu130 wheel, which has no Pascal kernels. Always `uv run --no-sync` after.
+Build the planner with `python -m tools.build_reach_native` and export
+`DRMARIO_REACH_LIB` before `build`.
+
 `tools.validate_corpus_public_state` measures the reconstruction against native
 games (exact per decision on 30 games: own side 100%, opponent pill/phase/virus
 count 99.5%, event kinds and sides 91%; the rest are ±1-frame animation timing
