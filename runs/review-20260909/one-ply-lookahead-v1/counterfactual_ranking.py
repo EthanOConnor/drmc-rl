@@ -92,7 +92,7 @@ SCORERS = {
     "value_f1": dict(mode="value", followups=1),
     "value_f2": dict(mode="value", followups=2),
     "settled_value": dict(mode="root_value", followups=1),
-    "logit": dict(mode="logit", followups=1),
+    "followup_logit": dict(mode="logit", followups=1),
 }
 
 
