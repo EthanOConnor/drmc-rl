@@ -201,26 +201,37 @@ def plan_candidates(planner, state: Mapping[str, Any], execution_delay_frames: i
     return planes, opponent_planes, pill, preview, speed, speed_ups, frame, reach, packed, costs
 
 
-def early_marginal_scores(policy, candidate, state, pace, delay, compute_frames):
-    """Log preview-marginal policy over all 512 actions for a pre-spawn decision.
+EARLY_PREVIEW_ROWS = {"repeat": 1, "marginal": 9}
+
+
+def early_preview_scores(policy, candidate, state, pace, delay, compute_frames, preview_mode):
+    """(action, log policy over all 512 actions) for a pre-spawn decision.
 
     The host sends the predicted spawn view frozen at its request frame; the
-    after-next preview is not public yet, so the policy is averaged uniformly
-    over the nine possible previews (``early_decision.marginal_action``).
+    after-next preview is not public yet. ``repeat`` scores one pass with the
+    next pill's colours as the preview; ``marginal`` averages the policy over
+    the nine possible previews. Both choose exactly what the arena's
+    ``early_preview`` of the same name chooses (lowest action on ties).
     """
     from drmc_rl.human.anticipation import score_public_inputs
     from drmc_rl.human.controller_context import controller_policy_inputs, live_controller_state
     from drmc_rl.human.early_decision import PREVIEWS, marginal_action, with_own_preview
 
+    if preview_mode == "repeat":
+        previews = [tuple(_pair(state["pill"], "pill"))]
+    elif preview_mode == "marginal":
+        previews = list(PREVIEWS)
+    else:
+        raise ValueError(f"unknown early preview {preview_mode!r}")
     live = state.get("public_live_context") or {}
     sides = [dict(side) for side in live.get("sides", ())]
     if len(sides) == 2:
-        sides[1]["preview"] = list(PREVIEWS[0])
-    # Decode and audit the wire view once; the nine views differ only in the preview.
-    base = live_controller_state({**state, "preview": list(PREVIEWS[0]),
+        sides[1]["preview"] = list(previews[0])
+    # Decode and audit the wire view once; the views differ only in the preview.
+    base = live_controller_state({**state, "preview": list(previews[0]),
                                   "public_live_context": {**live, "sides": sides}})
     observations, infos = [], []
-    for preview in PREVIEWS:
+    for preview in previews:
         view = {**base, "preview": list(preview),
                 "public_pair_state": with_own_preview(base["public_pair_state"], preview)}
         observation, info = controller_policy_inputs(policy, candidate, view, pace, delay, compute_frames)
@@ -230,8 +241,9 @@ def early_marginal_scores(policy, candidate, state, pace, delay, compute_frames)
     shifted = np.where(np.isfinite(scores), scores - scores.max(axis=1, keepdims=True), -np.inf)
     probabilities = np.exp(shifted)
     probabilities /= probabilities.sum(axis=1, keepdims=True)
+    action = int(scores[0].argmax()) if len(previews) == 1 else marginal_action(scores)
     with np.errstate(divide="ignore"):
-        return marginal_action(scores), np.log(probabilities.mean(axis=0))
+        return action, np.log(probabilities.mean(axis=0))
 
 
 class HumanBackend:
@@ -393,10 +405,10 @@ class HumanBackend:
             pace = BY_ID[pace_id]
             paced_info = {**info, "pace/id": pace_id,
                           "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
-            # Live decisions score one position; only next-pill anticipation scores
-            # its 18 preview/parity branches, and public-context cores decline it.
-            # Pre-spawn (early) decisions score the nine unrevealed previews at once.
-            for batch in (1, 9) if uses_public_context(policy) else (1, 18):
+            # Live and pre-spawn (repeat preview) decisions score one position; only
+            # next-pill anticipation scores its 18 preview/parity branches, and
+            # public-context cores decline it.
+            for batch in (1,) if uses_public_context(policy) else (1, 18):
                 started = time.perf_counter()
                 policy.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
                 self.warm_batch_ms[batch] = (time.perf_counter() - started) * 1e3
@@ -413,8 +425,10 @@ class HumanBackend:
             "anticipation": {"version": 1, "available": bool(anticipation_paces), "supported_paces": anticipation_paces,
                              "preview_branches": 9, "frame_parities": 2,
                              "public_information_only": True, "opponent_ablation": True},
-            "early_decision": {"version": 1, "available": public_core, "preview": "marginal",
-                               "previews": 9, "points": ["lock", "settled"]},
+            # "preview" is the mode hosts should request; "preview_modes" are accepted.
+            "early_decision": {"version": 1, "available": public_core, "preview": "repeat",
+                               "previews": EARLY_PREVIEW_ROWS["repeat"],
+                               "preview_modes": dict(EARLY_PREVIEW_ROWS), "points": ["lock", "settled"]},
             "geometry_preparation": {"version": 1, "available": self.competitive is not None,
                                      "frame_parities": 2, "max_entries": 2,
                                      "fresh_context_required": True,
@@ -532,10 +546,12 @@ class HumanBackend:
             controller_policy_inputs, live_controller_state, uses_public_context,
         )
         early = request.get("early_decision")
-        if early is not None and (early != {"version": 1, "preview": "marginal"}
+        if early is not None and (not isinstance(early, Mapping) or set(early) != {"version", "preview"}
+                                  or early["version"] != 1 or early["preview"] not in EARLY_PREVIEW_ROWS
                                   or competitive is None or not uses_public_context(competitive)
                                   or request.get("strength_control") != "quality"):
-            raise ValueError("early decisions need version 1 marginal previews and a public-context core at quality")
+            raise ValueError("early decisions need version 1 repeat or marginal previews "
+                             "and a public-context core at quality")
         request_state = state
         if (competitive is not None and uses_public_context(competitive)
                 and request.get("strength_control") == "quality"):
@@ -707,8 +723,9 @@ class HumanBackend:
                         by_action = np.full(512, -np.inf, dtype=np.float32)
                         by_action[actions[0, masks[0]]] = logits[0, masks[0]]
                     else:
-                        early_action, by_action = early_marginal_scores(
-                            competitive, candidate, request_state, pace, execution_delay, compute_frames)
+                        early_action, by_action = early_preview_scores(
+                            competitive, candidate, request_state, pace, execution_delay, compute_frames,
+                            early["preview"])
                         if set(np.flatnonzero(np.isfinite(by_action))) != set(valid_actions):
                             raise RuntimeError("competitive policy changed candidate coverage")
                     scores = np.where(packed.mask, by_action[packed.actions.clip(min=0)], -np.inf)
@@ -716,11 +733,12 @@ class HumanBackend:
                 if early is None:
                     packed_slot = self.runtime.choose_quality(scores, packed.mask)
                 else:
-                    # The arena's marginal argmax over all 512 actions (lowest action on ties).
+                    # The arena's argmax over all 512 actions (lowest action on ties).
                     packed_slot = int(np.flatnonzero(packed.mask & (packed.actions == early_action))[0])
                 strength = {"control": "quality", "chosen_regret": 0.0,
                             "rating_calibrated": False,
-                            **({} if early is None else {"early_decision": {"preview": "marginal", "previews": 9}}),
+                            **({} if early is None else {"early_decision": {
+                                "preview": early["preview"], "previews": EARLY_PREVIEW_ROWS[early["preview"]]}}),
                             "competitive_model": {**(self.competitive_identity or {}), "selected_pace": pace.id}}
             else:
                 packed_slot, strength = self.runtime.choose_strength(

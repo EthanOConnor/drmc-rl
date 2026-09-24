@@ -293,10 +293,11 @@ class PreviewSensitivePolicy(RecordingPublicPolicy):
         return actions, masks, logits + np.sin(previews[:, None] * np.arange(512)[None] * .37) * 3
 
 
-def test_backend_early_marginal_matches_the_arena_on_the_hosts_wire_view():
+@pytest.mark.parametrize("mode", ["repeat", "marginal"])
+def test_backend_early_preview_matches_the_arena_on_the_hosts_wire_view(mode):
     """The browser sends the request-frame view with its own side predicted; the
-    backend's nine-preview marginal must choose what the arena chooses at spawn."""
-    from drmc_rl.human.backend import early_marginal_scores
+    backend's early preview mode must choose what the arena's does at spawn."""
+    from drmc_rl.human.backend import early_preview_scores
 
     pace = resolve_pace("frame_perfect")
     with FrameVsPool(1, lib_path=LIBRARY) as pool:
@@ -317,12 +318,15 @@ def test_backend_early_marginal_matches_the_arena_on_the_hosts_wire_view():
                     candidate = plan_candidates(planner, state, delay, pace)
                     policy = PreviewSensitivePolicy()
                     rows = []
-                    for preview in PREVIEWS:
+                    # As tools/trainer_planning_arena.py scores an early request.
+                    previews = [tuple(state["pill"])] if mode == "repeat" else PREVIEWS
+                    for preview in previews:
                         view = early_public_view(public, board=board, pill=state["pill"], preview=preview,
                                                  falling=state["falling"])
                         rows.append(score_public_inputs(policy, *controller_policy_inputs(
                             policy, candidate, state, pace, delay, 4, public=view, decision_delay_frames=delay)))
-                    expected = marginal_action(np.concatenate(rows))
+                    expected = (int(rows[0][0].argmax()) if mode == "repeat"
+                                else marginal_action(np.concatenate(rows)))
                     # The host's wire view: frozen at the request frame, own side predicted.
                     wire = public.to_dict()
                     for side in wire["sides"]:
@@ -338,7 +342,7 @@ def test_backend_early_marginal_matches_the_arena_on_the_hosts_wire_view():
                     host = {**pool.semantic(1), "preview": [0, 0], "public_live_context": wire,
                             "opponent_pill": list(public.sides[0].pill),
                             "opponent_board_planes": board_bytes_to_semantic_planes(public.sides[0].board)}
-                    action, _ = early_marginal_scores(policy, candidate, host, pace, delay, 4)
+                    action, _ = early_preview_scores(policy, candidate, host, pace, delay, 4, mode)
                     assert action == expected
                     checked += 1
                 was = s.falling
