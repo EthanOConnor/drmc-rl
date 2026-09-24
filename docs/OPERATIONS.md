@@ -1475,6 +1475,16 @@ uses normal fresh planning with the same requested motor limits. Neither
 native buffers nor speculative history are serialized. Existing app/browser
 schedulers continue using their prior protocol until explicitly integrated.
 
+`capabilities.early_decision` (version 1, `preview: marginal`, nine previews)
+announces pre-spawn decisions for a public-context core at quality strength. A
+`decide` carrying `early_decision: {"version": 1, "preview": "marginal"}` supplies
+the predicted spawn state with `frame_id` set to the predicted spawn frame and
+the public view frozen at the request frame, own side replaced as in
+`early_public_view` (preview placeholder). The backend scores all nine previews
+and executes the arena's `marginal_action`. The host owns the request point
+(lock when `garbage_risk` is None, else the settled phase), the start delay
+`max(reaction, request + compute - spawn, 0)` and validation at spawn.
+
 `runs/review-20260909/live-geometry-audit.py` retains the bounded real 100M-core
 Metal source-process check, with order-balanced fresh/cached requests on twelve
 14-HI controller prefixes. All 61 playable decisions matched exactly in scores,
