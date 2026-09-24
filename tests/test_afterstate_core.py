@@ -209,3 +209,26 @@ def test_model_uses_afterstates_and_loads_through_plain_policy(tmp_path):
     with torch.inference_mode():
         loaded, _ = policy.net(*inputs, aux=aux)
     assert torch.equal(loaded, reference)
+
+
+def test_controller_core_trainer_accepts_the_afterstate_core(tmp_path):
+    from drmc_rl.models.policy.controller_core import ControllerCorePolicy
+
+    cfg, net = _small_net()
+    path = tmp_path / "student.pt"
+    torch.save(dict(cfg=cfg, state_dict=net.state_dict()), path)
+    actor = ControllerCorePolicy(path, "cpu", training=True)
+    inputs, aux = _inputs(np.random.default_rng(7))
+    records = []
+    for b in range(inputs[0].shape[0]):
+        n = int(inputs[5][b].sum())
+        records.append(dict(
+            observation=inputs[0][b].numpy().astype(np.uint8), pill=inputs[1][b].numpy().astype(np.int8),
+            preview=inputs[2][b].numpy().astype(np.int8), actions=inputs[3][b, :n].numpy().astype(np.int16),
+            costs=inputs[4][b, :n].numpy().astype(np.uint16), mask=np.ones(n, bool),
+            public_context=aux[b].numpy(), base_logits=np.zeros(n, np.float32), slot=0))
+    features, data = actor.training_batch(records)
+    logits, value = actor.training_forward(features)
+    assert logits.shape[0] == len(records) and value.shape == (len(records),)
+    (logits.log_softmax(-1)[:, 0].sum() + value.sum()).backward()
+    assert net is not actor.net and actor.net.bottle.stem.weight.grad is not None
