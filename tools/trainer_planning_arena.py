@@ -35,6 +35,7 @@ from drmc_rl.human.anticipation import (
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from tools.trainer_arena_stopping import ComparisonStopping
 from tools.vs_head_to_head import PlainPolicy
 
 FPS = 60.0988
@@ -242,13 +243,17 @@ def publish(config, results, output, store):
     tournaments, aggregates = [], {}
     for match in config["schedule"]:
         rows = results.get(match["id"], [])
+        stopping = config.get("_stopping", {}).get(match["id"])
         tournaments.append(
             {
                 **match,
                 "target": match["games"],
                 "played": len(rows),
                 **outcome_summary(rows),
-                "status": "Complete"
+                **({"stopping": stopping} if stopping else {}),
+                "status": f"Decided: {stopping['decision']}"
+                if stopping
+                else "Complete"
                 if len(rows) >= match["games"]
                 else "Waiting for checkpoint"
                 if not match_ready(config, match)
@@ -318,10 +323,11 @@ def match_ready(config, match):
     return all(variant_ready(config,config["variants"][match[side]]) for side in ("a","b"))
 
 
-def next_live_match(config, results):
+def next_live_match(config, results, decided=()):
     """Give every ready matchup an initial batch before deepening coverage."""
     pending = [match for match in config["schedule"]
-               if len(results.get(match["id"],[])) < match["games"] and match_ready(config,match)]
+               if len(results.get(match["id"],[])) < match["games"] and match_ready(config,match)
+               and match["id"] not in decided]
     return min(pending,key=lambda m:len(results.get(m["id"],[])),default=None)
 
 
@@ -397,14 +403,19 @@ def main():
                 raise ValueError("resume journal has different or unrecorded motor limits; retain its frozen evaluator")
             results.setdefault(row["comparison"], []).append(row)
     records.touch(exist_ok=True)
+    stopping = ComparisonStopping(config, output)
+    config["_stopping"] = stopping.verdicts
+    for match in config["schedule"]:
+        stopping.verdict(match, results.get(match["id"], []))
     publish(config, results, output, store)
     try:
         schedule = iter(config["schedule"])
         while True:
             if config.get("watch",False):
-                match = next_live_match(config,results)
+                match = next_live_match(config,results,stopping.verdicts)
                 if match is None:
-                    complete = all(len(results.get(m["id"],[])) >= m["games"] for m in config["schedule"])
+                    complete = all(len(results.get(m["id"],[])) >= m["games"] or m["id"] in stopping.verdicts
+                                   for m in config["schedule"])
                     config.update(_worker_status="Complete" if complete else "Waiting for checkpoints",_current_match=None)
                     publish(config,results,output,store)
                     if complete:
@@ -415,6 +426,8 @@ def main():
                 match = next(schedule,None)
                 if match is None:
                     break
+                if match["id"] in stopping.verdicts:
+                    continue
             if policies is not None:
                 for id in (match["a"],match["b"]):
                     if id not in policies:
@@ -427,13 +440,16 @@ def main():
                 raise ValueError("evaluation batches require complete side-swapped pairs")
             if config.get("watch",False):
                 jobs = jobs[:batch_size]
-            for start in range(0, len(jobs), batch_size):
+            start = 0
+            while start < len(jobs) and match["id"] not in stopping.verdicts:
+                size = stopping.batch_games(match, results.get(match["id"], []), batch_size)
                 config.update(_worker_status="Playing",_current_match=match["id"])
                 publish(config,results,output,store)
                 profile = cProfile.Profile() if config.get("profile") else None
                 if profile:
                     profile.enable()
-                batch, elapsed = rollout(config, match, jobs[start:start+batch_size], policy, planner, preparer, policies=policies)
+                batch, elapsed = rollout(config, match, jobs[start:start+size], policy, planner, preparer, policies=policies)
+                start += size
                 if profile:
                     profile.disable()
                     profile.dump_stats(output / "profile.pstats")
@@ -473,8 +489,9 @@ def main():
                     games=len(batch), simulated_frames=sum(r[0]["frames"] for r in batch),
                     decisions=sum(r[0]["a_stats"].get("decisions",0)+r[0]["b_stats"].get("decisions",0) for r in batch),
                     wall_seconds=elapsed)
-                publish(config, results, output, store)
                 rows = results[match["id"]]
+                stopping.verdict(match, rows)
+                publish(config, results, output, store)
                 print(
                     json.dumps(
                         {
@@ -482,6 +499,7 @@ def main():
                             "games": len(rows),
                             "target": match["games"],
                             **outcome_summary(rows),
+                            **stopping.progress(match, rows),
                             "batch_seconds": round(elapsed, 2),
                         }
                     ),
