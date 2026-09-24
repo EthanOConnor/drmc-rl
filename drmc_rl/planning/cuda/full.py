@@ -96,8 +96,7 @@ class CudaReachFull:
         _check(drv.cuMemsetD8(self.arena, 0, slot * self.slots))
         for index in range(self.slots):
             base = int(self.arena) + index * slot
-            _check(drv.cuMemsetD32(drv.CUdeviceptr(base), 0xFFFFFFFF, nkeys * 8))               # sord
-            _check(drv.cuMemsetD32(drv.CUdeviceptr(base + nkeys * 36), 0xFFFFFFFF, nkeys))      # kord (after sord, acc)
+            _check(drv.cuMemsetD32(drv.CUdeviceptr(base), 0xFFFFFFFF, nkeys * 8))  # sord: unvisited
         self.scr, self.nkeys, self.fr_cap, self.slot_bytes = scr, nkeys, fr_cap, slot
 
     def _ensure_io(self, n: int) -> None:
@@ -164,56 +163,7 @@ class CudaReachFull:
             (self.script_capacity, "i"), (io["costs"], "p"), (io["offsets"], "p"),
             (io["lengths"], "p"), (io["scripts"], "p"), (io["used"], "p"), (io["status"], "p"),
             (io["nodes"], "p")], min(self.slots, n), self.block_threads)
-        return self._collect(n, ok=CudaReachFull._full_ok)
-
-    # -- paced stage 1 -------------------------------------------------------
-
-    @staticmethod
-    def pack_paced(columns, spawns, thresholds, planner_args, max_frames: int = 2048) -> np.ndarray:
-        """Instances for ``solve_paced``; ``planner_args`` as ``Pace.planner_args``."""
-        out = CudaReachFull.pack(columns, spawns, thresholds, max_frames)
-        for i, args in enumerate(planner_args):
-            reaction = int(args.get("reaction_frames", 0))
-            edge, motion = int(args.get("edge_interval", 0)), int(args.get("motion_interval", 0))
-            buttons = int(args.get("max_buttons", 3))
-            if not (0 <= reaction <= 255 and 0 <= edge <= 255 and 0 <= motion <= 255 and 0 <= buttons <= 255):
-                raise ValueError("paced profile out of range")
-            out["flags"][i] = reaction
-            out["_pad"][i] = edge | motion << 8 | buttons << 16
-        return out
-
-    def solve_paced(self, instances: np.ndarray):
-        """Stage 1 of ``drm_reach_bfs_paced``: returns (FullBatch, unresolved wanted (n,512) u8,
-        post-reaction state (n,8) u8). Status 32 means the CPU would continue past the
-        simple routes; the caller resolves it with the unrestricted v4 costs or the CPU."""
-        instances = np.ascontiguousarray(instances, dtype=INSTANCE_DTYPE)
-        n = len(instances)
-        if n > self.max_batch:
-            raise ValueError("paced batch larger than max_batch; chunk it")
-        if getattr(self, "paced_kernel", None) is None:
-            self.paced_kernel = _check(drv.cuModuleGetFunction(self.module, b"drm_reach_paced_stage1_kernel"))
-            self.paced_scratch = _check(drv.cuMemAlloc(self.slots * N_POSES * 2 * 1024))
-            self.paced_io = None
-        if self.paced_io is None or self.paced_io[0] < n:
-            if self.paced_io is not None:
-                drv.cuMemFree(self.paced_io[1]); drv.cuMemFree(self.paced_io[2])
-            capacity = max(n, self.max_batch)
-            self.paced_io = (capacity, _check(drv.cuMemAlloc(capacity * N_POSES)),
-                             _check(drv.cuMemAlloc(capacity * 8)))
-        self._ensure_io(n)
-        io = self._io
-        _check(drv.cuMemcpyHtoDAsync(io["insts"], instances.ctypes.data, instances.nbytes, self.stream))
-        _check(drv.cuMemsetD8Async(self.cursor, 0, 8, self.stream))
-        self._launch(self.paced_kernel, [
-            (io["insts"], "p"), (n, "i"), (self.cursor, "p"), (self.paced_scratch, "p"),
-            (self.script_capacity, "i"), (io["costs"], "p"), (io["offsets"], "p"), (io["lengths"], "p"),
-            (io["scripts"], "p"), (io["used"], "p"), (io["status"], "p"), (self.paced_io[1], "p"),
-            (self.paced_io[2], "p")], min(self.slots, n), 512)
-        wanted = np.empty((n, N_POSES), np.uint8)
-        initial = np.empty((n, 8), np.uint8)
-        batch = self._collect(n, extra=((wanted, self.paced_io[1]), (initial, self.paced_io[2])),
-                              ok=lambda status: (status == 0) | (status == 32))
-        return batch, wanted, initial
+        return self._collect(n)
 
     def _launch(self, kernel, args, grid, block):
         holders = []
@@ -223,7 +173,7 @@ class CudaReachFull:
         pointers = np.array([h.ctypes.data for h in holders], dtype=np.uint64)
         _check(drv.cuLaunchKernel(kernel, grid, 1, 1, block, 1, 1, 0, self.stream, pointers.ctypes.data, 0))
 
-    def _collect(self, n, extra=(), ok=lambda status: status == 0):
+    def _collect(self, n):
         io = self._io
         costs = np.empty((n, N_POSES), np.uint16)
         offsets = np.empty((n, N_POSES), np.uint16)
@@ -232,13 +182,11 @@ class CudaReachFull:
         status = np.empty(n, np.int32)
         nodes = np.zeros(n, np.uint32)
         pairs = [(costs, io["costs"]), (offsets, io["offsets"]), (lengths, io["lengths"]),
-                 (used, io["used"]), (status, io["status"]), *extra]
-        if ok is CudaReachFull._full_ok:
-            pairs.append((nodes, io["nodes"]))
+                 (used, io["used"]), (status, io["status"]), (nodes, io["nodes"])]
         for array, pointer in pairs:
             _check(drv.cuMemcpyDtoHAsync(array.ctypes.data, pointer, array.nbytes, self.stream))
         self._wait()
-        width = int(min(self.script_capacity, max(1, used[ok(status)].max(initial=1))))
+        width = int(min(self.script_capacity, max(1, used[status == 0].max(initial=1))))
         scripts = np.zeros((n, width), np.uint8)
         copy = drv.CUDA_MEMCPY2D()
         copy.srcMemoryType = drv.CUmemorytype.CU_MEMORYTYPE_DEVICE
@@ -252,10 +200,6 @@ class CudaReachFull:
         _check(drv.cuMemcpy2DAsync(copy, self.stream))
         self._wait()
         return FullBatch(costs, offsets, lengths, scripts, used, status, nodes)
-
-    @staticmethod
-    def _full_ok(status):
-        return status == 0
 
     def _wait(self) -> None:
         # Poll so the interpreter lock is free for the rollout thread while
@@ -272,10 +216,7 @@ class CudaReachFull:
         for pointer in self._io.values():
             drv.cuMemFree(pointer)
         self._io = {}
-        if getattr(self, "paced_io", None) is not None:
-            drv.cuMemFree(self.paced_io[1]); drv.cuMemFree(self.paced_io[2])
-            self.paced_io = None
-        for name in ("arena", "cursor", "paced_scratch"):
+        for name in ("arena", "cursor"):
             if getattr(self, name, None) is not None:
                 drv.cuMemFree(getattr(self, name))
                 setattr(self, name, None)
