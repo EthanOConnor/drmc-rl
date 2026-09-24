@@ -1,0 +1,3 @@
+python -m tools.trainer_planning_arena --config runs/review-20260909/timing-contract-v2/config-P8-mac.json
+{"comparison": "V2-frame_perfect-lock_safe-b1", "games": 128, "target": 256, "wins": 90, "losses": 38, "draws": 0, "censored": 0, "observed_score": 0.703125, "score_bounds": [0.703125, 0.703125], "score_ci": [0.5822979889645742, 0.8009484867445998], "batch_seconds": 1424.43}
+{"comparison": "V2-frame_perfect-lock_safe-b1", "games": 256, "target": 256, "wins": 175, "losses": 81, "draws": 0, "censored": 0, "observed_score": 0.68359375, "score_bounds": [0.68359375, 0.68359375], "score_ci": [0.59867840721784, 0.7578125], "batch_seconds": 1404.9}
