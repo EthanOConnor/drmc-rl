@@ -33,6 +33,10 @@ from drmc_rl.human.anticipation import (
     NextTurnPreparer, execution_for_action, own_board_only, score_public_inputs, select_prepared,
 )
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
+from drmc_rl.human.early_decision import (
+    PREVIEWS, EarlyRequests, early_public_view, early_start_delay, marginal_action,
+    network_execution_frames, validate_timing_params, with_own_preview,
+)
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_stopping import ComparisonStopping
@@ -62,6 +66,9 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
     moves = [[] for _ in jobs]
     replays = [[] for _ in jobs]
     was_falling = [False] * len(controllers)
+    # Opt-in pre-spawn requests (timing-contract experiments); inert for spawn variants.
+    early = EarlyRequests(len(controllers))
+    points = {id: validate_timing_params(p) for id, p in variants.items()}
     begun = time.perf_counter()
     next_activity = begun
     budget = config.get("reactive_compute_frames", 3)
@@ -88,18 +95,25 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 pair, physical = divmod(side, 2)
                 variant = match["a"] if physical == jobs[pair][1] else match["b"]
                 params = variants[variant]
+                point = points[variant]
+                actor = policy if policies is None else policies[variant]
+                if point != "spawn" and not uses_public_context(actor):
+                    raise ValueError("pre-spawn decisions require a public-context actor")
                 if was_falling[side] and not current.falling:
                     statistics[side]["locks"] += 1
                     if controllers[side] is None:
                         statistics[side]["unplanned_locks"] += 1
                     controllers[side] = None
+                    early.on_lock(side, point, frame, current, states[side ^ 1], pool, statistics[side])
                 was_falling[side] = current.falling
+                # Everything an early decision may use is frozen at its request frame.
+                early.on_frame(side, point, frame, current, states[side ^ 1], pool, statistics[side])
                 key = (current.spawn_id, current.pill_counter_total)
                 if not current.falling or last_spawn[side] == key:
                     continue
                 last_spawn[side] = key
                 statistics[side]["decisions"] += 1
-                actor = policy if policies is None else policies[variant]
+                request = early.resolve(side, point, frame, current, states[side ^ 1], statistics[side])
                 contextual = uses_public_context(actor)
                 if contextual and (params.get("own_board_only") or params.get("anticipation")):
                     raise ValueError("public-context actors require fresh complete context; legacy ablation/preparation is incompatible")
@@ -119,9 +133,14 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                         reason = "not_ready"
                     statistics[side]["cache_" + reason] += 1
                 delay = 0 if selected else max(int(params["delay"]), pace.reaction_frames)
+                timing = None
+                if request is not None:
+                    delay = early_start_delay(request["frame"], frame, int(params["delay"]), pace.reaction_frames)
+                    timing = dict(point=point, kind=request["kind"], request_frame=request["frame"],
+                                  lead_frames=frame - request["frame"])
                 if selected:
                     controllers[side] = (frame, selected)
-                    fresh.append((side, state, None, selected, delay, reason, anticipates))
+                    fresh.append((side, state, None, selected, delay, reason, anticipates, 0, None))
                 else:
                     try:
                         candidate = plan_candidates(planner, state, delay, pace)
@@ -129,17 +148,37 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                         statistics[side]["no_reachable_after_delay"] += 1
                         prepared[side] = None
                         continue
-                    obs, info = controller_policy_inputs(
-                        actor, candidate, state, pace, delay, int(params["delay"]),
-                    )
-                    info[0]["pace/context"] = strategy_context(pace, state, delay)
+                    delay_input, compute_input = network_execution_frames(
+                        params, pace, delay, early=timing is not None)
+                    if timing is None and params.get("preview_input", "visible") == "visible":
+                        views = [None]
+                    elif timing is None:
+                        # Diagnostic: a spawn-time decision that ignores the visible preview.
+                        views = [with_own_preview(state["public_pair_state"], preview) for preview in PREVIEWS]
+                    else:
+                        # The after-next preview is not public before spawn.
+                        mode = params.get("early_preview", "marginal")
+                        timing.update(delay_input=delay_input, compute_input=compute_input, preview=mode)
+                        previews = [tuple(state["pill"])] if mode == "repeat" else PREVIEWS
+                        views = [early_public_view(request["public"], board=request["board"],
+                                                   pill=state["pill"], preview=preview,
+                                                   falling=state["falling"]) for preview in previews]
+                        if mode == "branches":
+                            # Scored before spawn; the branch is chosen once the preview is revealed.
+                            timing["branch"] = PREVIEWS.index(tuple(state["preview"]))
+                    for view in views:
+                        obs, info = controller_policy_inputs(
+                            actor, candidate, state, pace, delay, compute_input,
+                            public=view, decision_delay_frames=delay_input,
+                        )
+                        info[0]["pace/context"] = strategy_context(pace, state, delay)
+                        observations.append(obs)
+                        infos.extend(info)
+                        policy_ids.append(variant)
                     legal_count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                     statistics[side]["feasible_candidates"] += legal_count
                     statistics[side]["forced_placements"] += int(legal_count == 1)
-                    observations.append(obs)
-                    infos.extend(info)
-                    policy_ids.append(variant)
-                    fresh.append((side, state, candidate, None, delay, reason, anticipates))
+                    fresh.append((side, state, candidate, None, delay, reason, anticipates, len(views), timing))
             learning = {}
             if infos:
                 obs_batch = np.concatenate(observations)
@@ -155,11 +194,18 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 scored = iter(enumerate(all_scores))
             else:
                 scored = iter(())
-            for side, state, candidate, selected, delay, reason, anticipates in fresh:
+            for side, state, candidate, selected, delay, reason, anticipates, rows, timing in fresh:
                 sample = None
                 if selected is None:
-                    score_index, scores = next(scored)
-                    selected = execution_for_action(candidate, int(scores.argmax()), pace, delay=delay)
+                    block = [next(scored) for _ in range(rows)]
+                    if rows == 1:
+                        score_index, scores = block[0]
+                        action = int(scores.argmax())
+                    elif timing is not None and "branch" in timing:
+                        score_index, action = None, int(block[timing["branch"]][1].argmax())
+                    else:
+                        score_index, action = None, marginal_action(np.stack([s for _, s in block]))
+                    selected = execution_for_action(candidate, action, pace, delay=delay)
                     sample = learning.get(score_index)
                     if sample is not None and sample["action"] != selected["placement"]["action"]:
                         raise RuntimeError("learning record differs from the executed action")
@@ -172,6 +218,10 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                     "pill": state["pill"], "preview": state["preview"], "speed_ups": state["speed_ups"]})
                 if sample is not None:
                     moves[pair][-1]["learning"] = sample
+                if timing is not None:
+                    moves[pair][-1]["timing"] = timing
+                early.on_commit(side, points[match["a"] if physical == jobs[pair][1] else match["b"]],
+                                frame + delay, states[side], selected["placement"]["action"])
                 if anticipates:
                     prepared[side] = preparer.prepare(state, selected, pace)
                     ready_at[side] = frame + (0 if delay == 0 else budget) + preparation_budget

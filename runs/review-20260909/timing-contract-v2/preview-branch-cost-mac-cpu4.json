@@ -1,0 +1,86 @@
+{
+ "schema": "drmc-preview-branch-cost-v1",
+ "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt",
+ "threads": 4,
+ "host": "Ethans-MBP.lan",
+ "machine": "arm64",
+ "load_average": [
+  17.48193359375,
+  17.52734375,
+  23.78515625
+ ],
+ "positions": 6,
+ "repeats": 30,
+ "median_ms": {
+  "one_ms": 30.057770782150328,
+  "nine_ms": 143.47472897497937,
+  "nine_reuse_ms": 77.09781226003543,
+  "opponent_encode_ms": 12.994614255148917
+ },
+ "opponent_reuse_exact": false,
+ "max_opponent_reuse_diff": 0.0003814697265625,
+ "max_logit_diff_with_reuse": 1.621246337890625e-05,
+ "note": "opponent_encode_ms uses a zero condition and is only a rough cost of one bottle trunk pass",
+ "records": [
+  {
+   "legal": 30,
+   "opponent_reuse_max_abs_diff": 0.00028228759765625,
+   "own_bottle_preview_spread": 3.4737815856933594,
+   "logits_max_abs_diff_with_reuse": 1.049041748046875e-05,
+   "one_ms": 28.220437525305897,
+   "nine_ms": 119.89016702864319,
+   "nine_reuse_ms": 71.53754198225215,
+   "opponent_encode_ms": 8.82856297539547
+  },
+  {
+   "legal": 32,
+   "opponent_reuse_max_abs_diff": 0.00019073486328125,
+   "own_bottle_preview_spread": 10.762306213378906,
+   "logits_max_abs_diff_with_reuse": 8.58306884765625e-06,
+   "one_ms": 24.729811993893236,
+   "nine_ms": 126.79847853723913,
+   "nine_reuse_ms": 76.75820798613131,
+   "opponent_encode_ms": 13.897416007239372
+  },
+  {
+   "legal": 32,
+   "opponent_reuse_max_abs_diff": 0.0003509521484375,
+   "own_bottle_preview_spread": 6.255699157714844,
+   "logits_max_abs_diff_with_reuse": 8.58306884765625e-06,
+   "one_ms": 31.89510403899476,
+   "nine_ms": 156.53800003929064,
+   "nine_reuse_ms": 85.91914596036077,
+   "opponent_encode_ms": 14.871958061121404
+  },
+  {
+   "legal": 32,
+   "opponent_reuse_max_abs_diff": 0.000286102294921875,
+   "own_bottle_preview_spread": 6.757820129394531,
+   "logits_max_abs_diff_with_reuse": 1.621246337890625e-05,
+   "one_ms": 33.93689601216465,
+   "nine_ms": 159.80929147917777,
+   "nine_reuse_ms": 87.97870844136924,
+   "opponent_encode_ms": 12.091812503058463
+  },
+  {
+   "legal": 32,
+   "opponent_reuse_max_abs_diff": 0.0003814697265625,
+   "own_bottle_preview_spread": 4.6936163902282715,
+   "logits_max_abs_diff_with_reuse": 1.239776611328125e-05,
+   "one_ms": 36.50770802050829,
+   "nine_ms": 154.00731249246746,
+   "nine_reuse_ms": 77.43741653393954,
+   "opponent_encode_ms": 10.777229501400143
+  },
+  {
+   "legal": 28,
+   "opponent_reuse_max_abs_diff": 0.000274658203125,
+   "own_bottle_preview_spread": 4.885044097900391,
+   "logits_max_abs_diff_with_reuse": 8.58306884765625e-06,
+   "one_ms": 26.825562526937574,
+   "nine_ms": 132.94214545749128,
+   "nine_reuse_ms": 71.36450003599748,
+   "opponent_encode_ms": 14.171770540997386
+  }
+ ]
+}

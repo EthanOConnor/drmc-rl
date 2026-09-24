@@ -1398,7 +1398,18 @@ was faster (1.37x on inference alone); keep `strict_fp32`.
 
 The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
 measurement. Reject a deployment deadline that fails the real host check even
-if it wins offline. `trainer-planning-analysis` replays saved `trainer_planning_moves`
+if it wins offline. Timing-contract experiments use opt-in variant keys
+(`drmc_rl/human/early_decision.py`); absent keys keep the spawn contract.
+`compute_input_frames` shows the network another compute tier while charging
+`delay`. `decision_point: settled|lock|lock_safe|commit_safe` (frame runner
+only) requests before spawn with the request-frame public view and the
+predicted own spawn view, validates the bottle, pill and incoming garbage at
+spawn, starts at `spawn + max(reaction, request + delay - spawn, 0)`, and falls
+back to a fresh spawn request on mismatch (reasons are counted). `lock_safe`
+and `commit_safe` apply the public garbage rule `garbage_safe`; `commit_safe`
+predicts the lock from the committed placement. `early_preview:
+marginal|repeat|branches` handles the unrevealed after-next preview.
+`preview_input: marginal` is the matching spawn-time control. `trainer-planning-analysis` replays saved `trainer_planning_moves`
 through controller frames and writes `trainer_planning_analysis`, comparing
 fresh opponent inputs and reachability after four/eight idle frames with the
 same `competitive_checkpoint`. Sample whole side-swapped games and keep their
