@@ -1,0 +1,17 @@
+{
+ "schema": "drmc-timing-contract-seed-audit-v1",
+ "created_at": "2026-09-24T06:48:18.344595+00:00",
+ "method": "Exclude every seed in any seed-bearing journal under runs/review-20260909 (local audit rerun now plus the Sep 23 local and tf3090 audits), the mixed-v2 core training/holdout/anchor seeds, and the retention-fresh-v1 seeds; draw without replacement with numpy default_rng(selection_seed); split in pace order (192 per pace, first 64 = first read).",
+ "selection_seed": 20260924,
+ "excluded": {
+  "review_journals_local": 3906,
+  "review_journals_tf3090": 61225,
+  "core_training_holdout_anchor": 27717,
+  "retention_fresh_v1": 1792
+ },
+ "excluded_total": 64300,
+ "available_after_exclusion": 1235,
+ "overlap_with_older_non_review_journals": 718,
+ "globally_unseen_remaining": 315,
+ "limitation": "Not globally unseen: too few seeds remain outside every audited journal for 960 seeds. Chosen seeds may appear in pre-review journals of other models; none were used to train or evaluate the mixed-v2 core in the review program."
+}

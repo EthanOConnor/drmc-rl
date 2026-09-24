@@ -74,11 +74,15 @@ def uses_public_context(policy):
     return getattr(policy, "aux_spec", None) in PUBLIC_CONTEXT_DIMS
 
 
-def controller_policy_inputs(policy, candidate, state, pace, delay, compute_frames):
+def controller_policy_inputs(policy, candidate, state, pace, delay, compute_frames, *,
+                             public=None, decision_delay_frames=None):
     """Condition the actual complete motor-feasible frontier on its causal view.
 
     The public pose is the observation before computation. Costs/witnesses start
     after the charged delay; execution context makes that distinction explicit.
+    Timing experiments may supply an earlier request-time ``public`` view and
+    the ``decision_delay_frames`` the network is told; both default to the
+    spawn-time contract.
     """
     if not uses_public_context(policy):
         from drmc_rl.human.backend import _pair
@@ -95,7 +99,7 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
     if (state.get("public_context_schema") != PUBLIC_CONTEXT_SCHEMA
             or state.get("vs/observation_timeline") != "causal-settled-pair-v1"):
         raise ValueError("controller context requires an explicitly causal live public view")
-    public = state["public_pair_state"]
+    public = state["public_pair_state"] if public is None else public
     costs = np.asarray(candidate[-1], dtype=np.uint16).reshape(512)
     legal = np.flatnonzero(costs != 0xFFFF).tolist()
     execution = PublicExecutionContext(
@@ -104,7 +108,8 @@ def controller_policy_inputs(policy, candidate, state, pace, delay, compute_fram
         # The ROM falls when its counter exceeds the table threshold. The
         # public feature names the period, including the one-frame fast limit.
         gravity_frames=int(compute_speed_threshold(state["speed"], state["speed_ups"])) + 1,
-        speed_ups=int(state["speed_ups"]), decision_delay_frames=int(delay),
+        speed_ups=int(state["speed_ups"]),
+        decision_delay_frames=int(delay if decision_delay_frames is None else decision_delay_frames),
         compute_frames=int(compute_frames),
     )
     observation, info = policy_request(

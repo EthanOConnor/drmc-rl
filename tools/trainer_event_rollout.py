@@ -18,6 +18,7 @@ from drmc_rl.envs.backends.vs_frames import EventVsPool
 from drmc_rl.execution.pace import resolve_pace, strategy_context
 from drmc_rl.human.anticipation import execution_for_action, score_public_inputs
 from drmc_rl.human.controller_context import controller_policy_inputs, uses_public_context
+from drmc_rl.human.early_decision import network_execution_frames, validate_timing_params
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
 from tools.trainer_arena_cache import ByteCache
@@ -101,6 +102,9 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
         raise ValueError("event rollout currently requires reaction-covered computation")
     if config.get("replay_games", 0):
         raise ValueError("use the reference frame runner for full-frame replay capture")
+    if any(validate_timing_params(p) != "spawn" or p.get("preview_input", "visible") != "visible"
+           for p in config["variants"].values()):
+        raise ValueError("pre-spawn decision points and preview marginals require the frame runner")
     started = time.perf_counter()
     next_activity = started
     measured = Counter()
@@ -190,9 +194,11 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     continue
                 state, delay, _ = requests[i]
                 actor = policy if policies is None else policies[actors[i]]
+                delay_input, compute_input = network_execution_frames(
+                    config["variants"][actors[i]], pace, delay)
                 obs, info = controller_policy_inputs(
-                    actor, candidate, state, pace, delay,
-                    int(config["variants"][actors[i]]["delay"]),
+                    actor, candidate, state, pace, delay, compute_input,
+                    decision_delay_frames=delay_input,
                 )
                 info[0]["pace/context"] = strategy_context(pace, state, delay)
                 count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))

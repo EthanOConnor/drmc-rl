@@ -1,0 +1,13 @@
+python -m tools.trainer_planning_arena --config /dev/shm/timing-contract/config-B2-tf3090.json
+[W924 00:51:18.996943190 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1608515584 bytes (free: 1311113216, total: 25293225984).
+[W924 00:51:18.997117513 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1608515584 bytes (free: 1311113216, total: 25293225984).
+[W924 00:51:19.445510315 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1648361472 bytes (free: 887488512, total: 25293225984).
+[W924 00:51:19.454805749 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 1648361472 bytes (free: 1264975872, total: 25293225984).
+[W924 00:51:20.239957482 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2550136832 bytes (free: 616955904, total: 25293225984).
+[W924 00:51:20.251250749 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2550136832 bytes (free: 1065746432, total: 25293225984).
+[W924 00:51:21.678637270 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2099249152 bytes (free: 159055872, total: 25293225984).
+[W924 00:51:21.734394342 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2099249152 bytes (free: 268107776, total: 25293225984).
+[W924 00:51:22.999257535 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2099249152 bytes (free: 270204928, total: 25293225984).
+[W924 00:51:22.001267125 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2099249152 bytes (free: 270204928, total: 25293225984).
+[W924 00:51:22.001367124 CUDACachingAllocator.cpp:3933] memory allocation failed with OOM on device 0 while trying to allocate 2099249152 bytes (free: 270204928, total: 25293225984).
+{"comparison": "B-super_human-lock-b1", "games": 256, "target": 256, "wins": 136, "losses": 120, "draws": 0, "censored": 0, "observed_score": 0.53125, "score_bounds": [0.53125, 0.53125], "score_ci": [0.4451537079599475, 0.6155252322729583], "batch_seconds": 1264.01}

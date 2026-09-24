@@ -1,0 +1,706 @@
+{
+ "A-fast-c8": {
+  "all": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 11.990098426357045,
+   "base_wait_frames": 11.990098426357045
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 11.990098426357045,
+   "base_wait_frames": 11.990098426357045
+  }
+ },
+ "A-frame_perfect-c5": {
+  "all": {
+   "games": 384,
+   "score": 0.4765625,
+   "ci95": [
+    0.4114583333333333,
+    0.5390625
+   ],
+   "censored": 0,
+   "split_pairs": 39,
+   "a_wait_frames": 5.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.453125,
+   "ci95": [
+    0.34375,
+    0.5625
+   ],
+   "censored": 0,
+   "split_pairs": 14,
+   "a_wait_frames": 5.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-frame_perfect-c6": {
+  "all": {
+   "games": 384,
+   "score": 0.5286458333333334,
+   "ci95": [
+    0.4661458333333333,
+    0.59375
+   ],
+   "censored": 0,
+   "split_pairs": 35,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.546875,
+   "ci95": [
+    0.4375,
+    0.65625
+   ],
+   "censored": 0,
+   "split_pairs": 10,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-frame_perfect-c6pin": {
+  "all": {
+   "games": 128,
+   "score": 0.546875,
+   "ci95": [
+    0.4375,
+    0.65625
+   ],
+   "censored": 0,
+   "split_pairs": 10,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.546875,
+   "ci95": [
+    0.4375,
+    0.65625
+   ],
+   "censored": 0,
+   "split_pairs": 10,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-frame_perfect-c8": {
+  "all": {
+   "games": 384,
+   "score": 0.3776041666666667,
+   "ci95": [
+    0.3177083333333333,
+    0.4401041666666667
+   ],
+   "censored": 0,
+   "split_pairs": 35,
+   "a_wait_frames": 7.999294557511199,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.359375,
+   "ci95": [
+    0.25,
+    0.46875
+   ],
+   "censored": 0,
+   "split_pairs": 8,
+   "a_wait_frames": 7.999144385026738,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-frame_perfect-c8pin": {
+  "all": {
+   "games": 128,
+   "score": 0.359375,
+   "ci95": [
+    0.25,
+    0.46875
+   ],
+   "censored": 0,
+   "split_pairs": 8,
+   "a_wait_frames": 7.999144385026738,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.359375,
+   "ci95": [
+    0.25,
+    0.46875
+   ],
+   "censored": 0,
+   "split_pairs": 8,
+   "a_wait_frames": 7.999144385026738,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-normal-c8": {
+  "all": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 21.863694748772193,
+   "base_wait_frames": 21.863694748772193
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 21.863694748772193,
+   "base_wait_frames": 21.863694748772193
+  }
+ },
+ "A-super_human-c5": {
+  "all": {
+   "games": 384,
+   "score": 0.4270833333333333,
+   "ci95": [
+    0.3671223958333334,
+    0.4895833333333333
+   ],
+   "censored": 0,
+   "split_pairs": 42,
+   "a_wait_frames": 5.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.421875,
+   "ci95": [
+    0.3203125,
+    0.5234375
+   ],
+   "censored": 0,
+   "split_pairs": 16,
+   "a_wait_frames": 5.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-super_human-c6": {
+  "all": {
+   "games": 384,
+   "score": 0.4348958333333333,
+   "ci95": [
+    0.3723958333333333,
+    0.4973958333333333
+   ],
+   "censored": 0,
+   "split_pairs": 37,
+   "a_wait_frames": 5.9997879409062,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.4921875,
+   "ci95": [
+    0.3828125,
+    0.6015625
+   ],
+   "censored": 0,
+   "split_pairs": 15,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-super_human-c8": {
+  "all": {
+   "games": 384,
+   "score": 0.375,
+   "ci95": [
+    0.3151041666666667,
+    0.4348958333333333
+   ],
+   "censored": 0,
+   "split_pairs": 38,
+   "a_wait_frames": 7.999276934201013,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.3359375,
+   "ci95": [
+    0.234375,
+    0.4453125
+   ],
+   "censored": 0,
+   "split_pairs": 11,
+   "a_wait_frames": 7.999553521598393,
+   "base_wait_frames": 4.0
+  }
+ },
+ "A-top_humans-c5": {
+  "all": {
+   "games": 384,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 192,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0
+  }
+ },
+ "A-top_humans-c6": {
+  "all": {
+   "games": 384,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 192,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5,
+   "ci95": [
+    0.5,
+    0.5
+   ],
+   "censored": 0,
+   "split_pairs": 64,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0
+  }
+ },
+ "A-top_humans-c8": {
+  "all": {
+   "games": 384,
+   "score": 0.4140625,
+   "ci95": [
+    0.3541666666666667,
+    0.4765625
+   ],
+   "censored": 0,
+   "split_pairs": 41,
+   "a_wait_frames": 7.999312962676697,
+   "base_wait_frames": 6.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.4453125,
+   "ci95": [
+    0.34375,
+    0.546875
+   ],
+   "censored": 0,
+   "split_pairs": 17,
+   "a_wait_frames": 7.999578880875927,
+   "base_wait_frames": 6.0
+  }
+ },
+ "B-frame_perfect-lock": {
+  "all": {
+   "games": 384,
+   "score": 0.6145833333333334,
+   "ci95": [
+    0.5494791666666666,
+    0.6770833333333334
+   ],
+   "censored": 0,
+   "split_pairs": 28,
+   "a_wait_frames": 0.5759011328527291,
+   "base_wait_frames": 4.0,
+   "early_requests": 58226,
+   "early_accepted": 49872,
+   "early_mismatch": 8004,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.13829566659755338,
+   "fallback_share_of_decisions": 0.1439752832131823,
+   "mean_lead_frames": 39.49013474494706
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.578125,
+   "ci95": [
+    0.46875,
+    0.6875
+   ],
+   "censored": 0,
+   "split_pairs": 10,
+   "a_wait_frames": 0.5844944623079671,
+   "base_wait_frames": 4.0,
+   "early_requests": 19577,
+   "early_accepted": 16730,
+   "early_mismatch": 2735,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.1405086051888004,
+   "fallback_share_of_decisions": 0.14612361557699177,
+   "mean_lead_frames": 39.41099820681411
+  }
+ },
+ "B-frame_perfect-settled": {
+  "all": {
+   "games": 384,
+   "score": 0.6171875,
+   "ci95": [
+    0.5572916666666666,
+    0.6744791666666666
+   ],
+   "censored": 0,
+   "split_pairs": 49,
+   "a_wait_frames": 1.0200875342203002,
+   "base_wait_frames": 4.0,
+   "early_requests": 56974,
+   "early_accepted": 56965,
+   "early_mismatch": 0,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.006695844740100089,
+   "mean_lead_frames": 3.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.6171875,
+   "ci95": [
+    0.515625,
+    0.7109375
+   ],
+   "censored": 0,
+   "split_pairs": 19,
+   "a_wait_frames": 1.020356234096692,
+   "base_wait_frames": 4.0,
+   "early_requests": 18740,
+   "early_accepted": 18736,
+   "early_mismatch": 0,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.006785411365564037,
+   "mean_lead_frames": 3.0
+  }
+ },
+ "B-super_human-lock": {
+  "all": {
+   "games": 384,
+   "score": 0.5234375,
+   "ci95": [
+    0.4609375,
+    0.5859375
+   ],
+   "censored": 0,
+   "split_pairs": 41,
+   "a_wait_frames": 2.3062098869521828,
+   "base_wait_frames": 4.0,
+   "early_requests": 58070,
+   "early_accepted": 49219,
+   "early_mismatch": 8514,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.14747198309459061,
+   "fallback_share_of_decisions": 0.15310494347609133,
+   "mean_lead_frames": 39.84798553404173
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5078125,
+   "ci95": [
+    0.3984375,
+    0.6171875
+   ],
+   "censored": 0,
+   "split_pairs": 15,
+   "a_wait_frames": 2.308542286442839,
+   "base_wait_frames": 4.0,
+   "early_requests": 18809,
+   "early_accepted": 15920,
+   "early_mismatch": 2776,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.14848095849379547,
+   "fallback_share_of_decisions": 0.15427114322141947,
+   "mean_lead_frames": 39.58806532663316
+  }
+ },
+ "B-super_human-settled": {
+  "all": {
+   "games": 384,
+   "score": 0.5911458333333334,
+   "ci95": [
+    0.5286458333333334,
+    0.6510416666666666
+   ],
+   "censored": 0,
+   "split_pairs": 41,
+   "a_wait_frames": 2.013376062421625,
+   "base_wait_frames": 4.0,
+   "early_requests": 57046,
+   "early_accepted": 57032,
+   "early_mismatch": 0,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.006688031210812317,
+   "mean_lead_frames": 3.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.6015625,
+   "ci95": [
+    0.5,
+    0.703125
+   ],
+   "censored": 0,
+   "split_pairs": 17,
+   "a_wait_frames": 2.013509947754499,
+   "base_wait_frames": 4.0,
+   "early_requests": 18828,
+   "early_accepted": 18821,
+   "early_mismatch": 0,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.006754973877249459,
+   "mean_lead_frames": 3.0
+  }
+ },
+ "B-top_humans-lock": {
+  "all": {
+   "games": 384,
+   "score": 0.48828125,
+   "ci95": [
+    0.4440104166666667,
+    0.5338541666666666
+   ],
+   "censored": 0,
+   "split_pairs": 114,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0,
+   "early_requests": 57901,
+   "early_accepted": 48802,
+   "early_mismatch": 8774,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.1523898846741698,
+   "fallback_share_of_decisions": 0.15800552104899931,
+   "mean_lead_frames": 39.70099586082537
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5078125,
+   "ci95": [
+    0.4296875,
+    0.5859375
+   ],
+   "censored": 0,
+   "split_pairs": 37,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0,
+   "early_requests": 18531,
+   "early_accepted": 15640,
+   "early_mismatch": 2784,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.1511072514112028,
+   "fallback_share_of_decisions": 0.15696420871065114,
+   "mean_lead_frames": 39.76886189258312
+  }
+ },
+ "B-top_humans-settled": {
+  "all": {
+   "games": 384,
+   "score": 0.5104166666666666,
+   "ci95": [
+    0.4609375,
+    0.5598958333333334
+   ],
+   "censored": 0,
+   "split_pairs": 98,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0,
+   "early_requests": 57553,
+   "early_accepted": 57537,
+   "early_mismatch": 0,
+   "early_unavailable": 384,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.0066297197907494694,
+   "mean_lead_frames": 3.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.5859375,
+   "ci95": [
+    0.5,
+    0.671875
+   ],
+   "censored": 0,
+   "split_pairs": 31,
+   "a_wait_frames": 6.0,
+   "base_wait_frames": 6.0,
+   "early_requests": 18556,
+   "early_accepted": 18550,
+   "early_mismatch": 0,
+   "early_unavailable": 128,
+   "mismatch_rate": 0.0,
+   "fallback_share_of_decisions": 0.006852982117999786,
+   "mean_lead_frames": 3.0
+  }
+ },
+ "C-frame_perfect-premarg": {
+  "all": {
+   "games": 384,
+   "score": 0.4973958333333333,
+   "ci95": [
+    0.4505208333333333,
+    0.5442708333333334
+   ],
+   "censored": 0,
+   "split_pairs": 103,
+   "a_wait_frames": 4.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.4921875,
+   "ci95": [
+    0.40625,
+    0.578125
+   ],
+   "censored": 0,
+   "split_pairs": 33,
+   "a_wait_frames": 4.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "C-super_human-premarg": {
+  "all": {
+   "games": 384,
+   "score": 0.5078125,
+   "ci95": [
+    0.4609375,
+    0.5546875
+   ],
+   "censored": 0,
+   "split_pairs": 101,
+   "a_wait_frames": 4.0,
+   "base_wait_frames": 4.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.484375,
+   "ci95": [
+    0.3984375,
+    0.5703125
+   ],
+   "censored": 0,
+   "split_pairs": 32,
+   "a_wait_frames": 4.0,
+   "base_wait_frames": 4.0
+  }
+ },
+ "C-top_humans-premarg": {
+  "all": {
+   "games": 384,
+   "score": 0.5494791666666666,
+   "ci95": [
+    0.5,
+    0.5989583333333334
+   ],
+   "censored": 0,
+   "split_pairs": 95,
+   "a_wait_frames": 5.9998949506267945,
+   "base_wait_frames": 6.0
+  },
+  "first_read": {
+   "games": 128,
+   "score": 0.6015625,
+   "ci95": [
+    0.5234375,
+    0.6796875
+   ],
+   "censored": 0,
+   "split_pairs": 35,
+   "a_wait_frames": 5.999673788941445,
+   "base_wait_frames": 6.0
+  }
+ },
+ "B-frame_perfect-settled-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": 0.11979166666666667,
+  "ci95": [
+   0.0390625,
+   0.19791666666666666
+  ]
+ },
+ "B-frame_perfect-lock-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": 0.1171875,
+  "ci95": [
+   0.03125,
+   0.203125
+  ]
+ },
+ "B-super_human-settled-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": 0.08333333333333333,
+  "ci95": [
+   0.0026041666666666665,
+   0.1640625
+  ]
+ },
+ "B-super_human-lock-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": 0.015625,
+  "ci95": [
+   -0.06510416666666667,
+   0.09635416666666667
+  ]
+ },
+ "B-top_humans-settled-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": -0.0390625,
+  "ci95": [
+   -0.07552083333333333,
+   -0.0026041666666666665
+  ]
+ },
+ "B-top_humans-lock-minus-premarg": {
+  "seed_pairs": 192,
+  "difference": -0.061197916666666664,
+  "ci95": [
+   -0.125,
+   0.0026041666666666665
+  ]
+ }
+}
