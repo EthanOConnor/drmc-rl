@@ -36,6 +36,47 @@ from drmc_rl.models.policy.placement_heads import OrderedPairEmbedding
 AFTERSTATE_CORE_SCHEMA = "drmc-afterstate-core-v1"
 
 
+class _RowCache:
+    """Bounded LRU of exact per-row afterstates; PPO epochs and anchors repeat rows."""
+
+    def __init__(self, capacity: int = 50_000) -> None:
+        from collections import OrderedDict
+
+        self.capacity = int(capacity)
+        self.rows = OrderedDict()
+
+    def get(self, key):
+        value = self.rows.get(key)
+        if value is not None:
+            self.rows.move_to_end(key)
+        return value
+
+    def put(self, key, value) -> None:
+        self.rows[key] = value
+        self.rows.move_to_end(key)
+        while len(self.rows) > self.capacity:
+            self.rows.popitem(last=False)
+
+
+_CACHE = _RowCache()
+
+
+def _row_key(planes, pill, actions) -> bytes:
+    import hashlib
+
+    digest = hashlib.blake2b(digest_size=16)
+    digest.update(np.packbits(planes > 0.5).tobytes())
+    digest.update(np.asarray(pill, np.int8).tobytes())
+    digest.update(np.asarray(actions, np.int16).tobytes())
+    return digest.digest()
+
+
+def _root_row(planes) -> np.ndarray:
+    from drmc_rl.game.afterstate import planes_to_fields
+
+    return planes_to_fields(planes)
+
+
 def _tile_plane_table() -> torch.Tensor:
     """Lookup from native tile byte to the eight semantic planes."""
 
@@ -179,14 +220,35 @@ class AfterstateCorePolicyNet(nn.Module):
     # ------------------------------------------------------------------
     @staticmethod
     def exact_afterstates(obs, pill_colors, cand_actions, cand_mask):
-        """Host-side exact afterstate tensors for one model call."""
+        """Host-side exact afterstate tensors for one model call (row-level LRU cache)."""
 
-        tiles, facts = afterstate_batch(
-            obs[:, :8].detach().to("cpu", torch.float32).numpy(),
-            pill_colors.detach().cpu().numpy(),
-            cand_actions.detach().cpu().numpy(),
-            cand_mask.detach().cpu().numpy().astype(bool),
-        )
+        planes = obs[:, :8].detach().to("cpu", torch.float32).numpy()
+        pills = pill_colors.detach().cpu().numpy()
+        actions = cand_actions.detach().cpu().numpy()
+        mask = cand_mask.detach().cpu().numpy().astype(bool)
+        batch, width = mask.shape
+        tiles = np.empty((batch, width, 128), np.uint8)
+        facts = np.zeros((batch, width, FACT_DIM), np.float32)
+        keys, missing = [], []
+        for b in range(batch):
+            n = int(mask[b].sum())
+            contiguous = bool(mask[b, :n].all())
+            key = (_row_key(planes[b], pills[b], actions[b, :n]) if contiguous else None)
+            hit = _CACHE.get(key) if key is not None else None
+            if hit is None:
+                missing.append(b)
+            else:
+                tiles[b, :n], facts[b, :n] = hit
+                tiles[b, n:] = _root_row(planes[b])
+            keys.append((key, n))
+        if missing:
+            rows = np.asarray(missing)
+            got_tiles, got_facts = afterstate_batch(planes[rows], pills[rows], actions[rows], mask[rows])
+            tiles[rows], facts[rows] = got_tiles, got_facts
+            for b in missing:
+                key, n = keys[b]
+                if key is not None:
+                    _CACHE.put(key, (tiles[b, :n].copy(), facts[b, :n].copy()))
         device = obs.device
         return torch.from_numpy(tiles).to(device), torch.from_numpy(facts).to(device)
 

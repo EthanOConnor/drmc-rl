@@ -1,0 +1,85 @@
+{
+ "schema": "drmc-afterstate-seed-audit-v1",
+ "created_at": "2026-09-24T16:38:35.501071+00:00",
+ "selection_seed": 20260924,
+ "journals_audited": 319,
+ "errors": {
+  "local": 32,
+  "tf3090": 1
+ },
+ "local_roots": [
+  "/Users/ethan/dev/drmario/drmc-rl/runs",
+  "/Users/ethan/dev/drmario/drmc-rl-afterstate/runs",
+  "/Users/ethan/dev/drmario/drmc-rl-distributed/runs",
+  "/Users/ethan/dev/drmario/drmc-rl-gpu-planner/runs",
+  "/Users/ethan/dev/drmario/drmc-rl-timing-contract/runs"
+ ],
+ "remote_roots": [
+  "/home/ethan/.cache/drmc-rl/trainer-output",
+  "/dev/shm"
+ ],
+ "rule": "exclude every evaluation/arena/anchor journal seed, champion-lineage and distillation-source training seeds (controller-core-live-v4, controller-retention-mixed-v2), fresh-v1 seeds and the mixed-v2 holdout; use globally unseen seeds first, then seeds seen only in unrelated study-arm training games",
+ "excluded": 62798,
+ "globally_unseen_available": 150,
+ "unrelated_training_only_available": 2587,
+ "selected_globally_unseen": 150,
+ "selected_unrelated_training_only": 2218,
+ "champion_lineage_training_journals": [
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-core-live-v4/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-retention-mixed-v2/training-games.jsonl"
+ ],
+ "unrelated_training_journals": [
+  "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/public-pool-smoke/training-games.jsonl",
+  "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-objective-corrected/training-games.jsonl",
+  "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-objective-legacy/training-games.jsonl",
+  "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-pace/training-games.before-throughput-u179.jsonl",
+  "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-pace/training-games.jsonl",
+  "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/scaled-smoke/training-games.jsonl",
+  "/dev/shm/pytest-of-ethan/pytest-0/test_registered_retention_trai0/training/training-games.jsonl",
+  "/dev/shm/pytest-of-ethan/pytest-1/test_controller_training_comma0/run/training-games.jsonl",
+  "/dev/shm/pytest-of-ethan/pytest-1/test_controller_training_comma1/run/training-games.jsonl",
+  "/dev/shm/pytest-of-ethan/pytest-1/test_controller_training_comma2/run/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/pace-strategy-20260908/output/training-games.before-throughput-u179.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/pace-strategy-20260908/output/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/pace-strategy-20260908/throughput-training/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-core-gpu-smoke-v2/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-core-live-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-core-live-v2/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-core-live-v3/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-retention-control-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/controller-retention-mixed-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/progress-input-control-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/progress-input-countdown-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/progress-input-progress-v1/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/smoke-decision_mean/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/smoke-episode_mean/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/training-decision_mean/training-games.jsonl",
+  "/home/ethan/.cache/drmc-rl/trainer-output/review-20260909/training-episode_mean/training-games.jsonl"
+ ],
+ "sizes": {
+  "quick": {
+   "normal": 64,
+   "frame_perfect": 64
+  },
+  "panel": {
+   "sloth": 64,
+   "relaxed": 64,
+   "normal": 64,
+   "fast": 64,
+   "top_humans": 64,
+   "super_human": 64,
+   "frame_perfect": 64
+  },
+  "tournament": {
+   "sloth": 256,
+   "relaxed": 256,
+   "normal": 256,
+   "fast": 256,
+   "top_humans": 256,
+   "super_human": 256,
+   "frame_perfect": 256
+  }
+ },
+ "seed_file_sha256": "a861b70f1e1c72ad9ae0fa05c0784c7ad80a78244d94e0938f76b6d0011780a4",
+ "limitation": "Only journals reachable on this Mac and tf3090 are audited; deleted logs cannot be ruled out."
+}

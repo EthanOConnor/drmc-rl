@@ -195,6 +195,8 @@ def test_model_uses_afterstates_and_loads_through_plain_policy(tmp_path):
     cfg, net = _small_net()
     inputs, aux = _inputs(np.random.default_rng(6))
     tiles, facts = net.exact_afterstates(inputs[0], inputs[1], inputs[3], inputs[5])
+    cached = net.exact_afterstates(inputs[0], inputs[1], inputs[3], inputs[5])
+    assert torch.equal(cached[0], tiles) and torch.equal(cached[1], facts)
     with torch.inference_mode():
         reference, _ = net(*inputs, aux=aux)
         explicit, _ = net(*inputs, aux=aux, afterstate=(tiles, facts))

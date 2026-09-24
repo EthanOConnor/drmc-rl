@@ -347,6 +347,32 @@ recipes:
       - Separate teacher KL and per-pace vetoes never replace the actual PPO behavior distribution or natural terminal returns.
       - Restore both model and optimizer on rejection. Fresh arena evidence, larger teachers and expressive play remain separate requirements.
 
+  trainer-afterstate-core-dataset:
+    status: active
+    stage: 3
+    purpose: Score sampled public controller replay states with a frozen public core and attach every candidate's exact settled afterstate and consequence facts.
+    requires_paths: [tools/distill_afterstate_core.py, drmc_rl/game/afterstate.py]
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.distill_afterstate_core, build, --shards, "{afterstate_replay_glob}", --teacher, "{afterstate_teacher}", --out, "{afterstate_dataset}"]
+    produces: [Streamed dataset parts with teacher candidate logits, teacher value distributions, exact afterstate deltas and facts]
+    resources: {preferred_host: tf3090, accelerator: cuda}
+    notes:
+      - Teachers see their original public inputs; afterstates are a deterministic function of the same inputs (validated against the native engine).
+      - Replay returns are retained for diagnostics only; targets are teacher outputs.
+
+  trainer-afterstate-core-distill:
+    status: active
+    stage: 3
+    purpose: Distil a frozen public-context core into the 256x6 afterstate core on whole-seed training games and report held-out agreement.
+    requires_paths: [tools/distill_afterstate_core.py, drmc_rl/models/policy/afterstate_core.py, "{afterstate_dataset}"]
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.distill_afterstate_core, train, --dataset, "{afterstate_dataset}", --out, "{afterstate_output}"]
+    produces: [Distilled afterstate-core checkpoint loadable by PlainPolicy and ControllerCorePolicy, held-out agreement/KL/value error]
+    resources: {preferred_host: tf3090, accelerator: cuda}
+    notes:
+      - Agreement is not strength. Paired side-swapped arena reads against the teacher decide whether outcome PPO starts from the student.
+      - Outcome PPO reuses trainer-controller-retention with the student as checkpoint and every registered evaluation seed in holdout_seeds.
+
   trainer-controller-gradient-audit:
     status: active
     stage: 3

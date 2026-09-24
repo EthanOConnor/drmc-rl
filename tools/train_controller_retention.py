@@ -189,6 +189,12 @@ def main():
                        progress=progress,training_config=config)
             for name in progress['checkpoints'][:-2]: (output/name).unlink(missing_ok=True)
             progress['checkpoints']=progress['checkpoints'][-2:]
+            every=config.get('checkpoint_every_frames')
+            if every and progress['frames']>=every:
+                # Stop-rule snapshots: one per crossed frame multiple (an update is far shorter).
+                path=output/f"core-f{progress['frames']//every*every:011d}.pt"
+                if not path.exists():
+                    actor.save(path,update=update,progress=progress,training_config=config)
             for milestone in config.get('milestone_decisions',[]):
                 path=output/f'core-d{milestone:09d}.pt'
                 if progress['decisions']>=milestone and not path.exists():
