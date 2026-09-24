@@ -2250,6 +2250,16 @@ uv run python -m tools.arena worker \
   --worker-id macbook-mps --device mps --threads 2 --batch 12
 ```
 
+Trainer-planning-arena studies (`tools.trainer_planning_arena` configs) have
+their own coordinator, `python -m tools.trainer_arena_distributed serve|worker|local`.
+It leases the single-host seed-pair batches, applies sequential stopping at the
+coordinator and journals results in schedule order, so a distributed or
+multi-process run writes the same `games.jsonl` and move traces as one process.
+New hosts pass `tools.arena_host_selftest` and the coordinator's
+`--calibration-games` replay before contributing. Host setup, the Windows/WSL2
+route, measured Mac throughput and the fidelity limits are in
+`docs/ARENA_HOSTS.md`.
+
 ## Gate evidence
 
 A gate report is run output and remains untracked. Record it after reviewing the
