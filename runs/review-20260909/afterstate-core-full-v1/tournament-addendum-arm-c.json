@@ -1,0 +1,44 @@
+{
+ "schema": "drmc-afterstate-multiarm-preregistration-addendum-v1",
+ "amends": "afterstate-core-human-v1/threeway-preregistration.json (branch trainer/afterstate-core-human; seed file sha256 a861b70f1e1c72ad9ae0fa05c0784c7ad80a78244d94e0938f76b6d0011780a4) with its addenda 1 and 2, and arm A's tournament pre-registration (prepare_afterstate_tournament_v1.py PREREGISTRATION). Adds arm C; no existing pairing, seed, analysis or verdict rule changes.",
+ "created_at": "2026-09-24",
+ "registered_before": "any arm-C PPO update and any tournament-seed game by any arm",
+ "arm_c": {
+  "branch": "trainer/afterstate-core-full",
+  "model": "drmc-afterstate-full-core-v1 (drmc_rl/models/policy/afterstate_full_core.py): the champion's full G5 public core (320x8 FiLM trunk, column attention, 3 candidate-attention layers, 51-atom value head, 9x9 patches, public_pair_context_v3) plus an additive per-candidate afterstate branch (32ch x 2-block CNN over the exact settled own bottle, changed-cell mask, 16-ch root-trunk projection, 16 exact facts) whose zero-initialized output projection adds into the candidate token before candidate attention",
+  "initialization": "every champion tensor loaded unchanged; audit afterstate-core-full-v1/init-audit.json: logits, values and auxiliary heads bitwise equal to the champion on 512 recorded mixed-v2 decisions (12550 candidates, four paces)",
+  "training": "afterstate-core-full-v1/ppo-full-v1.json = arm A's ppo-ppo-v1.json with checkpoint/output/native_library/source_commit changed and the new-branch rate schedule added (afterstate.* parameters: linear ramp to 10x the 3e-6 trunk rate over updates 1-3; every champion tensor keeps 3e-6)",
+  "selection": "arm A's stop rule on the same 896-game panel seeds (afterstate_full_stop_rule_v1.py); snapshot 0 is the initialization, scored 0.500 by construction (it is the champion function) and not played; the best pooled snapshot (ties to the earlier) is arm C's single tournament candidate; if snapshot 0 is selected, arm C has no candidate and is recorded as REJECT/not adopted"
+ },
+ "seeds": "afterstate-core-v1/seeds.json group \"tournament\" (256 per pace, seven paces), the same seeds as every existing pairing, held out by arm C's PPO (holdout_seeds); each seed played twice with sides swapped",
+ "new_pairings": {
+  "c-vs-champion": "arm C (candidate) vs champion, 3584 games",
+  "c-vs-a": "arm C (candidate) vs arm A's selected core, 3584 games",
+  "c-vs-b": "arm C (candidate) vs arm B's selected core, 3584 games, played only if both arm B and arm C PROMOTE versus the champion and the adoption rule below cannot otherwise order them"
+ },
+ "settings_and_analysis": "identical to the existing pairings: level 14 HI; spawn decisions; delay max(4, reaction); reactive compute 4, preparation 6; events backend; strict FP32; 4 interleaved blocks of 64 seeds per pace; per-seed mean of the two side-swapped games; 20000 whole-seed bootstrap resamples (numpy default_rng(20260924)); seven-pace simultaneous 95% intervals by max-|studentized deviation|; pooled equal-pace score with its 95% bootstrap interval",
+ "verdicts": {
+  "versus_champion": "arm A's rule for every arm: PROMOTE if pooled 95% lower bound > 0.50 and no pace with simultaneous 95% upper bound < 0.45; PARITY if not PROMOTE, pooled interval contains 0.50 and no such pace; REJECT otherwise",
+  "head_to_head": "arm B's primary rule for any pairing X (candidate) vs Y: X_STRONGER if pooled 95% lower bound > 0.50 and no pace with simultaneous 95% upper bound < 0.45; Y_STRONGER if pooled 95% upper bound < 0.50 and no pace with simultaneous 95% lower bound > 0.55; otherwise NO_DIFFERENCE_SHOWN; with the same paired-difference consistency check against the two versus-champion pairings (a contradiction downgrades to NO_DIFFERENCE_SHOWN)"
+ },
+ "adoption": {
+  "rule": "the browser core is the strongest arm that PROMOTEs versus the champion; ties are broken by browser cost",
+  "procedure": [
+   "P = arms (A, B, C) with PROMOTE versus the champion. If P is empty the champion stays.",
+   "Within P, arm X beats arm Y when their head-to-head verdict is X_STRONGER. The strongest arms are those in P that no other arm in P beats (a-vs-b from the three-way registration, c-vs-a here, c-vs-b if it had to be played).",
+   "One strongest arm: adopt it. Several (NO_DIFFERENCE_SHOWN between them): adopt the one with the lower browser cost.",
+   "Browser cost = median batch-1 decision time of the fp16-weight ONNX export on the ONNX Runtime CPU provider plus the median host exact-afterstate time, measured by tools/benchmark_afterstate_core.py in one run that alternates the tied cores on the Mac (4 threads, widths 32 and 56, 60 repeats), mean over the two widths. A and B share an architecture, so between them cost is equal and arm B's existing rule applies (higher pooled score versus the champion). Measured at registration: arm C adds about 5% FLOPs and 7-9% ONNX CPU time to the champion (afterstate-core-full-v1/bench-arm-c-mac.json) and costs more than A/B, so arm C is adopted over a tied A or B only if it beats it head to head."
+  ],
+  "shipping_confirmation": "the adopted arm (C included) must then pass arm A's shipped-timing confirmation addendum (schema drmc-afterstate-shipped-timing-confirmation-v1: the v17 browser contract, decision_point lock_safe with early_preview repeat on both sides, frames backend, its registered confirmation seeds and rule) before it ships; arm C is bound by that addendum exactly as A and B are. If the confirmation fails the champion stays."
+ },
+ "arm_c_prespawn_support": "The afterstate branch reads only the public model tensors, so a lock_safe request scores the lock-predicted settled bottle (drmc_rl.human.early_decision); tests/test_afterstate_full_core.py::test_lock_safe_pre_spawn_decisions_agree_with_spawn_when_the_prediction_holds shows that for every accepted request the own planes, candidates, exact afterstates and facts equal the spawn decision's, and that with the rest of the public view held at spawn the logits and value are identical. Arm C, like A and B, trains only under the spawn contract.",
+ "confound": "Arm C starts from the champion and receives about 3M more decisions of the champion's own outcome-PPO recipe (retention-mixed v2 was produced by exactly this recipe). A C-over-champion gain may therefore come from extra PPO rather than from afterstate information. Adoption does not depend on attribution; claims that the afterstate branch caused a gain do.",
+ "optional_control": {
+  "arm": "C0: the identical PPO config (ppo-full-v1.json) with checkpoint = the unmodified champion and no new-branch keys (a single optimizer group at 3e-6), same seed, opponents, anchors, holdout, snapshot cadence and stop rule on the same panel seeds",
+  "run_only_if": "arm C's c-vs-champion result is borderline: pooled 95% lower bound within [0.47, 0.53], or c-vs-champion PROMOTE while c-vs-a is NO_DIFFERENCE_SHOWN",
+  "evaluation": "C0's selected snapshot plays c0-vs-champion and c-vs-c0 on the same tournament seeds with the settings above",
+  "attribution": "AFTERSTATE_ADDS if c-vs-c0 is C_STRONGER (arm B's head-to-head rule with C as candidate); EXTRA_PPO_EXPLAINS if c-vs-c0 is NO_DIFFERENCE_SHOWN and c0-vs-champion is PROMOTE or PARITY with pooled score within 0.02 of c-vs-champion; otherwise UNRESOLVED. The control never changes the adoption decision.",
+  "if_not_run": "when C's result is not borderline the confound stays documented and unresolved; a clear C win is reported as 'afterstate branch + extra PPO', not as an afterstate effect"
+ },
+ "censoring": "timeouts are reported and scored as recorded; any censored game flags the report"
+}
