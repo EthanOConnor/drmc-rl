@@ -28,10 +28,12 @@ import argparse
 import copy
 import gzip
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
 import platform
+import random
 import secrets
 import signal
 import socket
@@ -584,9 +586,14 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class StudyServer(ThreadingHTTPServer):
+    request_queue_size = 128   # a fleet starting at once must not overflow the accept backlog
+    daemon_threads = True
+
+
 def start_server(coordinator, state, host, port, token):
     handler = type("StudyHandler", (Handler,), dict(coordinator=coordinator, state=state, token=token))
-    server = ThreadingHTTPServer((host, port), handler)
+    server = StudyServer((host, port), handler)
     server.daemon_threads = True
     thread = threading.Thread(target=server.serve_forever, name="study-coordinator", daemon=True)
     thread.start()
@@ -595,6 +602,15 @@ def start_server(coordinator, state, host, port, token):
 
 # ---------------------------------------------------------------------------
 # Worker.
+
+
+class CoordinatorError(RuntimeError):
+    def __init__(self, code, detail):
+        super().__init__(f"coordinator HTTP {code}: {detail}")
+        self.code = code
+
+
+TRANSIENT = (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException)
 
 
 class StudyClient:
@@ -616,22 +632,31 @@ class StudyClient:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as error:
-            raise RuntimeError(f"coordinator HTTP {error.code}: {error.read().decode(errors='replace')}") from error
+            raise CoordinatorError(error.code, error.read().decode(errors="replace")) from error
 
     def retrying(self, method, path, payload=None, *, compress=False, patience=900.0):
         """Ride out coordinator restarts and brief network loss."""
-        deadline, delay = time.monotonic() + patience, 2.0
+        return self._retry(lambda: self.request(method, path, payload, compress=compress), patience)
+
+    @staticmethod
+    def _retry(call, patience):
+        # Every endpoint is idempotent (reads, leases, renewals, hash-checked uploads).
+        deadline, delay = time.monotonic() + patience, 1.0
         while True:
             try:
-                return self.request(method, path, payload, compress=compress)
-            except (urllib.error.URLError, OSError, TimeoutError) as error:
-                if time.monotonic() > deadline:
+                return call()
+            except (CoordinatorError, *TRANSIENT) as error:
+                if isinstance(error, CoordinatorError) and error.code < 500 or time.monotonic() > deadline:
                     raise
-                print(f"worker: coordinator unreachable ({error}); retrying in {delay:.0f}s", flush=True)
-                time.sleep(delay)
+                wait = delay * (0.5 + random.random())
+                print(f"worker: coordinator request failed ({error}); retrying in {wait:.1f}s", flush=True)
+                time.sleep(wait)
                 delay = min(60.0, delay * 2)
 
-    def download(self, digest, name, cache):
+    def download(self, digest, name, cache, patience=3600.0):
+        return self._retry(lambda: self._download(digest, name, cache), patience)
+
+    def _download(self, digest, name, cache):
         cache = Path(cache).expanduser()
         target = cache / f"{digest}-{name}"
         if target.is_file() and sha256_file(target) == digest:
@@ -647,7 +672,7 @@ class StudyClient:
                     sha.update(block)
                     stream.write(block)
             if sha.hexdigest() != digest:
-                raise ValueError(f"artifact {name} hash mismatch")
+                raise OSError(f"artifact {name} hash mismatch (truncated or corrupted transfer)")
             os.replace(temporary, target)
         finally:
             if os.path.exists(temporary):
@@ -719,7 +744,7 @@ def run_worker(args):
     token = (args.token or Path(args.token_file).expanduser().read_text()).strip()
     args.worker_id = args.worker_id or f"{socket.gethostname()}-{args.device or 'cfg'}-{os.getpid()}"
     args.client = client = StudyClient(args.coordinator, token)
-    study = client.request("GET", "/api/v1/study")
+    study = client.retrying("GET", "/api/v1/study")
     if study["protocol"] != PROTOCOL:
         raise RuntimeError(f"coordinator protocol {study['protocol']} != {PROTOCOL}")
     source = source_revision()
@@ -762,8 +787,8 @@ def run_worker(args):
             def renew():
                 while not renewal_stop.wait(max(5.0, lease["ttl_seconds"] / 3)):
                     try:
-                        client.request("POST", f"/api/v1/study/leases/{lease['lease_id']}/renew",
-                                       dict(claim_token=lease["claim_token"]))
+                        client.retrying("POST", f"/api/v1/study/leases/{lease['lease_id']}/renew",
+                                        dict(claim_token=lease["claim_token"]), patience=lease["ttl_seconds"] / 3)
                     except Exception as error:
                         print(f"worker: renewal failed: {error}", flush=True)
             renewer = threading.Thread(target=renew, daemon=True)
