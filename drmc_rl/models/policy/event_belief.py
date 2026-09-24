@@ -50,35 +50,52 @@ def _number(payload: Mapping[str, object], names: Sequence[str], default: float 
     return float(default)
 
 
-def event_feature(event: PairEvent, *, current_frame: int) -> np.ndarray:
-    """Encode one public event without consulting hidden/native state."""
+_AGE_SCALE = np.log1p(600.0)
+
+
+def _clip(value: float, low: float, high: float) -> float:
+    # Exact scalar equivalent of np.clip for the finite floats _number returns.
+    return low if value < low else high if value > high else value
+
+
+def event_feature(
+    event: PairEvent, *, current_frame: int, relative_to: int | None = None
+) -> np.ndarray:
+    """Encode one public event without consulting hidden/native state.
+
+    ``relative_to`` encodes the event side relative to that acting side (0 for
+    its own events, 1 for the opponent's) without rebuilding the event.
+    """
 
     if current_frame < event.frame_id:
         raise ValueError("current_frame cannot precede a public event")
+    side = event.side
+    if relative_to is not None and side is not None:
+        side = int(side != relative_to)
     out = np.zeros(EVENT_FEATURE_DIM, dtype=np.float32)
     out[_EVENT_INDEX[event.kind]] = 1.0
     side_offset = len(_EVENT_KINDS)
-    out[side_offset + (0 if event.side is None else 1 + int(event.side))] = 1.0
+    out[side_offset + (0 if side is None else 1 + int(side))] = 1.0
     cursor = side_offset + 3
-    out[cursor] = np.log1p(current_frame - event.frame_id) / np.log1p(600.0)
+    out[cursor] = np.log1p(current_frame - event.frame_id) / _AGE_SCALE
     payload = event.public_payload
-    out[cursor + 1] = np.clip(
+    out[cursor + 1] = _clip(
         _number(payload, ("garbage_size", "size", "volley_size")) / 4.0, 0.0, 1.0
     )
-    out[cursor + 2] = np.clip(
+    out[cursor + 2] = _clip(
         _number(payload, ("tiles_cleared", "cleared_tiles")) / 32.0, 0.0, 1.0
     )
-    out[cursor + 3] = np.clip(
+    out[cursor + 3] = _clip(
         _number(payload, ("viruses_cleared", "virus_delta")) / 16.0, 0.0, 1.0
     )
-    out[cursor + 4] = np.clip(
+    out[cursor + 4] = _clip(
         _number(payload, ("row_top", "row"), -1.0) / 15.0, -1.0, 1.0
     )
-    out[cursor + 5] = np.clip(
+    out[cursor + 5] = _clip(
         _number(payload, ("column", "col"), -1.0) / 7.0, -1.0, 1.0
     )
-    out[cursor + 6] = np.clip(_number(payload, ("rotation", "rot")) / 3.0, 0.0, 1.0)
-    out[cursor + 7] = np.clip(
+    out[cursor + 6] = _clip(_number(payload, ("rotation", "rot")) / 3.0, 0.0, 1.0)
+    out[cursor + 7] = _clip(
         _number(payload, ("outcome", "terminal_outcome")), -1.0, 1.0
     )
     return out
@@ -89,6 +106,7 @@ def pair_events_to_features(
     *,
     current_frame: int,
     max_events: int = 32,
+    relative_to: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return chronological ``[T,F]`` features and valid mask, right padded."""
 
@@ -97,7 +115,9 @@ def pair_events_to_features(
     features = np.zeros((width, EVENT_FEATURE_DIM), dtype=np.float32)
     mask = np.zeros(width, dtype=np.bool_)
     for index, event in enumerate(selected):
-        features[index] = event_feature(event, current_frame=int(current_frame))
+        features[index] = event_feature(
+            event, current_frame=int(current_frame), relative_to=relative_to
+        )
         mask[index] = True
     return features, mask
 

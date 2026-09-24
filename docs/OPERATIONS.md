@@ -1359,6 +1359,43 @@ aborts on a script/microstate mismatch. Keep level 14 HI primary; report level
 20 HI and slower paces separately. The default 60,000-frame cap bounds only
 unfinished games; completed rounds stop naturally.
 
+Two opt-in knobs answer a comparison before its full `games` budget, which
+stays the maximum. `sequential` (config default; a schedule row may override
+it or disable it with `null`) is `{"question": "threshold", "threshold": 0.45}`
+or `{"question": "equivalence", "margin": 0.05}` with optional `alpha`
+(one-sided, default 0.025), `early_alpha` (default `alpha/5`) and
+`look_games` (default `pairs`). After each look the arena evaluates
+`drmc_rl.arena.sequential`: interim looks use an always-valid betting
+confidence sequence on whole side-swapped seed scores at `early_alpha`; the
+budget look uses the fixed-sample Student bound at `alpha - early_alpha`, so
+each one-sided error stays at most `alpha` however often it looks. Divide
+`alpha` by the family size for simultaneous claims. An unresolved threshold
+question at the budget reads as the pre-registered FAIL. A pre-registration
+that uses early stopping must name this rule; fixed-budget assessment scripts
+that require every scheduled game do not apply to a stopped comparison.
+`skip_identical: true` records a comparison as exactly 0.5 without play when
+both entrants have the same model bytes and settings and the same charged
+delay `max(delay, reaction_frames)` at that pace. When only
+network-input-only settings differ (raw `delay`, `compute_input_frames`), it
+first plays `identity_probe_games` (default 16) and requires every seed's two
+games to have byte-identical move journals; otherwise the comparison continues
+normally. `results.json` reports each verdict under `stopping`, with games
+used and the budget. Verdicts are recomputed from `games.jsonl` and `moves/`
+on resume.
+
+On tf3090 (4 cores, RTX 3090) arena throughput is bound by native planning and
+the main Python thread, not the GPU (about 22% busy). A September 2026 sweep of
+Frame Perfect event games measured 2,531/2,900/2,978/3,351 games per hour at
+`pairs` 32/64/128/256 with async planning (3, 3, 3 and 4 workers), 2,179 and
+3,238 at `pairs: 128` with 2 and 4 workers, 2,475 synchronously, and 3,278 for
+two 64-pair two-worker processes together. Use `rollout_backend: events`,
+`async_planning: true`, `planner_workers: 4` and `pairs` 128–256; use smaller
+`look_games` only when sequential stopping needs finer looks. The frame
+runner measured 763 games per hour for one process and 1,979 for three.
+TF32, bf16, `cudnn.benchmark`, `channels_last` and `torch.compile` are not
+bit-identical to strict FP32, and at the arena's small batches only compile
+was faster (1.37x on inference alone); keep `strict_fp32`.
+
 The variant's `delay` is an assumed fresh-decision deadline, not a GPU timing
 measurement. Reject a deployment deadline that fails the real host check even
 if it wins offline. Timing-contract experiments use opt-in variant keys
@@ -2212,6 +2249,16 @@ uv run python -m tools.arena worker \
   --token-file ~/.config/drmc-rl/arena-worker.token \
   --worker-id macbook-mps --device mps --threads 2 --batch 12
 ```
+
+Trainer-planning-arena studies (`tools.trainer_planning_arena` configs) have
+their own coordinator, `python -m tools.trainer_arena_distributed serve|worker|local`.
+It leases the single-host seed-pair batches, applies sequential stopping at the
+coordinator and journals results in schedule order, so a distributed or
+multi-process run writes the same `games.jsonl` and move traces as one process.
+New hosts pass `tools.arena_host_selftest` and the coordinator's
+`--calibration-games` replay before contributing. Host setup, the Windows/WSL2
+route, measured Mac throughput and the fidelity limits are in
+`docs/ARENA_HOSTS.md`.
 
 ## Gate evidence
 

@@ -41,6 +41,7 @@ from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.human.movement import MOVEMENT_MODES, human_execution_for_action, movement_for_pace
 from drmc_rl.planning.fast_reach import compute_speed_threshold
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from tools.trainer_arena_stopping import ComparisonStopping
 from tools.vs_head_to_head import PlainPolicy
 
 FPS = 60.0988
@@ -98,6 +99,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
     traced = [config.get("replay_games", 16) > 0 and (job[2] // 2) % replay_stride == 0 for job in jobs]
     with FrameVsPool(count, lib_path=config.get("native_library")) as pool:
         pool.reset([job[0] for job in jobs], level=match["level"])
+        finished = [False] * count
         for frame in range(max_frames):
             states = pool.states
             if activity and (time.perf_counter() >= next_activity or all(s.terminal for s in states[::2])):
@@ -108,11 +110,15 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                                           for p, (_, side, _) in enumerate(jobs)),
                 ))
                 next_activity = time.perf_counter() + 5
-            if all(states[2*p].terminal for p in range(count)):
+            if all(finished):
                 break
             fresh, observations, infos, policy_ids = [], [], [], []
             for side, current in enumerate(states):
                 pair, physical = divmod(side, 2)
+                if finished[pair]:
+                    # A game's statistics end with its terminal frame, however
+                    # long the other games in this batch continue.
+                    continue
                 variant = match["a"] if physical == jobs[pair][1] else match["b"]
                 params = variants[variant]
                 point = points[variant]
@@ -276,6 +282,7 @@ def run_batch(config, match, jobs, policy, planner, preparer, *, policies=None, 
                 if anticipates:
                     prepared[side] = preparer.prepare(state, selected, pace)
                     ready_at[side] = frame + (0 if delay == 0 else budget) + preparation_budget
+            finished = [states[2*p].terminal for p in range(count)]
             buttons = [0] * len(controllers)
             for side, controller in enumerate(controllers):
                 if controller is None or not states[side].falling:
@@ -344,13 +351,17 @@ def publish(config, results, output, store):
     tournaments, aggregates = [], {}
     for match in config["schedule"]:
         rows = results.get(match["id"], [])
+        stopping = config.get("_stopping", {}).get(match["id"])
         tournaments.append(
             {
                 **match,
                 "target": match["games"],
                 "played": len(rows),
                 **outcome_summary(rows),
-                "status": "Complete"
+                **({"stopping": stopping} if stopping else {}),
+                "status": f"Decided: {stopping['decision']}"
+                if stopping
+                else "Complete"
                 if len(rows) >= match["games"]
                 else "Waiting for checkpoint"
                 if not match_ready(config, match)
@@ -420,10 +431,11 @@ def match_ready(config, match):
     return all(variant_ready(config,config["variants"][match[side]]) for side in ("a","b"))
 
 
-def next_live_match(config, results):
+def next_live_match(config, results, decided=()):
     """Give every ready matchup an initial batch before deepening coverage."""
     pending = [match for match in config["schedule"]
-               if len(results.get(match["id"],[])) < match["games"] and match_ready(config,match)]
+               if len(results.get(match["id"],[])) < match["games"] and match_ready(config,match)
+               and match["id"] not in decided]
     return min(pending,key=lambda m:len(results.get(m["id"],[])),default=None)
 
 
@@ -447,49 +459,66 @@ def variant_policy(config, params, parent):
     return actor
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    args = parser.parse_args()
-    config = json.loads(args.config.read_text())
-    bind_execution_profiles(config)
-    output = Path(config["output"])
-    output.mkdir(parents=True, exist_ok=True)
-    torch.set_num_threads(config.get("threads", 1))
-    torch.set_num_interop_threads(1)
-    if config.get("strict_fp32",False):
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-    policy = PlainPolicy(Path(config["checkpoint"]), config.get("device", "cuda"), public_only=True)
-    backend = config.get("rollout_backend", "frames")
-    anticipation = any(p.get("anticipation") for p in config["variants"].values())
-    rollout = run_batch
-    if backend == "events":
-        if anticipation or config.get("replay_games", 0):
-            raise ValueError("event arenas require reactive decisions; use frames for full-frame replay capture")
-        from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
-        planner = ParallelPlanning(config.get("planner_workers", 4))
-        rollout = run_event_batch
-    elif backend == "frames":
-        planner = NativeReachabilityRunner()
-    else:
-        raise ValueError("rollout_backend must be frames or events")
-    if config.get("memoize", False):
-        from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
-        policy = MemoPolicy(policy)
-        if backend == "frames":
-            planner = MemoPlanner(planner)
-    mixed = any("adapter_checkpoint" in p or "checkpoint" in p for p in config["variants"].values())
-    if mixed and anticipation:
-        raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
-    policies = {} if mixed else None
-    preparer = NextTurnPreparer(policy, planner, lib_path=config.get("native_library")) if anticipation else None
-    store = ArenaStore(config["working_db"], replay_dir=output / "replays")
+class ArenaRuntime:
+    """Loaded actors, planner and rollout for one host; shared by the local
+    arena and distributed study workers so both execute identical batches."""
+
+    def __init__(self, config):
+        torch.set_num_threads(config.get("threads", 1))
+        torch.set_num_interop_threads(1)
+        if config.get("strict_fp32",False):
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+        self.config = config
+        policy = PlainPolicy(Path(config["checkpoint"]), config.get("device", "cuda"), public_only=True)
+        backend = config.get("rollout_backend", "frames")
+        anticipation = any(p.get("anticipation") for p in config["variants"].values())
+        rollout = run_batch
+        if backend == "events":
+            if anticipation or config.get("replay_games", 0):
+                raise ValueError("event arenas require reactive decisions; use frames for full-frame replay capture")
+            from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
+            planner = ParallelPlanning(config.get("planner_workers", 4))
+            rollout = run_event_batch
+        elif backend == "frames":
+            planner = NativeReachabilityRunner()
+        else:
+            raise ValueError("rollout_backend must be frames or events")
+        if config.get("memoize", False):
+            from tools.trainer_arena_cache import MemoPlanner, MemoPolicy
+            policy = MemoPolicy(policy)
+            if backend == "frames":
+                planner = MemoPlanner(planner)
+        mixed = any("adapter_checkpoint" in p or "checkpoint" in p for p in config["variants"].values())
+        if mixed and anticipation:
+            raise ValueError("mixed-policy evaluation currently requires reaction-covered computation")
+        self.policy, self.planner, self.rollout = policy, planner, rollout
+        self.policies = {} if mixed else None
+        self.preparer = NextTurnPreparer(policy, planner, lib_path=config.get("native_library")) if anticipation else None
+
+    def play(self, match, jobs, activity=None):
+        """``activity`` is called with progress about every five seconds; it may raise to abandon the batch."""
+        if self.policies is not None:
+            for id in (match["a"],match["b"]):
+                if id not in self.policies:
+                    self.policies[id] = variant_policy(self.config,self.config["variants"][id],self.policy)
+        return self.rollout(self.config, match, jobs, self.policy, self.planner, self.preparer,
+                            policies=self.policies, activity=activity)
+
+    def close(self):
+        if self.preparer is not None:
+            self.preparer.close()
+        self.planner.close()
+
+
+def register_variants(config, store):
     for id, params in config["variants"].items():
         store.register(agent_id=id, name=params["name"], family="trainer planning", generation=1,
             checkpoint=params.get("adapter_checkpoint", params.get("checkpoint",config["checkpoint"])),
             params={"parent_checkpoint":params.get("checkpoint",config["checkpoint"]), **params}, status="active")
-    records = output / "games.jsonl"
+
+
+def load_journal(config, records):
     results = {}
     if records.exists():
         expected = {m["id"]: m["execution_key"] for m in config["schedule"]}
@@ -499,14 +528,90 @@ def main():
                 raise ValueError("resume journal has different or unrecorded motor limits; retain its frozen evaluator")
             results.setdefault(row["comparison"], []).append(row)
     records.touch(exist_ok=True)
+    return results
+
+
+def batch_size(config):
+    size = config.get("pairs", 16)
+    if size < 2 or size%2:
+        raise ValueError("evaluation batches require complete side-swapped pairs")
+    return size
+
+
+def write_trace(output, match, row, moves):
+    trace = output / "moves" / f"{match['id']}-{row['index']:04d}.json.gz"
+    trace.parent.mkdir(exist_ok=True)
+    # A fixed header timestamp keeps a replayed game's trace byte-identical.
+    with open(trace, "wb") as raw, gzip.GzipFile(filename=trace.name[:-3], fileobj=raw, mode="wb", mtime=0) as packed:
+        packed.write(json.dumps({"game": row, "moves": moves}).encode())
+    return trace
+
+
+def commit_batch(config, match, batch, elapsed, *, output, store, records, results, worker=None):
+    """Journal one played batch exactly as the single-host arena does."""
+    censored_seeds = {r["seed"] for r, _, _ in batch if r["reason"] == "timeout"}
+    for row, moves, replay in batch:
+        row.update(comparison=match["id"], level=match["level"], pace=match.get("pace", "frame_perfect"),
+                   execution_key=match["execution_key"])
+        results.setdefault(match["id"], []).append(row)
+        trace = write_trace(output, match, row, moves)
+        if row["seed"] not in censored_seeds:
+            store.record(
+                match["a"],
+                match["b"],
+                seed=row["seed"],
+                side=row["side"],
+                winner=row["winner"],
+                match_len_sec=row["frames"] / FPS,
+                decisions=row["a_stats"].get("decisions", 0)
+                + row["b_stats"].get("decisions", 0),
+                terminal_reason=row["reason"],
+                replay=replay,
+                match_key=f"{match['id']}-{row['index']}",
+                condition_key=match["id"],
+                level=match["level"],
+                speed_setting=2,
+                provenance={"controller_frames": True, "move_trace": str(trace.name),
+                            "pace": row["pace"]},
+                commit=False,
+            )
+        with records.open("a") as stream:
+            stream.write(json.dumps(row)+"\n")
+    worker = worker or dict(worker_id=f"{socket.gethostname()}-trainer-frames-{Path(config['working_db']).stem}",
+                            device=config.get("device", "cuda"), threads=config.get("threads",1))
+    store.record_worker_sample(worker_id=worker["worker_id"], device=worker["device"],
+        threads=worker["threads"], batch_size=len(batch), agent_a=match["a"], agent_b=match["b"],
+        games=len(batch), simulated_frames=sum(r[0]["frames"] for r in batch),
+        decisions=sum(r[0]["a_stats"].get("decisions",0)+r[0]["b_stats"].get("decisions",0) for r in batch),
+        wall_seconds=elapsed)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    args = parser.parse_args()
+    config = json.loads(args.config.read_text())
+    bind_execution_profiles(config)
+    output = Path(config["output"])
+    output.mkdir(parents=True, exist_ok=True)
+    runtime = ArenaRuntime(config)
+    store = ArenaStore(config["working_db"], replay_dir=output / "replays")
+    register_variants(config, store)
+    records = output / "games.jsonl"
+    results = load_journal(config, records)
+    stopping = ComparisonStopping(config, output)
+    config["_stopping"] = stopping.verdicts
+    for match in config["schedule"]:
+        stopping.verdict(match, results.get(match["id"], []))
     publish(config, results, output, store)
     try:
         schedule = iter(config["schedule"])
         while True:
             if config.get("watch",False):
-                match = next_live_match(config,results)
+                match = next_live_match(config,results,stopping.verdicts)
                 if match is None:
-                    complete = all(len(results.get(m["id"],[])) >= m["games"] for m in config["schedule"])
+                    complete = all(len(results.get(m["id"],[])) >= m["games"] or m["id"] in stopping.verdicts
+                                   for m in config["schedule"])
                     config.update(_worker_status="Complete" if complete else "Waiting for checkpoints",_current_match=None)
                     publish(config,results,output,store)
                     if complete:
@@ -517,66 +622,32 @@ def main():
                 match = next(schedule,None)
                 if match is None:
                     break
-            if policies is not None:
-                for id in (match["a"],match["b"]):
-                    if id not in policies:
-                        policies[id] = variant_policy(config,config["variants"][id],policy)
+                if match["id"] in stopping.verdicts:
+                    continue
             jobs = paired_jobs(config, match)
             completed = {row["index"] for row in results.get(match["id"], [])}
             jobs = [job for job in jobs if job[2] not in completed]
-            batch_size = config.get("pairs", 16)
-            if batch_size < 2 or batch_size%2:
-                raise ValueError("evaluation batches require complete side-swapped pairs")
+            size_limit = batch_size(config)
             if config.get("watch",False):
-                jobs = jobs[:batch_size]
-            for start in range(0, len(jobs), batch_size):
+                jobs = jobs[:size_limit]
+            start = 0
+            while start < len(jobs) and match["id"] not in stopping.verdicts:
+                size = stopping.batch_games(match, results.get(match["id"], []), size_limit)
                 config.update(_worker_status="Playing",_current_match=match["id"])
                 publish(config,results,output,store)
                 profile = cProfile.Profile() if config.get("profile") else None
                 if profile:
                     profile.enable()
-                batch, elapsed = rollout(config, match, jobs[start:start+batch_size], policy, planner, preparer, policies=policies)
+                batch, elapsed = runtime.play(match, jobs[start:start+size])
+                start += size
                 if profile:
                     profile.disable()
                     profile.dump_stats(output / "profile.pstats")
-                censored_seeds = {r["seed"] for r, _, _ in batch if r["reason"] == "timeout"}
-                for row, moves, replay in batch:
-                    row.update(comparison=match["id"], level=match["level"], pace=match.get("pace", "frame_perfect"),
-                               execution_key=match["execution_key"])
-                    results.setdefault(match["id"], []).append(row)
-                    trace = output / "moves" / f"{match['id']}-{row['index']:04d}.json.gz"
-                    trace.parent.mkdir(exist_ok=True)
-                    with gzip.open(trace, "wt") as stream:
-                        json.dump({"game": row, "moves": moves}, stream)
-                    if row["seed"] not in censored_seeds:
-                        store.record(
-                            match["a"],
-                            match["b"],
-                            seed=row["seed"],
-                            side=row["side"],
-                            winner=row["winner"],
-                            match_len_sec=row["frames"] / FPS,
-                            decisions=row["a_stats"].get("decisions", 0)
-                            + row["b_stats"].get("decisions", 0),
-                            terminal_reason=row["reason"],
-                            replay=replay,
-                            match_key=f"{match['id']}-{row['index']}",
-                            condition_key=match["id"],
-                            level=match["level"],
-                            speed_setting=2,
-                            provenance={"controller_frames": True, "move_trace": str(trace.name),
-                                        "pace": row["pace"]},
-                            commit=False,
-                        )
-                    with records.open("a") as stream:
-                        stream.write(json.dumps(row)+"\n")
-                store.record_worker_sample(worker_id=f"{socket.gethostname()}-trainer-frames-{Path(config['working_db']).stem}", device=config.get("device", "cuda"),
-                    threads=config.get("threads",1), batch_size=len(batch), agent_a=match["a"], agent_b=match["b"],
-                    games=len(batch), simulated_frames=sum(r[0]["frames"] for r in batch),
-                    decisions=sum(r[0]["a_stats"].get("decisions",0)+r[0]["b_stats"].get("decisions",0) for r in batch),
-                    wall_seconds=elapsed)
-                publish(config, results, output, store)
+                commit_batch(config, match, batch, elapsed, output=output, store=store,
+                             records=records, results=results)
                 rows = results[match["id"]]
+                stopping.verdict(match, rows)
+                publish(config, results, output, store)
                 print(
                     json.dumps(
                         {
@@ -584,6 +655,7 @@ def main():
                             "games": len(rows),
                             "target": match["games"],
                             **outcome_summary(rows),
+                            **stopping.progress(match, rows),
                             "batch_seconds": round(elapsed, 2),
                         }
                     ),
@@ -597,10 +669,7 @@ def main():
         raise
     finally:
         store.close()
-        if preparer is not None:
-            preparer.close()
-        planner.close()
-
+        runtime.close()
 
 if __name__ == "__main__":
     main()
