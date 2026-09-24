@@ -109,9 +109,19 @@ import torch
 assert torch.cuda.is_available(), "CUDA unavailable"
 major, minor = torch.cuda.get_device_capability(0)
 arch = f"sm_{major}{minor}"
-assert arch in torch.cuda.get_arch_list(), f"{arch} not in {torch.cuda.get_arch_list()}"
+# Cubins run on any device of the same major with an equal or higher minor
+# (sm_60 serves a 6.1 GTX 1080 Ti); PTX for an older arch is JIT-compiled.
+listed = torch.cuda.get_arch_list()
+usable = [a for a in listed if a.split("_")[0] in ("sm", "compute") and int(a.split("_")[1][:-1]) == major
+          and int(a.split("_")[1][-1]) <= minor] + [a for a in listed if a.startswith("compute_")
+          and int(a.split("_")[1]) <= major * 10 + minor]
+assert usable, f"no kernels for {arch} in {listed}"
 x = torch.randn(64, 64, device="cuda")
+w = torch.randn(8, 4, 3, 3, device="cuda")
 torch.testing.assert_close((x @ x).cpu(), x.cpu() @ x.cpu(), rtol=1e-3, atol=1e-3)
+torch.testing.assert_close(torch.nn.functional.conv2d(x[None, None].expand(1, 4, 64, 64), w).cpu(),
+                           torch.nn.functional.conv2d(x.cpu()[None, None].expand(1, 4, 64, 64), w.cpu()),
+                           rtol=1e-3, atol=1e-3)
 print("cuda ok", torch.__version__, torch.cuda.get_device_name(0), arch)
 EOF
   then
