@@ -1,0 +1,14 @@
+H-fast           n=128 score=0.219±0.075 | A wait   7.0 steer  18.3 desc  18.0 tot  43.3 (hes  2.1, fb 0.062) | B wait  12.0 steer   8.4 desc  14.8 tot  35.2 | pills/game A 132 B 150
+R-fast           n=128 score=0.711±0.080 | A wait   7.1 steer   8.3 desc  14.2 tot  29.6 (hes  2.7, fb 0.000) | B wait  12.0 steer   8.0 desc  13.7 tot  33.7 | pills/game A 145 B 135
+RD-fast          n=128 score=0.547±0.091 | A wait   7.1 steer   8.4 desc  21.1 tot  36.5 (hes  2.5, fb 0.000) | B wait  12.0 steer   8.2 desc  14.4 tot  34.6 | pills/game A 137 B 142
+RS-fast          n=128 score=0.414±0.083 | A wait   7.0 steer  18.8 desc  11.6 tot  37.4 (hes  2.2, fb 0.060) | B wait  12.0 steer   8.3 desc  14.5 tot  34.7 | pills/game A 140 B 147
+SD-fast          n=128 score=0.156±0.061 | A wait  12.0 steer  16.2 desc  17.4 tot  45.6 (hes  0.0, fb 0.060) | B wait  12.0 steer   8.4 desc  15.0 tot  35.4 | pills/game A 133 B 154
+NC-fast          n=128 score=0.375±0.084 | A wait   6.9 steer  17.5 desc  18.6 tot  43.0 (hes  2.1, fb 0.062) | B wait  12.0 steer   8.4 desc  14.6 tot  35.0 | pills/game A 135 B 150
+CTX-fast         n=128 score=0.211±0.068 | A wait   7.1 steer  18.4 desc  18.2 tot  43.6 (hes  2.1, fb 0.058) | B wait  12.0 steer   8.4 desc  14.6 tot  35.0 | pills/game A 128 B 146
+H-top_humans     n=128 score=0.125±0.053 | A wait   5.0 steer  16.7 desc  17.6 tot  39.2 (hes  0.9, fb 0.055) | B wait   6.0 steer   6.6 desc  15.9 tot  28.6 | pills/game A 126 B 149
+R-top_humans     n=128 score=0.586±0.080 | A wait   4.8 steer   6.5 desc  14.9 tot  26.3 (hes  1.0, fb 0.000) | B wait   6.0 steer   6.2 desc  15.1 tot  27.3 | pills/game A 156 B 151
+RD-top_humans    n=128 score=0.328±0.087 | A wait   4.9 steer   6.5 desc  21.2 tot  32.6 (hes  1.1, fb 0.000) | B wait   6.0 steer   6.5 desc  15.6 tot  28.1 | pills/game A 145 B 155
+RS-top_humans    n=128 score=0.289±0.080 | A wait   4.9 steer  17.3 desc  12.0 tot  34.1 (hes  0.9, fb 0.050) | B wait   6.0 steer   6.5 desc  15.5 tot  28.0 | pills/game A 145 B 157
+SD-top_humans    n=128 score=0.109±0.051 | A wait   6.0 steer  15.9 desc  17.6 tot  39.5 (hes  0.0, fb 0.051) | B wait   6.0 steer   6.5 desc  16.0 tot  28.4 | pills/game A 139 B 161
+FS-fast          n=128 score=0.180±0.073 | A wait   7.1 steer  18.5 desc  18.0 tot  43.6 (hes  2.1, fb 0.055) | B wait  12.0 steer   8.3 desc  14.6 tot  34.9 | pills/game A 119 B 138
+FS-top_humans    n=128 score=0.078±0.044 | A wait   4.9 steer  16.8 desc  17.4 tot  39.1 (hes  0.8, fb 0.054) | B wait   6.0 steer   6.5 desc  15.8 tot  28.3 | pills/game A 117 B 141
