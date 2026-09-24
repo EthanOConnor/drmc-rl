@@ -143,6 +143,7 @@ def main():
     parser.add_argument("--json-out")
     args = parser.parse_args()
     torch.set_num_threads(args.threads)
+    from drmc_rl.game.afterstate import afterstate_batch
     from drmc_rl.models.policy.afterstate_core import AfterstateCorePolicyNet, afterstate_core_config
     from tools.eval_policy import _build_net_from_cfg
     from tools.vs_head_to_head import PlainPolicy
@@ -172,7 +173,8 @@ def main():
             for _ in range(3):
                 student(*inputs, aux=aux, afterstate=afterstate); teacher(*inputs, aux=aux)
             for _ in range(args.repeats):
-                t = time.perf_counter(); AfterstateCorePolicyNet.exact_afterstates(inputs[0], inputs[1], inputs[3], inputs[5])
+                t = time.perf_counter()  # uncached exact afterstates, as for a new decision
+                afterstate_batch(inputs[0][:, :8].numpy(), inputs[1].numpy(), inputs[3].numpy(), inputs[5].numpy())
                 timings["host_afterstate"].append(time.perf_counter() - t)
                 t = time.perf_counter(); student(*inputs, aux=aux, afterstate=afterstate)
                 timings["afterstate"].append(time.perf_counter() - t)
