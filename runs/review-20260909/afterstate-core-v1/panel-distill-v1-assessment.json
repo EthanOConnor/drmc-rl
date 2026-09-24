@@ -1,0 +1,261 @@
+{
+  "schema": "drmc-afterstate-arena-assessment-v1",
+  "config": "/Users/ethan/dev/drmario/drmc-rl-afterstate/runs/review-20260909/afterstate-core-v1/panel-distill-v1.json",
+  "complete": true,
+  "games": 896,
+  "expected_games": 896,
+  "candidate": {
+    "name": "Afterstate core \u00b7 distill-v1",
+    "delay": 4,
+    "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/student-final-inference.pt"
+  },
+  "champion": {
+    "name": "Mixed-pace retention v2 \u00b7 3M placements",
+    "delay": 4,
+    "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt"
+  },
+  "pooled_score": 0.5245535714285714,
+  "pooled_ci95": [
+    0.48660714285714285,
+    0.5613839285714286
+  ],
+  "pooled_elo": 17.07530353319941,
+  "simultaneous_critical_value": 2.6284151538792657,
+  "comparisons": [
+    {
+      "pace": "sloth",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 43,
+      "losses": 41,
+      "draws": 44,
+      "censored": 0,
+      "score": 0.5078125,
+      "marginal_score_ci95": [
+        0.4140625,
+        0.6015625
+      ],
+      "elo_difference": 5.429122875709566,
+      "seed_standard_error": 0.04788713828777887,
+      "reasons": {
+        "topout": 128
+      },
+      "candidate_execution": {
+        "validated_input_frames": 26036,
+        "locks": 1361,
+        "unplanned_locks": 278,
+        "decisions": 1394,
+        "feasible_candidates": 10565,
+        "forced_placements": 0,
+        "spawn_wait_frames": 49860,
+        "no_reachable_after_delay": 286
+      },
+      "simultaneous_score_ci95": [
+        0.38194522004849,
+        0.6336797799515099
+      ]
+    },
+    {
+      "pace": "relaxed",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 69,
+      "losses": 57,
+      "draws": 2,
+      "censored": 0,
+      "score": 0.546875,
+      "marginal_score_ci95": [
+        0.4375,
+        0.65625
+      ],
+      "elo_difference": 32.668018580527814,
+      "seed_standard_error": 0.0564741455629343,
+      "reasons": {
+        "topout": 127,
+        "clear": 1
+      },
+      "candidate_execution": {
+        "validated_input_frames": 153565,
+        "locks": 5477,
+        "unplanned_locks": 154,
+        "decisions": 5520,
+        "feasible_candidates": 112449,
+        "forced_placements": 0,
+        "spawn_wait_frames": 160980,
+        "no_reachable_after_delay": 154
+      },
+      "simultaneous_score_ci95": [
+        0.3984375,
+        0.6953125
+      ]
+    },
+    {
+      "pace": "normal",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 69,
+      "losses": 59,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.5390625,
+      "marginal_score_ci95": [
+        0.4296875,
+        0.6484375
+      ],
+      "elo_difference": 27.198831638044453,
+      "seed_standard_error": 0.05489967344479599,
+      "reasons": {
+        "clear": 54,
+        "topout": 74
+      },
+      "candidate_execution": {
+        "validated_input_frames": 326489,
+        "locks": 12403,
+        "unplanned_locks": 66,
+        "decisions": 12420,
+        "feasible_candidates": 343140,
+        "forced_placements": 0,
+        "spawn_wait_frames": 271788,
+        "no_reachable_after_delay": 66
+      },
+      "simultaneous_score_ci95": [
+        0.39476336637467513,
+        0.6833616336253249
+      ]
+    },
+    {
+      "pace": "fast",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 56,
+      "losses": 72,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.4375,
+      "marginal_score_ci95": [
+        0.3515625,
+        0.5234375
+      ],
+      "elo_difference": -43.65778777002721,
+      "seed_standard_error": 0.04523417902848412,
+      "reasons": {
+        "topout": 22,
+        "clear": 106
+      },
+      "candidate_execution": {
+        "validated_input_frames": 398047,
+        "locks": 17773,
+        "unplanned_locks": 13,
+        "decisions": 17799,
+        "feasible_candidates": 544937,
+        "forced_placements": 2,
+        "spawn_wait_frames": 213432,
+        "no_reachable_after_delay": 13
+      },
+      "simultaneous_score_ci95": [
+        0.31860579836824465,
+        0.5563942016317553
+      ]
+    },
+    {
+      "pace": "top_humans",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 64,
+      "losses": 64,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.5,
+      "marginal_score_ci95": [
+        0.3984375,
+        0.6015625
+      ],
+      "elo_difference": 0.0,
+      "seed_standard_error": 0.05103103630798288,
+      "reasons": {
+        "clear": 124,
+        "topout": 4
+      },
+      "candidate_execution": {
+        "validated_input_frames": 401844,
+        "locks": 18340,
+        "unplanned_locks": 0,
+        "decisions": 18352,
+        "feasible_candidates": 581121,
+        "forced_placements": 0,
+        "spawn_wait_frames": 110112
+      },
+      "simultaneous_score_ci95": [
+        0.3658692508499348,
+        0.6341307491500652
+      ]
+    },
+    {
+      "pace": "super_human",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 73,
+      "losses": 55,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.5703125,
+      "marginal_score_ci95": [
+        0.4765625,
+        0.6640625
+      ],
+      "elo_difference": 49.184068250484835,
+      "seed_standard_error": 0.04837024901303831,
+      "reasons": {
+        "clear": 124,
+        "topout": 4
+      },
+      "candidate_execution": {
+        "validated_input_frames": 369263,
+        "locks": 18086,
+        "unplanned_locks": 0,
+        "decisions": 18101,
+        "feasible_candidates": 578275,
+        "forced_placements": 0,
+        "spawn_wait_frames": 72404
+      },
+      "simultaneous_score_ci95": [
+        0.4431754044972165,
+        0.6974495955027835
+      ]
+    },
+    {
+      "pace": "frame_perfect",
+      "games": 128,
+      "independent_reset_seeds": 64,
+      "wins": 73,
+      "losses": 55,
+      "draws": 0,
+      "censored": 0,
+      "score": 0.5703125,
+      "marginal_score_ci95": [
+        0.46875,
+        0.671875
+      ],
+      "elo_difference": 49.184068250484835,
+      "seed_standard_error": 0.05207403190753663,
+      "reasons": {
+        "clear": 123,
+        "topout": 5
+      },
+      "candidate_execution": {
+        "validated_input_frames": 323658,
+        "locks": 18179,
+        "unplanned_locks": 0,
+        "decisions": 18193,
+        "feasible_candidates": 589324,
+        "forced_placements": 0,
+        "spawn_wait_frames": 72772
+      },
+      "simultaneous_score_ci95": [
+        0.4334403254106383,
+        0.7071846745893617
+      ]
+    }
+  ],
+  "censored_games": 0
+}
