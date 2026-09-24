@@ -33,16 +33,24 @@ What is not guaranteed: FP32 network outputs are not bitwise identical across
 devices, kernel choices or batch shapes (the preview-branch measurement found
 logit differences up to 1.6e-5 from a shape change alone), and the event
 runner's asynchronous batches are timing-dependent even on one host. Games stay
-identical as long as no decision is that close to a tie. A different numerics
-class (device, CPU model, torch build) must therefore be **validated**, not
-assumed:
+identical as long as no decision is that close to a tie. Every batch holds whole
+seed pairs, so both side-swapped games of a seed always run on the same worker
+and hardware effects apply to both entrants alike. Other numerics classes
+(device, CPU model, torch build) are validated rather than assumed:
 
 - `--calibration-games N` makes each new numerics class replay N
-  already-journaled games before it may contribute; a mismatch rejects it.
-  `--trust PREFIX` admits the reference class (e.g. `mps/`) without replay.
-- `--replicate-every K` replays every K-th batch on a second worker (another
-  numerics class when one is connected) and records the comparison in
-  `distributed/audit.jsonl`.
+  already-journaled games before it may contribute. `--trust PREFIX` admits
+  the reference class (e.g. `mps/`) without replay.
+- `--replicate-every K` (default 16, about 6% of batches) replays sampled
+  batches on a second worker, preferring another numerics class.
+- `--fidelity tolerant` (default, exploratory studies) admits a class whose
+  decisions agree with the reference at `--min-agreement` (0.99) of compared
+  decisions, counting each game up to and including its first divergence;
+  divergent games are expected and fine. `--fidelity strict` (confirmation
+  runs) requires byte-identical games. A failing calibration or replica
+  rejects the untrusted class. Every comparison, with per-class cumulative
+  agreement and divergent-game rates, is appended to
+  `distributed/audit.jsonl` and shown in `/api/v1/study/status`.
 - `tools.arena_host_selftest` checks the host's native engine and planner
   builds against the Mac reference without torch or checkpoints.
 
@@ -58,7 +66,7 @@ python3 -c 'import secrets; print(secrets.token_hex(24))' > ~/.config/drmc-rl/st
 chmod 600 ~/.config/drmc-rl/study-worker.token
 export DRMARIO_REACH_LIB=$FROZEN/libdrm_reach_full.dylib   # the study's frozen natives
 uv run python -m tools.trainer_arena_distributed serve --config STUDY.json \
-  --host 0.0.0.0 --port 8099 --calibration-games 8 --trust mps/ --replicate-every 16
+  --host 0.0.0.0 --port 8099 --calibration-games 8 --trust mps/   # add --fidelity strict for confirmation
 ```
 
 Bind `0.0.0.0` (or the LAN address, e.g. 192.168.157.114) only on a trusted

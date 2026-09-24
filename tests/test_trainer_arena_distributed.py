@@ -108,7 +108,8 @@ def test_http_workers_reproduce_the_single_host_study(tmp_path, monkeypatch):
     config_path = tmp_path / "dist.json"
     config_path.write_text(json.dumps(study(tmp_path, "http")))
     args = type("Args", (), dict(config=config_path, lease_ttl=60.0, replicate_every=2, calibration_games=0,
-                                 max_ahead=0, allow_source_mismatch=False, trust=[], host="127.0.0.1",
+                                 max_ahead=0, allow_source_mismatch=False, trust=[], fidelity="strict",
+                                 min_agreement=0.99, host="127.0.0.1",
                                  port=0, token="secret", exit_when_done=True, linger=0.5))()
     ready = threading.Event()
     port = {}
@@ -161,4 +162,26 @@ def test_leases_expire_and_mismatched_replicas_are_audited(tmp_path):
     assert not audit["equal"] and audit["differing"][0]["first_move"] == 0
     with pytest.raises(ValueError):
         coordinator.submit("unknown", dict(payload, batch=second["batch"], rows=payload["rows"][:1]))
+    coordinator.close()
+
+
+def test_seed_pairs_share_a_batch_and_tolerant_fidelity_scores_decisions(tmp_path):
+    coordinator = dist.StudyCoordinator(study(tmp_path, "pairs"), log=lambda *_: None)
+    for batch in coordinator.batches.values():
+        sides = {}
+        for seed, side, _ in batch.jobs:
+            sides.setdefault(seed, set()).add(side)
+        assert all(v == {0, 1} for v in sides.values())  # both side-swapped games on one worker
+    games = [fake_game(*job) for job in coordinator.plan["plain"][0].jobs]
+    rows, moves = [g[0] for g in games], [g[1] for g in games]
+    other = json.loads(json.dumps(moves))
+    other[0][1]["placement"]["action"] = 511  # diverge at the second decision of one game
+    comparison = coordinator._compare(rows, moves, rows, other)
+    total = sum(len(m) for m in moves)
+    assert comparison["divergent_games"] == 1
+    assert comparison["compared_decisions"] == total - len(moves[0]) + 2
+    assert comparison["agreed_decisions"] == total - len(moves[0]) + 1
+    assert coordinator._acceptable(comparison) == (comparison["agreement"] >= 0.99)
+    coordinator.fidelity = "strict"
+    assert not coordinator._acceptable(comparison)
     coordinator.close()

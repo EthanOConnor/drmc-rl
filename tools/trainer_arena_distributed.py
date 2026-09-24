@@ -95,7 +95,8 @@ class StudyCoordinator:
     """All study state. Not thread-safe: the server calls it from one thread."""
 
     def __init__(self, config, *, lease_ttl=1800.0, replicate_every=0, calibration_games=0,
-                 max_ahead=0, allow_source_mismatch=False, trust=(), log=print):
+                 max_ahead=0, allow_source_mismatch=False, trust=(), fidelity="tolerant", min_agreement=0.99,
+                 log=print):
         from drmc_rl.arena.store import ArenaStore
         from tools.trainer_arena_stopping import ComparisonStopping
         from tools.trainer_planning_arena import (
@@ -150,6 +151,10 @@ class StudyCoordinator:
         self.next_accept = {m["id"]: 0 for m in self.matches}
         self.leases = {}
         self.workers = {}
+        if fidelity not in ("tolerant", "strict"):
+            raise ValueError("fidelity must be tolerant or strict")
+        self.fidelity, self.min_agreement = fidelity, float(min_agreement)
+        self.fidelity_stats = {}
         self.trust = tuple(trust)      # numerics prefixes admitted without calibration
         self.admitted = {}           # numerics class -> calibration verdict
         self.calibration = self._calibration_jobs()
@@ -354,23 +359,60 @@ class StudyCoordinator:
                     identical=batch.result["sha256"] == digest)
 
     def _compare(self, rows_a, moves_a, rows_b, moves_b):
-        differing = []
+        """Per-game divergence plus decision agreement up to each first divergence."""
+        differing, agreed, compared = [], 0, 0
         for ra, ma, rb, mb in zip(rows_a, moves_a, rows_b, moves_b):
             if canonical(ra) == canonical(rb) and canonical(ma) == canonical(mb):
+                agreed += len(ma)
+                compared += len(ma)
                 continue
             first = next((i for i, (x, y) in enumerate(zip(ma, mb)) if canonical(x) != canonical(y)),
                          min(len(ma), len(mb)))
+            # Decisions before the first divergence agree and the divergent one
+            # does not; after it the two are different games and are not compared.
+            diverged = first < min(len(ma), len(mb))
+            agreed += first
+            compared += first + int(diverged)
             differing.append(dict(index=ra["index"], seed=ra["seed"], first_move=first,
                                   moves=[len(ma), len(mb)], scores=[ra["score"], rb["score"]]))
-        return differing
+        return dict(differing=differing, agreed_decisions=agreed, compared_decisions=compared,
+                    agreement=agreed / compared if compared else 1.0, divergent_games=len(differing),
+                    games=len(rows_a))
 
-    def _audit(self, batch, payload):
-        differing = self._compare(batch.result["rows"], batch.result["moves"], payload["rows"], payload["moves"])
-        record = dict(batch=batch.key, time=time.time(), equal=not differing, games=len(payload["rows"]),
-                      differing=differing, reference=batch.result["worker"], replica=payload["worker"])
+    def _acceptable(self, comparison):
+        if self.fidelity == "strict":
+            return not comparison["differing"]
+        return comparison["agreement"] >= self.min_agreement
+
+    def _trusted(self, numerics):
+        return bool(self.trust) and numerics.startswith(self.trust)
+
+    def _record(self, record, comparison, numerics):
+        stats = self.fidelity_stats.setdefault(numerics, dict(games=0, divergent_games=0, compared_decisions=0,
+                                                              agreed_decisions=0))
+        for key in list(stats):
+            stats[key] += comparison[key]
+        stats.update(agreement=stats["agreed_decisions"] / max(stats["compared_decisions"], 1),
+                     divergent_game_rate=stats["divergent_games"] / max(stats["games"], 1))
+        record.update(comparison, equal=not comparison["differing"], fidelity=self.fidelity,
+                      min_agreement=self.min_agreement, acceptable=self._acceptable(comparison),
+                      class_totals=dict(stats))
         with (self.output / "distributed" / "audit.jsonl").open("a") as stream:
             stream.write(json.dumps(record) + "\n")
-        self.log(f"coordinator: audit {batch.key}: {'identical' if not differing else f'{len(differing)} games differ'}")
+
+    def _audit(self, batch, payload):
+        comparison = self._compare(batch.result["rows"], batch.result["moves"], payload["rows"], payload["moves"])
+        reference, replica = batch.result["worker"]["numerics"], payload["worker"]["numerics"]
+        self._record(dict(batch=batch.key, time=time.time(), reference=batch.result["worker"],
+                          replica=payload["worker"]), comparison, replica)
+        self.log(f"coordinator: audit {batch.key}: {comparison['divergent_games']}/{comparison['games']} games "
+                 f"diverge, decision agreement {comparison['agreement']:.4f}")
+        if not self._acceptable(comparison) and reference != replica:
+            # Blame whichever class is not the trusted reference.
+            suspect = reference if self._trusted(replica) and not self._trusted(reference) else replica
+            self.admitted[suspect] = f"replica of {batch.key} failed: agreement {comparison['agreement']:.4f}, " \
+                                     f"{comparison['divergent_games']} divergent games ({self.fidelity})"
+            self.log(f"coordinator: rejecting numerics class {suspect}")
 
     def _calibrate(self, payload):
         numerics = payload["worker"]["numerics"]
@@ -381,15 +423,18 @@ class StudyCoordinator:
         journals = load_journals(self.output, match_id, reference)
         strip = ("comparison", "level", "pace", "execution_key")
         reference_rows = [{k: v for k, v in r.items() if k not in strip} for r in reference]
-        differing = self._compare(reference_rows, [journals[r["index"]] for r in reference],
-                                  payload["rows"], payload["moves"])
-        self.admitted[numerics] = True if not differing else f"{len(differing)} of {len(reference)} games differ"
-        record = dict(batch="calibration", time=time.time(), equal=not differing, games=len(reference),
-                      differing=differing, replica=payload["worker"], numerics=numerics)
-        with (self.output / "distributed" / "audit.jsonl").open("a") as stream:
-            stream.write(json.dumps(record) + "\n")
-        self.log(f"coordinator: calibration {numerics}: {'admitted' if not differing else self.admitted[numerics]}")
-        return dict(accepted=not differing, calibration=self.admitted[numerics])
+        comparison = self._compare(reference_rows, [journals[r["index"]] for r in reference],
+                                   payload["rows"], payload["moves"])
+        ok = self._acceptable(comparison)
+        self.admitted[numerics] = True if ok else (
+            f"calibration failed: agreement {comparison['agreement']:.4f}, "
+            f"{comparison['divergent_games']} of {len(reference)} games diverge ({self.fidelity})")
+        self._record(dict(batch="calibration", time=time.time(), replica=payload["worker"], numerics=numerics),
+                     comparison, numerics)
+        self.log(f"coordinator: calibration {numerics}: {'admitted' if ok else self.admitted[numerics]} "
+                 f"({comparison['divergent_games']}/{comparison['games']} games diverge, "
+                 f"agreement {comparison['agreement']:.4f})")
+        return dict(accepted=ok, calibration=self.admitted[numerics], agreement=comparison["agreement"])
 
     def _advance(self, match):
         """Accept finished batches in order; evaluate stopping after each."""
@@ -451,6 +496,7 @@ class StudyCoordinator:
                     leases=[dict(batch=l["batch"], worker=l["worker"], purpose=l["purpose"],
                                  expires_in=round(l["expires"] - now)) for l in self.leases.values()],
                     workers=list(self.workers.values()), admitted=self.admitted,
+                    fidelity=dict(mode=self.fidelity, min_agreement=self.min_agreement, classes=self.fidelity_stats),
                     verdicts=self.stopping.verdicts)
 
     def close(self):
@@ -765,7 +811,8 @@ def serve(args, *, token=None, on_ready=None, stopped=None):
     coordinator = state.submit(lambda: StudyCoordinator(
         config, lease_ttl=args.lease_ttl, replicate_every=args.replicate_every,
         calibration_games=args.calibration_games, max_ahead=args.max_ahead,
-        allow_source_mismatch=args.allow_source_mismatch, trust=args.trust)).result()
+        allow_source_mismatch=args.allow_source_mismatch, trust=args.trust,
+        fidelity=args.fidelity, min_agreement=args.min_agreement)).result()
     server = start_server(coordinator, state, args.host, args.port, token)
     print(json.dumps(dict(coordinator=f"http://{args.host}:{server.server_address[1]}",
                           batches=len(coordinator.batches), source=coordinator.source)), flush=True)
@@ -851,8 +898,13 @@ def main(argv=None):
     def coordinator_arguments(p):
         p.add_argument("--config", required=True, type=Path)
         p.add_argument("--lease-ttl", type=float, default=1800.0)
-        p.add_argument("--replicate-every", type=int, default=0,
-                       help="replay every Nth planned batch on a second worker (prefer another numerics class)")
+        p.add_argument("--replicate-every", type=int, default=16,
+                       help="replay every Nth planned batch on a second worker, preferring another numerics "
+                            "class (0 disables)")
+        p.add_argument("--fidelity", choices=("tolerant", "strict"), default="tolerant",
+                       help="tolerant: admit a class whose decisions agree >= --min-agreement up to each "
+                            "first divergence; strict: require byte-identical games (confirmation runs)")
+        p.add_argument("--min-agreement", type=float, default=0.99)
         p.add_argument("--calibration-games", type=int, default=0,
                        help="journaled games each new numerics class must reproduce before contributing")
         p.add_argument("--max-ahead", type=int, default=0,
