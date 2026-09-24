@@ -355,7 +355,9 @@ class HumanBackend:
             pace = BY_ID[pace_id]
             paced_info = {**info, "pace/id": pace_id,
                           "pace/context": strategy_context(pace, state, max(4, pace.reaction_frames))}
-            for batch in (1, 18):
+            # Live decisions score one position; only next-pill anticipation scores
+            # its 18 preview/parity branches, and public-context cores decline it.
+            for batch in (1,) if uses_public_context(policy) else (1, 18):
                 policy.score(np.repeat(observation[None], batch, axis=0), [paced_info] * batch)
 
     def capabilities(self) -> dict[str, Any]:
