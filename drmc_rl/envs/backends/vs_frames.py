@@ -113,6 +113,18 @@ class FrameVsPool:
         self.states = (FrameState * (2 * self.num_pairs))()
         self.buttons = (C.c_uint8 * (2 * self.num_pairs))()
         self._history = None
+        self._events = {}
+
+    def _public_event(self, event):
+        # Native events are immutable once recorded, and conversion is a pure
+        # function of the struct's bytes; reuse the audited PairEvent.
+        key = bytes(event)
+        value = self._events.get(key)
+        if value is None:
+            if len(self._events) >= 65536:
+                self._events.clear()
+            value = self._events[key] = event.public()
+        return value
 
     def reset(self, seeds, *, level=14, speed=2, mask=None):
         if len(seeds) != self.num_pairs:
@@ -181,7 +193,7 @@ class FrameVsPool:
                 viruses_remaining=int(history.viruses_remaining[i]),
                 animation_phase=phase, state_age_frames=0,
             ))
-        events = tuple(event.public() for event in history.events[:history.count])
+        events = tuple(self._public_event(event) for event in history.events[:history.count])
         if any(event.frame_id > frame for event in events) or any(
             a.frame_id > b.frame_id for a, b in zip(events, events[1:])
         ):

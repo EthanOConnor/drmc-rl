@@ -7,7 +7,7 @@ Missing observations have explicit masks; native restore bytes are never read.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import numpy as np
 
@@ -211,12 +211,9 @@ def encode_public_context(
     )
     # Event side IDs are relative to the actor, so swapping physical ports does
     # not silently change the feature meaning.
-    events = tuple(
-        replace(e, side=None if e.side is None else int(e.side != side))
-        for e in public.recent_events
-    )
     history, mask = pair_events_to_features(
-        events, current_frame=public.frame_id, max_events=HISTORY_LENGTH
+        public.recent_events, current_frame=public.frame_id, max_events=HISTORY_LENGTH,
+        relative_to=side,
     )
     features += np.concatenate((history, mask[:, None]), axis=1).reshape(-1).tolist()
     result = np.asarray(features, dtype=np.float32)
