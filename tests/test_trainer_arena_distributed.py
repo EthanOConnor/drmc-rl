@@ -184,6 +184,11 @@ def test_seed_pairs_share_a_batch_and_tolerant_fidelity_scores_decisions(tmp_pat
     assert coordinator._acceptable(comparison) == (comparison["agreement"] >= 0.99)
     coordinator.fidelity = "strict"
     assert not coordinator._acceptable(comparison)
+    for _ in range(2):  # a class's second audit adds to its running totals
+        coordinator._record({}, comparison, "cuda/y")
+    totals = coordinator.fidelity_stats["cuda/y"]
+    assert totals["games"] == 2 * comparison["games"] and totals["divergent_games"] == 2
+    assert totals["agreement"] == comparison["agreement"]
     coordinator.close()
 
 

@@ -414,7 +414,7 @@ class StudyCoordinator:
     def _record(self, record, comparison, numerics):
         stats = self.fidelity_stats.setdefault(numerics, dict(games=0, divergent_games=0, compared_decisions=0,
                                                               agreed_decisions=0))
-        for key in list(stats):
+        for key in ("games", "divergent_games", "compared_decisions", "agreed_decisions"):
             stats[key] += comparison[key]
         stats.update(agreement=stats["agreed_decisions"] / max(stats["compared_decisions"], 1),
                      divergent_game_rate=stats["divergent_games"] / max(stats["games"], 1))
