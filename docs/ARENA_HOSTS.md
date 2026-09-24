@@ -85,12 +85,20 @@ mombox can run the coordinator (it is I/O and bookkeeping only), but it is a
 
 ## Mac workers
 
-MPS is the Mac's network device; the M3 Max GPU is not saturated by one
-process because the frame runner is a serial Python loop. Measured frame-runner
-`lock_safe` frame_perfect, pairs 16, under load average 50–100 from unrelated
-jobs: one process 378 games/h, two processes 1,060 games/h, three processes
-1,440 games/h (see `runs/review-20260909/arena-hosts-mac-benchmark.json`).
-One CPU-only process at one thread was 9x slower than MPS (39 vs 356 games/h).
+MPS is the Mac's network device; one process leaves the M3 Max GPU idle
+between its serial frame-loop steps, so several worker processes scale well.
+Measured with `local`, frame_perfect, both sides the mixed-v2 core, under load
+average 63–122 from unrelated jobs (`runs/review-20260909/arena-hosts-mac-benchmark.json`):
+
+| study | 1 process | 3 workers | 4 workers | 6 workers |
+|---|---|---|---|---|
+| frames, lock_safe vs spawn, pairs 16 | 344 games/h | 729 | 800 | 971 |
+| events, spawn vs spawn, pairs 32, async | 1,557 | 2,695 | | |
+
+One CPU-only process at one thread was 9x slower than MPS (39 vs 356 games/h;
+conv2d was 90% of its time), so the Mac should not add CPU workers while other
+jobs occupy its cores. Use 4–6 MPS workers when the machine is otherwise idle
+and 3 when it is shared.
 
 ```bash
 uv run python -m tools.trainer_arena_distributed local --config STUDY.json \
