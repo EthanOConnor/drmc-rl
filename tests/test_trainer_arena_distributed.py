@@ -28,7 +28,7 @@ class FakeRuntime:
     def __init__(self, config):
         self.config = config
 
-    def play(self, match, jobs):
+    def play(self, match, jobs, activity=None):
         FakeRuntime.played.append((match["id"], len(jobs)))
         return [fake_game(*job) for job in jobs], 0.01
 
@@ -184,4 +184,20 @@ def test_seed_pairs_share_a_batch_and_tolerant_fidelity_scores_decisions(tmp_pat
     assert coordinator._acceptable(comparison) == (comparison["agreement"] >= 0.99)
     coordinator.fidelity = "strict"
     assert not coordinator._acceptable(comparison)
+    coordinator.close()
+
+
+def test_released_leases_are_reissued_immediately(tmp_path):
+    config = study(tmp_path, "release")
+    config["schedule"] = config["schedule"][2:]
+    coordinator = dist.StudyCoordinator(config, replicate_every=0, log=lambda *_: None)
+    worker = dict(protocol=dist.PROTOCOL, worker_id="a", host="h", numerics="cpu/x", device="cpu", threads=1,
+                  source=coordinator.source)
+    first = coordinator.lease(worker)
+    assert not coordinator.release(first["lease_id"], "wrong")["released"]
+    assert coordinator.release(first["lease_id"], first["claim_token"])["released"]
+    again = coordinator.lease(dict(worker, worker_id="b"))
+    assert again["batch"] == first["batch"]
+    assert coordinator.release_batch(again["batch"])["released"] == 1
+    assert coordinator.lease(dict(worker, worker_id="c"))["batch"] == first["batch"]
     coordinator.close()

@@ -444,13 +444,14 @@ class ArenaRuntime:
         self.policies = {} if mixed else None
         self.preparer = NextTurnPreparer(policy, planner, lib_path=config.get("native_library")) if anticipation else None
 
-    def play(self, match, jobs):
+    def play(self, match, jobs, activity=None):
+        """``activity`` is called with progress about every five seconds; it may raise to abandon the batch."""
         if self.policies is not None:
             for id in (match["a"],match["b"]):
                 if id not in self.policies:
                     self.policies[id] = variant_policy(self.config,self.config["variants"][id],self.policy)
         return self.rollout(self.config, match, jobs, self.policy, self.planner, self.preparer,
-                            policies=self.policies)
+                            policies=self.policies, activity=activity)
 
     def close(self):
         if self.preparer is not None:

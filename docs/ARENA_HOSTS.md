@@ -77,6 +77,11 @@ firewall in stealth mode, allow it explicitly:
 Check from another host with
 `curl -H "Authorization: Bearer $TOKEN" http://192.168.157.114:8099/api/v1/study/status`.
 The status shows batches, live leases, per-worker identity and calibration.
+A worker's first SIGTERM/SIGINT abandons its batch within about five seconds and
+releases the lease so another worker takes it at once; a second signal exits
+immediately. For a killed or hung worker, release its batch by hand:
+`curl -X POST -H "Authorization: Bearer $TOKEN" -d '{"batch":"BATCH_KEY"}' http://HOST:8099/api/v1/study/release`
+(batch keys are listed under `leases` in the status).
 Restarting the coordinator is safe: finished batches are spooled under
 `distributed/spool/` and workers retry for up to 15 minutes.
 

@@ -316,6 +316,28 @@ class StudyCoordinator:
         lease["expires"] = time.time() + self.lease_ttl
         return dict(renewed=True, ttl_seconds=self.lease_ttl)
 
+    def release(self, lease_id, claim):
+        """A worker gives a lease back unfinished so the batch is re-leased at once."""
+        lease = self.leases.get(lease_id)
+        if lease is None or not secrets.compare_digest(lease["claim"], claim):
+            return dict(released=False)
+        self._drop(lease_id, "released by its worker")
+        return dict(released=True)
+
+    def release_batch(self, key):
+        """Operator action: drop every live lease on one batch (e.g. a hung or killed worker)."""
+        dropped = [lease_id for lease_id, lease in self.leases.items() if lease["batch"] == key]
+        for lease_id in dropped:
+            self._drop(lease_id, "released by operator")
+        return dict(released=len(dropped), batch=key)
+
+    def _drop(self, lease_id, reason):
+        lease = self.leases.pop(lease_id)
+        batch = self.batches.get(lease["batch"])
+        if batch is not None:
+            batch.leases.discard(lease_id)
+        self.log(f"coordinator: lease {lease_id[:8]} for {lease['batch']} by {lease['worker']} {reason}")
+
     def submit(self, lease_id, payload):
         lease = self.leases.pop(lease_id, None)
         if lease is not None and not secrets.compare_digest(lease["claim"], str(payload.get("claim_token", ""))):
@@ -564,11 +586,15 @@ class Handler(BaseHTTPRequestHandler):
             request = self._body()
             if path == "/api/v1/study/leases":
                 return self._json(200, self._call(c.lease, request))
+            if path == "/api/v1/study/release":
+                return self._json(200, self._call(c.release_batch, str(request["batch"])))
             parts = path.split("/")
             if len(parts) == 7 and parts[:5] == ["", "api", "v1", "study", "leases"]:
                 lease_id = urllib.parse.unquote(parts[5])
                 if parts[6] == "renew":
                     return self._json(200, self._call(c.renew, lease_id, str(request.get("claim_token", ""))))
+                if parts[6] == "release":
+                    return self._json(200, self._call(c.release, lease_id, str(request.get("claim_token", ""))))
                 if parts[6] == "results":
                     return self._json(200, self._call(c.submit, lease_id, request))
             return self._json(404, dict(error="not found"))
@@ -602,6 +628,10 @@ def start_server(coordinator, state, host, port, token):
 
 # ---------------------------------------------------------------------------
 # Worker.
+
+
+class Abandoned(Exception):
+    """Raised inside a batch when the worker was asked to stop."""
 
 
 class CoordinatorError(RuntimeError):
@@ -766,9 +796,22 @@ def run_worker(args):
                                 if os.environ.get("DRMARIO_REACH_LIB") else None))
     print(json.dumps(dict(worker=identity, study=study["study_sha256"])), flush=True)
     stopped = threading.Event()
+
+    def interrupt(*_):
+        if stopped.is_set():
+            print("worker: second signal, exiting now", flush=True)
+            os._exit(130)
+        print("worker: stopping; the current batch is abandoned and its lease released "
+              "(signal again to exit immediately)", flush=True)
+        stopped.set()
+
     if threading.current_thread() is threading.main_thread():
         for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, lambda *_: stopped.set())
+            signal.signal(sig, interrupt)
+
+    def activity(_progress):
+        if stopped.is_set():
+            raise Abandoned()
     played = 0
     try:
         while not stopped.is_set():
@@ -794,7 +837,16 @@ def run_worker(args):
             renewer = threading.Thread(target=renew, daemon=True)
             renewer.start()
             try:
-                batch, elapsed = runtime.play(matches[lease["match"]], [tuple(j) for j in lease["jobs"]])
+                batch, elapsed = runtime.play(matches[lease["match"]], [tuple(j) for j in lease["jobs"]],
+                                              activity=activity)
+            except Abandoned:
+                try:
+                    client.request("POST", f"/api/v1/study/leases/{lease['lease_id']}/release",
+                                   dict(claim_token=lease["claim_token"]))
+                    print(f"worker: released {lease['batch']}", flush=True)
+                except Exception as error:
+                    print(f"worker: release failed ({error}); the lease will expire", flush=True)
+                return
             finally:
                 renewal_stop.set()
             submission = dict(claim_token=lease["claim_token"], batch=lease["batch"], elapsed=elapsed,
