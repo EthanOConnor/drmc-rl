@@ -514,3 +514,27 @@ def test_controller_training_command_finishes_with_activity_reporting(parent, tm
     assert payload["observation_schema"] == (progress_schema or "public_pair_context_v3")
     with np.load(output / "public-replay/update-00001.npz") as replay:
         assert json.loads(str(replay["metadata"]))["observation_schema"] == payload["observation_schema"]
+
+
+def test_deferred_reference_logits_match_collection_reference_and_keep_sampling(parent):
+    eager, deferred = ControllerCorePolicy(parent, seed=83), ControllerCorePolicy(parent, seed=83)
+    deferred.defer_reference = True
+    with torch.no_grad():
+        # A trained actor differs from its fixed reference; make that visible.
+        for actor in (eager, deferred):
+            for p in actor.net.parameters():
+                p.add_(torch.linspace(-.01, .01, p.numel()).reshape(p.shape))
+    obs, infos = controller_requests(eager)
+    first = eager.score(obs, infos)
+    second = deferred.score(obs, infos)
+    for a, b in zip(first, second):
+        assert np.array_equal(a, b)
+    rows, later = eager.learning_records, deferred.learning_records
+    assert all(r["base_logits"] is None for r in later)
+    assert deferred.fill_reference_logits(later, batch_size=3) == len(later)
+    for r, d in zip(rows, later):
+        assert r["slot"] == d["slot"] and r["behavior_logp"].tolist() == d["behavior_logp"].tolist()
+        reference_logp = torch.as_tensor(r["base_logits"]).log_softmax(-1).numpy()
+        assert not np.allclose(reference_logp, r["behavior_logp"], atol=1e-4)
+        np.testing.assert_allclose(d["base_logits"], r["base_logits"], rtol=0, atol=1e-5)
+    assert deferred.fill_reference_logits(later) == 0

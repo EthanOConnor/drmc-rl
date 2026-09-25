@@ -165,6 +165,7 @@ def main():
         raise ValueError('fork checkpoint bytes differ from the declared sha256')
     actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],
                                resume=config.get('resume') or (fork['checkpoint'] if fork else None))
+    actor.defer_reference=bool(config.get('deferred_reference',False))
     parent=PlainPolicy(Path(config['opponent_parent']),device,public_only=True)
     opponents=PublicOpponentPool(config['opponent_pool'],parent,config['opponent_parent'],device)
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
@@ -273,6 +274,9 @@ def main():
                 selected=terminal_samples(batch)
                 if bonus is not None:
                     for k,v in apply_bonus(batch,selected,bonus).items(): bonus_stats[k]+=v
+                if actor.defer_reference:
+                    tick=time.monotonic(); actor.fill_reference_logits(selected)
+                    breakdown['reference_seconds']+=time.monotonic()-tick
                 for r in selected:
                     r.update(game_id=r['game_id']+offset,pace=match['pace'])
                 rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b'],
