@@ -119,6 +119,12 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
         raise ValueError("shadow observers require deterministic synchronous decision batches")
     if asynchronous and not hasattr(planner,"submit"):
         raise ValueError("asynchronous rollout requires a submitting planner")
+    # Parked pairs cannot move until their decision arrives, so waiting for
+    # every pending plan only merges decisions into fewer, larger inference
+    # calls; the window still bounds how long a slow plan can hold the batch.
+    fill = len(jobs)*2 if config.get("fill_inference_batches") else 0
+    window = config.get("inference_batch_window_seconds", .02 if fill else .002)
+    cap = fill or 64
     with EventVsPool(len(jobs), lib_path=config.get("native_library")) as pool:
         pool.reset([job[0] for job in jobs], level=match["level"], starts=starts)
         while True:
@@ -164,14 +170,14 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 # sides of its own pair stay parked in frame_advance until the
                 # missing decision arrives, so its public snapshot stays valid.
                 wait([p[0] for p in pending.values()],return_when=FIRST_COMPLETED)
-                deadline = time.perf_counter()+.002
-                while sum(p[0].done() for p in pending.values()) < min(16,len(pending)):
+                deadline = time.perf_counter()+window
+                while sum(p[0].done() for p in pending.values()) < min(fill or 16,len(pending)):
                     remaining = deadline-time.perf_counter()
                     if remaining <= 0:
                         break
                     wait([p[0] for p in pending.values() if not p[0].done()],
                          timeout=remaining,return_when=FIRST_COMPLETED)
-                ready = [side for side,p in pending.items() if p[0].done()][:64]
+                ready = [side for side,p in pending.items() if p[0].done()][:cap]
                 completed = [pending.pop(side) for side in ready]
                 candidates = [p[0].result() for p in completed]
                 requests = [p[1] for p in completed]
