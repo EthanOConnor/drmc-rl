@@ -42,7 +42,7 @@ def _bounds(r):
 
 
 def collapse_lineages(rows, state, difference_se=None, roles=None):
-    """One row per training run: its best snapshot once concluded, else its newest rated one.
+    """One row per training run: its strongest snapshot in the table (the recorded best once concluded).
 
     The row carries the run's trajectory (every rated snapshot, retired ones included,
     by frames). Entrants outside lineages pass through unchanged.
@@ -60,13 +60,18 @@ def collapse_lineages(rows, state, difference_se=None, roles=None):
         members.sort(key=lambda r: (state.step_of(r["entrant"]), r["entrant"]))
         record = state.lineages.get(run, {})
         present = {r["entrant"]: r for r in members}
-        if state.lineage_status(run) == "concluded":
-            pick = record.get("best") if record.get("best") in present else max(present, key=lambda e: present[e]["rating"])
+        # Each table shows the run by its strongest snapshot in that table (its own rating);
+        # a concluded run by its recorded best when that snapshot is in the table.
+        if state.lineage_status(run) == "concluded" and record.get("best") in present:
+            pick = record["best"]
         else:
-            live = [r["entrant"] for r in members if state.entrants[r["entrant"]]["status"] != "retired"]
-            pick = (live or [members[-1]["entrant"]])[-1]
+            pick = max(present, key=lambda e: (present[e]["rating"], state.step_of(e)))
+        live = [e for e in state.lineage_members(run) if state.entrants[e]["status"] != "retired"]
+        newest = live[-1] if live else members[-1]["entrant"]
+        label = f"{run} · {frames_label(state.step_of(pick))}" if pick == newest else \
+            f"{run} · best {frames_label(state.step_of(pick))} (latest {frames_label(state.step_of(newest))})"
         rep = dict(present[pick], lineage=run, lineage_status=state.lineage_status(run),
-                   label=f"{run} · {frames_label(state.step_of(pick))}",
+                   label=label, newest=newest,
                    trajectory=[dict(entrant=r["entrant"], step=state.step_of(r["entrant"]),
                                     frames=frames_label(state.step_of(r["entrant"])), rating=round(r["rating"]),
                                     ci95=_bounds(r), games=r["games"],

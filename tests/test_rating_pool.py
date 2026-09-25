@@ -363,7 +363,8 @@ def test_stop_rule_fires_after_two_non_improving_snapshots(tmp_path):
     assert result["fired"] and result["selected"]["entrant"] == "run-f2"
     report = build_report(c)
     run_row = [r for r in report["condition_sets"][0]["pooled"] if r.get("lineage") == "run"]
-    assert len(run_row) == 1 and run_row[0]["entrant"] == "run-f4"     # active run: its newest snapshot
+    assert len(run_row) == 1 and run_row[0]["entrant"] == "run-f2"     # its strongest snapshot
+    assert run_row[0]["label"].startswith("run · best ")
     assert len(run_row[0]["trajectory"]) == 4 and "run · " in summary_text(report)
 
 
@@ -521,7 +522,9 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     report = build_report(c)
     rows = report["condition_sets"][0]["pooled"]
     run_rows = [r for r in rows if r.get("lineage") == "run"]
-    assert len(run_rows) == 1 and run_rows[0]["label"] == "run · 75M"      # newest rated snapshot
+    # Shown by its strongest snapshot (50M, truth 0.6), labelled with the latest registered one.
+    assert len(run_rows) == 1 and run_rows[0]["entrant"] == "run-f2"
+    assert run_rows[0]["label"] == "run · best 50M (latest 100M)" and run_rows[0]["newest"] == "run-f4"
     assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M"]
     # Per-pace drill-down: the run's row in each pace table carries that pace's snapshots,
     # each with LOS vs the next snapshot (covariance-aware), the last one "–".
@@ -535,7 +538,7 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     assert t[2]["los"] == pytest.approx(NormalDist().cdf(d / f.difference_se("run-f2", "run-f3")), abs=1e-4)
     assert los_text(t[-1]["los"]) == "–" and all(type(p["rating"]) is int for p in t)
     assert "data-toggle" in PAGE and "expanded" in PAGE and 'tr class="sub' in PAGE
-    assert not {r["entrant"] for r in rows} & {"run-f0", "run-f1", "run-f2"}
+    assert not {r["entrant"] for r in rows} & {"run-f0", "run-f1", "run-f3"}
     # A 50M-mark stop rule ignores the 25M/75M snapshots; a panel job with step_every does too.
     rule = stop_rule(c, run="run", min_games=128, step_every=50_000_000)
     assert [s["entrant"] for s in rule["snapshots"]] == ["run-f0", "run-f2", "run-f4"]
