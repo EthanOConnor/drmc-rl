@@ -131,6 +131,8 @@ class PoolHandler(Handler):
             request = self._body()
             if path == "/api/v1/pool/leases":
                 return self._json(200, self._call(c.lease, request))
+            if path == "/api/v1/pool/heartbeat":
+                return self._json(200, self._call(c.heartbeat, request))
             if path == "/api/v1/pool/release":
                 return self._json(200, self._call(c.release_batch, str(request["batch"])))
             if path == "/api/v1/pool/registry":

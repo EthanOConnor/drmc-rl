@@ -707,3 +707,27 @@ def test_lineage_roles_resolve_neighbours_and_report_recent_games(tmp_path):
     assert {t["entrant"]: t["recent"] for t in row["trajectory"]}["ln-f3"] == 2
     pace = report["condition_sets"][0]["paces"][0]["ratings"]
     assert next(r for r in pace if r.get("lineage") == "ln")["trajectory"][-1]["recent"] == 2
+
+
+def test_worker_stats_come_from_the_journal_and_survive_restarts(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a", "b"))
+    c = coordinator(tmp_path)
+    available_everything(c)
+    strengths = dict(anchor=0, a=0.4, b=-0.2)
+    for _ in range(3):
+        lease = c.lease(worker("Mac.lan-pool-mps-0"))
+        lease["_wid"] = "Mac.lan-pool-mps-0"
+        submit(c, lease, strengths)
+    c.lease(worker("Mac.lan-pool-mps-1"))                   # holds a live lease
+    c.heartbeat(dict(worker("Mac.lan-pool-mps-2"), reason="2 other arena workers; slot 2 of budget 3"))
+    report = build_report(c)
+    w = {r["worker"]: r for r in report["workers"]}
+    assert w["Mac.lan-pool-mps-0"]["games"] == 3 * 32 and w["Mac.lan-pool-mps-0"]["games_last_hour"] == 96
+    assert w["Mac.lan-pool-mps-1"]["state"].startswith("playing play ")
+    assert w["Mac.lan-pool-mps-2"]["state"].startswith("paused")
+    assert report["hosts"][0]["host"] == "h" and report["hosts"][0]["games"] == 96
+    # A restarted coordinator knows nothing live, but lifetime stats come back from the journal.
+    again = build_report(coordinator(tmp_path))
+    w = {r["worker"]: r for r in again["workers"]}
+    assert w["Mac.lan-pool-mps-0"]["games"] == 96 and w["Mac.lan-pool-mps-0"]["first_seen"]
+    assert "Mac.lan-pool-mps-0" in summary_text(again)

@@ -264,6 +264,12 @@ done
 --device cuda --slot N` from a checkout of the pool commit; a new CUDA class
 replays `calibration_games` (8) traced games before it contributes.
 
+Workers are keyed by a stable id (host, device, slot: `Mac.lan-pool-mps-0`). The report's
+Workers section derives lifetime, last-hour and last-24 h games, the games/hour rate over batch
+play time and first/last seen from `batches.jsonl`, so it survives worker and coordinator
+restarts, and adds per-host totals and the live state (playing with its lease, idle, paused
+for the host budget or disk via a worker heartbeat, offline).
+
 Status and control:
 
 ```bash

@@ -234,13 +234,19 @@ function render(d) {
     ["Status", i => `<span class="${i.overdue ? "bad" : i.view === "blocked" ? "warn" : ""}">${esc(i.view)}${i.overdue ? " · overdue" : ""}</span>` + (i.job ? `<br><small>job ${esc(i.job.status)}</small>` : "")],
     ["Waiting on", i => i.waiting_on.map(esc).join("<br>"), "wrap"], ["Due", i => esc(i.due || "")],
     ["Decision rule", i => `<small>${esc(i.decision_rule)}</small>`, "wrap"]], d.intentions, "no intentions");
+  const when = t => t ? new Date(t).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : "";
   $("workers").innerHTML = table([
-    ["Worker", w => esc(w.worker)], ["Numerics", w => `<small>${esc(w.numerics)}</small>`],
+    ["Host", h => esc(h.host)], ["Online", h => `${h.online} / ${h.workers}`, "n"], ["Games", h => num(h.games), "n"],
+    ["Last h", h => num(h.games_last_hour), "n"], ["24 h", h => num(h.games_last_day), "n"]], d.hosts || [], "no hosts yet") +
+    table([
+    ["Worker", w => esc(w.worker) + `<br><small>${esc(w.numerics)}</small>`, "wrap"],
     ["Admitted", w => w.admitted === true ? "yes" : w.admitted == null ? "pending" : `<span class="bad">no</span>`],
-    ["Seen", w => `${w.seen_seconds_ago} s`, "n"], ["Games", w => num(w.games), "n"], ["Games/h", w => num(w.games_per_hour), "n"],
-    ["Fail", w => w.failures ? `<span class="warn">${w.failures}</span>` : 0, "n"],
-    ["Status", w => `<small>${esc(w.status)}</small>` + (w.last_error ? `<br><small class="bad">${esc(w.last_error)}</small>` : ""), "wrap"]],
-    d.workers, "no workers seen since the coordinator started");
+    ["Games", w => num(w.games), "n"], ["Last h", w => num(w.games_last_hour), "n"], ["24 h", w => num(w.games_last_day), "n"],
+    ["Games/h", w => num(w.games_per_hour), "n"],
+    ["First / last seen", w => `<small>${when(w.first_seen)} – ${when(w.last_seen)}</small>`],
+    ["State", w => `<small class="${w.state === "offline" ? "muted" : w.state.startsWith("paused") ? "warn" : ""}">${esc(w.state)}</small>` +
+      (w.last_error ? `<br><small class="bad">${esc(w.last_error)}</small>` : ""), "wrap"]],
+    d.workers, "no workers yet");
   $("conditions").innerHTML = d.conditions.map(c =>
     `<details data-key="cond-${esc(c.key)}"><summary><b>${esc(c.name)}</b> <span class="muted">· ${num(c.games)} games · ${c.ratings.length} rated</span></summary>` +
     ratings(c.ratings) + (c.unanchored.length ? `<p class="warn">Not connected to the anchor: ${c.unanchored.map(esc).join(", ")}</p>` : "") +

@@ -199,14 +199,7 @@ def build_report(coordinator):
                          intention=job.get("intention"), games=sum(min(p["games"], p["target"]) for p in progress),
                          target=sum(p["target"] for p in progress), items=len(progress),
                          blocked_items=sum(1 for p in progress if p["blocked"])))
-    workers = []
-    for w in sorted(coordinator.workers.values(), key=lambda w: w["worker_id"]):
-        workers.append(dict(worker=w["worker_id"], host=w.get("host"), numerics=w.get("numerics"),
-                            admitted=coordinator.admission(w.get("numerics", "")),
-                            seen_seconds_ago=round(now - w["seen"]), status=w.get("status"),
-                            batches=w.get("batches", 0), games=w.get("games", 0),
-                            games_per_hour=round(3600 * w.get("games", 0) / w["seconds"]) if w.get("seconds") else None,
-                            failures=w.get("failures", 0), last_error=w.get("last_error")))
+    workers, hosts = worker_rows(coordinator, batches, now)
     return dict(
         schema="drmc-rating-pool-report-v1", generated=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         model=MODEL, anchor_rating=settings["anchor_rating"], source=coordinator.source,
@@ -227,10 +220,74 @@ def build_report(coordinator):
                                                     if k in ("best", "final", "reason", "stop_rule")})
                   for run in state.lineage_runs()],
         intentions=intent.roadmap(state, coordinator.capabilities),
-        workers=workers, blocks=list(state.blocks.values()),
+        workers=workers, hosts=hosts, blocks=list(state.blocks.values()),
         fidelity=dict(mode=settings["fidelity"], min_agreement=settings["min_agreement"],
                       admitted=state.admitted, classes=coordinator.fidelity_stats,
                       pending_audits=len(coordinator.audits)))
+
+
+def worker_rows(coordinator, batches, now):
+    """Per stable worker id (host + slot) and per host, from the journal plus live leases.
+
+    Lifetime, last-hour and last-day games come from batches.jsonl (every accepted pool
+    batch records its worker), so they survive worker and coordinator restarts. The rate is
+    games per hour of batch play time. State: playing (live lease), paused (the worker said
+    so), idle (seen within 3 minutes), offline.
+    """
+    stats = {}
+    for b in batches:
+        if b.get("source") != "pool":
+            continue
+        w = b.get("worker") or {}
+        wid = w.get("worker_id")
+        if not wid:
+            continue
+        row = stats.setdefault(wid, dict(worker=wid, host=w.get("host"), numerics=w.get("numerics"), games=0,
+                                         hour=0, day=0, seconds=0.0, batches=0, first=None, last=None))
+        games, when = int(b.get("new_games", 0)), float(b.get("unix", 0))
+        row["games"] += games
+        row["seconds"] += float(b.get("elapsed", 0))
+        row["batches"] += 1
+        row["hour"] += games if now - when < 3600 else 0
+        row["day"] += games if now - when < 86400 else 0
+        row["first"] = when if row["first"] is None else min(row["first"], when)
+        row["last"] = when if row["last"] is None else max(row["last"], when)
+        row["numerics"] = w.get("numerics") or row["numerics"]
+    leases = {l["worker"]: l for l in coordinator.leases.values()}
+    for wid, live in coordinator.workers.items():
+        row = stats.setdefault(wid, dict(worker=wid, host=live.get("host"), numerics=live.get("numerics"), games=0,
+                                         hour=0, day=0, seconds=0.0, batches=0, first=None, last=None))
+        row["seen"] = live["seen"]
+        row["live_status"] = live.get("status")
+        row["failures"], row["last_error"] = live.get("failures", 0), live.get("last_error")
+    iso = lambda t: None if t is None else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))  # noqa: E731
+    out, hosts = [], {}
+    for wid, row in sorted(stats.items()):
+        seen = max(row.get("seen") or 0, row["last"] or 0)
+        if wid in leases:
+            lease = leases[wid]
+            state = f"playing {lease['purpose']} {lease['batch']['key']}"
+        elif str(row.get("live_status", "")).startswith("paused") and now - seen < 180:
+            state = row["live_status"]
+        elif now - seen < 180:
+            state = "idle"
+        else:
+            state = "offline"
+        item = dict(worker=wid, host=row["host"], numerics=row["numerics"],
+                    admitted=coordinator.admission(row["numerics"] or ""), games=row["games"],
+                    games_last_hour=row["hour"], games_last_day=row["day"], batches=row["batches"],
+                    games_per_hour=round(3600 * row["games"] / row["seconds"]) if row["seconds"] else None,
+                    first_seen=iso(row["first"] or row.get("seen")), last_seen=iso(seen or None),
+                    seen_seconds_ago=round(now - seen) if seen else None, state=state,
+                    online=state != "offline", failures=row.get("failures", 0), last_error=row.get("last_error"))
+        out.append(item)
+        h = hosts.setdefault(row["host"] or "?", dict(host=row["host"] or "?", workers=0, online=0, games=0,
+                                                       games_last_hour=0, games_last_day=0))
+        h["workers"] += 1
+        h["online"] += item["online"]
+        for k in ("games", "games_last_hour", "games_last_day"):
+            h[k] += item[k]
+    return out, sorted(hosts.values(), key=lambda h: -h["games"])
 
 
 def style_rows(coordinator):
@@ -406,9 +463,12 @@ def summary_text(report):
         wait = f" waiting on {', '.join(i['waiting_on'])}" if i["waiting_on"] else ""
         lines.append(f"  {i['view']:<8}{' OVERDUE' if i['overdue'] else ''} {i['id']:<34} {i['title']}{wait}")
     lines.append("\n[workers]")
+    for h in report.get("hosts", []):
+        lines.append(f"  host {h['host']:<24} {h['online']}/{h['workers']} online  {h['games']} games  "
+                     f"{h['games_last_hour']} last hour  {h['games_last_day']} last day")
     for w in report["workers"]:
-        lines.append(f"  {w['worker']:<30} {str(w['numerics'])[:40]:<40} seen {w['seen_seconds_ago']}s  "
-                     f"{w['games']} games  {w['games_per_hour']} g/h  fail {w['failures']}  {w['status']}")
+        lines.append(f"  {w['worker']:<30} {w['games']:>7} games  {w['games_last_hour']:>5}/h  {w['games_last_day']:>6}/24h  "
+                     f"{w['games_per_hour']} g/h  {w['state']}")
     return "\n".join(lines)
 
 

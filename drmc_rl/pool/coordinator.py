@@ -337,6 +337,12 @@ class PoolCoordinator:
             self.inflight.get((*slot, "leases"), set()).discard(lease_id)
         self.log(f"pool: lease {lease_id[:8]} {spec['key']} by {lease['worker']} {reason}")
 
+    def heartbeat(self, worker):
+        """A worker that is alive but not leasing (e.g. paused for the host budget or disk)."""
+        identity = self._register(worker)
+        identity["status"] = f"paused ({str(worker.get('reason', ''))[:120]})"
+        return dict(ok=True)
+
     def lease(self, worker):
         if self.fatal:
             return dict(status="wait", reason="coordinator stopped after an internal error", retry=60)

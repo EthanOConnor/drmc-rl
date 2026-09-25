@@ -257,6 +257,10 @@ def run_worker(args, client):
             pause = host_pause(args)
             if pause:
                 print(f"worker: pausing ({pause})", flush=True)
+                try:
+                    client.post("/api/v1/pool/heartbeat", dict(me, reason=pause), patience=30)
+                except Exception as error:
+                    print(f"worker: heartbeat failed: {error}", flush=True)
                 stopped.wait(args.poll)
                 continue
             lease = client.post("/api/v1/pool/leases", me, patience=900)
