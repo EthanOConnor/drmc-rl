@@ -132,7 +132,8 @@ class PoolCoordinator:
         self._seed_cache = {}
         self._view_cache = {}
         self.scheduler = Scheduler(self.state, seed_source=self.seed_source, available=self.available,
-                                   capabilities=self.capabilities, background_seeds=self.background_seeds)
+                                   capabilities=self.capabilities, background_seeds=self.background_seeds,
+                                   roles=self.lineage_roles)
         self.tick()
 
     # -- seeds ----------------------------------------------------------------------
@@ -769,6 +770,62 @@ class PoolCoordinator:
     def stop_rule(self, query):
         from drmc_rl.pool.report import stop_rule
         return stop_rule(self, **query)
+
+    def lineage_roles(self):
+        """entrant -> (kind, detail, targets) for non-retired snapshots of active runs.
+
+        ``newest`` and ``best`` (best so far by the weighted pooled rating on the primary set)
+        get full new-entrant priority. Every other snapshot is ``resolving`` while its comparison
+        with an adjacent snapshot (by frames) or the best is undecided, else ``maintenance``.
+        """
+        state = self.state
+        stamp = (len(state.games), len(state.entrants), tuple(sorted(state.dirty)),
+                 tuple(sorted((r, v.get("status")) for r, v in state.lineages.items())))
+        if getattr(self, "_roles", None) and self._roles[0] == stamp:
+            return self._roles[1]
+        from drmc_rl.pool.report import primary_set
+        from drmc_rl.pool.ratings import pooled_difference_se, superiority
+        cset = primary_set(state)
+        fits = self.fits
+        keys = cset["conditions"] if cset else []
+        weights = self.pace_weights(keys) if keys else []
+        view = pooled(fits, keys, min_games=1, weights=weights) if keys and all(k in fits for k in keys) else {}
+        s = self.settings
+
+        def games(e):
+            return sum(fits[k].ratings[e].games for k in keys if k in fits and e in fits[k].ratings)
+
+        def resolved(e, o):
+            if e not in view or o not in view:
+                return False
+            se = pooled_difference_se(fits, keys, e, o, weights)
+            if se is None:
+                return False
+            los = superiority(view[e]["rating"] - view[o]["rating"], se)
+            return los >= s["resolve_los"] or los <= 1 - s["resolve_los"] or 1.96 * se <= s["resolve_ci"]
+        roles = {}
+        for run in state.lineage_runs():
+            if state.lineage_status(run) != "active":
+                continue
+            members = [e for e in state.lineage_members(run) if state.entrants[e]["status"] != "retired"]
+            if not members:
+                continue
+            newest = members[-1]
+            rated = [e for e in members if e in view]
+            best = max(rated, key=lambda e: (view[e]["rating"], state.step_of(e))) if rated else newest
+            roles[newest] = ("newest", "", [])
+            roles.setdefault(best, ("best", "best so far", []))
+            for i, e in enumerate(members):
+                if e in roles:
+                    continue
+                if games(e) >= s["snapshot_game_cap"]:
+                    roles[e] = ("maintenance", "game cap", [])
+                    continue
+                around = [members[j] for j in (i - 1, i + 1) if 0 <= j < len(members)] + [best]
+                open_ = [o for o in dict.fromkeys(around) if o != e and not resolved(e, o)]
+                roles[e] = ("resolving", "vs " + ", ".join(open_), open_) if open_ else ("maintenance", "resolved", [])
+        self._roles = (stamp, roles)
+        return roles
 
     def pace_weights(self, conditions, weighting="pace"):
         """Per-condition weights of a pooled view: confirmed pace weights, or all equal."""

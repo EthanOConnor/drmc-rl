@@ -110,10 +110,10 @@ function spark(t) {
 function entrantCell(r) {
   if (!r.trajectory) return `<span title="${esc(r.entrant)}">${esc(r.entrant)}</span>`;
   const t = r.trajectory;
-  const rows = t.map(p => `<tr><td class="n">${esc(p.frames)}</td><td class="n">${int(p.rating)}</td><td class="n">${int(p.ci95[0])}–${int(p.ci95[1])}</td><td class="n">${num(p.games)}</td><td class="n">${los(p.los)}</td><td><small>${p.shown ? "shown" : p.retired ? "retired" : ""}</small></td></tr>`).join("");
+  const rows = t.map(p => `<tr><td class="n">${esc(p.frames)}</td><td class="n">${int(p.rating)}</td><td class="n">${int(p.ci95[0])}–${int(p.ci95[1])}</td><td class="n">${num(p.games)}</td><td class="n">${num(p.recent)}</td><td class="n">${los(p.los)}</td><td><small>${[p.shown ? "shown" : "", esc(p.role || "")].filter(Boolean).join(" · ")}</small></td></tr>`).join("");
   return `<details class="traj" data-key="traj-${esc(r.lineage)}-${esc(r.entrant)}"><summary title="${esc(r.entrant)}">${esc(r.label)}` +
     `${r.lineage_status === "concluded" ? ' <small class="muted">(done)</small>' : ""}${spark(t)}</summary>` +
-    `<table class="sub"><thead><tr><th class="n">Frames</th><th class="n">Elo</th><th class="n">95% CI</th><th class="n">Games</th><th class="n" title="Probability this snapshot is stronger than the next one">LOS</th><th></th></tr></thead><tbody>${rows}</tbody></table></details>`;
+    `<table class="sub"><thead><tr><th class="n">Frames</th><th class="n">Elo</th><th class="n">95% CI</th><th class="n">Games</th><th class="n" title="Games journaled in the last 60 minutes">Last h</th><th class="n" title="Probability this snapshot is stronger than the next one">LOS</th><th>Scheduled as</th></tr></thead><tbody>${rows}</tbody></table></details>`;
 }
 function ratings(rows) {
   return `<div class="scroll">${table([
@@ -123,6 +123,7 @@ function ratings(rows) {
     ["95% CI", r => `${int(r.ci95[0])}–${int(r.ci95[1])}`, "n"],
     ['<span title="Probability this entrant is stronger than the next row">LOS</span>', r => los(r.los), "n"],
     ["Games", r => num(r.games), "n"],
+    ['<span title="Games journaled in the last 60 minutes">Last h</span>', r => num(r.recent), "n"],
   ], rows, "no rated entrants yet")}</div>`;
 }
 function paceBreakdown(s) {
@@ -133,7 +134,7 @@ function paceBreakdown(s) {
     if (!r) return '<span class="muted">·</span>';
     // Marked when this pace's 95% interval excludes the entrant's pooled rating.
     const mark = pooled != null && (pooled < r.ci95[0] ? "▲" : pooled > r.ci95[1] ? "▼" : "");
-    return `<span title="95% CI ${int(r.ci95[0])}–${int(r.ci95[1])} · ${num(r.games)} games · LOS ${los(r.los)}" class="${mark ? (mark === "▲" ? "up" : "down") : ""}">${int(r.rating)}${mark ? " " + mark : ""}</span>`;
+    return `<span title="95% CI ${int(r.ci95[0])}–${int(r.ci95[1])} · ${num(r.games)} games (${num(r.recent)} last hour) · LOS ${los(r.los)}" class="${mark ? (mark === "▲" ? "up" : "down") : ""}">${int(r.rating)}${mark ? " " + mark : ""}</span>`;
   };
   // Lineage rows expand into one muted sub-row per snapshot; ▲/▼ compare with that snapshot's own pooled rating.
   const traj = s.paces.map(p => Object.fromEntries(p.ratings.flatMap(r => (r.trajectory || []).map(t => [t.entrant, t]))));
@@ -147,7 +148,7 @@ function paceBreakdown(s) {
       : esc(r.entrant);
     let html = `<tr><td class="e" title="${esc(r.entrant)}">${name}</td><td class="n">${int(r.rating)}</td>` +
       s.paces.map((p, i) => `<td class="n">${cell(at(i, r.entrant), r.rating)}</td>`).join("") + "</tr>";
-    if (open) html += r.trajectory.map(t => `<tr class="sub${t.retired ? " retired" : ""}"><td class="e">&nbsp;&nbsp;${esc(t.frames)}${t.retired ? " <small>retired</small>" : ""}</td>` +
+    if (open) html += r.trajectory.map(t => `<tr class="sub${t.retired ? " retired" : ""}"><td class="e" title="${esc(t.role || "")}">&nbsp;&nbsp;${esc(t.frames)} <small>${esc(t.role || "")}</small></td>` +
       `<td class="n">${int(t.rating)}</td>` + s.paces.map((p, i) => `<td class="n">${cell(at(i, t.entrant), t.rating)}</td>`).join("") + "</tr>").join("");
     return html;
   }).join("");

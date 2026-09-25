@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from collections import Counter
+import time
 
 from drmc_rl.pool import intentions as intent
 from drmc_rl.pool.ratings import MODEL, pooled, pooled_difference_se, superiority
@@ -21,6 +23,16 @@ def frames_label(step):
     return f"{step / 1e6:.4g}M" if step else "0"
 
 
+def _role(roles, entrant, state):
+    """Why a snapshot is scheduled: newest, best, resolving vs X, maintenance (reason), or retired."""
+    if state.entrants[entrant]["status"] == "retired":
+        return "retired"
+    if not roles or entrant not in roles:
+        return "active" if state.lineage_status(state.lineage_of(entrant)) == "concluded" else ""
+    kind, detail, _ = roles[entrant]
+    return kind if not detail or kind == "best" else f"{kind} {detail}" if kind == "resolving" else f"{kind} ({detail})"
+
+
 def _round(value):
     return None if value is None else round(value, 4)
 
@@ -29,7 +41,7 @@ def _bounds(r):
     return [round(r["rating"] - 1.96 * r["se"]), round(r["rating"] + 1.96 * r["se"])]
 
 
-def collapse_lineages(rows, state, difference_se=None):
+def collapse_lineages(rows, state, difference_se=None, roles=None):
     """One row per training run: its best snapshot once concluded, else its newest rated one.
 
     The row carries the run's trajectory (every rated snapshot, retired ones included,
@@ -59,7 +71,8 @@ def collapse_lineages(rows, state, difference_se=None):
                                     frames=frames_label(state.step_of(r["entrant"])), rating=round(r["rating"]),
                                     ci95=_bounds(r), games=r["games"],
                                     retired=state.entrants[r["entrant"]]["status"] == "retired",
-                                    shown=r["entrant"] == pick,
+                                    shown=r["entrant"] == pick, recent=r.get("recent"),
+                                    role=_role(roles, r["entrant"], state),
                                     # P(this snapshot is stronger than the next one by frames).
                                     los=None if i + 1 == len(members) or difference_se is None else _round(superiority(
                                         r["rating"] - members[i + 1]["rating"],
@@ -69,12 +82,14 @@ def collapse_lineages(rows, state, difference_se=None):
     return out
 
 
-def display_rows(rows, difference_se, state=None):
+def display_rows(rows, difference_se, state=None, recent=None, roles=None):
     """Rows sorted strongest first, for display: integer rating and 95% bounds, and the
     likelihood of superiority over the next row, P(rating_i > rating_i+1), from the fitted
     covariance of the two estimates (None for the last row or when it is undefined).
     With ``state``, snapshots of a training run collapse to one row with its trajectory."""
-    rows = sorted(collapse_lineages(rows, state, difference_se), key=lambda r: -r["rating"])
+    if recent is not None:
+        rows = [dict(r, recent=recent(r["entrant"])) for r in rows]
+    rows = sorted(collapse_lineages(rows, state, difference_se, roles), key=lambda r: -r["rating"])
     out = []
     for i, r in enumerate(rows):
         below = rows[i + 1] if i + 1 < len(rows) else None
@@ -105,14 +120,24 @@ def build_report(coordinator):
     for row in state.games.values():
         source = "pool" if row["source"] == "pool" else "imported"
         games_by_source[source] = games_by_source.get(source, 0) + 1
+    # Journaled games in the last hour per (condition, entrant); pool rows carry ISO times,
+    # imported rows only dates (which sort before any time on that day).
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
+    hour = Counter()
+    for row in state.games.values():
+        if row.get("time", "") >= cutoff:
+            hour[(row["condition"], row["a"])] += 1
+            hour[(row["condition"], row["b"])] += 1
+    roles = coordinator.lineage_roles()
     conditions = []
     for key, c in sorted(state.conditions.items(), key=lambda kv: kv[1]["name"]):
         f = fits.get(key)
         games = sum(len(sides) for seeds in state.by_pairing.get(key, {}).values() for sides in seeds.values())
         conditions.append(dict(key=key, name=c["name"], spec=c["spec"], games=games,
                                anchor=None if f is None else f.anchor,
-                               ratings=[] if f is None else display_rows([r.to_dict() for r in f.ratings.values()],
-                                                                         f.difference_se, state),
+                               ratings=[] if f is None else display_rows(
+                                   [r.to_dict() for r in f.ratings.values()], f.difference_se, state,
+                                   recent=lambda e, k=key: hour[(k, e)], roles=roles),
                                unanchored=[] if f is None else f.unanchored))
     sets = []
     view_fits = {v: coordinator.view_fits(v) for v in ("real_play", "uniform")}
@@ -120,7 +145,8 @@ def build_report(coordinator):
     def set_rows(fitmap, keys, weighting):
         weights = coordinator.pace_weights(keys, weighting)
         view = pooled(fitmap, keys, min_games=1, weights=weights)
-        return display_rows(list(view.values()), lambda a, b: pooled_difference_se(fitmap, keys, a, b, weights), state)
+        return display_rows(list(view.values()), lambda a, b: pooled_difference_se(fitmap, keys, a, b, weights), state,
+                            recent=lambda e: sum(hour[(k, e)] for k in keys), roles=roles)
     for cset in sorted(state.condition_sets.values(), key=lambda s: (not s["primary"], s["name"])):
         keys = cset["conditions"]
         by_key = {c["key"]: c for c in conditions}

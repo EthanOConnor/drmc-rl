@@ -516,7 +516,7 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     available_everything(c)
     # The newest snapshot carries the lineage's new-entrant priority; older ones are maintenance only.
     batch = c.lease(worker())["batch"]
-    assert "run-f4" in (batch["a"], batch["b"]) and "new entrant" in batch["why"]
+    assert "run-f4" in (batch["a"], batch["b"]) and "(newest)" in batch["why"]
     # The pooled table shows one row for the run, labelled with frames, with its trajectory.
     report = build_report(c)
     rows = report["condition_sets"][0]["pooled"]
@@ -655,3 +655,55 @@ def test_style_counters_follow_the_big_clear_scorer_and_reach_the_report(tmp_pat
     assert got["a"]["games"] == 4 and got["a"]["combos"] == 50.0 and got["anchor"]["best"]["score"] == 0.0
     assert report["style"]["human"] == HUMAN and "normal" in section["paces"]
     assert "Combos &amp; style" in PAGE and "data-sort" in PAGE
+
+
+def test_lineage_roles_resolve_neighbours_and_report_recent_games(tmp_path):
+    state, keys = setup_state(tmp_path, entrants=("anchor",), paces=("normal", "fast"))
+    truth = {0: -0.4, 1: 0.5, 2: 0.52, 3: 0.2}      # f1 and f2 are nearly equal; f0 is clearly weaker
+    for i, t in truth.items():
+        e = f"ln-f{i}"
+        state.record("entrant", entrant(e, lineage=dict(run="ln", step=25_000_000 * i, parent="anchor")))
+        p = 1 / (1 + math.exp(-t))
+        rng = random.Random(i)
+        for key in keys:
+            for seed in BANK[:(40 if i == 2 else 300)]:
+                rows = rows_for(key, e, "anchor", [seed])
+                for row in rows:
+                    won = float(rng.random() < p)
+                    row["score"] = won if row["a"] == e else 1 - won
+                    row["time"] = "2000-01-01T00:00:00Z"
+                state.add_games(rows)
+    c = coordinator(tmp_path)
+    c.all_fits()
+    roles = c.lineage_roles()
+    assert roles["ln-f3"][0] == "newest"
+    best = next(e for e, r in roles.items() if r[0] == "best")
+    assert best in ("ln-f1", "ln-f2")
+    other = "ln-f2" if best == "ln-f1" else "ln-f1"
+    # f1 vs f2 is undecided and f2 has few games: the non-best one keeps resolving against the best.
+    assert roles[other][0] == "resolving" and best in roles[other][2]
+    # f0 is decisively weaker than its neighbour f1 and the best: maintenance.
+    assert roles["ln-f0"] == ("maintenance", "resolved", [])
+    available_everything(c)
+    whys = [c.lease(worker(f"w{i}"))["batch"]["why"] for i in range(12)]
+    assert any("(resolving)" in w for w in whys) and not any("(maintenance)" in w for w in whys[:3])
+    # The per-snapshot game cap ends the boost even when unresolved.
+    c.settings["snapshot_game_cap"] = 100
+    c._roles = None
+    assert c.lineage_roles()[other][0] == "maintenance"
+    c.settings["snapshot_game_cap"] = 2000
+    c._roles = None
+    # Last-hour counts come from journal timestamps; old games do not count, fresh ones do.
+    report = build_report(c)
+    row = next(r for r in report["condition_sets"][0]["pooled"] if r.get("lineage") == "ln")
+    assert row["recent"] == 0 and all(t["recent"] == 0 for t in row["trajectory"])
+    assert {t["entrant"]: t["role"] for t in row["trajectory"]}["ln-f0"] == "maintenance (resolved)"
+    fresh = rows_for(keys[0], "ln-f3", "anchor", [BANK[350]])
+    for r in fresh:
+        r["time"] = __import__("drmc_rl.pool.store", fromlist=["now_iso"]).now_iso()
+    c.state.add_games(fresh)
+    report = build_report(c)
+    row = next(r for r in report["condition_sets"][0]["pooled"] if r.get("lineage") == "ln")
+    assert {t["entrant"]: t["recent"] for t in row["trajectory"]}["ln-f3"] == 2
+    pace = report["condition_sets"][0]["paces"][0]["ratings"]
+    assert next(r for r in pace if r.get("lineage") == "ln")["trajectory"][-1]["recent"] == 2

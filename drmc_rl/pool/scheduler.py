@@ -30,7 +30,7 @@ from drmc_rl.pool.store import condition_requirements, entrant_requirements
 
 
 class Scheduler:
-    def __init__(self, state, *, seed_source, available, capabilities, background_seeds=None):
+    def __init__(self, state, *, seed_source, available, capabilities, background_seeds=None, roles=None):
         """``seed_source(job, condition) -> list[int]``; ``available(entrant) -> bool`` (artifacts servable)."""
         self.state = state
         self.seed_source = seed_source
@@ -38,6 +38,10 @@ class Scheduler:
         self.capabilities = capabilities
         # (condition, a, b, inflight) -> (seed-set name, seeds) for background pairs; default: the bank.
         self.background_seeds = background_seeds or (lambda c, a, b, inflight: ("reserve", seed_source(None, c)))
+        # entrant -> (kind, detail, targets) for snapshots of active runs: newest/best get full priority,
+        # resolving ones a real boost against their unresolved neighbours, maintenance a thin share.
+        self.roles = roles or (lambda: {e: (("newest" if r == "newest" else "maintenance"), "", [])
+                                        for e in state.entrants if (r := state.snapshot_role(e))})
         self.leases = 0
 
     # -- eligibility --------------------------------------------------------------
@@ -173,10 +177,12 @@ class Scheduler:
                     if e == anchor:
                         return 0.0
                     return (ratings[e].se / ELO_SCALE) ** 2 if e in ratings and ratings[e].games else prior_var
-                # Earlier snapshots of an active run are not opponents for others: a lineage
-                # shares one entrant's worth of background budget, carried by its newest snapshot.
-                role = {e: state.snapshot_role(e) for e in active}
-                rated = sorted((e for e in active if e in ratings and ratings[e].games and role[e] != "older"),
+                # Snapshots of an active run other than its newest and best are not opponents for
+                # others: the run's background budget is carried by those two.
+                roles = self.roles()
+                role = {e: roles.get(e, (None, "", []))[0] for e in active}
+                side = {e for e in active if role[e] in ("resolving", "maintenance")}
+                rated = sorted((e for e in active if e in ratings and ratings[e].games and e not in side),
                                key=lambda e: ratings[e].rating)
                 era_best = {}
                 for e in rated:
@@ -189,12 +195,16 @@ class Scheduler:
                     g = games(e)
                     boost = 1.0 + settings["new_entrant_boost"] * (g < settings["min_rated_games"]) \
                         + settings["underplayed_boost"] * max(0.0, 1.0 - g / settings["target_games"])
-                    if role[e] == "older":
+                    if role[e] == "resolving":
+                        boost = 1.0 + settings["underplayed_boost"]
+                    elif role[e] == "maintenance":
                         half = 1.96 * ratings[e].se if e in ratings and g else float("inf")
                         boost = settings["maintenance_share"] if half > settings["maintenance_ci"] \
                             else settings["maintenance_idle"]
                     # An unplayed entrant is anchored first; afterwards eras and neighbours join.
                     opponents = [anchor] if not g else [anchor, *era_best.values()]
+                    if role[e] == "resolving":
+                        opponents += [o for o in roles[e][2] if o in active]   # its unresolved neighbours
                     if e in ratings and g:
                         near = sorted((o for o in rated if o != e),
                                       key=lambda o: (abs(ratings[o].rating - ratings[e].rating), o))
@@ -214,7 +224,7 @@ class Scheduler:
                         batch = self._batch(condition, a, b, seeds, inflight,
                                             self.pairs_per_batch(condition), why=(
                                                 f"background {cset['name']} ({seed_set} seeds): value {value:.3g}"
-                                                f"{' (maintenance)' if role[e] == 'older' else ' (new entrant)' if g < settings['min_rated_games'] else ''}"))
+                                                f"{f' ({role[e]})' if role[e] else ' (new entrant)' if g < settings['min_rated_games'] else ''}"))
                         if batch is not None:
                             best = (key, batch)
         return None if best is None else best[1]

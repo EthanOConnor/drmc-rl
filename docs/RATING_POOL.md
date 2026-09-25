@@ -170,13 +170,19 @@ running and overdue items. Seeded from `runs/rating-pool-v1/intentions.json`.
 ### Lineages (training runs)
 
 Snapshots with the same `lineage.run` (the `watch-run --run` id) form a lineage.
-While the run is active every snapshot stays active and visible, but the lineage
-shares one entrant's background budget: only the newest snapshot gets the
-new-entrant and underplayed boosts and serves as an opponent for others; each
-older snapshot gets a maintenance share (`maintenance_share` 0.1) until its
-per-condition 95% half-width is below `maintenance_ci` (75 Elo, about ±28 pooled
-over seven paces), then only occasional games (`maintenance_idle` 0.01). Focused
-jobs are unaffected.
+While the run is active every snapshot stays active and visible. Its newest
+snapshot and its best so far (weighted pooled rating on the primary set) get full
+new-entrant priority and are the run's opponents for other entrants. Every other
+snapshot is *resolving*, with a real boost and direct games against its open
+neighbours, until its comparison with each adjacent snapshot (by frames) and the
+best is resolved: LOS >= 90% or <= 10% on the weighted pooled view, or the 95%
+half-width of the difference <= 25 Elo (genuinely equal snapshots), or 2,000
+games over the primary set (`resolve_los`, `resolve_ci`, `snapshot_game_cap`).
+Then it drops to *maintenance*: a 0.1 share until its per-condition 95% half-width
+is below 75 Elo, then occasional games. Focused jobs are unaffected. The report's
+trajectories show why each snapshot is scheduled (newest, best, resolving vs X,
+maintenance (reason), retired), and every rating table shows games journaled in
+the last hour next to total games.
 
 A run concludes with `lineage conclude RUN [--best E]`, when a lineage that opted
 in with `lineage set RUN --stop-set SET --step-every N --auto` (or `watch-run

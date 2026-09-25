@@ -66,6 +66,13 @@ DEFAULT_SETTINGS = dict(
     maintenance_ci=75.0,
     maintenance_share=0.1,
     maintenance_idle=0.01,
+    # A non-frontier snapshot of an active run keeps a real boost until its weighted-pooled
+    # comparison with each neighbour (by frames) and the run's best is resolved: LOS >= resolve_los
+    # or <= 1 - resolve_los, or the difference's 95% half-width <= resolve_ci, or it has
+    # snapshot_game_cap games over the primary set.
+    resolve_los=0.9,
+    resolve_ci=25.0,
+    snapshot_game_cap=2000,
     # Seed sets for background play (docs/RATING_POOL.md "Seeds"): the reserve bank, a uniform
     # draw of non-reserve console seeds and a 50/50 real-play mixture draw; shares of pairs.
     background_seed_shares=dict(mixture=0.5, reserve=0.25, uniform=0.25),
