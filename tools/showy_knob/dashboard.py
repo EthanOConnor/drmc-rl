@@ -130,6 +130,46 @@ def build(spec):
                          .get("fast4" if any(x["fast4"] for x in v) else "all")["base"] for b, v in zero.items()})
 
 
+POOL_BASES = ("bigclear-champ-f00100000000", "armA-ppo-v1-f00100000000", "champion-retention-mixed-v2")
+
+
+def pool_rows(url, condition_set="l14-spawn"):
+    """Knob entrants (and their bases) from the rating pool's report.json: per-pace ratings and style."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=10) as r:
+            rep = json.loads(r.read())
+    except Exception as error:  # the dashboard never fails on the pool
+        return dict(error=f"{type(error).__name__}: {error}")
+    cs = next((c for c in rep.get("condition_sets", []) if c["name"] == condition_set), None)
+    st = next((x for x in rep.get("style", {}).get("sets", []) if x["condition_set"] == condition_set), None)
+    if cs is None:
+        return dict(error=f"no condition set {condition_set}")
+    wanted = lambda e: "+showy" in e or e in POOL_BASES  # noqa: E731
+    per = {}
+    for pace in cs["paces"]:
+        for r in pace["ratings"]:
+            if wanted(r["entrant"]):
+                per.setdefault(r["entrant"], {})[pace["pace"]] = r
+    style = {e["entrant"]: e for e in (st or {}).get("entrants", []) if wanted(e["entrant"])}
+    rows = []
+    for entrant in sorted(set(per) | set(style)):
+        paces = per.get(entrant, {})
+        f4 = {p: r for p, r in paces.items() if p in FAST4}
+        def wmean(d):
+            if not d:
+                return None
+            ws = sum(W[p] for p in d)
+            m = sum(W[p] * r["rating"] for p, r in d.items()) / ws
+            se = math.sqrt(sum((W[p] / ws * r["se"]) ** 2 for p, r in d.items()))
+            return dict(elo=m, lo=m - 1.96 * se, hi=m + 1.96 * se, games=sum(r["games"] for r in d.values()))
+        rows.append(dict(entrant=entrant, fast4=wmean(f4), all=wmean(paces),
+                         sh=wmean({p: paces[p] for p in ("super_human",) if p in paces}),
+                         fp=wmean({p: paces[p] for p in ("frame_perfect",) if p in paces}),
+                         paces=sorted(paces, key=list(W).index), style=style.get(entrant)))
+    return dict(generated=rep.get("generated"), rows=rows)
+
+
 def fmt(x, d=3):
     return "–" if x is None or (isinstance(x, float) and math.isnan(x)) else f"{x:.{d}f}"
 
@@ -213,6 +253,31 @@ th:first-child,td:first-child{text-align:left}tr.partial td{background:var(--par
 """
 
 
+def pool_table(pool):
+    if not pool:
+        return ""
+    out = ["<h2>Rating pool (source: pool report.json, l14-spawn, champion = 1500)</h2>"]
+    if pool.get("error"):
+        return out[0] + f"<div class=mut>pool report unavailable: {html.escape(pool['error'])}</div>"
+    out.append(f"<div class=mut>pool report {html.escape(str(pool.get('generated')))}; absolute pool ratings (not vs base); "
+               "style pooled over all paces the entrant has played; T1+ is the pool's t1p (≥27).</div><table><tr><th>entrant</th>"
+               "<th>games</th><th>4-pace rating</th><th>7-pace rating</th><th>SH</th><th>FP</th><th>T1+</th><th>T2+</th>"
+               "<th>T3+</th><th>h-share</th><th>best</th></tr>")
+    for r in pool["rows"]:
+        st = r["style"] or {}
+        def cell(p):
+            return "–" if not p else f"{p['elo']:.0f} <span class=ci>[{p['lo']:.0f}, {p['hi']:.0f}]</span>"
+        best = st.get("best")
+        g = r["all"]["games"] if r["all"] else st.get("games", 0)
+        out.append(f"<tr><td>{html.escape(r['entrant'])} <span class=badge>pool</span></td><td>{g} <span class=ci>({len(r['paces'])}/7)</span></td>"
+                   f"<td>{cell(r['fast4'])}</td><td>{cell(r['all'])}</td><td>{cell(r['sh'])}</td><td>{cell(r['fp'])}</td>"
+                   f"<td>{fmt(st.get('t1p'))}</td><td>{fmt(st.get('t2'))}</td><td>{fmt(st.get('t3'), 4)}</td>"
+                   f"<td>{fmt(st['horizontal'] * 100, 1) + '%' if st.get('horizontal') is not None else '–'}</td>"
+                   f"<td>{best['score'] if best else '–'}</td></tr>")
+    out.append("</table>")
+    return "".join(out)
+
+
 def render(data):
     arms = data["arms"]
     out = [f"<!doctype html><html><head><meta charset=utf-8><meta http-equiv=refresh content=60>"
@@ -225,7 +290,7 @@ def render(data):
         rows = [a for a in arms if a["base"] == base and a["opponent"] == "self"]
         if not rows:
             continue
-        out.append(f"<h2>{html.escape(base)} + knob vs its unbiased self</h2><div>{chart(arms, base)}</div><table>{HEAD}")
+        out.append(f"<h2>{html.escape(base)} + knob vs its unbiased self <span class=badge>local h2h</span></h2><div>{chart(arms, base)}</div><table>{HEAD}")
         z = data["zero"].get(base)
         if z:
             out.append(f"<tr><td>0 (unbiased)</td><td>–</td><td>0</td><td>0</td><td>–</td><td>–</td>{style_cells(z)}<td></td><td></td></tr>")
@@ -237,6 +302,7 @@ def render(data):
         for a in vs:
             out.append(arm_row(dict(a, lam=f"{a['base']} λ{a['lam']}")))
         out.append("</table>")
+    out.append(pool_table(data.get("pool")))
     out.append("<h2>Reference (per 100 placements, 14-Hi)</h2><table><tr><th>who</th><th>T1+</th><th>T2+</th><th>T3+</th>"
                "<th>h-share</th><th>h-combo</th></tr>")
     for r in data["references"]:
@@ -256,12 +322,15 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--arms", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--pool-report", help="rating pool report.json URL (e.g. http://127.0.0.1:8098/report.json)")
     ap.add_argument("--loop", type=float, default=0, help="rewrite every N seconds (0: once)")
     args = ap.parse_args(argv)
     args.out.mkdir(parents=True, exist_ok=True)
     while True:
         spec = json.loads(args.arms.read_text())
         data = build(spec)
+        if args.pool_report:
+            data["pool"] = pool_rows(args.pool_report)
         for name, text in (("knob.json", json.dumps(data, indent=1, default=float)), ("knob.html", render(data))):
             tmp = args.out / (name + ".tmp")
             tmp.write_text(text)
