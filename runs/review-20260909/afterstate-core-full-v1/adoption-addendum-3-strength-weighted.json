@@ -1,0 +1,43 @@
+{
+ "schema": "drmc-afterstate-adoption-addendum-v1",
+ "addendum": 3,
+ "title": "Strength-weighted primary adoption criterion for the afterstate tournaments (arms A, B, C, three-way and multi-arm)",
+ "created_at": "2026-09-25T04:51:10.714805+00:00",
+ "registered_before": "any tournament, three-way or multi-arm adoption game is played",
+ "decided_by": "the user, relayed by the main session",
+ "applies_to": [
+  "arm A tournament (trainer/afterstate-core)",
+  "arm B and the three-way tournament (trainer/afterstate-core-human)",
+  "arm C and the multi-arm tournament (trainer/afterstate-core-full)"
+ ],
+ "pace_weights": {
+  "frame_perfect": 3,
+  "super_human": 3,
+  "top_humans": 2,
+  "fast": 1.5,
+  "normal": 1,
+  "relaxed": 0.5,
+  "sloth": 0.5
+ },
+ "normalized_pace_weights": {
+  "frame_perfect": 0.2608695652173913,
+  "super_human": 0.2608695652173913,
+  "top_humans": 0.17391304347826086,
+  "fast": 0.13043478260869565,
+  "normal": 0.08695652173913043,
+  "relaxed": 0.043478260869565216,
+  "sloth": 0.043478260869565216
+ },
+ "primary": {
+  "statistic": "strength-weighted pooled score: sum_p w_p * score_p with the normalized weights; its 95% interval from the same whole-seed bootstrap resamples as the per-pace scores",
+  "PROMOTE": "weighted pooled 95% lower bound > 0.50 AND no pace with simultaneous 95% upper bound < 0.45",
+  "PARITY": "not PROMOTE AND weighted pooled 95% interval contains 0.50 AND no pace with simultaneous 95% upper bound < 0.45",
+  "REJECT": "otherwise"
+ },
+ "secondary": "the equal-weight pooled score and its interval (the previously registered primary) are reported alongside, with its PROMOTE/PARITY/REJECT verdict, but no longer decide adoption",
+ "justification": "absolute strength matters most at the fast paces; the slow paces use human-like movement in the product and weaker players choose slower paces",
+ "unchanged": [
+  "arm A stop rule: equal-weight pooled panel score, two consecutive non-improving snapshots. It already evaluated three snapshots (distill-v1 0.525, 50M 0.568, 100M 0.595); changing it now would be post hoc, so it stays exactly as registered. Arms B and C keep their registered stop rules likewise.",
+  "seeds, schedules, per-pace simultaneous bands, the shipped-timing confirmation (pooled lower bound >= 0.45) and the three-way/multi-arm finals structure"
+ ]
+}
