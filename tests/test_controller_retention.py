@@ -33,14 +33,15 @@ def test_retention_pressure_uses_pace_relative_budget_without_relaxing_guard():
 
 def test_mixed_and_cycling_arms_have_identical_per_pace_game_schedules():
     from tools.train_controller_retention import collection_schedule
+    from drmc_rl.program.seed_reserve import SeedPool
     from drmc_rl.training.public_league import PublicOpponentPool
     opponents=PublicOpponentPool([dict(id='a',weight=.4),dict(id='b',weight=.6)],None,'unused','cpu')
     config=dict(arm='mixed_retention',paces=['sloth','normal','frame_perfect'],seed=700,
                 games_per_pace={'sloth':8},games_per_update=4)
     for cycle in (1,2,100):
-        mixed=collection_schedule(config,cycle,np.arange(1,100),opponents)
+        mixed=collection_schedule(config,cycle,SeedPool(np.arange(1,100)),opponents)
         cycling=[collection_schedule(dict(config,arm='cycling_control'),(cycle-1)*3+i+1,
-                                     np.arange(1,100),opponents)[0] for i in range(3)]
+                                     SeedPool(np.arange(1,100)),opponents)[0] for i in range(3)]
         for (a,ja),(b,jb) in zip(mixed,cycling,strict=True):
             assert ja==jb
             assert {k:v for k,v in a.items() if k!='id'}=={k:v for k,v in b.items() if k!='id'}

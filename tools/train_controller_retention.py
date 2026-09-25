@@ -47,7 +47,7 @@ def collection_schedule(config, update, available, opponents):
         count=config['games_per_pace'].get(pace,config['games_per_update'])
         if count<2 or count%2:
             raise ValueError('collections require complete seed pairs')
-        seeds=rng.choice(available,count//2,replace=False)
+        seeds=available.choice(rng,count//2)
         jobs=[(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
         result.append((dict(id=f'train-{update}-{pace}',a='learner',b=opponent,
                             games=count,pace=pace,level=level),jobs))

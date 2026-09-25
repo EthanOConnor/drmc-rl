@@ -42,10 +42,46 @@ distinct games. Each one has a single hardware-reachable seed on the console
 orbit. This cap cannot be raised without changing the level or speed. Hold-outs
 that list `s` but not `s ^ 0x100` do not hold that game out.
 
-New strength studies take seeds only from the permanent reserve
-(`drmc_rl/program/seed_reserve.py`, `eval_seed_reserve.json`): 4,096 games, one
-orbit seed each. Both seeds of every reserved game (8,192) are removed from
-every training draw.
+Deployed play only ever meets these 32,767 games per level and speed, so
+training may use nearly all of them. Recognizing a seed is acceptable, and
+garbage makes later boards depend on the opponent anyway. New runs draw
+console-reachable seeds from a 50/50 mixture set by the `seed_mix` config key
+(default 0.5):
+
+- 50% weighted by real Fightcade play frequency, from
+  `drmc_rl/program/seed_frequency.json`. The table covers 265,958 games and
+  10,376 seeds from drmariostats `/api/seeds`, levels 0–20 pooled.
+- 50% uniform.
+
+A small permanent reserve (`eval_seed_reserve.json`: 1,024 games, 2,048
+blocked seeds) is never drawn by training at any level. It serves two purposes:
+
+1. **Memorization check.** An entrant's score on games training could have
+   drawn is compared with its score on reserve games, per condition (L14 HI,
+   L20 HI) and pooled. The rating pool's `rating-pool-v1` bank (512 reserve
+   games) is the held-out side.
+2. **Recipe A/B decision games.** These need fresh held-out seeds. Allocate a
+   slice for each decision and reuse it across paces and both levels.
+
+Sizing:
+
+- A side-swapped seed pair's mean score has variance of about 0.165 in the
+  afterstate panels. About 0.04 of that persists across related candidates on
+  the same seed.
+- With K opponents per seed, the smallest seen-minus-reserve gap detected at 5%
+  two-sided with 80% power is `detectable_gap(n, K, seen)`:
+
+| reserve games | K=4 | K=16 | K=16, 4× seen games | K=16, L14+L20 pooled |
+|---|---|---|---|---|
+| 512  | 4.7 | 3.8 | 3.0 | 2.7 |
+| 1,024 | 3.3 | 2.7 | 2.1 | 1.9 |
+
+The table is in score points. With 512 reserve games, a 2–3 point gap is
+detectable pooled over L14 and L20, or per condition with four times as many
+seen games. Seen games are cheap: they are any non-reserve seeds. Draw them
+uniformly (`draw_mixture_seeds(..., seed_mix=0)`) for the memorization
+contrast. Report the real-play-weighted view (`strength_views`) beside the
+uniform one.
 
 ```bash
 python -m drmc_rl.program.seed_reserve allocate STUDY COUNT --purpose "..." --out runs/.../seeds.json
@@ -55,11 +91,10 @@ python -m drmc_rl.program.seed_reserve show
 
 Allocations are contiguous, never reissued, and recorded in
 `eval_seed_allocations.json`, which is committed with the study. One seed
-serves one side-swapped pair. Reuse a study's slice across paces unless the
-design needs independent seeds per pace; a 256-seed-per-pace, seven-pace
-layout uses 1,792 seeds. Report the allocation's `status_at_creation`. Every
-reserve game was already in some training journal when the reserve was built
-(see `docs/OPERATIONS.md#evaluation-seed-reserve`).
+serves one side-swapped pair. Report the allocation's `status_at_creation`.
+Every reserve game had training exposure when the reserve was built (see
+`docs/OPERATIONS.md#evaluation-seed-reserve`). The reserve is clean for
+lineages trained after 2026-09-24.
 
 ## Correctness gates
 

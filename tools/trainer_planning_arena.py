@@ -362,7 +362,7 @@ def paired_jobs(config, match):
     else:
         rng = np.random.default_rng(match["seed"])
         available = training_seed_pool(excluded, config=config)
-        seeds = rng.choice(available, match["games"]//2, replace=False)
+        seeds = available.choice(rng, match["games"]//2)
     return [(int(seed), side, 2*i+side) for i, seed in enumerate(seeds) for side in (0, 1)]
 
 

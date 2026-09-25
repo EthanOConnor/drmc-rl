@@ -1,4 +1,10 @@
-"""Permanent evaluation-seed reserve: reset seeds no training run may use.
+"""Evaluation-seed reserve and the shared training seed mixture.
+
+Deployed play only ever meets the 32,767 console games per level and speed, so
+training may use essentially the whole seed space; recognizing a seed is
+acceptable. A small reserve of games that no training run may draw exists for
+two purposes: the seen-versus-reserve memorization check and the decision games
+of recipe A/B experiments.
 
 Seed space
 ----------
@@ -18,21 +24,25 @@ transient twin; seed ``0x100`` steps into the ``0x0000`` lockup. Evaluation
 diversity cannot be widened past 32,767 games without changing the level or
 speed being evaluated.
 
-The reserve therefore works in game classes: it reserves whole classes, gives
-each study the class's hardware-reachable orbit member as its evaluation seed,
-and blocks both members of every reserved class from training.
+The reserve works in game classes: it reserves whole classes, gives each study
+the class's hardware-reachable orbit member, and blocks both members of every
+reserved class from training at every level.
 
-Enforcement
------------
-Every training seed source calls :func:`training_seed_pool`,
-:func:`require_training_seeds`, :func:`draw_training_state` or
-:func:`is_reserved_state`. Runs that predate the reserve are grandfathered by
-output path (``legacy_training_outputs`` in the reserve file) or by an
-explicit ``"seed_reserve": "legacy"`` config key, so resuming them keeps their
-original seed draws. Studies take seeds only through :func:`allocate`, which
-hands out disjoint, recorded, contiguous slices in reserve order.
+Training draws
+--------------
+New runs draw console-reachable seeds outside the reserve (and outside the twin
+of every excluded seed) from a mixture: ``seed_mix`` (default 0.5) weighted by
+real Fightcade play frequency (``seed_frequency.json``, from drmariostats
+``/api/seeds``), the rest uniform. Every training seed source goes through
+:func:`training_seed_pool`, :func:`require_training_seeds` or
+:func:`draw_training_state`. Runs that predate the reserve are grandfathered by
+output path (``legacy_training_outputs``) or ``"seed_reserve": "legacy"`` and
+keep their original uniform draws. Studies take reserve seeds only through
+:func:`allocate`, which hands out disjoint, recorded, contiguous slices.
+Evaluation helpers: :func:`memorization_report`, :func:`strength_views`,
+:func:`draw_mixture_seeds` and :func:`detectable_gap`.
 
-CLI: ``python -m drmc_rl.program.seed_reserve {show,allocate,check,build}``.
+CLI: ``python -m drmc_rl.program.seed_reserve {show,allocate,check,resize,frequency,build}``.
 """
 from __future__ import annotations
 
@@ -52,6 +62,10 @@ import numpy as np
 
 RESERVE_PATH = Path(__file__).with_name("eval_seed_reserve.json")
 ALLOCATIONS_PATH = Path(__file__).with_name("eval_seed_allocations.json")
+FREQUENCY_PATH = Path(__file__).with_name("seed_frequency.json")
+FREQUENCY_SCHEMA = "drmc-seed-frequency-v1"
+FREQUENCY_API = "https://drmariostats.zudark.net/api/seeds?lvl={level}"
+DEFAULT_SEED_MIX = 0.5  # share of new-run training draws weighted by real Fightcade play
 RESERVE_SCHEMA = "drmc-eval-seed-reserve-v1"
 ALLOCATION_SCHEMA = "drmc-eval-seed-allocations-v1"
 SELECTION_KEY = "drmc-eval-seed-reserve-v1"
@@ -126,6 +140,7 @@ class Reserve:
     blocked: frozenset[int]  # every arena seed sharing a game class with a reserve seed
     legacy_outputs: tuple[str, ...]
     sha256: str
+    compatible_sha256: tuple[str, ...] = ()  # longer earlier files this reserve is a prefix of
 
 
 @lru_cache(maxsize=4)
@@ -147,7 +162,8 @@ def load_reserve(path: Path | str = RESERVE_PATH) -> Reserve:
     if data.get("blocked_count") != len(blocked):
         raise ValueError(f"{path}: blocked seed count does not match the game classes")
     return Reserve(seeds, status, blocked, tuple(data.get("legacy_training_outputs", ())),
-                   hashlib.sha256(raw).hexdigest())
+                   hashlib.sha256(raw).hexdigest(),
+                   tuple(entry["sha256"] for entry in data.get("truncated_from", ())))
 
 
 def is_legacy(config: dict | None, reserve: Reserve | None = None) -> bool:
@@ -161,18 +177,69 @@ def is_legacy(config: dict | None, reserve: Reserve | None = None) -> bool:
     return bool(output) and any(output.endswith(suffix) for suffix in reserve.legacy_outputs)
 
 
-def training_seed_pool(excluded: Iterable[int] = (), *, config: dict | None = None,
-                       reserve: Reserve | None = None) -> np.ndarray:
-    """Every arena reset seed a training (or unregistered arena) draw may use.
+@dataclass(frozen=True)
+class SeedPool:
+    """Seeds a draw may use and their probabilities (``None`` = uniform)."""
 
-    Outside grandfathered runs this removes the whole reserve and the twin of
-    every excluded seed, since ``s`` and ``s ^ 0x100`` are the same game.
+    seeds: np.ndarray
+    p: np.ndarray | None = None
+
+    def choice(self, rng: np.random.Generator, count: int) -> np.ndarray:
+        """``count`` distinct seeds; a uniform pool draws exactly like ``rng.choice(seeds, ...)``."""
+        return rng.choice(self.seeds, count, replace=False, p=self.p)
+
+
+@lru_cache(maxsize=4)
+def load_seed_frequency(path: Path | str = FREQUENCY_PATH) -> dict[int, int]:
+    """Real Fightcade games per console seed (arena convention), all levels pooled."""
+    data = json.loads(Path(path).read_text())
+    if data.get("schema") != FREQUENCY_SCHEMA:
+        raise ValueError(f"{path}: not a {FREQUENCY_SCHEMA} file")
+    table = dict(zip(map(int, data["seeds"]), map(int, data["games"])))
+    if sum(table.values()) != data["total_games"] or not set(table) <= orbit_seeds():
+        raise ValueError(f"{path}: frequency table is inconsistent")
+    return table
+
+
+def mixture_probabilities(seeds: Iterable[int] | None = None, *, seed_mix: float = DEFAULT_SEED_MIX,
+                          frequency: dict[int, int] | None = None) -> tuple[np.ndarray, np.ndarray]:
+    """``(seeds, p)``: ``seed_mix`` by real play frequency plus the rest uniform over ``seeds``.
+
+    ``seeds`` defaults to all 32,767 console-reachable states (the deployment
+    distribution); both components are renormalized over the seeds given, and
+    a transient seed counts as its orbit twin.
+    """
+    if not 0 <= seed_mix <= 1:
+        raise ValueError("seed_mix must lie in [0, 1]")
+    frequency = load_seed_frequency() if frequency is None else frequency
+    pool = np.asarray(sorted(orbit_seeds()) if seeds is None else list(seeds), dtype=np.int64)
+    orbit = orbit_seeds()
+    counts = np.asarray([frequency.get(s if s in orbit else twin(s), 0) for s in pool.tolist()], float)
+    p = np.full(len(pool), (1 - seed_mix) / len(pool))
+    if counts.sum() > 0:
+        p += seed_mix * counts / counts.sum()
+    else:
+        p += seed_mix / len(pool)
+    return pool, p / p.sum()
+
+
+def training_seed_pool(excluded: Iterable[int] = (), *, config: dict | None = None,
+                       reserve: Reserve | None = None) -> SeedPool:
+    """The seeds a training (or unregistered arena) draw may use, with their weights.
+
+    Grandfathered runs keep their original uniform draw over 1..65535 minus
+    ``excluded``. New runs draw console-reachable seeds outside the reserve and
+    outside every excluded game (``s`` and ``s ^ 0x100`` are the same game):
+    ``seed_mix`` (default 0.5) weighted by real play frequency, the rest uniform.
     """
     reserve = reserve or load_reserve()
     removed = set(map(int, excluded))
-    if not is_legacy(config, reserve):
-        removed |= {twin(s) for s in removed} | reserve.blocked  # a held-out game is both its seeds
-    return np.setdiff1d(np.arange(1, 65536), np.fromiter(removed, dtype=np.int64, count=len(removed)))
+    if is_legacy(config, reserve):
+        return SeedPool(np.setdiff1d(np.arange(1, 65536), np.fromiter(removed, np.int64, len(removed))))
+    removed |= {twin(s) for s in removed} | reserve.blocked
+    allowed = sorted(orbit_seeds() - removed)
+    seeds, p = mixture_probabilities(allowed, seed_mix=float((config or {}).get("seed_mix", DEFAULT_SEED_MIX)))
+    return SeedPool(seeds, p)
 
 
 def require_training_seeds(seeds: Iterable[int], *, config: dict | None = None,
@@ -191,12 +258,15 @@ def is_reserved_state(r0: int, r1: int, reserve: Reserve | None = None) -> bool:
     return arena_seed(r0, r1) in (reserve or load_reserve()).blocked
 
 
-def draw_training_state(rng: np.random.Generator, reserve: Reserve | None = None) -> tuple[int, int]:
-    """Uniform random ``rng_state`` bytes outside the reserve (legacy byte-draw order)."""
-    while True:
-        state = int(rng.integers(0, 256)), int(rng.integers(0, 256))
-        if not is_reserved_state(*state, reserve):
-            return state
+@lru_cache(maxsize=8)
+def _state_pool(seed_mix: float, reserve_sha: str) -> SeedPool:
+    return training_seed_pool(config={"seed_mix": seed_mix})
+
+
+def draw_training_state(rng: np.random.Generator, *, seed_mix: float = DEFAULT_SEED_MIX) -> tuple[int, int]:
+    """Random ``rng_state`` bytes for a training reset, from the new-run mixture outside the reserve."""
+    pool = _state_pool(float(seed_mix), load_reserve().sha256)
+    return rng_state(int(rng.choice(pool.seeds, p=pool.p)))
 
 
 # ------------------------------------------------------------------- allocation
@@ -218,7 +288,7 @@ def validate_allocations(allocations: list[dict], reserve: Reserve) -> None:
         start, count = int(entry["start"]), int(entry["count"])
         if entry["study"] in names or start != end or count < 1 or start + count > len(reserve.seeds):
             raise ValueError(f"allocation {entry['study']!r} is not a fresh contiguous reserve slice")
-        if entry["reserve_sha256"] != reserve.sha256:
+        if entry["reserve_sha256"] not in (reserve.sha256, *reserve.compatible_sha256):
             raise ValueError(f"allocation {entry['study']!r} was made from a different reserve file")
         if entry["seeds_sha256"] != _seeds_sha(reserve.seeds[start:start + count]):
             raise ValueError(f"allocation {entry['study']!r} does not match its reserve slice")
@@ -268,6 +338,103 @@ def allocate(study: str, count: int, purpose: str, *, reserve: Reserve | None = 
 
 def _seeds_sha(seeds: Iterable[int]) -> str:
     return hashlib.sha256(json.dumps([int(s) for s in seeds]).encode()).hexdigest()
+
+
+# ------------------------------------------------------------------- evaluation
+# Pair-mean variance of a side-swapped seed pair is ~0.165 in the afterstate
+# panels; ~0.04 of it persists across related candidates on the same seed (the
+# seed x entrant interaction), the rest is per-play noise.
+SEED_VARIANCE, PLAY_VARIANCE = 0.04, 0.125
+
+
+def detectable_gap(reserve_seeds: int, plays_per_seed: float = 1.0, seen_seeds: int | None = None, *,
+                   seed_variance: float = SEED_VARIANCE, play_variance: float = PLAY_VARIANCE,
+                   z_alpha: float = 1.96, z_power: float = 0.8416) -> float:
+    """Smallest seen-minus-reserve score gap found at 5% two-sided with 80% power.
+
+    ``plays_per_seed`` counts side-swapped pairs per seed per entrant (one per
+    opponent); ``seen_seeds`` defaults to as many seen seeds as reserve seeds.
+    """
+    per_seed = seed_variance + play_variance / plays_per_seed
+    seen = reserve_seeds if seen_seeds is None else seen_seeds
+    return (z_alpha + z_power) * float(np.sqrt(per_seed * (1 / reserve_seeds + 1 / seen)))
+
+
+def _seed_means(rows: Iterable[dict]) -> dict[int, tuple[float, int]]:
+    total: dict[int, list[float]] = {}
+    for row in rows:
+        if row.get("score") is not None:
+            total.setdefault(int(row["seed"]), []).append(float(row["score"]))
+    return {s: (sum(v) / len(v), len(v)) for s, v in total.items()}
+
+
+def _clustered(means: list[float], weights: np.ndarray | None = None) -> dict:
+    x = np.asarray(means, float)
+    w = np.ones(len(x)) if weights is None else np.asarray(weights, float)
+    w = w / w.sum()
+    mean = float(w @ x)
+    ess = float(1 / np.sum(w * w))
+    se = float(np.sqrt(np.sum(w * w * (x - mean) ** 2) * len(x) / max(len(x) - 1, 1)))
+    return dict(seeds=len(x), mean=mean, se=se, effective_seeds=ess)
+
+
+def memorization_report(rows: Iterable[dict], *, reserve: Reserve | None = None) -> dict:
+    """Seen-minus-reserve score gap for one entrant, per condition and pooled.
+
+    ``rows`` are that entrant's games: ``seed`` (arena), ``score`` (entrant's
+    score, 1/0.5/0) and an optional ``condition`` label such as ``"L14-HI"``.
+    Seeds are the clustering unit; a positive gap means better play on games
+    that training could have seen.
+    """
+    reserve = reserve or load_reserve()
+    groups: dict[str, list[dict]] = {}
+    for row in rows:
+        groups.setdefault(str(row.get("condition", "all")), []).append(row)
+    out, gaps = {}, []
+    for condition, items in sorted(groups.items()):
+        means = _seed_means(items)
+        held = [m for s, (m, _) in means.items() if s in reserve.blocked]
+        seen = [m for s, (m, _) in means.items() if s not in reserve.blocked]
+        entry = dict(reserve=_clustered(held) if held else None, seen=_clustered(seen) if seen else None)
+        if len(held) > 1 and len(seen) > 1:
+            gap = entry["seen"]["mean"] - entry["reserve"]["mean"]
+            se = float(np.hypot(entry["seen"]["se"], entry["reserve"]["se"]))
+            entry.update(gap=gap, se=se, ci95=(gap - 1.96 * se, gap + 1.96 * se))
+            gaps.append((gap, se))
+        out[condition] = entry
+    if gaps:
+        w = np.asarray([1 / se**2 if se > 0 else 0.0 for _, se in gaps])
+        if w.sum() > 0:
+            gap = float(w @ np.asarray([g for g, _ in gaps]) / w.sum())
+            se = float(1 / np.sqrt(w.sum()))
+            out["pooled"] = dict(gap=gap, se=se, ci95=(gap - 1.96 * se, gap + 1.96 * se))
+    return out
+
+
+def strength_views(rows: Iterable[dict], *, seed_mix: float = DEFAULT_SEED_MIX) -> dict:
+    """Uniform and real-play-weighted mean score over the seeds in ``rows``.
+
+    The weighted view reweights each seed by its probability under the
+    ``seed_mix`` mixture over all 32,767 console games relative to uniform
+    (self-normalized). It is only as good as its ``effective_seeds``: a bank
+    of rarely played seeds carries little real-play weight, so for this view
+    play seeds drawn by :func:`draw_mixture_seeds` (their plain mean is the
+    weighted view).
+    """
+    means = _seed_means(rows)
+    seeds = sorted(means)
+    _, p = mixture_probabilities(seed_mix=seed_mix)
+    index = {s: i for i, s in enumerate(sorted(orbit_seeds()))}
+    orbit = orbit_seeds()
+    weights = np.asarray([p[index[s if s in orbit else twin(s)]] for s in seeds]) * len(orbit)
+    values = [means[s][0] for s in seeds]
+    return dict(uniform=_clustered(values), weighted=_clustered(values, weights), seed_mix=seed_mix)
+
+
+def draw_mixture_seeds(rng: np.random.Generator, count: int, *, seed_mix: float = DEFAULT_SEED_MIX,
+                       excluded: Iterable[int] = ()) -> list[int]:
+    """Distinct non-reserve seeds from the training mixture (real-play-weighted evaluation games)."""
+    return [int(s) for s in training_seed_pool(excluded, config={"seed_mix": seed_mix}).choice(rng, count)]
 
 
 # ------------------------------------------------------------------------ check
@@ -429,6 +596,67 @@ def _cli_build(args) -> None:
                       if k not in ("seeds", "status_codes", "training_journals")}, indent=1))
 
 
+def resize_reserve(size: int, *, path: Path | str = RESERVE_PATH,
+                   allocations_path: Path | str = ALLOCATIONS_PATH, now: datetime | None = None) -> dict:
+    """Keep only the first ``size`` reserve games; the rest return to training.
+
+    Truncation never reorders, so every allocation made from the longer file
+    stays a valid slice; the old file hash is kept as compatible.
+    """
+    path = Path(path)
+    raw = path.read_bytes()
+    data = json.loads(raw)
+    used = sum(int(a["count"]) for a in load_allocations(allocations_path))
+    if not used <= size < len(data["seeds"]):
+        raise ValueError(f"size must cover the {used} allocated games and shrink the reserve")
+    data["truncated_from"] = [*data.get("truncated_from", []), dict(
+        sha256=hashlib.sha256(raw).hexdigest(), size=len(data["seeds"]),
+        at=(now or datetime.now(UTC)).isoformat(timespec="seconds"))]
+    data["seeds"], data["status_codes"] = data["seeds"][:size], data["status_codes"][:size]
+    data["training_journals"] = data["training_journals"][:size]
+    data["size"] = size
+    data["blocked_count"] = sum(len(class_members()[class_of(s)]) for s in data["seeds"])
+    data["status_at_creation"] = {k: data["status_codes"].count(str(i)) for i, k in enumerate(STATUSES)}
+    path.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+    load_reserve.cache_clear()
+    return data
+
+
+def build_seed_frequency(levels: Iterable[int] = range(21), *, source_dir: Path | None = None) -> dict:
+    """Pool drmariostats ``/api/seeds`` counts over levels into an arena-seed frequency table.
+
+    The API reports seeds as ``rng_state[0] << 8 | rng_state[1]`` (the seedlab
+    convention); stored seeds are arena seeds. ``source_dir`` reads saved
+    ``seeds-<level>.json`` responses instead of fetching.
+    """
+    import urllib.request
+
+    counts: dict[int, int] = {}
+    per_level = {}
+    for level in levels:
+        if source_dir is not None:
+            payload = json.loads((Path(source_dir) / f"seeds-{level}.json").read_text())
+        else:
+            with urllib.request.urlopen(FREQUENCY_API.format(level=level), timeout=120) as response:
+                payload = json.load(response)
+        if payload.get("lvl") != level:
+            raise ValueError(f"level {level}: unexpected response")
+        per_level[str(level)] = sum(int(r["n"]) for r in payload["rows"])
+        for row in payload["rows"]:
+            s = int(row["s"])
+            seed = arena_seed(s >> 8, s & 0xFF)
+            counts[seed] = counts.get(seed, 0) + int(row["n"])
+    if not set(counts) <= orbit_seeds():
+        raise ValueError("API seeds are not console-reachable states; check the byte convention")
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return dict(schema=FREQUENCY_SCHEMA, source=FREQUENCY_API.format(level="0..20"),
+                filter="drmariostats /api/seeds rows: status-ok replays, garbage crowns removed",
+                fetched_at=datetime.now(UTC).isoformat(timespec="seconds"),
+                convention="arena reset seed (rng_state[0] | rng_state[1] << 8), all levels pooled",
+                games_by_level=per_level, total_games=sum(counts.values()), distinct_seeds=len(counts),
+                seeds=[s for s, _ in ordered], games=[n for _, n in ordered])
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -449,9 +677,23 @@ def main(argv: list[str] | None = None) -> None:
                                                     "afterstate"])
     b.add_argument("--legacy-output", nargs="*", default=[])
     b.add_argument("--force", action="store_true")
+    r = sub.add_parser("resize", help="truncate the reserve; released games return to training")
+    r.add_argument("size", type=int)
+    f = sub.add_parser("frequency", help="rebuild seed_frequency.json from drmariostats /api/seeds")
+    f.add_argument("--source-dir", type=Path, help="saved seeds-<level>.json responses")
     args = parser.parse_args(argv)
     if args.command == "build":
         return _cli_build(args)
+    if args.command == "resize":
+        data = resize_reserve(args.size)
+        print(json.dumps({k: data[k] for k in ("size", "blocked_count", "truncated_from")}, indent=1))
+        return
+    if args.command == "frequency":
+        data = build_seed_frequency(source_dir=args.source_dir)
+        FREQUENCY_PATH.write_text(json.dumps(data, separators=(",", ":")) + "\n")
+        load_seed_frequency.cache_clear()
+        print(json.dumps({k: data[k] for k in ("total_games", "distinct_seeds", "games_by_level")}))
+        return
     reserve = load_reserve()
     if args.command == "show":
         allocations = load_allocations()

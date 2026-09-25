@@ -2,50 +2,63 @@
 
 ## Evaluation seed reserve
 
-Since 2026-09-24, `drmc_rl/program/eval_seed_reserve.json` holds a permanent
-block of 4,096 evaluation games. It is built by
-`python -m drmc_rl.program.seed_reserve build` from the cached seed audits of
-this Mac and tf3090 (426 journals). Each reserved game contributes its orbit
-seed and that seed's `^ 0x100` twin, which plays the identical game (see
-`docs/EVALUATION.md#evaluation-seeds`).
+Seed policy (2026-09-25, `docs/EVALUATION.md#evaluation-seeds`): training may
+use essentially the whole seed space. Only a small reserve is held out, for
+the memorization check and for A/B decision games.
 
-Selection left out every game that holds a registered study, hold-out, or
-retention-anchor seed; 8,893 games were left out this way. The other games were
-ranked by exposure, then by a keyed hash. No clean games were left: every one of
-the 32,767 games appears in some journal, and only 132 never appear in a
-training journal, all of them already registered. So every reserve game was
-`trained_lineage` at creation, seen in 1–4 training journals, and the reserve
-takes the least-exposed ones. It is clean from now on, not in the past.
+- **Reserve.** `drmc_rl/program/eval_seed_reserve.json` holds 1,024 games.
+  Both seeds of each game (`s` and `s ^ 0x100` play the same game) are blocked
+  from training at every level.
+  - The 1,024 games are the first 1,024 of the 4,096-game reserve from
+    2026-09-24. The file records that source reserve's hash under
+    `truncated_from`, so allocations made against it stay valid.
+  - `stranded-edge-benchmark-v1` (0–95) and `rating-pool-v1` (96–607) keep
+    their seeds; 416 games remain.
+  - The other 3,072 games (6,144 seeds) went back to the training pool.
+  - `resize N` shrinks the reserve further. It never reorders and never cuts an
+    allocation.
+- **Exposure.** Selection left out every game that holds a registered study,
+  hold-out or retention-anchor seed. The rest were ranked by exposure in the
+  cached seed audits of this Mac and tf3090 (426 journals). No clean games were
+  left: all 32,767 appear in some journal, and the 132 never trained on were
+  already registered. So every reserve game is `trained_lineage` (1–4
+  training journals). The reserve is clean from 2026-09-24 onward.
+- **Training draws.** `training_seed_pool` and `draw_training_state` give new
+  runs console-reachable seeds outside the reserve, the hold-out, and the
+  hold-out's twins. `seed_mix` (default 0.5) sets the share weighted by real
+  play in `seed_frequency.json`; the rest is uniform. Refresh the table with
+  `python -m drmc_rl.program.seed_reserve frequency`, which reads the public
+  API. Callers:
+  - `train_controller_retention` and `train_pace_strategy`
+  - random schedules in `trainer_planning_arena`
+  - `build_public_quality_bank`
+  - the random resets in `DrMarioPoolVecEnv` and `DrMarioVsVecEnv`
 
-Enforcement: every training seed source excludes both seeds of each reserved
-game and the twin of every hold-out seed. These sources are
-`train_controller_retention`, `train_pace_strategy`, random schedules in
-`trainer_planning_arena`, `build_controller_retention` anchors,
-`build_public_quality_bank`, motor-opportunity rows, afterstate distillation
-training rows, and the random resets in `DrMarioPoolVecEnv` and
-`DrMarioVsVecEnv`. Explicit arena seeds from the reserve require an allocation.
-`tests/test_seed_reserve.py` fails if any committed seed list under `runs/`
-uses an unallocated reserve seed.
+  Anchor seeds, motor-opportunity rows and distillation training rows reject
+  or skip reserve games. Explicit arena seeds from the reserve require an
+  allocation. `tests/test_seed_reserve.py` fails if any committed seed list
+  under `runs/` uses an unallocated reserve seed.
+- **Transition.** The running afterstate PPO arms
+  (`afterstate-core-v1/ppo-v1`, `afterstate-core-full-v1/ppo-v1`,
+  `afterstate-core-human-v1/ppo-v1`) are grandfathered by output path.
+  Resuming them keeps their original uniform draws over 1..65535 minus their
+  hold-out, and their configs are unchanged. A pre-reserve run of any other
+  kind needs `"seed_reserve": "legacy"` to resume with identical seeds. Treat
+  checkpoints from grandfathered runs, and their descendants, as
+  reserve-exposed.
+- **Known leak in pre-reserve hold-outs.** They held out `s` but not
+  `s ^ 0x100`.
+  - For 1,814 of the 2,048 mixed-v2 hold-out seeds, the identical game appears
+    in champion-lineage training.
+  - For `afterstate-core-v1/seeds.json`, the same is true of 2,119 of 2,368
+    seeds, and 35 twin pairs repeat a game inside the study.
+  - For `confirmation-seeds.json`, it is 370 of 448 seeds.
+  - The running arms can draw the twin of 2,236 of their evaluation seeds.
 
-Transition: the afterstate PPO arms (`afterstate-core-v1/ppo-v1`,
-`afterstate-core-full-v1/ppo-v1`, `afterstate-core-human-v1/ppo-v1`) are
-grandfathered by output path. Resuming them keeps their original draws, and
-their configs are unchanged. A pre-reserve run of any other kind needs
-`"seed_reserve": "legacy"` to resume with identical seeds. Grandfathered arms
-keep training on reserve games until they finish. Treat their checkpoints and
-descendants as reserve-exposed.
+  Under the new policy this counts as on-distribution exposure, not a defect.
+  Do not read those panels as held-out memorization evidence.
 
-Known leak in pre-reserve hold-outs: those lists held out `s` but not
-`s ^ 0x100`.
-
-- For 1,814 of the 2,048 mixed-v2 hold-out seeds, the identical game appears
-  in champion-lineage training.
-- For `afterstate-core-v1/seeds.json`, the same is true of 2,119 of 2,368
-  seeds, and 35 twin pairs repeat a game inside the study.
-- For `confirmation-seeds.json`, it is 370 of 448 seeds.
-- The running arms can still draw the twin of 2,236 of their evaluation seeds.
-
-Read those panels and tournaments as partly in-sample.
+## Afterstate core experiment
 
 The afterstate core (`docs/DESIGN.md#afterstate-public-core`) is trained in two
 steps, then evaluated only with pre-registered seeds.
