@@ -1,0 +1,69 @@
+{
+ "schema": "drmc-stranded-edge-variant-addendum-v1",
+ "amends": [
+  "stranded-edge-v1/preregistration.json (this branch, trainer/stranded-edge-endgame)",
+  "arm A tournament pre-registration (prepare_afterstate_tournament_v1.py PREREGISTRATION) and its shipped-timing confirmation addendum",
+  "afterstate-core-full-v1/tournament-addendum-arm-c.json (multi-arm addendum, branch trainer/afterstate-core-full)"
+ ],
+ "created_at": "2026-09-24",
+ "registered_before": "any A+S snapshot, any C+S or B+S update, and any tournament-seed game by any variant",
+ "design": {
+  "principle": "Branch each variant off its arm's own update checkpoint instead of restarting: the arm continues unchanged, the variant differs only by the stranded-edge start mix from the fork on, and they are compared at equal frame labels.",
+  "fork": "tools/train_controller_retention.py config key fork = {checkpoint, sha256, journal}. The variant loads the parent's full update checkpoint (model, AdamW state, sampling RNG, retention baseline, per-pace counters, update index and frames) and its journal truncated at the fork update; fork_contract() refuses any config difference other than start_mix, fork, output, source_commit, resume and seed_reserve.",
+  "A+S": {
+   "parent": "arm A, trainer-output/afterstate-core-v1/ppo-v1 (tmux afterstate-ppo-18h, continues unchanged)",
+   "fork_checkpoint": "ppo-v1/core-u00037.pt, update 37, 109,335,507 frames, 1,055,946 decisions",
+   "fork_sha256": "40dd5e1a08e0e38e512bebdea97ce15e3e7e36f9e75f9337faae8ba168f3d95a",
+   "why_not_the_100M_snapshot": "core-f00100000000.pt is inference-only (no optimizer or sampler state); restarting AdamW from it would add a second difference besides the curriculum. u37 is the nearest full checkpoint after it (+9.3M frames).",
+   "output": "trainer-output/afterstate-core-v1/ppo-v1-stranded",
+   "tmux": "afterstate-ppo-stranded-A",
+   "source": "trainer/stranded-edge-endgame 1fb5dd47 (arm A ran 0f36d78d; the training path differs only by the seed-reserve exclusion and the start mix)"
+  },
+  "C+S": "same construction off arm C's first full update checkpoint after its first 50M-frame snapshot, launched when arm C has it; registered here with identical schedule, metrics and rules",
+  "B+S": "later, same construction",
+  "known_difference": "A new output is not grandfathered, so training_seed_pool excludes the evaluation reserve: natural seed draws of the variant differ from arm A's for the same update wherever arm A drew a reserve game. Opponents, levels, pace schedule and optimizer are identical."
+ },
+ "schedule": {
+  "start_mix": {
+   "share0": 0.4,
+   "half_life_frames": 8000000,
+   "floor": 0.0,
+   "cutoff": 0.01,
+   "levels": [
+    14
+   ],
+   "paces": "all seven"
+  },
+  "formula": "share(t) = 0.40 * 0.5 ** (t / 8M), t = frames simulated by the variant since the fork; 0 once below 1% (t > 42.6M), after which only natural occurrences remain",
+  "justification": "0.40 of seed pairs is dense but keeps natural games the majority of every collection: bank games are about 20 learner decisions against about 59 for natural games, so the first updates put about 18% of learner decisions (about 15% of frames) on bank starts and retention anchors, per-pace collections and the natural return distribution stay dominant. An 8M half-life is about 3 updates at arm A's 2.8M frames per update: front-loaded, reaching background (cutoff) after 42.6M frames (about 16 updates), inside the requested 40-50M, i.e. just after the 150M-frame snapshot; from 200M frames on the variant sees only natural positions, so later snapshots test retention of whatever it learned. Expected exposure: about 550 bank pairs, about 22k learner decisions.",
+  "logging": "training.json and each ppo.log update line carry start_mix_share, start_mix_update_games and cumulative start_mix_games; journal rows of bank games carry start_row",
+  "bank": {
+   "path": "trainer-output/stranded-edge-v1/stranded-edge-train-v1.npz",
+   "sha256": "dd2673d0fec5a5e83026e4389c41107528c37ffc7ba43bb360439bae5eb333d6",
+   "note": "disjoint from every benchmark source game and board; pill streams come from the variant's training-pool seeds"
+  }
+ },
+ "evaluation": {
+  "per_snapshot": "runs/review-20260909/stranded_variant_watch_v1.py ARM: every 50M-frame variant snapshot plays the 896-game panel versus the champion and the stranded benchmark (solo frame_perfect and normal); the parent's snapshot at the same frame label also gets the benchmark",
+  "primary": {
+   "metric": "paired stranded-benchmark difference, variant snapshot minus the parent arm's snapshot at the same frame label: restricted-mean pills to clear the stranded virus (horizon 40, uncleared = 40), strata 0-1, pooled over frame_perfect and normal, bootstrap over bank groups (tools.eval_stranded_edge --compare VARIANT_OUT PARENT_OUT, paired.pooled.pills_restricted)",
+   "evaluated_at": "the variant's selected snapshot (below) against the parent snapshot with the same frame label",
+   "success": "point estimate <= -1.5 pills and 95% upper bound < 0"
+  },
+  "guards": [
+   "stranded benchmark strata 2-3 (pillar) and 4-5 (grounded): paired 95% upper bound <= +1.0 pill",
+   "general strength: the same 896-game panel; paired per-seed difference (mean of the two side-swapped games, variant minus parent, both versus the champion, 20000 bootstrap resamples) must have 95% lower bound >= -0.05"
+  ],
+  "stop_rule": "the arms' rule: a variant snapshot improves when its pooled panel score exceeds the best so far, where 'so far' includes the parent's snapshots up to the fork (arm A: best 0.595 at 100M); after two consecutive non-improving variant snapshots, or when the variant ends, the variant's tmux session is interrupted; its selected snapshot is its best post-fork snapshot by pooled panel score (ties to the earlier)",
+  "equal_frames": "the variant also stops no later than its parent's last snapshot frame label plus 50M, so every variant snapshot has a matched parent snapshot or is reported as unmatched"
+ },
+ "tournament_addition": {
+  "seeds": "afterstate-core-v1/seeds.json group tournament, same settings, analysis and verdict rules as tournament-addendum-arm-c.json",
+  "pairings": {
+   "xs-vs-champion": "variant (candidate) vs champion, 3584 games, versus_champion verdict",
+   "xs-vs-x": "variant (candidate) vs its own arm's selected core, 3584 games, head_to_head verdict"
+  },
+  "adoption": "the variant joins the set P of the multi-arm adoption procedure as its own arm (X+S). It has its parent's architecture and browser cost; when X and X+S are both in P and xs-vs-x is NO_DIFFERENCE_SHOWN, the higher pooled score versus the champion wins (arm B's rule for equal-cost arms). The shipped-timing confirmation addendum binds it exactly as the arms.",
+  "curriculum_verdict": "CURRICULUM_HELPS if the primary succeeds, both guards pass and xs-vs-x is not X_STRONGER; CURRICULUM_HARMS_STRENGTH if the panel guard fails or xs-vs-x is X_STRONGER; otherwise NO_EFFECT_SHOWN"
+ }
+}
