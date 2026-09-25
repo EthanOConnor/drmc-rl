@@ -117,6 +117,45 @@ def check_name(name: str) -> str:
     return name
 
 
+# Entrant settings that change decisions (the showy-setup knob, drmc_rl.style.showy_knob).
+# A worker that cannot apply them must never play such an entrant as its plain checkpoint.
+SHOWY_CAPABILITY = "knob:showy-v1"
+SHOWY_KEYS = ("showy_lambda", "showy_model", "showy_tier_bar", "showy_terms")
+
+
+def settings_requirements(settings: dict) -> set[str]:
+    """Capabilities an entrant's decision-changing settings need (derived, never trusted from the record)."""
+    return {SHOWY_CAPABILITY} if any(k.startswith("showy_") for k in settings or {}) else set()
+
+
+def validate_showy_settings(settings: dict) -> None:
+    """Knob settings must be self-contained (inline model spec) and well-formed."""
+    import math
+    keys = {k for k in settings if k.startswith("showy_")}
+    if not keys:
+        return
+    unknown = keys - set(SHOWY_KEYS)
+    if unknown:
+        raise ValueError(f"unknown showy settings {sorted(unknown)}")
+    lam = settings.get("showy_lambda")
+    if not isinstance(lam, (int, float)) or isinstance(lam, bool) or not math.isfinite(lam) or lam <= 0:
+        raise ValueError("showy_lambda must be a positive finite number (omit the knob for an unbiased entrant)")
+
+    def model_ok(spec):
+        if not isinstance(spec, dict) or spec.get("schema") != "drmc-showy-knob-v1":
+            raise ValueError("showy models must be inline drmc-showy-knob-v1 specs (workers never read local paths)")
+        n = len(spec.get("features", []))
+        if not n or any(len(spec.get(k, [])) != n for k in ("mean", "scale", "coef")) or len(canonical(spec)) > 65536:
+            raise ValueError("malformed or oversized showy model spec")
+    model_ok(settings.get("showy_model"))
+    for term in settings.get("showy_terms", []):
+        if not isinstance(term, dict) or set(term) - {"model", "lambda", "tier_bar"}:
+            raise ValueError("showy_terms entries are {model, lambda[, tier_bar]}")
+        model_ok(term.get("model"))
+        if not isinstance(term.get("lambda"), (int, float)) or not math.isfinite(term["lambda"]):
+            raise ValueError("showy_terms lambda must be finite")
+
+
 def requirements(spec: dict) -> set[str]:
     """Runtime capabilities a worker build needs to play this condition."""
     needs = {f"backend:{spec['backend']}", f"decision:{spec['decision'].get('decision_point', 'spawn')}",
@@ -136,6 +175,9 @@ def runtime_capabilities(repo) -> set[str]:
     arena = repo / "tools" / "trainer_planning_arena.py"
     if movement.is_file() and arena.is_file() and "movement_for_pace" in arena.read_text():
         caps.add("movement:human")
+    knob = repo / "drmc_rl" / "style" / "showy_knob.py"
+    if knob.is_file() and arena.is_file() and "showy_lambda" in arena.read_text():
+        caps.add(SHOWY_CAPABILITY)
     return caps
 
 

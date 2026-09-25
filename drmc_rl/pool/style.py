@@ -8,7 +8,7 @@ per-side counters with each game. The coordinator only sums counters.
 Definitions per placement: a *clear* resolves at least one line; a *combo*
 has 2+ lines in the resolution or 2+ cascade rounds; a *chain* has 2+ rounds;
 *garbage* is the ROM's min(lines, 4) pieces for 2+ lines; T1/T2/T3 are
-showiness scores >= 20 / 30 / 42 (a plain 4-line clear scores 0).
+showiness scores >= 27 / 30 / 42 (``big_clear.TIERS``; a plain 4-line clear scores 0).
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ KEYS = ("placements", "clears", "lines", "combos", "chains", "garbage", "attacks
 
 # Human reference rates from the full Fightcade corpus (drmc-rl-bigclear-data
 # mining-summary.json: 57,341,660 placements, 20,180,178 clears), per 100 placements.
-HUMAN = dict(combos=15.6, chains=12.8, clears=35.2, garbage=34.1, share34=0.157, t1=0.85, t2=0.15, t3=0.012)
+HUMAN = dict(combos=15.6, chains=12.8, clears=35.2, garbage=34.1, share34=0.157, t1=0.28, t2=0.15, t3=0.012)
 
 
 def side_style(moves, physical):

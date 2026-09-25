@@ -57,13 +57,18 @@ def side_counters(moves, physical):
         horizontal = any(o == 0 for found, _, _ in detail for o, *_ in found)
         out["horizontal"] += int(horizontal)
         out["horizontal_combo"] += int(horizontal and f.lines >= 2)
+        if score > out.get("best_score", -1):
+            out["best_score"], out["best"] = score, dict(score=score, cells=f.cells, rounds=f.rounds, lines=f.lines,
+                                                         viruses=f.viruses, horizontal=bool(horizontal))
     return out
 
 
 def rates(total):
     p = max(total["placements"], 1)
     per = lambda k: round(100.0 * total[k] / p, 3)  # noqa: E731
-    return dict(placements=total["placements"], clears=per("clears"), combos=per("combos"), chains=per("chains"),
+    return dict(placements=total["placements"], counts={k: total[k] for k in ("clears", "t1", "t2", "t3", "horizontal",
+                                                                             "horizontal_combo")},
+                best=total.get("best"), clears=per("clears"), combos=per("combos"), chains=per("chains"),
                 t1_plus=per("t1"), t2_plus=per("t2"), t3_plus=per("t3"),
                 horizontal=per("horizontal"), horizontal_combo=per("horizontal_combo"),
                 horizontal_share_of_clears=round(total["horizontal"] / total["clears"], 4) if total["clears"] else None,
@@ -107,17 +112,17 @@ class Runner:
         from tools.trainer_planning_arena import ArenaRuntime
         os.environ.setdefault("DRMARIO_REACH_LIB", str(Path(args.reach_library).resolve()))
         self.args = args
-        config = dict(DEFAULT_RUNTIME, rollout_backend="events", checkpoint=args.checkpoint, device=args.device,
+        config = dict(DEFAULT_RUNTIME, rollout_backend="events", checkpoint=args.anchor, device=args.device,
                       threads=args.threads, native_library=args.native_library)
         if args.planner_workers:
             config["planner_workers"] = args.planner_workers
-        config["variants"] = {"_anchor": dict(name="anchor", delay=4, checkpoint=args.checkpoint)}
+        config["variants"] = {"_anchor": dict(name="anchor", delay=4, checkpoint=args.anchor)}
         torch.manual_seed(0)
         self.runtime = ArenaRuntime(config)
 
     def variants(self, lam, model):
-        base = dict(name="champion", delay=4, checkpoint=self.args.checkpoint)
-        knob = dict(base, name=f"champion+showy{lam}")
+        base = dict(name="base", delay=4, checkpoint=self.args.base_checkpoint or self.args.checkpoint)
+        knob = dict(base, name=f"knob{lam}", checkpoint=self.args.checkpoint)
         if lam is not None:
             knob.update(showy_lambda=float(lam), showy_model=model, showy_tier_bar=self.args.tier_bar)
             if self.args.extra_model and lam:
@@ -186,7 +191,9 @@ def verify_inputs(runner, model, pace, seeds, lam=1.0):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tag", default="", help="ignored (process-visibility marker for pool workers)")
-    ap.add_argument("--checkpoint", default=ANCHOR)
+    ap.add_argument("--checkpoint", default=ANCHOR, help="knob side's checkpoint")
+    ap.add_argument("--base-checkpoint", help="unbiased side's checkpoint (default: --checkpoint)")
+    ap.add_argument("--anchor", default=ANCHOR, help="runtime anchor (the pool's; other checkpoints load as entrants)")
     ap.add_argument("--native-library", default=f"{LIBS}/libdrmario_pool.dylib")
     ap.add_argument("--reach-library", default=f"{LIBS}/libdrm_reach_full.dylib")
     ap.add_argument("--device", default="mps")
@@ -211,7 +218,7 @@ def main():
         model = ShowyModel.load(args.model).spec   # inline: the run is immune to the file changing later
     runner = Runner(args)
     seeds = pick_seeds(args.pairs, args.seed_start)
-    report = dict(schema="drmc-showy-h2h-v1", checkpoint=args.checkpoint, device=args.device, level=14, speed="hi",
+    report = dict(schema="drmc-showy-h2h-v1", checkpoint=args.checkpoint, base_checkpoint=args.base_checkpoint, device=args.device, level=14, speed="hi",
                   delay=4, backend="events", model=model if not args.model else args.model, model_spec=model,
                   tier_bar=args.tier_bar, extra_model=args.extra_model, extra_lambda=args.extra_lambda,
                   seeds=seeds, started=time.strftime("%Y-%m-%dT%H:%M:%S"), checks={}, results=[])
@@ -246,6 +253,8 @@ def main():
                         c = side_counters(moves, phys)
                         for k in STYLE_KEYS:
                             tot[name][k] += c[k]
+                        if c.get("best_score", -1) > tot[name].get("best_score", -1):
+                            tot[name]["best_score"], tot[name]["best"] = c["best_score"], c["best"]
                 entry = dict(lam=lam, pace=pace, pairs_done=start // args.batch_pairs * args.batch_pairs + len(chunk),
                              **outcome(scores), decisions_per_sec=round(dec / max(wall, 1e-9), 1),
                              wall_seconds=round(wall, 1), style={k: rates(v) for k, v in tot.items()})

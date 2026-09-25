@@ -402,6 +402,10 @@ def variant_policy(config, params, parent):
     modified, so unbiased players that alias it stay unbiased.
     """
     actor = _variant_actor(config, params, parent)
+    from drmc_rl.pool.conditions import SHOWY_KEYS
+    unknown = {k for k in params if k.startswith("showy_")} - set(SHOWY_KEYS)
+    if unknown:
+        raise ValueError(f"this build cannot apply showy settings {sorted(unknown)}")
     lam = float(params.get("showy_lambda", 0) or 0)
     if lam:
         from drmc_rl.style.showy_knob import ShowyModel, ShowyPolicy
