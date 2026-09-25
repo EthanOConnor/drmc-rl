@@ -395,7 +395,21 @@ def next_live_match(config, results, decided=()):
 
 
 def variant_policy(config, params, parent):
-    """A frozen core override is a different player, not another parent alias."""
+    """A frozen core override is a different player, not another parent alias.
+
+    Opt-in ``showy_lambda`` (non-zero) with ``showy_model`` (path or inline
+    spec) wraps the actor in the showy-setup knob; the shared parent is never
+    modified, so unbiased players that alias it stay unbiased.
+    """
+    actor = _variant_actor(config, params, parent)
+    lam = float(params.get("showy_lambda", 0) or 0)
+    if lam:
+        from drmc_rl.style.showy_knob import ShowyModel, ShowyPolicy
+        actor = ShowyPolicy(actor, ShowyModel.load(params["showy_model"]), lam)
+    return actor
+
+
+def _variant_actor(config, params, parent):
     device = config.get("device","cuda")
     checkpoint = params.get("checkpoint",config["checkpoint"])
     if "adapter_checkpoint" in params:
