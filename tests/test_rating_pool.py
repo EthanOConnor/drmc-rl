@@ -426,3 +426,25 @@ def test_end_to_end_http_workers_restart_and_recompute(tmp_path, monkeypatch):
     for key in keys:
         for seeds in again.state.by_pairing[key].values():
             assert all(sorted(sides) == [0, 1] for sides in seeds.values())
+
+
+def test_worker_switches_runtimes_without_resetting_torch_threads(monkeypatch):
+    import torch
+    from drmc_rl.pool.worker import Runtimes
+    calls = []
+
+    class Runtime:
+        def __init__(self, config):
+            torch.set_num_interop_threads(1)
+            calls.append(config["rollout_backend"])
+
+        def close(self):
+            pass
+    monkeypatch.setattr("tools.trainer_planning_arena.ArenaRuntime", Runtime)
+    monkeypatch.setattr(torch, "set_num_interop_threads",
+                        lambda n: (_ for _ in ()).throw(RuntimeError("twice")) if calls else None)
+    runtimes = Runtimes(SimpleNamespace(device="cpu", threads=1, native_library="x", cache="/tmp", planner_workers=None))
+    for backend in ("events", "frames", "events"):
+        spec = dict(runtime=dict(rollout_backend=backend, anchor_checkpoint="sha256:x"))
+        runtimes.get(spec, {"sha256:x": "anchor.pt"})
+    assert calls == ["events", "frames", "events"]

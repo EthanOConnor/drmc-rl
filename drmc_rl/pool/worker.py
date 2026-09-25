@@ -97,6 +97,7 @@ class Runtimes:
     def __init__(self, args, max_loaded=4):
         self.args, self.max_loaded = args, max_loaded
         self.runtimes, self.policies = {}, OrderedDict()
+        self.built = False
 
     def config(self, spec, paths):
         runtime = spec["runtime"]
@@ -115,9 +116,18 @@ class Runtimes:
         from tools.trainer_planning_arena import ArenaRuntime
         key = (spec["runtime"]["rollout_backend"], spec["runtime"]["anchor_checkpoint"])
         if key not in self.runtimes:
+            import torch
             for other in list(self.runtimes):
                 self.runtimes.pop(other).close()     # one live runtime (planner threads, parent policy)
-            self.runtimes[key] = ArenaRuntime(self.config(spec, paths))
+            # torch accepts set_num_interop_threads once per process; later runtimes keep the first setting.
+            original = torch.set_num_interop_threads
+            if self.built:
+                torch.set_num_interop_threads = lambda n: None
+            try:
+                self.runtimes[key] = ArenaRuntime(self.config(spec, paths))
+            finally:
+                torch.set_num_interop_threads = original
+            self.built = True
         return self.runtimes[key]
 
     def policy(self, runtime, params, identity):
@@ -278,7 +288,9 @@ def run_worker(args, client):
                     print(f"worker: release failed ({error}); the lease will expire", flush=True)
                 return
             except Exception as error:
-                kind = "incompatible" if isinstance(error, (ValueError, KeyError, RuntimeError)) else "transient"
+                # Contract errors (a loader or decision contract this entrant cannot meet) are
+                # deterministic; anything else (device, memory, network) is treated as transient.
+                kind = "incompatible" if isinstance(error, (ValueError, KeyError)) else "transient"
                 detail = f"{type(error).__name__}: {error}"
                 traceback.print_exc()
                 client.post(base + "/fail", dict(claim_token=lease["claim_token"], error=detail, kind=kind))
