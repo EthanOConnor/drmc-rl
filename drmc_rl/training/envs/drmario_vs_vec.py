@@ -63,6 +63,60 @@ from drmc_rl.training.envs.policy_batch import PlacementPolicyBatch
 from drmc_rl.models.policy.candidate_packing import candidate_bucket_width
 
 NES_FPS = 60.1
+# NTSC frame rate used by fightcadeRatings' crown extractor when the skill-grade
+# model (tools/skill_grade.py) was fit; skill features must use the same clock.
+SKILL_FPS = 60.0988
+# Base speed value per speed setting (LOW/MED/HI), as the crown extractor maps it.
+SKILL_SPEED_BASE = (15, 25, 31)
+SKILL_SPEEDUPS_MAX = 49
+
+
+def skill_game_features(
+    *,
+    length_s: float,
+    volleys_sent: int,
+    garbage_sent: int,
+    salt_frames_inflicted: Optional[int],
+    pills: int,
+    speed_setting: int,
+) -> Dict[str, float]:
+    """Per-side skill-grade inputs, matching tools/skill_grade.py's fit data.
+
+    The model was fit on fightcadeRatings crown rows (extract_crowns.py), where
+    every metric describes what the graded side DID, not what it received:
+
+      cpm             garbage volleys sent per minute
+      cur             mean garbage pieces per volley sent (2..4), 0 if none
+      spd             ending speed value: base(speed setting) + speed-ups,
+                      one speed-up per 10 pills (capped at 49)
+      salt_per_min    SALT seconds inflicted per minute; each sent volley adds
+                      16 * n frames (n = the most rows any piece falls),
+                      seconds = frames / 60.0988
+      pills_per_min   pills per minute
+      garbage_per_min garbage pieces sent per minute
+
+    ``salt_frames_inflicted=None`` (native library without per-volley SALT)
+    yields NaN for salt_per_min so the record cannot be graded silently.
+    Pills here are locked placements (the crown row counts the ROM pill
+    counter), so spd/pills can differ from the ROM by one pill.
+    """
+    minutes = max(float(length_s) / 60.0, 1e-9)
+    volleys_sent = int(volleys_sent)
+    garbage_sent = int(garbage_sent)
+    speed_base = SKILL_SPEED_BASE[max(0, min(int(speed_setting), 2))]
+    if salt_frames_inflicted is None:
+        salt_per_min = float("nan")
+    else:
+        salt_per_min = float(salt_frames_inflicted) / SKILL_FPS / minutes
+    return {
+        "length_s": float(length_s),
+        "cpm": float(volleys_sent) / minutes,
+        "cur": float(garbage_sent) / float(volleys_sent) if volleys_sent else 0.0,
+        "spd": float(speed_base + min(int(pills) // 10, SKILL_SPEEDUPS_MAX)),
+        "salt_per_min": salt_per_min,
+        "pills_per_min": float(pills) / minutes,
+        "garbage_per_min": float(garbage_sent) / minutes,
+    }
 
 # NES tile encoding (see vendor/drmario_native/DrMarioPool.cpp / drmc_rl/game/specs/ram_to_state.py).
 _TILE_EMPTY = 0xFF
@@ -252,6 +306,10 @@ class DrMarioVsPoolVecEnv:
         self._volleys_sent_round = np.zeros((self.num_sides,), dtype=np.int64)
         self._volleys_recv_round = np.zeros((self.num_sides,), dtype=np.int64)
         self._garbage_recv_round = np.zeros((self.num_sides,), dtype=np.int64)
+        # Skill-grade inputs, keyed by the SENDING side (what it inflicted).
+        self._garbage_volley_sent_round = np.zeros((self.num_sides,), dtype=np.int64)
+        self._salt_frames_sent_round = np.zeros((self.num_sides,), dtype=np.int64)
+        self._salt_unknown_round = np.zeros((self.num_sides,), dtype=bool)
 
         # Pair-clock tracking (emulated time, for vs/cpm).
         self._pair_clock_prev = np.zeros((self.num_pairs,), dtype=np.int64)
@@ -369,6 +427,9 @@ class DrMarioVsPoolVecEnv:
         self._volleys_sent_round.fill(0)
         self._volleys_recv_round.fill(0)
         self._garbage_recv_round.fill(0)
+        self._garbage_volley_sent_round.fill(0)
+        self._salt_frames_sent_round.fill(0)
+        self._salt_unknown_round.fill(False)
         self._pair_clock_prev = self._pair_clocks().astype(np.int64)
         self._emu_frames_total += int(self._pair_clock_prev.sum())
 
@@ -432,15 +493,7 @@ class DrMarioVsPoolVecEnv:
         v_now = buf.viruses_rem.astype(np.int32, copy=False)
         self._need_action = buf.need_action.copy()
 
-        # Volley events from this call.
-        volleys = self._runner.volleys()
-        for v in volleys:
-            recv_gi = v.pair * 2 + v.receiver
-            sent_gi = v.pair * 2 + (1 - v.receiver)
-            self._volleys_recv_round[recv_gi] += 1
-            self._garbage_recv_round[recv_gi] += int(v.size)
-            self._volleys_sent_round[sent_gi] += 1
-            self._volleys_total += 1
+        self._accumulate_volleys(self._runner.volleys())
 
         # Emulated (pair-clock) time accounting.
         pair_clocks = self._pair_clocks().astype(np.int64)
@@ -481,6 +534,9 @@ class DrMarioVsPoolVecEnv:
                 self._volleys_sent_round[i] = 0
                 self._volleys_recv_round[i] = 0
                 self._garbage_recv_round[i] = 0
+                self._garbage_volley_sent_round[i] = 0
+                self._salt_frames_sent_round[i] = 0
+                self._salt_unknown_round[i] = False
                 self._viruses_initial[i] = int(v_i)
                 self._ep_viruses_cleared[i] = 0
                 self._human_recent_actions[i].fill(-1)
@@ -1251,6 +1307,25 @@ class DrMarioVsPoolVecEnv:
         # Empty mask -> fallback slot 0 -> padding action -1 (noop-fall).
         return cand_actions[np.arange(B), slot_np].astype(np.int32)
 
+    def _accumulate_volleys(self, volleys: Sequence[Any]) -> None:
+        """Credit each released volley to its receiver and its sender.
+
+        ``v.receiver`` is the side whose field took the garbage; the sender
+        (the side graded for cpm/cur/SALT/garbage) is the other side.
+        """
+        for v in volleys:
+            recv_gi = v.pair * 2 + v.receiver
+            sent_gi = v.pair * 2 + (1 - v.receiver)
+            self._volleys_recv_round[recv_gi] += 1
+            self._garbage_recv_round[recv_gi] += int(v.size)
+            self._volleys_sent_round[sent_gi] += 1
+            self._garbage_volley_sent_round[sent_gi] += int(v.size)
+            if int(v.salt_frames) > 0:
+                self._salt_frames_sent_round[sent_gi] += int(v.salt_frames)
+            else:
+                self._salt_unknown_round[sent_gi] = True
+            self._volleys_total += 1
+
     def _record_match(
         self, pair_i: int, outcome: np.ndarray, pair_clock: int, *, horizon: bool = False
     ) -> None:
@@ -1280,38 +1355,27 @@ class DrMarioVsPoolVecEnv:
         self._pills_per_match.append(float(self._ep_pills[i0]))
         self._garbage_per_match.append(float(self._garbage_sent_prev[i0]))
         self._viruses_per_match.append(float(self._ep_viruses_cleared[i0]))
-        minutes = max(length_s / 60.0, 1e-6)
-
-        # DrMC-style per-game features for tools/skill_grade.py (one record per
-        # side). Approximations (no per-frame stats from the pool):
-        #   cpm           = garbage volleys sent / min
-        #   cur           = cures: 1 if this side won by clearing all viruses
-        #                   (the crown-table cur is a small per-set count;
-        #                   human feature range is [0, 3.33])
-        #   spd           = 31 + 0.5 * (pills // 10): HI base speed plus the
-        #                   time-average of the every-10-pills speedup ramp
-        #   salt_per_min  = garbage half pills received / min (true SALT
-        #                   weights received garbage by stack depth)
-        #   pills_per_min = pills locked / min
-        #   garbage_per_min = garbage half pills sent / min
+        # Skill-grade features (one record per graded side); see
+        # skill_game_features for the fit-time definitions.
+        skill_length_s = float(max(1, int(pair_clock))) / SKILL_FPS
         # Pool mode: only the learner side is graded (P2 is a frozen net).
         sides = (i0,) if self._opp_pool is not None else (i0, i0 + 1)
         for i in sides:
-            pills = int(self._ep_pills[i])
             won = int(outcome[i]) == VS_OUTCOME_WIN
-            cured = bool(won and int(viruses_rem[i]) == 0)
-            self._skill_games.append(
-                {
-                    "length_s": length_s,
-                    "cpm": float(self._volleys_sent_round[i]) / minutes,
-                    "cur": 1.0 if cured else 0.0,
-                    "spd": 31.0 + 0.5 * float(pills // 10),
-                    "salt_per_min": float(self._garbage_recv_round[i]) / minutes,
-                    "pills_per_min": float(pills) / minutes,
-                    "garbage_per_min": float(self._garbage_sent_prev[i]) / minutes,
-                    "won": 1.0 if won else 0.0,
-                }
+            record = skill_game_features(
+                length_s=skill_length_s,
+                volleys_sent=int(self._volleys_sent_round[i]),
+                garbage_sent=int(self._garbage_volley_sent_round[i]),
+                salt_frames_inflicted=(
+                    None if bool(self._salt_unknown_round[i])
+                    else int(self._salt_frames_sent_round[i])
+                ),
+                pills=int(self._ep_pills[i]),
+                speed_setting=int(self.speed_setting),
             )
+            record["won"] = 1.0 if won else 0.0
+            record["match"] = float(self._matches_total)
+            self._skill_games.append(record)
 
     def _build_reset_specs(self, *, reset_mask: Optional[np.ndarray]) -> List[object]:
         specs: List[object] = []

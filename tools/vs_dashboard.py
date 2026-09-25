@@ -123,6 +123,9 @@ def build_view(run_dir: Path) -> Layout:
         cur = skill[-1]
         whr_hist = [r.get("whr") for r in skill if r.get("whr") is not None]
         s.add_row("est. WHR", f"[bold]{cur.get('whr', float('nan')):.0f}[/] ± {cur.get('whr_std', 0):.0f}")
+        if int(cur.get("skill_features", 1)) < 2:
+            # Pre-fix rows fed received garbage as SALT and all-clear 0/1 as CUR.
+            s.add_row("", "[red]invalid: pre-fix skill features[/]")
         s.add_row("trend", spark(whr_hist, 48))
         for k in ("cpm", "spd", "salt", "win_rate"):
             if k in cur:

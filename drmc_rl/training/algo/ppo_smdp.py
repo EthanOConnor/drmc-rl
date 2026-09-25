@@ -2719,13 +2719,25 @@ class SMDPPPOAdapter(AlgoAdapter):
                 [[float(g[name]) for name in skill_grade.BASE_FEATURES] for g in games],
                 dtype=float,
             )
+            # Drop records the env could not measure (NaN salt_per_min means
+            # the native library lacks per-volley SALT) instead of grading
+            # them with a fabricated input.
+            finite = np.isfinite(X).all(axis=1)
+            if not bool(finite.any()):
+                return
+            games = [g for g, ok in zip(games, finite) if ok]
+            X = X[finite]
             # Self-play: the opponent is the agent itself, so solve the rating
             # fixed point r = f(metrics, opp_whr=r). Falls back to the plain
             # mean prediction for version-1 (no opp_whr) model files.
             whr, _converged, _iters = skill_grade.self_play_rating(model, X)
 
-            n_matches = len(games) // 2
+            n_matches = len({g.get("match", k) for k, g in enumerate(games)})
             row: Dict[str, float] = {
+                # v2: per-side inflicted SALT and pieces-per-volley CUR, as
+                # the model was fit. Rows without this key (v1) fed received
+                # garbage as SALT and all-clear 0/1 as CUR and are invalid.
+                "skill_features": 2,
                 "step": int(step),
                 "whr": float(whr),
                 "whr_std": float(model["resid_std"]) / float(max(1, len(games))) ** 0.5,

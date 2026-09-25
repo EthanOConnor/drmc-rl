@@ -5,6 +5,7 @@ const $ = (sel) => document.querySelector(sel);
 const fmt = new Intl.NumberFormat("en-US");
 const f0 = (x) => x == null ? "—" : Number(x).toFixed(0);
 const f1 = (x) => x == null ? "—" : Number(x).toFixed(1);
+const validSkill = (r) => (r.latest_skill?.skill_features >= 2 ? r.latest_skill : null);
 const pct = (x) => x == null ? "—" : `${(Number(x) * 100).toFixed(1)}%`;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -165,8 +166,10 @@ function renderPools() {
         { key: "updated", label: "updated", cls: "l", fmt: r => esc(r.updated.replace("T", " ").replace("+00:00", "Z")) },
         { key: "entries", label: "pool", fmt: r => r.entries.length },
         { key: "step", label: "step", sort: r => r.latest_skill?.step || 0, fmt: r => fmt.format(r.latest_skill?.step || 0) },
-        { key: "whr", label: "grade", sort: r => r.latest_skill?.whr || -Infinity, fmt: r => f0(r.latest_skill?.whr) },
-        { key: "cur", label: "clear%", sort: r => r.latest_skill?.cur || -Infinity, fmt: r => pct(r.latest_skill?.cur) },
+        // skill_history rows without skill_features >= 2 fed received garbage
+        // as SALT and all-clear 0/1 as CUR; their grades are invalid.
+        { key: "whr", label: "grade", sort: r => validSkill(r)?.whr || -Infinity, fmt: r => r.latest_skill && !validSkill(r) ? `<span class="neg">invalid</span>` : f0(validSkill(r)?.whr) },
+        { key: "cur", label: "CUR", sort: r => validSkill(r)?.cur || -Infinity, fmt: r => validSkill(r) ? Number(validSkill(r).cur).toFixed(2) : "—" },
         { key: "garbage", label: "garbage/min", sort: r => r.latest_skill?.garbage_per_min || -Infinity, fmt: r => f1(r.latest_skill?.garbage_per_min) },
       ], "poolRunTable", "updated")}
     </section>

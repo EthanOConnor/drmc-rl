@@ -128,6 +128,7 @@ def test_vs_pool_smoke() -> None:
         for g in games:
             for key in ("cpm", "cur", "spd", "salt_per_min", "pills_per_min", "garbage_per_min", "length_s"):
                 assert key in g
+                assert np.isfinite(g[key]), key  # per-volley SALT is native
         assert env.skill_games_pending() == 0
     finally:
         env.close()
@@ -240,3 +241,45 @@ def test_vs_training_horizon_and_decisive_metrics() -> None:
         assert metrics["vs/topout_win_rate"] == 0.0
     finally:
         env.close()
+
+
+def test_vs_pool_volleys_report_canonical_salt() -> None:
+    """Every macro-runner volley carries SALT = 16 * n frames, n in 1..16."""
+
+    from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
+
+    num_pairs = 8
+    rng = np.random.default_rng(0)
+
+    def specs():
+        return [
+            build_vs_reset_spec(level=(10, 10), speed_setting=(2, 2),
+                                rng_state=(int(rng.integers(256)), 7), rng_override=True)
+            for _ in range(num_pairs)
+        ]
+
+    runner = DrMarioVsPoolRunner(num_pairs=num_pairs)
+    volleys = []
+    try:
+        runner.reset(None, specs())
+        buf = runner.buffers
+        for _ in range(3000):
+            acts = []
+            for i in range(2 * num_pairs):
+                idx = np.flatnonzero(buf.feasible_mask[i])
+                acts.append(int(rng.choice(idx)) if buf.need_action[i] and idx.size else -1)
+            done = buf.terminated.astype(np.uint8)
+            if done.any():
+                runner.step(np.asarray(acts, dtype=np.int32), done, specs())
+            else:
+                runner.step(np.asarray(acts, dtype=np.int32), None, None)
+            volleys += runner.volleys()
+            if len(volleys) >= 20:
+                break
+    finally:
+        runner.close()
+    assert volleys, "random play produced no volleys"
+    if all(v.salt_frames == 0 for v in volleys):  # pragma: no cover - stale local build
+        pytest.skip("native VS pool predates per-volley SALT")
+    for v in volleys:
+        assert v.salt_frames % 16 == 0 and 16 <= v.salt_frames <= 256, v

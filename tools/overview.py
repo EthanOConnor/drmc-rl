@@ -86,6 +86,8 @@ def show_runs() -> None:
                 f"    skill: WHR {s.get('whr', 0):.0f}±{s.get('whr_std', 0):.0f} "
                 f"(step {s.get('step', 0):,}, win_rate {s.get('win_rate', 0):.2f}, "
                 f"n={s.get('n_games', 0)})"
+                + ("" if int(s.get("skill_features", 1)) >= 2
+                   else " [INVALID: pre-fix skill features]")
             )
     if not found:
         print("  (none)")

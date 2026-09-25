@@ -80,7 +80,8 @@ class _DrmVsVolley(C.Structure):
         ("size", C.c_uint8),
         ("cols", C.c_uint8 * 4),
         ("colors", C.c_uint8 * 4),
-        ("_pad", C.c_uint16),
+        # Canonical SALT (16 * max fall rows, >= 16); 0 from older libraries.
+        ("salt_frames", C.c_uint16),
         ("frame", C.c_uint32),
     ]
 
@@ -143,6 +144,10 @@ class VsVolley:
     cols: Tuple[int, ...]
     colors: Tuple[int, ...]  # raw NES colors (0=Y,1=R,2=B)
     frame: int  # pair-clock frame of the release
+    # SALT inflicted on the receiver: 16 * n frames, n = the most rows any
+    # piece falls (first occupied row below the spawn row in rows 1..15, else
+    # 16). 0 means the native library predates the field (SALT unknown).
+    salt_frames: int = 0
 
 
 @dataclass(slots=True)
@@ -712,6 +717,7 @@ class DrMarioVsPoolRunner:
                     cols=tuple(int(v.cols[j]) for j in range(min(size, 4))),
                     colors=tuple(int(v.colors[j]) for j in range(min(size, 4))),
                     frame=int(v.frame),
+                    salt_frames=int(v.salt_frames),
                 )
             )
         return out
