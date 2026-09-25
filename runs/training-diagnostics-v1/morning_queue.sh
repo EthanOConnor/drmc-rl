@@ -7,7 +7,7 @@ RUN=$HOME/.cache/drmc-rl/trainer-output/afterstate-core-v1/ppo-v1
 OUT=$HOME/.cache/drmc-rl/trainer-output/diag-v1
 PY=$HOME/dev/drmario/drmc-rl/.venv/bin/python
 S=$HOME/diag-scratch/training_diagnostics.py
-cd /dev/shm/afterstate-core/src-0f36d78d
+cd $HOME/.cache/drmc-rl/afterstate-core/src-0f36d78d
 export PYTHONPATH=. PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 av() { echo "== $1 $(date -Is) avail=$(awk "/MemAvailable/{print \$2}" /proc/meminfo)kB"; }
 # 1. Frozen-trunk value fitting (head only at 4 LRs, fresh MLP probe); ~20 min.

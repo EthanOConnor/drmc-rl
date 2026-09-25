@@ -40,6 +40,6 @@
     "memory": "keep MemAvailable >= 4 GB; the GPU (24 GB) fits two trainers at minibatch 2048 per the GNS bench"
   },
   "preconditions": [
-    "/dev/shm/afterstate-core on tf3090 was cleared: the source snapshot (src-0f36d78d), native libdrmario_pool.so and ppo.log are gone. Re-stage the trainer source and native library before any fork, and before diag-scratch/morning_queue.sh (it runs from that snapshot)."
+    "Trainer source snapshot, native libraries (libdrmario_pool.so, libdrm_reach_full.so) and ppo.log live in ~/.cache/drmc-rl/afterstate-core on tf3090 (src-0f36d78d, native/). Point each fork's native_library and working directory there. Never use /dev/shm on tf3090 for scratch, checkouts or logs."
   ]
 }
