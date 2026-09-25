@@ -571,6 +571,8 @@ class PoolCoordinator:
                                       row.get("b_stats", {}).get("decisions", 0)],
                            source=source, batch=spec["key"], job=spec.get("job"), worker=worker["worker_id"],
                            numerics=worker["numerics"], time=stamp)
+            if isinstance(row.get("style"), list) and len(row["style"]) == 2:
+                compact["style"] = row["style"]          # combo/showiness counters [a, b]; visibility only
             pair_hash = int(hashlib.sha1(f"{condition}/{a}/{b}/{row['seed']}".encode()).hexdigest()[:8], 16)
             if pair_hash % every == 0 and self.trace_bytes < cap:
                 path = self._write_trace(gid, row, move)

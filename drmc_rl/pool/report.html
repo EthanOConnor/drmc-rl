@@ -25,6 +25,7 @@ td.wrap{white-space:normal;min-width:16em}
 .n{text-align:right}
 td.e{max-width:30em;overflow:hidden;text-overflow:ellipsis}
 details.traj{margin:0}
+button.sort{border:0;background:none;color:inherit;font:inherit;padding:0;cursor:pointer}button.sort.on{color:var(--fg);text-decoration:underline}
 div.tabs{margin:4px 0 6px;display:flex;flex-wrap:wrap;gap:4px}button.tab{border:1px solid var(--line);background:none;color:var(--muted);font:inherit;font-size:12px;padding:1px 8px;border-radius:10px;cursor:pointer}button.tab.on{color:var(--fg);border-color:var(--fg)}
 button.tog{border:0;background:none;color:inherit;font:inherit;padding:0 4px 0 0;cursor:pointer}
 tr.sub td{color:var(--muted);font-size:12px}tr.sub.retired td{opacity:.7}details.traj summary{padding:0}table.sub{width:auto;margin:4px 0 6px}table.sub th,table.sub td{padding:1px 6px;font-size:12px}
@@ -50,6 +51,9 @@ a{color:inherit}
 <h2>Memorization check</h2>
 <p class="muted">Score on uniform seen (non-reserve) seeds minus score on the reserve bank, pool games only, in points. Flagged when the 95% interval excludes 0 by more than 2 points.</p>
 <div class="scroll" id="memorization"></div>
+<h2>Combos &amp; style</h2>
+<p class="muted" id="style-note"></p>
+<div id="style"></div>
 <h2>New and underplayed</h2><div class="scroll" id="new"></div>
 <h2>Jobs</h2><div class="scroll" id="jobs"></div>
 <h2>Roadmap</h2><div class="scroll" id="intentions"></div>
@@ -65,6 +69,8 @@ const setView = new Map();    // chosen view per condition set; survives refresh
 const expanded = new Set();   // expanded lineage rows in pace matrices; survives refreshes
 let last = null;
 document.addEventListener("click", e => {
+  const so = e.target.closest("[data-sort]");
+  if (so) { const [set, col] = so.dataset.sort.split("|"); styleSort.set(set, col); keep(() => render(last)); return; }
   const t = e.target.closest("[data-view]");
   if (t) { const [set, view] = t.dataset.view.split("|"); setView.set(set, view); keep(() => render(last)); return; }
   const b = e.target.closest("[data-toggle]");
@@ -151,6 +157,39 @@ function paceBreakdown(s) {
   const tables = s.paces.map(p => `<details data-key="pace-${esc(s.name)}-${esc(p.key)}"><summary>${esc(p.pace)} <span class="muted">· ${esc(p.condition)} · ${p.ratings.length} rated</span></summary>${ratings(p.ratings)}</details>`).join("");
   return `<details class="by-pace" data-key="bypace-${esc(s.name)}"><summary>By pace</summary>${matrix}${tables}</details>`;
 }
+const styleSort = new Map();  // sort column per condition set; survives refreshes
+const STYLE_COLS = [
+  ["label", "Entrant", r => esc(r.label) + (r.few_games ? ' <small class="muted">few games</small>' : ""), "e"],
+  ["games", "Games", r => num(r.games), "n"],
+  ["combos", "Combos", r => f1(r.combos), "n"], ["chains", "Chains", r => f1(r.chains), "n"],
+  ["lines_per_clear", "Lines/clear", r => r.lines_per_clear ?? "", "n"],
+  ["garbage", "Garbage", r => f1(r.garbage), "n"],
+  ["share34", "3–4 share", r => r.share34 == null ? "" : Math.round(100 * r.share34) + "%", "n"],
+  ["t1", "T1+", r => f2(r.t1), "n"], ["t2", "T2+", r => f2(r.t2), "n"], ["t3", "T3+", r => f3(r.t3), "n"],
+  ["t1_mean", "T1+ mean", r => r.t1_mean ?? "", "n"],
+  ["best", "Best clear", r => r.best ? `${r.best.score} <small class="muted">${r.best.cells}c ${r.best.rounds}r ${r.best.lines}l</small>` : "", "n"],
+];
+const f1 = x => x == null ? "" : Number(x).toFixed(1), f2 = x => x == null ? "" : Number(x).toFixed(2), f3 = x => x == null ? "" : Number(x).toFixed(3);
+function renderStyle(st) {
+  if (!st) { $("style").innerHTML = '<p class="muted">no data</p>'; return; }
+  const h = st.human;
+  $("style-note").innerHTML = `Per 100 placements, pool games only (new games carry the counters); not part of any rating. Combo = 2+ lines or 2+ rounds; T1/T2/T3 = showiness ≥ 20/30/42. ` +
+    `Human corpus: combos ${h.combos}, chains ${h.chains}, garbage ${h.garbage} (3–4 share ${Math.round(100 * h.share34)}%), T1+ ${h.t1}, T2+ ${h.t2}, T3+ ${h.t3}. Click a header to sort.`;
+  $("style").innerHTML = st.sets.map(s => {
+    const key = styleSort.get(s.condition_set) || "t1";
+    const col = STYLE_COLS.find(c => c[0] === key);
+    const rows = [...s.entrants].sort((a, b) => key === "label" ? String(a.label).localeCompare(b.label)
+      : ((key === "best" ? (b.best || {}).score : b[key]) ?? -1) - ((key === "best" ? (a.best || {}).score : a[key]) ?? -1));
+    const head = STYLE_COLS.map(c => `<th class="${c[3]}"><button class="sort${c[0] === key ? " on" : ""}" data-sort="${esc(s.condition_set)}|${c[0]}">${c[1]}</button></th>`).join("");
+    const body = rows.map(r => `<tr>${STYLE_COLS.map(c => `<td class="${c[3]}">${c[2](r)}</td>`).join("")}</tr>`).join("");
+    const paceNames = Object.keys(s.paces);
+    const byPace = paceNames.length > 1 ? `<details data-key="style-pace-${esc(s.condition_set)}"><summary>By pace <span class="muted">(combos / T1+ per 100)</span></summary><div class="scroll"><table><thead><tr><th>Entrant</th>${paceNames.map(p => `<th class="n">${esc(p)}</th>`).join("")}</tr></thead><tbody>` +
+      rows.map(r => `<tr><td class="e">${esc(r.label)}</td>${paceNames.map(p => { const m = s.paces[p][r.entrant]; return `<td class="n">${m ? `${f1(m.combos)} / ${f2(m.t1)}` : '<span class="muted">·</span>'}</td>`; }).join("")}</tr>`).join("") +
+      "</tbody></table></div></details>" : "";
+    return `<details data-key="style-${esc(s.condition_set)}"${s === st.sets[0] ? " open" : ""}><summary><b>${esc(s.condition_set)}</b> <span class="muted">· ${s.entrants.length} entrants</span></summary>` +
+      `<div class="scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${byPace}</details>`;
+  }).join("") || '<p class="muted">no pool games with style counters yet</p>';
+}
 function render(d) {
   const t = d.totals;
   $("summary").textContent = `${num(t.games)} games (${num(t.pool || 0)} pool, ${num(t.imported || 0)} imported) · ` +
@@ -179,6 +218,7 @@ function render(d) {
     ["Seeds reserve / seen", m => `${m.reserve_seeds} / ${m.seen_seeds}`, "n"],
     ["", m => m.flagged ? '<span class="bad">flag</span>' : ""]],
     (d.memorization || []).filter(m => m.gap_points != null), "not enough pool games on both seed sets yet");
+  renderStyle(d.style);
   $("new").innerHTML = table([
     ["Entrant", e => esc(e.id), "e"], ["Era", e => esc(e.era)], ["Status", e => esc(e.status)],
     ["Games (min / max per primary condition)", e => { const v = Object.values(e.games); return v.length ? `${Math.min(...v)} / ${Math.max(...v)}` : ""; }, "n"],

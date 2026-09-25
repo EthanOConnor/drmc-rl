@@ -164,6 +164,7 @@ def build_report(coordinator):
             new.append(dict(_entrant_view(state, e), games=per, rated=e in primary_view,
                             pooled=None if e not in primary_view else round(primary_view[e]["rating"])))
     memorization = memorization_rows(coordinator)
+    style = style_rows(coordinator)
     jobs = []
     for job in sorted(state.jobs.values(), key=lambda j: (j["status"] != "active", -j.get("priority", 50), j["id"])):
         progress = coordinator.scheduler.job_progress(job)
@@ -191,7 +192,7 @@ def build_report(coordinator):
                     trace_mb=round(coordinator.trace_bytes / 2 ** 20, 1)),
         condition_sets=sets, conditions=conditions,
         eras=sorted(eras.values(), key=lambda s: -(s["best"] or {}).get("rating", -1e9)),
-        memorization=memorization, pace_weights=dict(settings["pace_weights"]),
+        memorization=memorization, style=style, pace_weights=dict(settings["pace_weights"]),
         pace_weights_status=settings["pace_weights_status"],
         seed_sets={k: len(v) for k, v in coordinator.seed_sets().items()},
         new_entrants=new, entrants=[_entrant_view(state, e) for e in sorted(state.entrants)], jobs=jobs,
@@ -204,6 +205,43 @@ def build_report(coordinator):
         fidelity=dict(mode=settings["fidelity"], min_agreement=settings["min_agreement"],
                       admitted=state.admitted, classes=coordinator.fidelity_stats,
                       pending_audits=len(coordinator.audits)))
+
+
+def style_rows(coordinator):
+    """Combo and showiness metrics per condition set (and per pace) from the counters workers
+    report with each pool game. Visibility only. Earlier snapshots of an active run are omitted."""
+    from drmc_rl.pool.style import HUMAN, add, metrics
+    state = coordinator.state
+    min_games = int(coordinator.settings["min_rated_games"])
+    set_of = {}
+    for cset in state.condition_sets.values():
+        for k in cset["conditions"]:
+            set_of.setdefault(k, cset["name"])
+    totals, paces = {}, {}
+    for game in state.games.values():
+        style = game.get("style")
+        if not style or game["condition"] not in set_of:
+            continue
+        name, pace = set_of[game["condition"]], state.conditions[game["condition"]]["spec"]["pace"]
+        for e, counters in zip((game["a"], game["b"]), style):
+            if counters:
+                add(totals.setdefault(name, {}).setdefault(e, {}), counters)
+                add(paces.setdefault(name, {}).setdefault(pace, {}).setdefault(e, {}), counters)
+    out = []
+    for name in sorted(totals, key=lambda n: (not state.condition_sets[n]["primary"], n)):
+        keep = [e for e in totals[name] if state.snapshot_role(e) != "older"]
+        out.append(dict(condition_set=name,
+                        entrants=sorted((dict(entrant=e, label=_style_label(state, e),
+                                              **metrics(totals[name][e], min_games=min_games)) for e in keep),
+                                        key=lambda r: -r["t1"]),
+                        paces={p: {e: metrics(t, min_games=min_games) for e, t in rows.items() if e in keep}
+                               for p, rows in sorted(paces[name].items())}))
+    return dict(human=HUMAN, sets=out)
+
+
+def _style_label(state, e):
+    run = state.lineage_of(e)
+    return e if run is None else f"{run} · {frames_label(state.step_of(e))}"
 
 
 def memorization_rows(coordinator):

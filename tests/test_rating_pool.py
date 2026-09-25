@@ -620,3 +620,38 @@ def test_memorization_is_flagged_when_seen_seeds_score_higher(tmp_path):
     c = coordinator(tmp_path)
     m = {r["entrant"]: r for r in memorization_rows(c)}["m"]
     assert m["gap_points"] > 20 and m["flagged"] and m["detectable_points"] > 0
+
+
+def test_style_counters_follow_the_big_clear_scorer_and_reach_the_report(tmp_path):
+    import numpy as np
+    from drmc_rl.pool.style import HUMAN, game_style, metrics
+    from drmc_rl.pool.report import PAGE
+
+    def bottle(cells):
+        g = np.full(128, 0xFF, np.uint8)
+        for (r, c), tile in cells.items():
+            g[r * 8 + c] = tile
+        return list(bytes(g))
+    single = dict(board=bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81}), pill=(0, 2),
+                  placement=dict(action=15 * 8 + 3))                       # plain 4-line clear: score 0
+    combo = dict(board=bottle({(15, 0): 0x80, (14, 0): 0x81, (13, 0): 0x81, (12, 0): 0x81, (9, 0): 0x80,
+                               (8, 0): 0x80}), pill=(1, 0), placement=dict(action=128 + 10 * 8))  # 2 rounds
+    nothing = dict(board=bottle({}), pill=(0, 0), placement=dict(action=15 * 8))
+    moves = [dict(combo, side=0), dict(single, side=1), dict(nothing, side=0), dict(nothing, side=1)]
+    a, b = game_style(dict(side=0), moves)
+    assert (a["placements"], a["clears"], a["combos"], a["chains"], a["lines"], a["garbage"]) == (2, 1, 1, 1, 2, 2)
+    assert (b["clears"], b["combos"], b["garbage"], b["best"]["score"]) == (1, 0, 0, 0.0)
+    m = metrics(dict(a, games=1, best=a["best"]))
+    assert m["combos"] == 50.0 and m["chains"] == 50.0 and m["lines_per_clear"] == 2.0 and m["few_games"]
+    # Counters travel with the game rows into a per-set section of the report.
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
+    rows = rows_for(key, "a", "anchor", BANK[:2])
+    for row in rows:
+        row["style"] = [a, b]
+    state.add_games(rows)
+    report = build_report(coordinator(tmp_path))
+    section = report["style"]["sets"][0]
+    got = {r["entrant"]: r for r in section["entrants"]}
+    assert got["a"]["games"] == 4 and got["a"]["combos"] == 50.0 and got["anchor"]["best"]["score"] == 0.0
+    assert report["style"]["human"] == HUMAN and "normal" in section["paces"]
+    assert "Combos &amp; style" in PAGE and "data-sort" in PAGE

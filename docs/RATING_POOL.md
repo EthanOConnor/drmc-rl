@@ -195,6 +195,21 @@ trajectory. Stop-rule panels and decisions stay on their registered marks:
 `stop-rule --step-every 50000000` (or the lineage's `step_every`) evaluates only
 those snapshots, so the extra snapshots never change a decision.
 
+### Combos and style (visibility only)
+
+Workers resolve every placement of both sides with the big-clear scorer
+(`drmc_rl/eval/big_clear.py`, identical to trainer/big-clear-setups) and send
+compact per-side counters with each game (`drmc_rl/pool/style.py`); rows carry
+them as `style: [a, b]`. They never enter a rating. The report's "Combos &
+style" section shows, per condition set (and per pace in a drill-down), per 100
+placements: combos (2+ lines or 2+ rounds), chains (2+ rounds), average lines per
+clear, garbage sent and the share of 3–4-piece attacks, T1+/T2+/T3+ clears
+(showiness >= 20/30/42; a plain 4-line clear scores 0), the mean score of T1+
+clears and the best clear (score, cells, rounds, lines). Human corpus references:
+combos 15.6, chains 12.8, garbage 34.1 (3–4 share 16%), T1+ 0.85, T2+ 0.15, T3+
+0.012. Only games played since the counters were added carry them; entrants with
+fewer than 64 such games are marked.
+
 ## Operations
 
 Coordinator: **mombox** (always on, 458 GB free), `~/drmc-rl-pool/{src,venv,data}`,

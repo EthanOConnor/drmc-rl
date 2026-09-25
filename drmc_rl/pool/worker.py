@@ -302,6 +302,10 @@ def run_worker(args, client):
             finally:
                 renewal.set()
             failures = 0
+            if not args.fake:
+                from drmc_rl.pool.style import game_style
+                for row, moves, _ in batch:
+                    row["style"] = game_style(row, moves)
             submission = json.loads(json.dumps(dict(
                 claim_token=lease["claim_token"], batch=spec, purpose=lease["purpose"], elapsed=elapsed,
                 worker=me, rows=[b[0] for b in batch], moves=[b[1] for b in batch])))
