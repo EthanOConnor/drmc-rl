@@ -173,7 +173,8 @@ const STYLE_COLS = [
   ["t1p", '<span title="Cumulative: clears scoring >= 27 per 100 placements">T1+ (≥27)</span>', r => f3(r.t1p), "n"],
   ["t2", '<span title="Cumulative: clears scoring >= 30 per 100 placements">T2+ (≥30)</span>', r => f3(r.t2), "n"],
   ["t3", '<span title="Cumulative: clears scoring >= 42 per 100 placements">T3+ (≥42)</span>', r => f3(r.t3), "n"],
-  ["horizontal", '<span title="Share of matched lines that are horizontal">Horiz.</span>', r => r.horizontal == null ? "" : Math.round(1000 * r.horizontal) / 10 + "%", "n"],
+  ["horizontal", '<span title="Share of clears that contain at least one horizontal line of 4+ (the human reference definition)">Horiz. clears</span>', r => r.horizontal == null ? "" : Math.round(1000 * r.horizontal) / 10 + "%", "n"],
+  ["horizontal_lines", '<span title="Share of matched lines that are horizontal (not comparable with the human rows)">Horiz. lines</span>', r => r.horizontal_lines == null ? "" : Math.round(1000 * r.horizontal_lines) / 10 + "%", "n"],
   ["t1_mean", '<span title="Mean showiness of clears scoring >= 20">T1 mean</span>', r => r.t1_mean ?? "", "n"],
   ["best", "Best clear", r => r.best ? `${r.best.score} <small class="muted">${r.best.cells}c ${r.best.rounds}r ${r.best.lines}l</small>` : "", "n"],
 ];
@@ -199,7 +200,8 @@ function renderStyle(st) {
       return `<tr>${cells}</tr>${subs}`;
     }).join("") +
       (st.human_rows || []).map(h => `<tr class="sub">${STYLE_COLS.map(c => `<td class="${c[3]}">${
-        c[0] === "label" ? esc(h.label) + ' <small>(human reference)</small>' : c[0] === "horizontal" ? Math.round(1000 * h.horizontal) / 10 + "%"
+        c[0] === "label" ? `<span title="Human reference, 14-Hi-rated corpus, per 100 placements; Horiz. clears = share of clears containing at least one horizontal line of 4+">${esc(h.label)} <small>(human reference)</small></span>`
+        : c[0] === "horizontal" ? `<span title="Share of clears containing at least one horizontal line of 4+">${Math.round(1000 * h.horizontal) / 10}%</span>`
         : ["t1", "t1p", "t2", "t3"].includes(c[0]) ? h[c[0]] : ""}</td>`).join("")}</tr>`).join("");
     const paceNames = Object.keys(s.paces);
     const byPace = paceNames.length > 1 ? `<details data-key="style-pace-${esc(s.condition_set)}"><summary>By pace <span class="muted">(combos / T1+ per 100)</span></summary><div class="scroll"><table><thead><tr><th>Entrant</th>${paceNames.map(p => `<th class="n">${esc(p)}</th>`).join("")}</tr></thead><tbody>` +

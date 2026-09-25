@@ -936,13 +936,17 @@ def test_style_reports_cumulative_t1_plus_horizontal_share_and_human_rows(tmp_pa
                t2=1, t3=0, t1_score=50.0)
     total = add(add({}, old), new)
     m = metrics(total)
-    assert m["t1"] == 2.0 and m["t1p"] == 1.0 and m["horizontal"] == 0.25    # T1+ over new games only
+    assert m["t1"] == 2.0 and m["t1p"] == 1.0 and m["horizontal_lines"] == 0.25   # T1+ over new games only
+    assert m["horizontal"] is None                      # clear share: only games that count it
+    m = metrics(add(dict(total), dict(new, clears3=30, hclears=6)))
+    assert m["horizontal"] == 0.2
     assert [r["label"] for r in HUMAN_ROWS] == ["Humans >2000", "Top 5 by 14-Hi", "All humans"]
     assert HUMAN_ROWS[1]["t1p"] == 0.557 and HUMAN_ROWS[2]["horizontal"] == 0.241
     state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
     report = build_report(coordinator(tmp_path))
     assert report["style"]["human_rows"][0]["t1"] == 1.25
     assert "T1 (≥20, old)" in PAGE and "T1+ (≥27)" in PAGE and "Cumulative: clears scoring >= 30" in PAGE
+    assert "Horiz. clears" in PAGE and "Horiz. lines" in PAGE
 
 
 def test_last_hour_counts_reconcile_with_the_totals(tmp_path):
@@ -992,3 +996,22 @@ def test_style_lists_every_run_even_when_its_ranked_snapshot_has_no_style_data(t
     bc = rows["bc"]
     assert bc["entrant"] == "bc-f1" and bc["label"].startswith("bc · 50M")      # most games among styled
     assert [x["frames"] for x in bc["snapshots"]] == ["25M", "50M"] and bc["games"] == 120
+
+
+def test_horizontal_clear_share_counts_clears_with_a_horizontal_line():
+    import numpy as np
+    from drmc_rl.pool.style import metrics, side_style
+
+    def bottle(cells):
+        g = np.full(128, 0xFF, np.uint8)
+        for (r, c), tile in cells.items():
+            g[r * 8 + c] = tile
+        return list(bytes(g))
+    horizontal = dict(board=bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81}), pill=(0, 2),
+                      placement=dict(action=15 * 8 + 3), side=0)                       # one horizontal line
+    vertical = dict(board=bottle({(15, 0): 0x80, (14, 0): 0x81, (13, 0): 0x81, (12, 0): 0x81, (9, 0): 0x80,
+                                  (8, 0): 0x80}), pill=(1, 0), placement=dict(action=128 + 10 * 8), side=0)
+    c = side_style([horizontal, vertical], 0)
+    assert (c["clears3"], c["hclears"]) == (2, 1)
+    m = metrics(dict(c, games=1))
+    assert m["horizontal"] == 0.5 and m["horizontal_lines"] == round(c["hlines"] / c["lines2"], 3)

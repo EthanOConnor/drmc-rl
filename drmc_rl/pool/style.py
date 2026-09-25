@@ -17,9 +17,12 @@ KEYS = ("placements", "clears", "lines", "combos", "chains", "garbage", "attacks
 # Counted only by workers since the T1 bar moved to 27 (big_clear.TIERS); rates use the
 # placements and lines of the games that carry them, so older games never dilute them.
 KEYS_V2 = ("placements2", "lines2", "t1p", "hlines")
+# Counted since the horizontal-clear share was added: clears with at least one horizontal
+# line of 4+ (the definition of big_clear_pool_metrics' horizontal_share), and those clears.
+KEYS_V3 = ("clears3", "hclears")
 
 # Human reference rows, per 100 placements (14-Hi-rated corpus analysis): old T1 (>=20),
-# T1+ (>=27), T2+ (>=30), T3+ (>=42), horizontal share of matched lines.
+# T1+ (>=27), T2+ (>=30), T3+ (>=42), share of clears containing a horizontal line (4+).
 HUMAN_ROWS = (
     dict(label="Humans >2000", t1=1.25, t1p=0.442, t2=0.254, t3=0.022, horizontal=0.288),
     dict(label="Top 5 by 14-Hi", t1=1.49, t1p=0.557, t2=0.329, t3=0.032, horizontal=0.306),
@@ -36,7 +39,7 @@ def side_style(moves, physical):
     from drmc_rl.eval import big_clear as bc
     t1p, t2, t3 = (bar for _, bar in bc.TIERS)          # cumulative T1+ (27), T2+ (30), T3+ (42)
     t1 = bc.LEGACY_T1                                    # the original T1 bar (20), kept as "t1"
-    out = dict.fromkeys(KEYS + KEYS_V2, 0)
+    out = dict.fromkeys(KEYS + KEYS_V2 + KEYS_V3, 0)
     out["t1_score"] = 0.0
     best = None
     for move in moves:
@@ -55,6 +58,8 @@ def side_style(moves, physical):
         out["lines"] += f.lines
         out["lines2"] += f.lines
         out["hlines"] += getattr(f, "horizontal_lines", 0)
+        out["clears3"] += 1
+        out["hclears"] += int(getattr(f, "horizontal_lines", 0) > 0)
         out["t1p"] += int(score >= t1p)
         out["combos"] += int(f.lines >= 2 or f.rounds >= 2)
         out["chains"] += int(f.rounds >= 2)
@@ -82,7 +87,7 @@ def game_style(row, moves):
 
 
 def add(total, counters):
-    for k in KEYS + KEYS_V2:
+    for k in KEYS + KEYS_V2 + KEYS_V3:
         total[k] = total.get(k, 0) + counters.get(k, 0)
     total["games"] = total.get("games", 0) + 1
     best = counters.get("best")
@@ -102,6 +107,9 @@ def metrics(total, *, min_games=64):
                 share34=round(total["attacks34"] / total["attacks"], 3) if total.get("attacks") else None,
                 t1=per("t1"), t2=per("t2"), t3=per("t3"),
                 t1p=round(100.0 * total["t1p"] / total["placements2"], 3) if total.get("placements2") else None,
-                horizontal=round(total["hlines"] / total["lines2"], 3) if total.get("lines2") else None,
+                # Share of clears with a horizontal line (comparable with the human rows)...
+                horizontal=round(total["hclears"] / total["clears3"], 3) if total.get("clears3") else None,
+                # ...and the share of matched lines that are horizontal.
+                horizontal_lines=round(total["hlines"] / total["lines2"], 3) if total.get("lines2") else None,
                 t1_mean=round(total["t1_score"] / total["t1"], 1) if total.get("t1") else None,
                 best=total.get("best"))
