@@ -21,11 +21,15 @@ def frames_label(step):
     return f"{step / 1e6:.4g}M" if step else "0"
 
 
+def _round(value):
+    return None if value is None else round(value, 4)
+
+
 def _bounds(r):
     return [round(r["rating"] - 1.96 * r["se"]), round(r["rating"] + 1.96 * r["se"])]
 
 
-def collapse_lineages(rows, state):
+def collapse_lineages(rows, state, difference_se=None):
     """One row per training run: its best snapshot once concluded, else its newest rated one.
 
     The row carries the run's trajectory (every rated snapshot, retired ones included,
@@ -55,7 +59,12 @@ def collapse_lineages(rows, state):
                                     frames=frames_label(state.step_of(r["entrant"])), rating=round(r["rating"]),
                                     ci95=_bounds(r), games=r["games"],
                                     retired=state.entrants[r["entrant"]]["status"] == "retired",
-                                    shown=r["entrant"] == pick) for r in members])
+                                    shown=r["entrant"] == pick,
+                                    # P(this snapshot is stronger than the next one by frames).
+                                    los=None if i + 1 == len(members) or difference_se is None else _round(superiority(
+                                        r["rating"] - members[i + 1]["rating"],
+                                        difference_se(r["entrant"], members[i + 1]["entrant"]))))
+                                for i, r in enumerate(members)])
         out.append(rep)
     return out
 
@@ -65,7 +74,7 @@ def display_rows(rows, difference_se, state=None):
     likelihood of superiority over the next row, P(rating_i > rating_i+1), from the fitted
     covariance of the two estimates (None for the last row or when it is undefined).
     With ``state``, snapshots of a training run collapse to one row with its trajectory."""
-    rows = sorted(collapse_lineages(rows, state), key=lambda r: -r["rating"])
+    rows = sorted(collapse_lineages(rows, state, difference_se), key=lambda r: -r["rating"])
     out = []
     for i, r in enumerate(rows):
         below = rows[i + 1] if i + 1 < len(rows) else None

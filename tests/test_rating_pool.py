@@ -520,6 +520,18 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     run_rows = [r for r in rows if r.get("lineage") == "run"]
     assert len(run_rows) == 1 and run_rows[0]["label"] == "run · 75M"      # newest rated snapshot
     assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M"]
+    # Per-pace drill-down: the run's row in each pace table carries that pace's snapshots,
+    # each with LOS vs the next snapshot (covariance-aware), the last one "–".
+    from statistics import NormalDist
+    from drmc_rl.pool.report import PAGE, los_text
+    pace = report["condition_sets"][0]["paces"][0]
+    t = next(r for r in pace["ratings"] if r.get("lineage") == "run")["trajectory"]
+    assert [p["entrant"] for p in t] == ["run-f0", "run-f1", "run-f2", "run-f3"] and t[-1]["los"] is None
+    f = c.all_fits()[key]
+    d = f.ratings["run-f2"].rating - f.ratings["run-f3"].rating
+    assert t[2]["los"] == pytest.approx(NormalDist().cdf(d / f.difference_se("run-f2", "run-f3")), abs=1e-4)
+    assert los_text(t[-1]["los"]) == "–" and all(type(p["rating"]) is int for p in t)
+    assert "data-toggle" in PAGE and "expanded" in PAGE and 'tr class="sub' in PAGE
     assert not {r["entrant"] for r in rows} & {"run-f0", "run-f1", "run-f2"}
     # A 50M-mark stop rule ignores the 25M/75M snapshots; a panel job with step_every does too.
     rule = stop_rule(c, run="run", min_games=128, step_every=50_000_000)

@@ -155,7 +155,7 @@ final snapshot stay active; intermediates become retired (rated, never scheduled
 Reports show one row per lineage: the best snapshot once concluded, otherwise the
 newest rated one, labelled `run · frames`, with an expandable trajectory (every
 snapshot's rating, CI and games against frames, retired ones included) and a
-sparkline. Other entrants are unchanged.
+sparkline. In the per-pace drill-down a run expands into its snapshots: matrix sub-rows (retired ones muted; ▲/▼ relative to each snapshot's own pooled rating) and, per pace, each snapshot's Elo, CI, games and LOS vs the next snapshot. Expanded rows survive the 60 s refresh. Other entrants are unchanged.
 
 Snapshot cadence and stop rules: runs may snapshot every 25M frames for the
 trajectory. Stop-rule panels and decisions stay on their registered marks:
