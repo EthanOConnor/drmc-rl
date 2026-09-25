@@ -121,11 +121,21 @@ def measure(args):
     update = int(payload["update"])
     exp_avg_sq = None
     if args.metric == "adam":
-        state = payload["optimizer"]["state"]
-        step = float(state[0]["step"])
-        beta2 = payload["optimizer"]["param_groups"][0]["betas"][1]
-        eps = payload["optimizer"]["param_groups"][0]["eps"]
-        exp_avg_sq = [state[i]["exp_avg_sq"] / (1 - beta2 ** step) for i in sorted(state)]
+        # AdamW was built over ALL net parameters (one group), but creates state
+        # only for parameters that ever received a gradient. The WDL heads get
+        # none from PPO or retention, so state has 187 of 191 entries; map by
+        # the group's parameter index rather than assuming a dense list.
+        group = payload["optimizer"]["param_groups"]
+        if len(group) != 1:
+            raise ValueError("expected the trainer's single AdamW parameter group")
+        group, state = group[0], payload["optimizer"]["state"]
+        beta2, eps = group["betas"][1], group["eps"]
+        exp_avg_sq = {}
+        for position, index in enumerate(group["params"]):
+            if index in state:
+                s_ = state[index]
+                exp_avg_sq[position] = s_["exp_avg_sq"] / (1 - beta2 ** float(s_["step"]))
+        group_size = len(group["params"])
     del payload
     actor = ControllerCorePolicy(config["checkpoint"], device, resume=ckpt, training=True,
                                  seed=int(config["seed"]))
@@ -133,10 +143,17 @@ def measure(args):
     params = [p for p in net.parameters() if p.requires_grad]
     P = sum(p.numel() for p in params)
     if exp_avg_sq is not None:
-        if [v.shape for v in exp_avg_sq] != [p.shape for p in params]:
-            raise ValueError("optimizer state does not match trainable parameters")
-        # Metric sqrt(D), D = 1/(sqrt(v_hat)+eps): tr(D Sigma)/(G' D G).
-        metric = torch.cat([(1 / (v.sqrt() + eps)).sqrt().reshape(-1) for v in exp_avg_sq]).to(device)
+        every = list(net.parameters())
+        if group_size != len(every) or any(v.shape != every[i].shape for i, v in exp_avg_sq.items()):
+            raise ValueError("optimizer state does not match the network's parameters")
+        # Metric sqrt(D), D = 1/(sqrt(v_hat)+eps): tr(D Sigma)/(G' D G). Stateless
+        # parameters never receive a gradient, so their metric value is immaterial.
+        position = {id(p): i for i, p in enumerate(every)}
+        metric = torch.cat([
+            ((1 / (exp_avg_sq[position[id(p)]].sqrt() + eps)).sqrt() if position[id(p)] in exp_avg_sq
+             else torch.ones_like(p, device="cpu")).reshape(-1) for p in params]).to(device)
+        stateless = [i for i in range(len(every)) if i not in exp_avg_sq]
+        print(f"adam metric: {len(exp_avg_sq)}/{len(every)} parameters with state; stateless {stateless}", flush=True)
         del exp_avg_sq
     else:
         metric = None
@@ -428,6 +445,7 @@ def analyze_one(path, *, boots=400, seed=0):
     ret = z["retention_draws"]
     R = int(z["retention_rows"])
     rng = np.random.default_rng(seed)
+    game_gram = z["game_gram"]          # load once; npz members decompress per access
 
     def exact_index(c, t):
         return c * T + t
@@ -482,7 +500,7 @@ def analyze_one(path, *, boots=400, seed=0):
         s2_dec = float(np.mean([v for vs in s2_per_c.values() for v in vs]))
 
         # Game-clustered variance (sketch Gram, per collection; pooled and pace-stratified).
-        K = z["game_gram"][list(COMBOS).index(name)]
+        K = game_gram[list(COMBOS).index(name)]
         s2_game, s2_strat, sig_eff = [], [], []
         for c in range(C):
             j = np.flatnonzero(coll == c)
@@ -533,7 +551,7 @@ def analyze_one(path, *, boots=400, seed=0):
 
         def ci(col):
             values = np.where(valid, boot[:, col], np.inf)
-            return [float(x) for x in np.percentile(values, [2.5, 97.5])]
+            return [float(x) for x in np.percentile(values, [2.5, 97.5], method="nearest")]
 
         res = dict(G2=G2, G2_pairs=cross.tolist(), G2_ci=[float(x) for x in np.percentile(boot[:, 0], [2.5, 97.5])],
                    G2_nonpositive_fraction=float(1 - valid.mean()),
