@@ -20,6 +20,9 @@ suboptimal clear times**. Consumers:
   reachable seed lies on the orbit of `0x8988`, which has **period 32,767**.
   `0x0000` is a lockup fixed point; the remaining 32,768 states are transient
   and never occur on hardware. Catalog universe = the 32,767 orbit states.
+  Each transient state steps straight onto the orbit and its one-step twin
+  (catalog seed `x ^ 1`, arena seed `s ^ 0x100`) plays the byte-identical
+  game, so the orbit already covers every game a 16-bit seed can produce.
 - A game is fully determined by `(level, speed_setting, seed)`:
   `generatePillsReserve()` (128 pills) runs first, then virus placement, both
   consuming the same RNG stream from the seeded state with no warmup

@@ -20,6 +20,7 @@ import torch
 from drmc_rl.arena.experiment import dump
 from drmc_rl.execution.pace import resolve_pace
 from drmc_rl.models.policy.controller_core import ControllerCorePolicy, write_public_replay
+from drmc_rl.program.seed_reserve import require_training_seeds, training_seed_pool
 from drmc_rl.training.controller_retention import PaceRetention
 from drmc_rl.training.episodic_objective import objective_contract
 from drmc_rl.training.public_league import PublicOpponentPool
@@ -80,7 +81,8 @@ def main():
         paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
         coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
         pressure_strength=config.get('retention_pressure_strength',0.))
-    available=np.setdiff1d(np.arange(1,65536),list(set(config['holdout_seeds'])|retention.seeds))
+    require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
+    available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
                     execution_profiles={p:resolve_pace(p).to_dict() for p in config['paces']})

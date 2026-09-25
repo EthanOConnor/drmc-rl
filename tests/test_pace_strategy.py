@@ -117,12 +117,12 @@ def test_mixed_scoring_preserves_parent_and_records_only_sampled_learner_rows():
 
 
 def test_explicit_evaluation_bank_stays_disjoint_and_side_balanced():
-    match = {"games":4,"seeds":[917,3410]}
-    assert paired_jobs({"seed_exclusions":[2,3]},match) == [(917,0,0),(917,1,1),(3410,0,2),(3410,1,3)]
+    match = {"games":4,"seeds":[918,3410]}
+    assert paired_jobs({"seed_exclusions":[2,3]},match) == [(918,0,0),(918,1,1),(3410,0,2),(3410,1,3)]
     with pytest.raises(ValueError):
-        paired_jobs({"seed_exclusions":[917]},match)
+        paired_jobs({"seed_exclusions":[918]},match)
     with pytest.raises(ValueError):
-        paired_jobs({}, {"games":4,"seeds":[917,917]})
+        paired_jobs({}, {"games":4,"seeds":[918,918]})
 
 
 def test_controller_rollout_distinguishes_physical_locks_from_planner_failures():

@@ -25,6 +25,7 @@ from drmc_rl.human.motor_opportunity import (
     state_from_controller_replay,
 )
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from drmc_rl.program.seed_reserve import is_legacy, load_reserve
 
 
 def selected_rows(replay, *, per_game, limit, seed):
@@ -98,6 +99,7 @@ def run(config):
         raise ValueError("root and sampling budgets must be positive")
     watch_seconds = min(60., max(1., float(config.get("watch_seconds", 10))))
     holdout = set(map(int, config["holdout_seeds"]))
+    reserve = load_reserve()
     planner = NativeReachabilityRunner()
     progress = dict(schema=OPPORTUNITY_SCHEMA, condition=OPPORTUNITY_CONDITION,
                     status="Running", target_roots=maximum)
@@ -140,6 +142,8 @@ def run(config):
                     digest = hashlib.sha256(path.read_bytes()).hexdigest()
                     indices = selected_rows(replay, per_game=per_game, limit=per_update,
                                             seed=int(config["seed"]) + int(metadata["update"]))
+                    if not is_legacy(config):  # evaluation-reserve games never become training rows
+                        indices = [i for i in indices if int(replay["game_seed"][i]) not in reserve.blocked]
                     for index in indices:
                         if (digest, index) in seen:
                             continue

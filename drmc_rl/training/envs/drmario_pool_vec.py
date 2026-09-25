@@ -25,6 +25,7 @@ import numpy as np
 from gymnasium import spaces
 
 import drmc_rl.game.specs.ram_to_state as ram_specs
+from drmc_rl.program.seed_reserve import draw_training_state
 from drmc_rl.envs.backends.drmario_pool import (
     GRID_H,
     GRID_W,
@@ -645,7 +646,7 @@ class DrMarioPoolVecEnv:
                 seed_bytes = fixed_seed_bytes
                 rng_override = True
             elif rng_randomize:
-                seed_bytes = (int(self._rng.integers(0, 256)) & 0xFF, int(self._rng.integers(0, 256)) & 0xFF)
+                seed_bytes = draw_training_state(self._rng)
                 rng_override = True
             else:
                 seed_bytes = (0, 0)

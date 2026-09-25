@@ -39,6 +39,7 @@ from drmc_rl.human.early_decision import (
 )
 from drmc_rl.human.backend import NoReachablePlacement, plan_candidates
 from drmc_rl.planning.native_reach import NativeReachabilityRunner
+from drmc_rl.program.seed_reserve import allocated_seeds, load_reserve, training_seed_pool
 from tools.trainer_arena_stopping import ComparisonStopping
 from tools.vs_head_to_head import PlainPolicy
 
@@ -343,7 +344,10 @@ def publish(config, results, output, store):
 
 
 def paired_jobs(config, match):
-    """Honor an explicit held-out bank, or draw the historical random schedule."""
+    """Honor an explicit held-out bank, or draw a random schedule outside the evaluation reserve.
+
+    Explicit seeds may come from the reserve only through a recorded allocation.
+    """
     if match["games"] < 2 or match["games"] % 2:
         raise ValueError("tournaments require complete side-swapped seed pairs")
     excluded = set(config.get("seed_exclusions", []))
@@ -352,9 +356,12 @@ def paired_jobs(config, match):
         if (len(seeds) != match["games"]//2 or len(set(seeds)) != len(seeds)
                 or any(type(s) is not int or not 1 <= s <= 65535 or s in excluded for s in seeds)):
             raise ValueError("explicit tournament seeds must be unique, valid, allowed, and complete")
+        reserved = set(seeds) & load_reserve().blocked
+        if reserved and not reserved <= set(allocated_seeds()):
+            raise ValueError("explicit tournament seeds use unallocated evaluation-reserve seeds")
     else:
         rng = np.random.default_rng(match["seed"])
-        available = np.setdiff1d(np.arange(1, 65536), list(excluded))
+        available = training_seed_pool(excluded, config=config)
         seeds = rng.choice(available, match["games"]//2, replace=False)
     return [(int(seed), side, 2*i+side) for i, seed in enumerate(seeds) for side in (0, 1)]
 
