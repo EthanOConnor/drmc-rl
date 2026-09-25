@@ -182,7 +182,8 @@ RESUME_FREE_KEYS=('resume','update_tf32')
 
 
 # Keys a fork may change relative to the run it branches from.
-FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve')
+FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve',
+           'start_mixes','showiness_bonus','checkpoint_every_frames')
 
 
 def fork_contract(config):

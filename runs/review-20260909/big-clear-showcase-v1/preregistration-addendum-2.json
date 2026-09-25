@@ -1,0 +1,19 @@
+{
+ "schema": "drmc-big-clear-preregistration-addendum-v1",
+ "created_at": "2026-09-25T08:05-07:00",
+ "amends": "runs/review-20260909/big-clear-showcase-v1/preregistration-addendum-1.json",
+ "nature": "Turbo is a deliberately aggressive, short fork of candidate 1 for the streamer showcase. It is NOT a controlled test: bonus, start mix and snapshot interval all change at once. Candidate 1 keeps running unchanged over the same frames as an informal A/B control.",
+ "run": "bigclear-turbo",
+ "fork": "candidate 1 (bigclear-champ) newest full update checkpoint at launch: model, optimizer, sampler, retention baseline, adaptive lr and journal carried over (fork keys extended to start_mixes, showiness_bonus, checkpoint_every_frames)",
+ "pool_parent": "the latest registered bigclear-champ snapshot at or before the fork frames",
+ "changes": {
+  "bonus": {"steps": [[27.0, 0.10], [30.0, 0.30], [42.0, 0.60]], "event_cap": 0.60, "game_cap": 1.20,
+            "horizontal": {"per_clear": 0.008, "combo_extra": 0.016, "game_cap": 0.20},
+            "bound": "tier plus horizontal caps (1.40) stay below the 2-point win/loss swing; the validator now enforces caps < 2 instead of < 1"},
+  "start_mixes": {"showiness": 0.50, "stranded_edge": 0.15, "natural": "the rest of level-14 pairs; decision fractions reported from update 1"},
+  "snapshots_every_frames": 12500000
+ },
+ "unchanged": "retention hinge, 2048-row effective minibatch, KL-targeted lr (continues from candidate 1's current value), max_update_kl 0.03, parent-KL and retention guards",
+ "candidate_2": "bigclear-armA paused at update 46 (99.0M frames), resumable from armA/core-u00046.pt; its f25/50/75M snapshots stay in the pool",
+ "reporting": "style cumulative T1+ (>=27) / T2+ (>=30) / T3+ (>=42) per 100 placements; turbo vs candidate 1 over matched frames since the fork"
+}

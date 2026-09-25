@@ -105,7 +105,7 @@ def test_spec_rejects_a_cap_that_could_outweigh_a_win():
     from drmc_rl.training.showiness import validate_spec
 
     with pytest.raises(ValueError):
-        validate_spec(dict(threshold=20, per_point=0.01, event_cap=0.5, game_cap=1.5))
+        validate_spec(dict(threshold=20, per_point=0.01, event_cap=0.5, game_cap=2.5))
 
 
 def test_start_mix_replays_only_training_pool_seeds(tmp_path):

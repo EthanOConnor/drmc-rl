@@ -44,8 +44,11 @@ def validate_spec(spec: dict) -> dict:
     h = spec.get("horizontal")
     if h is not None and not (0 <= h["per_clear"] and 0 <= h.get("combo_extra", 0.0) and 0 < h["game_cap"] <= 0.2):
         raise ValueError("showiness_bonus.horizontal needs per_clear, combo_extra >= 0 and 0 < game_cap <= 0.2")
-    if not (0 <= spec["base"] <= spec["event_cap"] <= spec["game_cap"] < 1.0):
-        raise ValueError("showiness_bonus caps must satisfy 0 <= base <= event_cap <= game_cap < 1")
+    if spec["game_cap"] + (h["game_cap"] if h else 0.0) >= 2.0:
+        raise ValueError("showiness_bonus caps together must stay below the 2-point win/loss swing")
+    # The per-game cap must stay below the 2-point win/loss swing, so no bonus total outweighs a win.
+    if not (0 <= spec["base"] <= spec["event_cap"] <= spec["game_cap"] < 2.0):
+        raise ValueError("showiness_bonus caps must satisfy 0 <= base <= event_cap <= game_cap < 2")
     if spec["per_point"] < 0:
         raise ValueError("showiness_bonus per_point must be non-negative")
     return spec
