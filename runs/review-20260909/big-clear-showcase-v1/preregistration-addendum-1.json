@@ -41,32 +41,49 @@
    "why": "stepped so T3 dominates (0.05/0.15/0.30 per clear), game cap 0.60 so one or two T3 clears are not capped away (30% of the win/loss swing). Parents' natural tier bonus at these bars: 0.009/game (arm A f100M) and 0.022/game (champion), pool traces. Horizontal: completed horizontal lines only (no reward for unclearing horizontal placements), 0.004 per clear plus 0.008 when the clear is a combo (2+ lines), own cap 0.10/game; parents clear 7-8 horizontal per game (~0.03-0.04/game), so the cap is not reached at baseline; per event a T2 is worth 12-37 horizontal clears. Note: the requested 0.02-0.04 per horizontal clear would pay ~0.2/game at baseline and swamp the tiers, and 'well under the T2/T3 bonus per game' is impossible at any useful size because big clears are rare, so the horizontal bonus is sized well under the tiers per event instead."
   },
   "curriculum": {
-   "start_mix": {
-    "fraction": 0.4,
-    "levels": [
-     14
-    ],
-    "replay_share": 0.5,
-    "score_weights": [
-     [
-      20.0,
-      0.0
+   "start_mixes": [
+    {
+     "bank": "big-clear-train-v1 (showiness setups)",
+     "fraction": 0.25,
+     "levels": [
+      14
      ],
-     [
-      27.0,
-      1.0
-     ],
-     [
-      30.0,
-      3.0
-     ],
-     [
-      42.0,
-      10.0
+     "replay_share": 0.5,
+     "score_weights": [
+      [
+       20.0,
+       0.0
+      ],
+      [
+       27.0,
+       1.0
+      ],
+      [
+       30.0,
+       3.0
+      ],
+      [
+       42.0,
+       10.0
+      ]
      ]
-    ]
+    },
+    {
+     "bank": "stranded-edge-train-v1 (A+S bank, sha dd2673d0)",
+     "fraction": 0.35,
+     "levels": [
+      14
+     ],
+     "reward": "none (A+S used none)"
+    }
+   ],
+   "target_decision_shares": {
+    "showiness": "~20%",
+    "stranded_edge": "10-15%",
+    "natural": ">= 60%"
    },
-   "why": "constant (the stranded-edge decaying share had no effect); rows weighted by target score band: old-T1-only rows (20-27) 0, T1 1, T2 3, T3 10, i.e. draws 8% T1 / 59% T2 / 33% T3 over the 15,250 eligible rows; target 20-25% of learner decisions from bank games, checked at update 1 (start_mix_update_decision_fraction). No horizontal weighting: the bank has no per-target horizontal signal."
+   "sizing": "level-14 learner decisions per game: natural 53.6, stranded bank 18.3 (A+S journal), showiness bank ~0.65x natural (smoke); expected ~19% / ~14% / ~67% incl. level-20 collections",
+   "why": "constant shares: the stranded-edge variant's decaying share reached only ~2% of frames and had no effect. Logged per update: start_mix_update_decision_fraction (all banks) and start_mix_update_decision_fraction_by_bank (0 showiness, 1 stranded edge)."
   },
   "throughput": [
    "fill_inference_batches",
@@ -98,7 +115,7 @@
   }
  },
  "strength_rule": "Strong enough for the showcase: the pooled l14-spawn rating stays within 60 Elo of the champion (point estimate >= 1440 with the champion anchored at 1500). This replaces the -15 Elo guard for these two candidates only; the style trade-off report is unchanged.",
- "reporting": "per snapshot: pooled Elo vs the champion; T1_20 (old), T1, T2, T3 per 100 placements; horizontal clears per 100 and horizontal share of clears; best clear; ASCII boards of the largest clears. Per update: update_kl, adaptive lr, bank decision fraction, bonus fire rate, learner style (natural games).",
+ "reporting": "per snapshot: pooled Elo vs the champion; T1_20 (old), T1, T2, T3 per 100 placements; horizontal clears per 100 and horizontal share of clears; best clear; ASCII boards of the largest clears. Per update: update_kl, adaptive lr, bank decision fraction, bonus fire rate, learner style (natural games). Stranded edge: the stranded-edge benchmark as A+S was evaluated (tools/eval_stranded_edge solo, paired restricted-mean pills to clear the stranded virus on strata 0-1, frame_perfect + normal, plus target_cleared and support-destroying clears), each snapshot vs its parent.",
  "pool": "runs bigclear-champ and bigclear-armA, era style:big-combo, parents as above; intention big-clear-setups (entrants bigclear-*)",
  "tiers": {
   "T1": 27.0,
@@ -135,5 +152,6 @@
   "retention_hinge_active per pace",
   "gradient.pre_clip_norm",
   "gradient.clipped_fraction"
- ]
+ ],
+ "nature": "A deliberately combined showcase recipe (showiness curriculum + stepped bonus + horizontal bonus + stranded-edge curriculum + retention hinge + 2048-row steps + KL-targeted lr), trained for a streamer demo. It is NOT a controlled test of any single change; its snapshots are compared with their parents only as whole recipes."
 }

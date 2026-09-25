@@ -207,3 +207,38 @@ def test_retention_hinge_is_zero_at_or_below_the_start_kl(pressure):
     expected = 0.1 * (0.06 * r.pressure["normal"] + 0.0) / 2
     assert float(r.loss(rng)) == pytest.approx(expected, rel=1e-5)
     assert r.pop_hinge_stats() == {"normal": pytest.approx(1 / 3, abs=1e-3), "fast": 0.0}
+
+
+def test_start_mixes_split_pairs_between_banks_at_constant_shares(tmp_path):
+    from tools.train_controller_retention import StartMixes, collection_schedule
+
+    board = np.full((16, 8), E, np.uint8)
+    board[15, 0] = 0xD1
+    paths = []
+    for name in ("a", "b"):
+        path = tmp_path / f"{name}.npz"
+        np.savez(path, boards=np.stack([np.stack([board, board])] * 3), falling=np.ones((3, 2, 2), np.uint8),
+                 preview=np.zeros((3, 2, 2), np.uint8), pill_counter=np.full((3, 2), 40, np.uint8),
+                 speed_ups=np.zeros((3, 2), np.uint8), stratum=np.zeros(3, np.uint8))
+        paths.append(str(path))
+    mixes = StartMixes([dict(bank=paths[0], fraction=0.35), dict(bank=paths[1], fraction=0.25)])
+    match = dict(pace="normal", level=14)
+    counts = np.zeros(3)
+    for cycle in range(100):
+        starts = mixes.starts(dict(seed=5), cycle, 0, match, 32)
+        for i in range(0, len(starts), 2):
+            assert starts[i] == starts[i + 1] or starts[i][1] is not None  # whole pairs
+            assert starts[i][3] == starts[i + 1][3]
+            counts[2 if starts[i][3] is None else starts[i][3]] += 1
+    assert counts / counts.sum() == pytest.approx([0.35, 0.25, 0.40], abs=0.03)
+    assert mixes.starts(dict(seed=5), 0, 0, dict(pace="normal", level=20), 32) is None
+
+    class Opponents:
+        def choose(self, rng):
+            return "opp"
+    config = dict(arm="mixed_retention", paces=["normal"], seed=7, games_per_update=64, games_per_pace={},
+                  level20_fraction=0.0)
+    (_, jobs, starts), = collection_schedule(config, 1, np.arange(1, 5000), Opponents(), mixes, 0.6)
+    assert len(jobs) == len(starts) == 64
+    with pytest.raises(ValueError):
+        StartMixes([dict(bank=paths[0], fraction=0.6), dict(bank=paths[1], fraction=0.5)])

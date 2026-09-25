@@ -117,6 +117,46 @@ class StartMix:
         return [(r,None if r is None else self.bank.spec_kwargs(r),s) for r,s in zip(rows,seeds) for _ in (0,1)]
 
 
+class StartMixes:
+    """Several start banks at constant shares of the same seed pairs (e.g. showiness setups and stranded edges).
+
+    ``specs``: ``StartMix`` specs, each with a constant ``fraction``; their sum
+    must stay below 1 and the remainder is natural play. One uniform per pair
+    (a stream disjoint from ``StartMix``) picks the bank, so the shares are
+    exact in expectation; each bank keeps its own row weights and seed replay.
+    Starts carry the bank index as a fourth element (journaled ``start_bank``).
+    """
+    def __init__(self, specs, available=None):
+        if any('fraction' not in spec for spec in specs):
+            raise ValueError('start_mixes support constant fractions only')
+        self.mixes=[StartMix(spec,available) for spec in specs]
+        if sum(m.share0 for m in self.mixes)>=1:
+            raise ValueError('start_mixes fractions must sum below 1')
+        self.sha256=hashlib.sha256(''.join(m.sha256 for m in self.mixes).encode()).hexdigest()
+
+    def share(self, frames_since_start):
+        return sum(m.share0 for m in self.mixes)
+
+    def starts(self, config, cycle, index, match, pairs, share=None):
+        live=[(k,m) for k,m in enumerate(self.mixes)
+              if not (m.paces and match['pace'] not in m.paces) and match['level'] in m.levels]
+        if not live: return None
+        rng=np.random.default_rng([config['seed'],cycle,index,0x60])
+        out,any_row=[],False
+        for _ in range(pairs):
+            u=rng.random(); edge=0.; pick=None
+            for k,m in live:
+                edge+=m.share0
+                if u<edge: pick=(k,m); break
+            if pick is None:
+                out.extend([(None,None,None,None)]*2); continue
+            k,m=pick
+            row=int(rng.integers(len(m.bank))) if m.row_p is None else int(rng.choice(len(m.bank),p=m.row_p))
+            seed=int(m.replay_seed[row]) if m.replay_seed[row]>0 and rng.random()<m.replay_share else None
+            out.extend([(row,m.bank.spec_kwargs(row),seed,k)]*2); any_row=True
+        return out if any_row else None
+
+
 # Keys a fork may change relative to the run it branches from.
 FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve')
 
@@ -186,7 +226,8 @@ def main():
         pressure_strength=config.get('retention_pressure_strength',0.),hinge=bool(config.get('retention_hinge',False)))
     require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
     available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
-    start_mix=StartMix(config['start_mix'],available) if config.get('start_mix') else None
+    start_mix=(StartMix(config['start_mix'],available) if config.get('start_mix')
+               else StartMixes(config['start_mixes'],available) if config.get('start_mixes') else None)
     bonus=validate_spec(config['showiness_bonus']) if config.get('showiness_bonus') else None
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
@@ -294,6 +335,7 @@ def main():
                 rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b'],
                            **({} if starts is None or starts[j][0] is None else {'start_row':starts[j][0]}),
                            **({'start_seed_replay':True} if starts is not None and starts[j][2] is not None else {}),
+                           **({'start_bank':starts[j][3]} if starts is not None and len(starts[j])>3 and starts[j][3] is not None else {}),
                            **({'showiness':{'learner':side_summary(moves,jobs[j][1]),
                                             'opponent':side_summary(moves,1-jobs[j][1])}}
                               if config.get('journal_showiness') else {}))
@@ -345,6 +387,12 @@ def main():
                                     sum(r['a_stats'].get('decisions',0) for r in games if 'start_row' in r)
                                     /max(1,sum(r['a_stats'].get('decisions',0) for r in games)),4),
                                 start_mix_update_game_fraction=round(mixed/max(1,len(games)),4),
+                                # Per bank (start_mixes index): share of learner decisions and of games.
+                                **({'start_mix_update_decision_fraction_by_bank':{str(k):round(
+                                        sum(r['a_stats'].get('decisions',0) for r in games if r.get('start_bank')==k)
+                                        /max(1,sum(r['a_stats'].get('decisions',0) for r in games)),4)
+                                        for k in range(len(start_mix.mixes))}}
+                                   if isinstance(start_mix,StartMixes) else {}),
                                 start_mix_replay_games=progress.get('start_mix_replay_games',0)
                                     +sum('start_seed_replay' in r for r in games))
             if config.get('journal_showiness'):
@@ -388,7 +436,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr','style_update','gradient','retention_hinge_active') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','start_mix_update_decision_fraction_by_bank','showiness_bonus_update','adaptive_lr','style_update','gradient','retention_hinge_active') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):

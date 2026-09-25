@@ -25,9 +25,17 @@ ENTRANTS = {'champ': 'champion-retention-mixed-v2', 'armA': 'armA-ppo-v1-f001000
 # Stepped tier bonus (T3 dominant) plus a small separately capped bonus for completed horizontal lines.
 BONUS = dict(steps=[[27.0, 0.05], [30.0, 0.15], [42.0, 0.30]], event_cap=0.30, game_cap=0.60,
              horizontal=dict(per_clear=0.004, combo_extra=0.008, game_cap=0.10))
-# Rows weighted by target score band: 20-27 (old T1 only) 0, 27-30 (T1) 1, 30-42 (T2) 3, 42+ (T3) 10.
-START_MIX = dict(fraction=0.40, levels=[14], paces=[], replay_share=0.5,
-                 score_weights=[[20.0, 0.0], [27.0, 1.0], [30.0, 3.0], [42.0, 10.0]])
+# Two constant start banks on level-14 seed pairs (the rest is natural play). Showiness setups:
+# rows weighted by target band 20-27 (old T1 only) 0, 27-30 1, 30-42 3, 42+ 10, half replaying the
+# human pills. Stranded edge-virus endgames: A+S's bank, no extra reward (as in A+S). Pair shares
+# 0.25 / 0.35 target about 19% / 14% of learner decisions (bank games are shorter), natural ~67%.
+START_MIXES = [
+    dict(bank=BANK, bank_sha256=BANK_SHA, fraction=0.25, levels=[14], paces=[], replay_share=0.5,
+         score_weights=[[20.0, 0.0], [27.0, 1.0], [30.0, 3.0], [42.0, 10.0]]),
+    dict(bank=f'{REMOTE}/stranded-edge-v1/stranded-edge-train-v1.npz',
+         bank_sha256='dd2673d0fec5a5e83026e4389c41107528c37ffc7ba43bb360439bae5eb333d6',
+         fraction=0.35, levels=[14], paces=[]),
+]
 # Arm A's steps barely move the policy (update KL ~0.0015); start at 1e-5 and steer update KL to 0.005.
 LR = 2e-5  # start higher: 16x fewer, cleaner steps (effective minibatch 2048)
 LR_KL_TARGET = dict(target=0.005, alarm=0.015, min_lr=1e-6, max_lr=3e-5)
@@ -40,7 +48,7 @@ def main():
         c = {k: v for k, v in base.items() if k not in ('resume', 'fork', 'seed_reserve')}
         c.update(checkpoint=ckpt, parent_entrant=ENTRANTS[name], output=f'{ROOT}/{name}',
                  native_library=f'{ROOT}/native/libdrmario_pool.so', seed=20260925,
-                 start_mix=dict(bank=BANK, bank_sha256=BANK_SHA, **START_MIX),
+                 start_mixes=START_MIXES,
                  showiness_bonus=BONUS, target_decisions=3_000_000,
                  minimum_decisions_per_pace=base['minimum_decisions_per_pace'], milestone_decisions=[],
                  checkpoint_every_frames=25_000_000, keep_update_checkpoints=True, journal_showiness=True,
