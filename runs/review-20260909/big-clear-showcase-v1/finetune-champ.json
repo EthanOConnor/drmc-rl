@@ -4468,7 +4468,7 @@
  "max_game_frames": 120000,
  "seed": 20260925,
  "async_planning": true,
- "source_commit": "2eb3cc51",
+ "source_commit": "71515247",
  "native_commit": "19f292c",
  "updates": 20000,
  "lr": 2e-05,
@@ -4501,34 +4501,45 @@
  "minimum_learning_rate": 1e-08,
  "checkpoint_every_frames": 25000000,
  "parent_entrant": "champion-retention-mixed-v2",
- "start_mix": {
-  "bank": "/home/ethan/.cache/drmc-rl/trainer-output/big-clear-v1/bank/big-clear-train-v1.npz",
-  "bank_sha256": "96cf5e45bdb0d083eaa4f5f74c5f0bfdf4591c21d338dc39c8485f29adffce8b",
-  "fraction": 0.4,
-  "levels": [
-   14
-  ],
-  "paces": [],
-  "replay_share": 0.5,
-  "score_weights": [
-   [
-    20.0,
-    0.0
+ "start_mixes": [
+  {
+   "bank": "/home/ethan/.cache/drmc-rl/trainer-output/big-clear-v1/bank/big-clear-train-v1.npz",
+   "bank_sha256": "96cf5e45bdb0d083eaa4f5f74c5f0bfdf4591c21d338dc39c8485f29adffce8b",
+   "fraction": 0.25,
+   "levels": [
+    14
    ],
-   [
-    27.0,
-    1.0
-   ],
-   [
-    30.0,
-    3.0
-   ],
-   [
-    42.0,
-    10.0
+   "paces": [],
+   "replay_share": 0.5,
+   "score_weights": [
+    [
+     20.0,
+     0.0
+    ],
+    [
+     27.0,
+     1.0
+    ],
+    [
+     30.0,
+     3.0
+    ],
+    [
+     42.0,
+     10.0
+    ]
    ]
-  ]
- },
+  },
+  {
+   "bank": "/home/ethan/.cache/drmc-rl/trainer-output/stranded-edge-v1/stranded-edge-train-v1.npz",
+   "bank_sha256": "dd2673d0fec5a5e83026e4389c41107528c37ffc7ba43bb360439bae5eb333d6",
+   "fraction": 0.35,
+   "levels": [
+    14
+   ],
+   "paces": []
+  }
+ ],
  "showiness_bonus": {
   "steps": [
    [
