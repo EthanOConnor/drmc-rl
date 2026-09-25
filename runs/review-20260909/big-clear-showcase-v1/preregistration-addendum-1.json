@@ -1,0 +1,21 @@
+{
+ "schema": "drmc-big-clear-preregistration-addendum-v1",
+ "created_at": "2026-09-24T23:30-07:00",
+ "amends": "runs/review-20260909/big-clear-v1/preregistration.json",
+ "reason": "A streamer may try the browser trainer on 2026-09-25; showiness matters more than raw strength as long as the player is strong enough. Two shaped candidates are trained overnight instead of the queued arm (b)/(a) pair.",
+ "candidates": {
+  "bigclear-champ": {"parent": "champion-retention-mixed-v2 (core-final-inference.pt, G5, deployable in the browser as is)", "optimizer": "fresh"},
+  "bigclear-armA": {"parent": "armA-ppo-v1-f00100000000 (as pre-registered; f50M and f100M rate level, f100M kept for continuity with the baseline benchmark)", "optimizer": "fresh"}
+ },
+ "changes": {
+  "bonus": {"spec": {"threshold": 20.0, "base": 0.07, "per_point": 0.007, "event_cap": 0.20, "game_cap": 0.45},
+            "why": "raised from 0.30 to 0.45 per game (22.5% of the win/loss swing) to move style within one night; both candidates use it so they differ only by parent"},
+  "curriculum": {"start_mix": {"fraction": 0.35, "levels": [14], "replay_share": 0.5},
+                 "why": "constant, not decaying: the stranded-edge variant showed a decaying 0.40/8M share falls to ~2% of frames and has no effect; target >= 10-15% of learner decisions from bank games, logged per update as start_mix_update_decision_fraction"},
+  "throughput": ["fill_inference_batches", "deferred_reference", "fast quiet-afterstate path (byte-identical)"],
+  "not_used": "coalesce_inference (no validated tf3090 smoke on record)"
+ },
+ "strength_rule": "Strong enough for the showcase: the pooled l14-spawn rating stays within 60 Elo of the champion (point estimate >= 1440 with the champion anchored at 1500). This replaces the -15 Elo guard for these two candidates only; the style trade-off report is unchanged.",
+ "reporting": "per snapshot (every 25M frames): pooled Elo vs the champion, natural T1+/T2+/T3 per 100 placements (pool traces, training journal), best clear score, and ASCII boards of the largest clears",
+ "pool": "runs bigclear-champ and bigclear-armA, era style:big-combo, parents as above; intention big-clear-setups (entrants bigclear-*)"
+}

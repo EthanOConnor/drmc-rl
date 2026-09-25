@@ -314,6 +314,11 @@ def main():
                 mixed=sum('start_row' in r for r in games)
                 progress.update(start_mix_share=share,start_mix_games=progress.get('start_mix_games',0)+mixed,
                                 start_mix_update_games=mixed,
+                                # Share of this update's learner decisions that came from bank games.
+                                start_mix_update_decision_fraction=round(
+                                    sum(r['a_stats'].get('decisions',0) for r in games if 'start_row' in r)
+                                    /max(1,sum(r['a_stats'].get('decisions',0) for r in games)),4),
+                                start_mix_update_game_fraction=round(mixed/max(1,len(games)),4),
                                 start_mix_replay_games=progress.get('start_mix_replay_games',0)
                                     +sum('start_seed_replay' in r for r in games))
             if bonus is not None:
@@ -347,7 +352,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','showiness_bonus_update') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):
