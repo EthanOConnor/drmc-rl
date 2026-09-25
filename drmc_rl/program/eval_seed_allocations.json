@@ -1,1 +1,17 @@
-{"schema": "drmc-eval-seed-allocations-v1", "allocations": []}
+{
+ "schema": "drmc-eval-seed-allocations-v1",
+ "allocations": [
+  {
+   "study": "stranded-edge-benchmark-v1",
+   "purpose": "Stranded edge-virus endgame benchmark: one pill-stream seed per bank group (position, its left-right mirror and grounded control twins), shared by every candidate and pace",
+   "start": 0,
+   "count": 96,
+   "created_at": "2026-09-25T00:00:38+00:00",
+   "reserve_sha256": "9a60df54a10719cb0624e57b0345ca59d834398123e08679a4c7187ac56a1635",
+   "seeds_sha256": "2bb2a27f1a4a906073e13abbdd3c7ae4ace6ebac57f2655a3c157772e185363d",
+   "status_at_creation": {
+    "trained_lineage": 96
+   }
+  }
+ ]
+}
