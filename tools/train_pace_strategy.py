@@ -609,7 +609,7 @@ def main():
             count = config.get("games_per_pace",{}).get(pace,config.get("games_per_update",16))
             if count < 2 or count%2:
                 raise ValueError("training batches require complete paired seeds")
-            seeds = rng.choice(available,count//2,replace=False)
+            seeds = available.choice(rng,count//2)
             jobs = [(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
             match = {
                 "id": f"train-{update}",

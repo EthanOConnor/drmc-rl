@@ -23,7 +23,7 @@ import torch
 from drmc_rl.arena.experiment import dump
 from drmc_rl.envs.backends.drmario_pool import resolve_library_path
 from drmc_rl.envs.backends.drmario_vs_pool import DrMarioVsPoolRunner, build_vs_reset_spec
-from drmc_rl.program.seed_reserve import is_legacy, is_reserved_state
+from drmc_rl.program.seed_reserve import arena_seed, is_legacy, rng_state, training_seed_pool
 from drmc_rl.search.native_pair import (
     CAUSAL_PUBLIC_SCHEMA, CAUSAL_PUBLIC_SCHEMAS, EVENT_PUBLIC_SCHEMA,
     capture_native_state, state_to_payload,
@@ -58,10 +58,14 @@ def game_catalog(config):
         raise ValueError("each matchup must name two frozen public members")
     rng = np.random.default_rng(config["seed"])
     # Exclude the all-zero register state, which is not a cycling RNG seed.
-    legacy = is_legacy(config)
-    seeds = [divmod(int(x), 256) for x in rng.permutation(np.arange(1, 65536))
-             if divmod(int(x), 256) not in excluded
-             and (legacy or not is_reserved_state(*divmod(int(x), 256)))]
+    if is_legacy(config):
+        seeds = [divmod(int(x), 256) for x in rng.permutation(np.arange(1, 65536))
+                 if divmod(int(x), 256) not in excluded]
+    else:  # the shared training mixture, outside the evaluation reserve
+        pool = training_seed_pool([arena_seed(*pair) for pair in excluded], config=config)
+        if sum(partitions.values()) > len(pool.seeds):
+            raise ValueError("not enough distinct reset seeds for disjoint partitions")
+        seeds = [rng_state(s) for s in pool.choice(rng, sum(partitions.values()))]
     if sum(partitions.values()) > len(seeds):
         raise ValueError("not enough distinct reset seeds for disjoint partitions")
     weights = np.asarray([c["weight"] for c in conditions], dtype=np.float64)
