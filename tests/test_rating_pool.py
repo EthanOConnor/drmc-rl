@@ -1156,3 +1156,34 @@ def test_horizontal_in_combo_counts_horizontal_clears_in_multi_line_resolutions(
     assert [r["hcombo"] for r in HUMAN_ROWS] == [6.23, 6.78, 4.72]
     from drmc_rl.pool.report import PAGE
     assert "Horiz. combos" in PAGE
+
+
+def test_style_totals_update_incrementally_and_match_a_full_rebuild(tmp_path):
+    from drmc_rl.pool.style import side_style
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
+    counters = dict(side_style([], 0), placements=10, clears=3, lines=4, t1=1)
+    rows = rows_for(key, "a", "anchor", BANK[:4])
+    for r in rows:
+        r["style"] = [counters, counters]
+    state.add_games(rows[:4])
+    c = coordinator(tmp_path, settings=dict(report_cache_seconds=0))
+    first = build_report(c)["style"]["sets"][0]
+    assert {r["entrant"]: r["games"] for r in first["entrants"]} == {"a": 4, "anchor": 4}
+    fresh = c.state.add_games(rows[4:])
+    c._note_style(fresh)                     # what _journal does for pool games
+    incremental = c.style_totals()
+    c._style = None
+    rebuilt = c.style_totals()
+    assert incremental == rebuilt and rebuilt[0]["main"]["a"]["games"] == 8
+
+
+def test_report_is_cached_between_calls(tmp_path):
+    setup_state(tmp_path)
+    clock = [1000.0]
+    c = PoolCoordinator(tmp_path, source="test", log=lambda *_: None, clock=lambda: clock[0],
+                        settings=dict(seed_bank=BANK, seed_sets=SEED_SETS, default_anchor="anchor"))
+    first = c.report()
+    clock[0] += 5
+    assert c.report() is first
+    clock[0] += 20
+    assert c.report() is not first

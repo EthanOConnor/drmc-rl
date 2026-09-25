@@ -651,6 +651,7 @@ class PoolCoordinator:
         fresh = self.state.add_games(out)
         if self._mix is not None:
             self._note_mix(fresh)
+        self._note_style(fresh)
         self.state.batches_journal.append(dict(batch=spec["key"], condition=condition, a=a, b=b, job=spec.get("job"),
                                                games=len(rows), new_games=len(fresh), elapsed=elapsed,
                                                worker=worker, sha256=digest, time=stamp, unix=self.clock(),
@@ -825,6 +826,7 @@ class PoolCoordinator:
                 row["trace"] = str(path.relative_to(self.dir))
             out.append(row)
         fresh = self.state.add_games(out)
+        self._note_style(fresh)
         return dict(imported=len(fresh), duplicates=len(rows) - len(fresh))
 
     # -- views -------------------------------------------------------------------------
@@ -845,8 +847,45 @@ class PoolCoordinator:
                     runtime=self.runtime)
 
     def report(self):
+        """The full report, cached for ``report_cache_seconds``: it runs on the state thread, so a
+        report every few seconds would stall leases and submissions for every worker."""
         from drmc_rl.pool.report import build_report
-        return build_report(self)
+        ttl = float(self.settings.get("report_cache_seconds", 15.0))
+        cached = getattr(self, "_report_cache", None)
+        if cached and self.clock() - cached[0] < ttl:
+            return cached[1]
+        report = build_report(self)
+        self._report_cache = (self.clock(), report)
+        return report
+
+    def style_totals(self):
+        """(set -> entrant -> summed counters, set -> pace -> entrant -> counters), built once from the
+        journal and then updated per journaled game instead of re-summed for every report."""
+        state = self.state
+        signature = tuple((n, tuple(s["conditions"])) for n, s in state.condition_sets.items())
+        if getattr(self, "_style", None) is None or self._style[0] != signature:
+            set_of = {}
+            for cset in state.condition_sets.values():
+                for k in cset["conditions"]:
+                    set_of.setdefault(k, cset["name"])
+            self._style = (signature, set_of, {}, {})
+            self._note_style(state.games.values())
+        return self._style[2], self._style[3]
+
+    def _note_style(self, rows):
+        if getattr(self, "_style", None) is None:
+            return
+        from drmc_rl.pool.style import add
+        _, set_of, totals, paces = self._style
+        for game in rows:
+            style = game.get("style")
+            if not style or game["condition"] not in set_of:
+                continue
+            name, pace = set_of[game["condition"]], self.state.conditions[game["condition"]]["spec"]["pace"]
+            for e, counters in zip((game["a"], game["b"]), style):
+                if counters:
+                    add(totals.setdefault(name, {}).setdefault(e, {}), counters)
+                    add(paces.setdefault(name, {}).setdefault(pace, {}).setdefault(e, {}), counters)
 
     def stop_rule(self, query):
         from drmc_rl.pool.report import stop_rule

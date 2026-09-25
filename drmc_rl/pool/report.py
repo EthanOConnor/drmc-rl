@@ -403,23 +403,10 @@ def worker_rows(coordinator, batches, now):
 def style_rows(coordinator):
     """Combo and showiness metrics per condition set (and per pace) from the counters workers
     report with each pool game. Visibility only. One row per run with every snapshot in it."""
-    from drmc_rl.pool.style import HUMAN, HUMAN_ROWS, add, metrics
+    from drmc_rl.pool.style import HUMAN, HUMAN_ROWS, metrics
     state = coordinator.state
     min_games = int(coordinator.settings["min_rated_games"])
-    set_of = {}
-    for cset in state.condition_sets.values():
-        for k in cset["conditions"]:
-            set_of.setdefault(k, cset["name"])
-    totals, paces = {}, {}
-    for game in state.games.values():
-        style = game.get("style")
-        if not style or game["condition"] not in set_of:
-            continue
-        name, pace = set_of[game["condition"]], state.conditions[game["condition"]]["spec"]["pace"]
-        for e, counters in zip((game["a"], game["b"]), style):
-            if counters:
-                add(totals.setdefault(name, {}).setdefault(e, {}), counters)
-                add(paces.setdefault(name, {}).setdefault(pace, {}).setdefault(e, {}), counters)
+    totals, paces = coordinator.style_totals()      # maintained incrementally as games arrive
     # The snapshot a run is shown by in the rankings: its strongest in the primary set's weighted view.
     primary = primary_set(state)
     fits = coordinator.all_fits()
