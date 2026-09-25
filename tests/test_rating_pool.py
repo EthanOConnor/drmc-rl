@@ -525,13 +525,15 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     # Shown by its strongest snapshot (50M, truth 0.6), labelled with the latest registered one.
     assert len(run_rows) == 1 and run_rows[0]["entrant"] == "run-f2"
     assert run_rows[0]["label"] == "run · best 50M (latest 100M)" and run_rows[0]["newest"] == "run-f4"
-    assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M"]
+    assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M", "100M"]
+    assert run_rows[0]["trajectory"][-1]["rating"] is None      # unplayed: listed, not rated
     # Per-pace drill-down: the run's row in each pace table carries that pace's snapshots,
     # each with LOS vs the next snapshot (covariance-aware), the last one "–".
     from statistics import NormalDist
     from drmc_rl.pool.report import PAGE, los_text
     pace = report["condition_sets"][0]["paces"][0]
     t = next(r for r in pace["ratings"] if r.get("lineage") == "run")["trajectory"]
+    t = [p for p in t if not p.get("incomplete")]
     assert [p["entrant"] for p in t] == ["run-f0", "run-f1", "run-f2", "run-f3"] and t[-1]["los"] is None
     f = c.all_fits()[key]
     d = f.ratings["run-f2"].rating - f.ratings["run-f3"].rating
@@ -889,3 +891,21 @@ def test_access_headers_are_sent_and_access_denials_are_explained(tmp_path, monk
         assert seen["cf-access-client-secret"] == "s3cret" and seen["authorization"] == "Bearer t"
     finally:
         server.shutdown()
+
+
+def test_trajectories_include_snapshots_not_yet_rated_everywhere(tmp_path):
+    state, keys = setup_state(tmp_path, entrants=("anchor",), paces=("normal", "fast"))
+    state.record("entrant", entrant("tr-f0", lineage=dict(run="tr", step=50_000_000, parent="anchor")))
+    state.record("entrant", entrant("tr-f1", lineage=dict(run="tr", step=100_000_000, parent="anchor")))
+    for key in keys:
+        state.add_games(rows_for(key, "tr-f0", "anchor", BANK[:30], score_a=1.0)[:40])
+    state.add_games(rows_for(keys[0], "tr-f1", "anchor", BANK[:10], score_a=1.0))   # one pace of two
+    report = build_report(coordinator(tmp_path))
+    s0 = report["condition_sets"][0]
+    row = next(r for r in s0["pooled"] if r.get("lineage") == "tr")
+    assert row["entrant"] == "tr-f0" and not any(r["entrant"] == "tr-f1" for r in s0["pooled"])
+    t = {p["entrant"]: p for p in row["trajectory"]}
+    assert t["tr-f1"]["incomplete"] == "1/2 paces" and t["tr-f1"]["rating"] is not None and t["tr-f1"]["los"] is None
+    fast = next(p for p in s0["paces"] if p["pace"] == "fast")
+    t = {p["entrant"]: p for p in next(r for r in fast["ratings"] if r.get("lineage") == "tr")["trajectory"]}
+    assert t["tr-f1"]["rating"] is None and t["tr-f1"]["incomplete"] == "—"
