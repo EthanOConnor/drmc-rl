@@ -1,0 +1,3302 @@
+{
+ "schema": "drmc-showy-quad-results-v1",
+ "base": "bigclear-champ f100M (sha 09da853e) vs its unbiased self",
+ "conditions": "events, L14 Hi, delay 4, both sides per seed, seeds from 7919",
+ "model": "drmc_rl/style/models/showy_quad_k4_v1.json (wp12: same spec + waste_penalty 12)",
+ "humans": {
+  ">2000 (2026-01..06)": {
+   "placements": 3567723,
+   "attacks": 18.584262287178685,
+   "garbage": 41.391722395488664,
+   "quads": 0.7378936088928428,
+   "n_quads": 26326,
+   "waste": 0.18580478361128372,
+   "quad_share": 0.03970529459229151,
+   "waste_per_quad": 0.2518042999316265,
+   "lines5p": 0.151104780275823,
+   "t2": 0.25100042800407996,
+   "t3": 0.021021811390626456
+  },
+  "top 5 (2026-01..06)": {
+   "placements": 1118474,
+   "attacks": 19.231560143552734,
+   "garbage": 43.25062540568668,
+   "quads": 0.9077546728846624,
+   "n_quads": 10153,
+   "waste": 0.25883480527933594,
+   "quad_share": 0.04720130172013017,
+   "waste_per_quad": 0.28513739781345415,
+   "lines5p": 0.20554791617865054,
+   "t2": 0.3165026634503797,
+   "t3": 0.029325670511786594
+  },
+  "all humans (2026-05..06)": {
+   "placements": 3663755,
+   "attacks": 16.1705408795075,
+   "garbage": 35.581718755757414,
+   "quads": 0.5308488149453225,
+   "n_quads": 19449,
+   "waste": 0.11930382899511566,
+   "quad_share": 0.032828142169199374,
+   "waste_per_quad": 0.2247416319605121,
+   "lines5p": 0.09866926145443679,
+   "t2": 0.1762672449440533,
+   "t3": 0.013319667936311242
+  }
+ },
+ "fit": {
+  "label": "quad_k4",
+  "train": 783018,
+  "test": 287159,
+  "base_rate": 0.035206975926229025,
+  "auc": 0.7910295939072636,
+  "ap": 0.2787018047232276,
+  "top1pct_rate": 0.6852367688022284,
+  "calibration": [
+   [
+    0.005437341518700123,
+    0.0046315642847193205
+   ],
+   [
+    0.007897443138062954,
+    0.007939824488090262
+   ],
+   [
+    0.009371555410325527,
+    0.010377489901100432
+   ],
+   [
+    0.010871479287743568,
+    0.013581278729628082
+   ],
+   [
+    0.012981229461729527,
+    0.017621452202681527
+   ],
+   [
+    0.016076259315013885,
+    0.02211310767516367
+   ],
+   [
+    0.02000950090587139,
+    0.028276918790917954
+   ],
+   [
+    0.025296788662672043,
+    0.03461484886474439
+   ],
+   [
+    0.03478817269206047,
+    0.04746482797046943
+   ],
+   [
+    0.14600980281829834,
+    0.16544783396016158
+   ]
+  ],
+  "coef": [
+   [
+    "trig_n",
+    -0.6139511466026306
+   ],
+   [
+    "log_occ",
+    0.3980828821659088
+   ],
+   [
+    "trig_sum_score",
+    0.384970098733902
+   ],
+   [
+    "trig_max_lines",
+    0.3185077905654907
+   ],
+   [
+    "surf_run3_sum",
+    0.2573937177658081
+   ],
+   [
+    "trig_max_garbage",
+    0.23223379254341125
+   ],
+   [
+    "h3_max",
+    0.23124338686466217
+   ],
+   [
+    "trig_multi",
+    -0.19938842952251434
+   ],
+   [
+    "trig_attack",
+    -0.19920498132705688
+   ],
+   [
+    "h3_colors",
+    0.195571169257164
+   ],
+   [
+    "stack_colors",
+    0.195571169257164
+   ],
+   [
+    "v3_colors",
+    0.1722067892551422
+   ],
+   [
+    "viruses",
+    -0.17010386288166046
+   ],
+   [
+    "v3_sum",
+    0.16613943874835968
+   ],
+   [
+    "stack_max",
+    0.1643494963645935
+   ],
+   [
+    "h2_sum",
+    0.16345855593681335
+   ],
+   [
+    "h3s_sum",
+    -0.16330595314502716
+   ],
+   [
+    "v2_sum",
+    0.15619251132011414
+   ],
+   [
+    "h3s_colors",
+    0.14793138206005096
+   ],
+   [
+    "threats",
+    0.12859319150447845
+   ],
+   [
+    "surf_run3_colors",
+    -0.12313606590032578
+   ],
+   [
+    "surf_run2_sum",
+    -0.11781542748212814
+   ],
+   [
+    "vir_h3_colors",
+    -0.10047353804111481
+   ],
+   [
+    "occupied",
+    -0.09958793222904205
+   ],
+   [
+    "vir_h3_sum",
+    0.09893946349620819
+   ],
+   [
+    "trig_quad",
+    0.09833266586065292
+   ],
+   [
+    "height_mean",
+    -0.09410539269447327
+   ],
+   [
+    "trig_max_rounds",
+    -0.09316296130418777
+   ],
+   [
+    "v3_max",
+    0.09259703755378723
+   ],
+   [
+    "bumpiness",
+    -0.08478055894374847
+   ],
+   [
+    "hv3_sum",
+    -0.08204605430364609
+   ],
+   [
+    "hv3_colors",
+    -0.08204605430364609
+   ],
+   [
+    "h6_5_colors",
+    0.08096762746572495
+   ],
+   [
+    "surface_cells",
+    0.08043321967124939
+   ],
+   [
+    "h2s_max",
+    0.07951447367668152
+   ],
+   [
+    "spawn_danger",
+    -0.0782027542591095
+   ],
+   [
+    "h2s_sum",
+    -0.07789204269647598
+   ],
+   [
+    "threats_sq",
+    -0.07689321041107178
+   ],
+   [
+    "h2s_colors",
+    0.07674731314182281
+   ],
+   [
+    "vir_v3_sum",
+    -0.0709957554936409
+   ],
+   [
+    "surf_run3_max",
+    -0.06842368841171265
+   ],
+   [
+    "vir_h3_max",
+    -0.0677591934800148
+   ],
+   [
+    "stack_sum",
+    -0.06433470547199249
+   ],
+   [
+    "threat_rows",
+    -0.06433470547199249
+   ],
+   [
+    "h6_4_sum",
+    -0.060346297919750214
+   ],
+   [
+    "h5_4_sum",
+    -0.056499067693948746
+   ],
+   [
+    "h3s_max",
+    0.05526583641767502
+   ],
+   [
+    "vir_v3_max",
+    0.05475066974759102
+   ],
+   [
+    "height_max",
+    0.053505778312683105
+   ],
+   [
+    "v2_colors",
+    0.04937240481376648
+   ],
+   [
+    "h6_5_sum",
+    -0.046991098672151566
+   ],
+   [
+    "h2_max",
+    -0.045308224856853485
+   ],
+   [
+    "holes",
+    -0.045091740787029266
+   ],
+   [
+    "tall_cols",
+    -0.044983625411987305
+   ],
+   [
+    "trig_max_waste",
+    -0.038880106061697006
+   ],
+   [
+    "h3_sum",
+    -0.03531958907842636
+   ],
+   [
+    "h6_4_max",
+    0.03468991070985794
+   ],
+   [
+    "h6_5_max",
+    -0.03386523947119713
+   ],
+   [
+    "h2_colors",
+    -0.026780245825648308
+   ],
+   [
+    "trig_t1",
+    -0.026584407314658165
+   ],
+   [
+    "vir_v3_colors",
+    0.025904549285769463
+   ],
+   [
+    "trig_max_score",
+    0.02426796406507492
+   ],
+   [
+    "surf_run2_colors",
+    0.022540725767612457
+   ],
+   [
+    "h5_4_max",
+    0.01953599415719509
+   ],
+   [
+    "h5_4_colors",
+    0.01824762672185898
+   ],
+   [
+    "hv3_max",
+    0.012230265885591507
+   ],
+   [
+    "h6_4_colors",
+    0.011081529781222343
+   ],
+   [
+    "surf_run2_max",
+    0.00957068894058466
+   ],
+   [
+    "v2_max",
+    -0.008446186780929565
+   ],
+   [
+    "trig_h",
+    0.0017841411754488945
+   ]
+  ]
+ },
+ "calibration": {
+  "t2": 1.0,
+  "seconds": 299,
+  "results": {
+   "0": {
+    "decisions": 9609,
+    "waste_per100": 0.48912477885315847,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.426683317722968
+   },
+   "0.25": {
+    "decisions": 9609,
+    "waste_per100": 0.48912477885315847,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.426683317722968
+   },
+   "0.5": {
+    "decisions": 9609,
+    "waste_per100": 0.48912477885315847,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.426683317722968
+   },
+   "1": {
+    "decisions": 9609,
+    "waste_per100": 0.48912477885315847,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.426683317722968
+   },
+   "2": {
+    "decisions": 9609,
+    "waste_per100": 0.48912477885315847,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.426683317722968
+   },
+   "4": {
+    "decisions": 9609,
+    "waste_per100": 0.45790404828806325,
+    "quads_per100": 2.1958580497450306,
+    "five_plus_per100": 0.416276407534603
+   },
+   "8": {
+    "decisions": 9609,
+    "waste_per100": 0.3954625871578728,
+    "quads_per100": 2.1750442293683006,
+    "five_plus_per100": 0.38505567696950777
+   },
+   "16": {
+    "decisions": 9609,
+    "waste_per100": 0.14569674263711105,
+    "quads_per100": 1.9773129357893642,
+    "five_plus_per100": 0.14569674263711105
+   }
+  }
+ },
+ "results": {
+  "quad 1.5 (70/30, 7 paces)": [
+   {
+    "lam": 1.5,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5682,
+    "ci95": [
+     0.4647,
+     0.6717
+    ],
+    "elo": 47.7,
+    "elo_ci95": [
+     -24.6,
+     124.3
+    ],
+    "wins": 50,
+    "losses": 38,
+    "draws": 0,
+    "decisions_per_sec": 113.7,
+    "wall_seconds": 232.5,
+    "style": {
+     "knob": {
+      "placements": 13310,
+      "counts": {
+       "clears": 4689,
+       "t1": 94,
+       "t2": 60,
+       "t3": 3,
+       "horizontal": 1292,
+       "horizontal_combo": 813
+      },
+      "best": {
+       "score": 52.0,
+       "cells": 25,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 10,
+       "horizontal": true
+      },
+      "clears": 35.229,
+      "combos": 18.482,
+      "chains": 14.959,
+      "t1_plus": 0.706,
+      "t2_plus": 0.451,
+      "t3_plus": 0.023,
+      "horizontal": 9.707,
+      "horizontal_combo": 6.108,
+      "attacks": 18.482,
+      "garbage": 41.39,
+      "quads": 1.165,
+      "waste": 0.255,
+      "quad_share": 0.063,
+      "horizontal_share_of_clears": 0.2755,
+      "lines_per_clear": 1.657
+     },
+     "base": {
+      "placements": 13101,
+      "counts": {
+       "clears": 4877,
+       "t1": 28,
+       "t2": 15,
+       "t3": 1,
+       "horizontal": 1264,
+       "horizontal_combo": 746
+      },
+      "best": {
+       "score": 47.0,
+       "cells": 24,
+       "rounds": 5,
+       "lines": 6,
+       "viruses": 5,
+       "horizontal": true
+      },
+      "clears": 37.226,
+      "combos": 18.434,
+      "chains": 14.846,
+      "t1_plus": 0.214,
+      "t2_plus": 0.114,
+      "t3_plus": 0.008,
+      "horizontal": 9.648,
+      "horizontal_combo": 5.694,
+      "attacks": 18.434,
+      "garbage": 39.974,
+      "quads": 0.42,
+      "waste": 0.053,
+      "quad_share": 0.0228,
+      "horizontal_share_of_clears": 0.2592,
+      "lines_per_clear": 1.58
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5568,
+    "ci95": [
+     0.453,
+     0.6606
+    ],
+    "elo": 39.7,
+    "elo_ci95": [
+     -32.7,
+     115.7
+    ],
+    "wins": 49,
+    "losses": 39,
+    "draws": 0,
+    "decisions_per_sec": 122.0,
+    "wall_seconds": 252.3,
+    "style": {
+     "knob": {
+      "placements": 15527,
+      "counts": {
+       "clears": 5405,
+       "t1": 85,
+       "t2": 41,
+       "t3": 3,
+       "horizontal": 1500,
+       "horizontal_combo": 1005
+      },
+      "best": {
+       "score": 53.5,
+       "cells": 29,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 2,
+       "horizontal": true
+      },
+      "clears": 34.81,
+      "combos": 19.353,
+      "chains": 16.011,
+      "t1_plus": 0.547,
+      "t2_plus": 0.264,
+      "t3_plus": 0.019,
+      "horizontal": 9.661,
+      "horizontal_combo": 6.473,
+      "attacks": 19.353,
+      "garbage": 43.544,
+      "quads": 1.224,
+      "waste": 0.225,
+      "quad_share": 0.0632,
+      "horizontal_share_of_clears": 0.2775,
+      "lines_per_clear": 1.701
+     },
+     "base": {
+      "placements": 15260,
+      "counts": {
+       "clears": 5640,
+       "t1": 36,
+       "t2": 17,
+       "t3": 0,
+       "horizontal": 1468,
+       "horizontal_combo": 873
+      },
+      "best": {
+       "score": 41.5,
+       "cells": 19,
+       "rounds": 3,
+       "lines": 4,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 36.959,
+      "combos": 19.194,
+      "chains": 16.035,
+      "t1_plus": 0.236,
+      "t2_plus": 0.111,
+      "t3_plus": 0.0,
+      "horizontal": 9.62,
+      "horizontal_combo": 5.721,
+      "attacks": 19.194,
+      "garbage": 41.671,
+      "quads": 0.459,
+      "waste": 0.092,
+      "quad_share": 0.0239,
+      "horizontal_share_of_clears": 0.2603,
+      "lines_per_clear": 1.611
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.6023,
+    "ci95": [
+     0.5,
+     0.7045
+    ],
+    "elo": 72.1,
+    "elo_ci95": [
+     0.0,
+     151.0
+    ],
+    "wins": 53,
+    "losses": 35,
+    "draws": 0,
+    "decisions_per_sec": 126.2,
+    "wall_seconds": 253.1,
+    "style": {
+     "knob": {
+      "placements": 16248,
+      "counts": {
+       "clears": 5605,
+       "t1": 117,
+       "t2": 47,
+       "t3": 4,
+       "horizontal": 1625,
+       "horizontal_combo": 1071
+      },
+      "best": {
+       "score": 53.0,
+       "cells": 29,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 6,
+       "horizontal": true
+      },
+      "clears": 34.497,
+      "combos": 19.498,
+      "chains": 16.199,
+      "t1_plus": 0.72,
+      "t2_plus": 0.289,
+      "t3_plus": 0.025,
+      "horizontal": 10.001,
+      "horizontal_combo": 6.592,
+      "attacks": 19.498,
+      "garbage": 43.932,
+      "quads": 1.163,
+      "waste": 0.222,
+      "quad_share": 0.0597,
+      "horizontal_share_of_clears": 0.2899,
+      "lines_per_clear": 1.715
+     },
+     "base": {
+      "placements": 15681,
+      "counts": {
+       "clears": 5733,
+       "t1": 43,
+       "t2": 21,
+       "t3": 2,
+       "horizontal": 1592,
+       "horizontal_combo": 955
+      },
+      "best": {
+       "score": 46.0,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 7,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 36.56,
+      "combos": 19.055,
+      "chains": 15.968,
+      "t1_plus": 0.274,
+      "t2_plus": 0.134,
+      "t3_plus": 0.013,
+      "horizontal": 10.152,
+      "horizontal_combo": 6.09,
+      "attacks": 19.055,
+      "garbage": 41.585,
+      "quads": 0.497,
+      "waste": 0.134,
+      "quad_share": 0.0261,
+      "horizontal_share_of_clears": 0.2777,
+      "lines_per_clear": 1.62
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.6136,
+    "ci95": [
+     0.5119,
+     0.7154
+    ],
+    "elo": 80.4,
+    "elo_ci95": [
+     8.3,
+     160.1
+    ],
+    "wins": 54,
+    "losses": 34,
+    "draws": 0,
+    "decisions_per_sec": 112.8,
+    "wall_seconds": 265.3,
+    "style": {
+     "knob": {
+      "placements": 14948,
+      "counts": {
+       "clears": 5262,
+       "t1": 100,
+       "t2": 59,
+       "t3": 3,
+       "horizontal": 1520,
+       "horizontal_combo": 989
+      },
+      "best": {
+       "score": 47.0,
+       "cells": 28,
+       "rounds": 3,
+       "lines": 7,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 35.202,
+      "combos": 18.691,
+      "chains": 15.507,
+      "t1_plus": 0.669,
+      "t2_plus": 0.395,
+      "t3_plus": 0.02,
+      "horizontal": 10.169,
+      "horizontal_combo": 6.616,
+      "attacks": 18.691,
+      "garbage": 42.467,
+      "quads": 1.318,
+      "waste": 0.294,
+      "quad_share": 0.0705,
+      "horizontal_share_of_clears": 0.2889,
+      "lines_per_clear": 1.684
+     },
+     "base": {
+      "placements": 14987,
+      "counts": {
+       "clears": 5520,
+       "t1": 41,
+       "t2": 21,
+       "t3": 1,
+       "horizontal": 1421,
+       "horizontal_combo": 812
+      },
+      "best": {
+       "score": 49.5,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 5,
+       "horizontal": true
+      },
+      "clears": 36.832,
+      "combos": 18.75,
+      "chains": 15.487,
+      "t1_plus": 0.274,
+      "t2_plus": 0.14,
+      "t3_plus": 0.007,
+      "horizontal": 9.482,
+      "horizontal_combo": 5.418,
+      "attacks": 18.75,
+      "garbage": 40.782,
+      "quads": 0.474,
+      "waste": 0.06,
+      "quad_share": 0.0253,
+      "horizontal_share_of_clears": 0.2574,
+      "lines_per_clear": 1.6
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "sloth",
+    "pairs_done": 25,
+    "games": 50,
+    "timeouts": 0,
+    "knob_score": 0.5,
+    "ci95": [
+     0.3614,
+     0.6386
+    ],
+    "elo": -0.0,
+    "elo_ci95": [
+     -98.9,
+     98.9
+    ],
+    "wins": 4,
+    "losses": 4,
+    "draws": 42,
+    "decisions_per_sec": 175.0,
+    "wall_seconds": 6.8,
+    "style": {
+     "knob": {
+      "placements": 438,
+      "counts": {
+       "clears": 92,
+       "t1": 0,
+       "t2": 0,
+       "t3": 0,
+       "horizontal": 9,
+       "horizontal_combo": 1
+      },
+      "best": {
+       "score": 14.0,
+       "cells": 11,
+       "rounds": 1,
+       "lines": 3,
+       "viruses": 1,
+       "horizontal": true
+      },
+      "clears": 21.005,
+      "combos": 0.685,
+      "chains": 0.457,
+      "t1_plus": 0.0,
+      "t2_plus": 0.0,
+      "t3_plus": 0.0,
+      "horizontal": 2.055,
+      "horizontal_combo": 0.228,
+      "attacks": 0.685,
+      "garbage": 1.598,
+      "quads": 0.0,
+      "waste": 0.0,
+      "quad_share": 0.0,
+      "horizontal_share_of_clears": 0.0978,
+      "lines_per_clear": 1.043
+     },
+     "base": {
+      "placements": 438,
+      "counts": {
+       "clears": 94,
+       "t1": 0,
+       "t2": 0,
+       "t3": 0,
+       "horizontal": 10,
+       "horizontal_combo": 0
+      },
+      "best": {
+       "score": 7.5,
+       "cells": 8,
+       "rounds": 2,
+       "lines": 2,
+       "viruses": 2,
+       "horizontal": false
+      },
+      "clears": 21.461,
+      "combos": 0.685,
+      "chains": 0.457,
+      "t1_plus": 0.0,
+      "t2_plus": 0.0,
+      "t3_plus": 0.0,
+      "horizontal": 2.283,
+      "horizontal_combo": 0.0,
+      "attacks": 0.685,
+      "garbage": 1.37,
+      "quads": 0.0,
+      "waste": 0.0,
+      "quad_share": 0.0,
+      "horizontal_share_of_clears": 0.1064,
+      "lines_per_clear": 1.032
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "relaxed",
+    "pairs_done": 25,
+    "games": 50,
+    "timeouts": 0,
+    "knob_score": 0.42,
+    "ci95": [
+     0.2832,
+     0.5568
+    ],
+    "elo": -56.1,
+    "elo_ci95": [
+     -161.3,
+     39.6
+    ],
+    "wins": 20,
+    "losses": 28,
+    "draws": 2,
+    "decisions_per_sec": 114.9,
+    "wall_seconds": 26.7,
+    "style": {
+     "knob": {
+      "placements": 1487,
+      "counts": {
+       "clears": 466,
+       "t1": 2,
+       "t2": 0,
+       "t3": 0,
+       "horizontal": 99,
+       "horizontal_combo": 53
+      },
+      "best": {
+       "score": 28.5,
+       "cells": 16,
+       "rounds": 3,
+       "lines": 4,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 31.338,
+      "combos": 12.239,
+      "chains": 9.617,
+      "t1_plus": 0.134,
+      "t2_plus": 0.0,
+      "t3_plus": 0.0,
+      "horizontal": 6.658,
+      "horizontal_combo": 3.564,
+      "attacks": 12.239,
+      "garbage": 25.689,
+      "quads": 0.202,
+      "waste": 0.0,
+      "quad_share": 0.0165,
+      "horizontal_share_of_clears": 0.2124,
+      "lines_per_clear": 1.429
+     },
+     "base": {
+      "placements": 1457,
+      "counts": {
+       "clears": 507,
+       "t1": 2,
+       "t2": 2,
+       "t3": 0,
+       "horizontal": 122,
+       "horizontal_combo": 53
+      },
+      "best": {
+       "score": 35.0,
+       "cells": 20,
+       "rounds": 2,
+       "lines": 4,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 34.798,
+      "combos": 11.119,
+      "chains": 8.099,
+      "t1_plus": 0.137,
+      "t2_plus": 0.137,
+      "t3_plus": 0.0,
+      "horizontal": 8.373,
+      "horizontal_combo": 3.638,
+      "attacks": 11.119,
+      "garbage": 23.198,
+      "quads": 0.137,
+      "waste": 0.0,
+      "quad_share": 0.0123,
+      "horizontal_share_of_clears": 0.2406,
+      "lines_per_clear": 1.347
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "normal",
+    "pairs_done": 25,
+    "games": 50,
+    "timeouts": 0,
+    "knob_score": 0.46,
+    "ci95": [
+     0.3219,
+     0.5981
+    ],
+    "elo": -27.9,
+    "elo_ci95": [
+     -129.5,
+     69.1
+    ],
+    "wins": 23,
+    "losses": 27,
+    "draws": 0,
+    "decisions_per_sec": 123.5,
+    "wall_seconds": 79.3,
+    "style": {
+     "knob": {
+      "placements": 4905,
+      "counts": {
+       "clears": 1753,
+       "t1": 21,
+       "t2": 15,
+       "t3": 0,
+       "horizontal": 490,
+       "horizontal_combo": 272
+      },
+      "best": {
+       "score": 39.0,
+       "cells": 19,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 9,
+       "horizontal": true
+      },
+      "clears": 35.739,
+      "combos": 16.024,
+      "chains": 12.253,
+      "t1_plus": 0.428,
+      "t2_plus": 0.306,
+      "t3_plus": 0.0,
+      "horizontal": 9.99,
+      "horizontal_combo": 5.545,
+      "attacks": 16.024,
+      "garbage": 35.087,
+      "quads": 0.714,
+      "waste": 0.082,
+      "quad_share": 0.0445,
+      "horizontal_share_of_clears": 0.2795,
+      "lines_per_clear": 1.536
+     },
+     "base": {
+      "placements": 4805,
+      "counts": {
+       "clears": 1786,
+       "t1": 8,
+       "t2": 4,
+       "t3": 0,
+       "horizontal": 459,
+       "horizontal_combo": 265
+      },
+      "best": {
+       "score": 40.0,
+       "cells": 22,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 5,
+       "horizontal": true
+      },
+      "clears": 37.17,
+      "combos": 16.087,
+      "chains": 12.695,
+      "t1_plus": 0.166,
+      "t2_plus": 0.083,
+      "t3_plus": 0.0,
+      "horizontal": 9.553,
+      "horizontal_combo": 5.515,
+      "attacks": 16.087,
+      "garbage": 34.61,
+      "quads": 0.354,
+      "waste": 0.042,
+      "quad_share": 0.022,
+      "horizontal_share_of_clears": 0.257,
+      "lines_per_clear": 1.499
+     }
+    }
+   }
+  ],
+  "quad 1.0": [
+   {
+    "lam": 1.0,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5795,
+    "ci95": [
+     0.4764,
+     0.6827
+    ],
+    "elo": 55.7,
+    "elo_ci95": [
+     -16.4,
+     133.1
+    ],
+    "wins": 51,
+    "losses": 37,
+    "draws": 0,
+    "decisions_per_sec": 94.4,
+    "wall_seconds": 277.0,
+    "style": {
+     "knob": {
+      "placements": 13081,
+      "counts": {
+       "clears": 4639,
+       "t1": 68,
+       "t2": 38,
+       "t3": 1,
+       "horizontal": 1228,
+       "horizontal_combo": 790
+      },
+      "best": {
+       "score": 46.0,
+       "cells": 25,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 10,
+       "horizontal": true
+      },
+      "clears": 35.464,
+      "combos": 18.951,
+      "chains": 15.802,
+      "t1_plus": 0.52,
+      "t2_plus": 0.29,
+      "t3_plus": 0.008,
+      "horizontal": 9.388,
+      "horizontal_combo": 6.039,
+      "attacks": 18.951,
+      "garbage": 42.137,
+      "quads": 0.956,
+      "waste": 0.138,
+      "quad_share": 0.0504,
+      "horizontal_share_of_clears": 0.2647,
+      "lines_per_clear": 1.658
+     },
+     "base": {
+      "placements": 13038,
+      "counts": {
+       "clears": 4846,
+       "t1": 30,
+       "t2": 12,
+       "t3": 0,
+       "horizontal": 1240,
+       "horizontal_combo": 700
+      },
+      "best": {
+       "score": 36.0,
+       "cells": 19,
+       "rounds": 4,
+       "lines": 4,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 37.168,
+      "combos": 18.669,
+      "chains": 15.263,
+      "t1_plus": 0.23,
+      "t2_plus": 0.092,
+      "t3_plus": 0.0,
+      "horizontal": 9.511,
+      "horizontal_combo": 5.369,
+      "attacks": 18.669,
+      "garbage": 40.236,
+      "quads": 0.422,
+      "waste": 0.054,
+      "quad_share": 0.0226,
+      "horizontal_share_of_clears": 0.2559,
+      "lines_per_clear": 1.582
+     }
+    }
+   },
+   {
+    "lam": 1.0,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5568,
+    "ci95": [
+     0.453,
+     0.6606
+    ],
+    "elo": 39.7,
+    "elo_ci95": [
+     -32.7,
+     115.7
+    ],
+    "wins": 49,
+    "losses": 39,
+    "draws": 0,
+    "decisions_per_sec": 101.6,
+    "wall_seconds": 301.7,
+    "style": {
+     "knob": {
+      "placements": 15456,
+      "counts": {
+       "clears": 5548,
+       "t1": 71,
+       "t2": 34,
+       "t3": 1,
+       "horizontal": 1515,
+       "horizontal_combo": 948
+      },
+      "best": {
+       "score": 43.0,
+       "cells": 26,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 1,
+       "horizontal": true
+      },
+      "clears": 35.895,
+      "combos": 19.274,
+      "chains": 15.955,
+      "t1_plus": 0.459,
+      "t2_plus": 0.22,
+      "t3_plus": 0.006,
+      "horizontal": 9.802,
+      "horizontal_combo": 6.134,
+      "attacks": 19.274,
+      "garbage": 42.598,
+      "quads": 0.899,
+      "waste": 0.175,
+      "quad_share": 0.0467,
+      "horizontal_share_of_clears": 0.2731,
+      "lines_per_clear": 1.655
+     },
+     "base": {
+      "placements": 15187,
+      "counts": {
+       "clears": 5626,
+       "t1": 35,
+       "t2": 23,
+       "t3": 3,
+       "horizontal": 1468,
+       "horizontal_combo": 873
+      },
+      "best": {
+       "score": 48.5,
+       "cells": 28,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 37.045,
+      "combos": 19.201,
+      "chains": 15.948,
+      "t1_plus": 0.23,
+      "t2_plus": 0.151,
+      "t3_plus": 0.02,
+      "horizontal": 9.666,
+      "horizontal_combo": 5.748,
+      "attacks": 19.201,
+      "garbage": 41.832,
+      "quads": 0.507,
+      "waste": 0.105,
+      "quad_share": 0.0264,
+      "horizontal_share_of_clears": 0.2609,
+      "lines_per_clear": 1.614
+     }
+    }
+   },
+   {
+    "lam": 1.0,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5909,
+    "ci95": [
+     0.4882,
+     0.6936
+    ],
+    "elo": 63.9,
+    "elo_ci95": [
+     -8.2,
+     142.0
+    ],
+    "wins": 52,
+    "losses": 36,
+    "draws": 0,
+    "decisions_per_sec": 89.1,
+    "wall_seconds": 336.4,
+    "style": {
+     "knob": {
+      "placements": 15127,
+      "counts": {
+       "clears": 5403,
+       "t1": 66,
+       "t2": 25,
+       "t3": 2,
+       "horizontal": 1571,
+       "horizontal_combo": 970
+      },
+      "best": {
+       "score": 49.5,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 7,
+       "viruses": 6,
+       "horizontal": true
+      },
+      "clears": 35.718,
+      "combos": 19.297,
+      "chains": 15.958,
+      "t1_plus": 0.436,
+      "t2_plus": 0.165,
+      "t3_plus": 0.013,
+      "horizontal": 10.385,
+      "horizontal_combo": 6.412,
+      "attacks": 19.297,
+      "garbage": 42.778,
+      "quads": 0.82,
+      "waste": 0.079,
+      "quad_share": 0.0425,
+      "horizontal_share_of_clears": 0.2908,
+      "lines_per_clear": 1.66
+     },
+     "base": {
+      "placements": 14832,
+      "counts": {
+       "clears": 5484,
+       "t1": 33,
+       "t2": 15,
+       "t3": 0,
+       "horizontal": 1513,
+       "horizontal_combo": 867
+      },
+      "best": {
+       "score": 40.0,
+       "cells": 23,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 36.974,
+      "combos": 18.804,
+      "chains": 15.601,
+      "t1_plus": 0.222,
+      "t2_plus": 0.101,
+      "t3_plus": 0.0,
+      "horizontal": 10.201,
+      "horizontal_combo": 5.845,
+      "attacks": 18.804,
+      "garbage": 40.945,
+      "quads": 0.499,
+      "waste": 0.074,
+      "quad_share": 0.0265,
+      "horizontal_share_of_clears": 0.2759,
+      "lines_per_clear": 1.601
+     }
+    }
+   },
+   {
+    "lam": 1.0,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5341,
+    "ci95": [
+     0.4299,
+     0.6383
+    ],
+    "elo": 23.7,
+    "elo_ci95": [
+     -49.1,
+     98.7
+    ],
+    "wins": 47,
+    "losses": 41,
+    "draws": 0,
+    "decisions_per_sec": 94.8,
+    "wall_seconds": 305.0,
+    "style": {
+     "knob": {
+      "placements": 14507,
+      "counts": {
+       "clears": 5148,
+       "t1": 57,
+       "t2": 20,
+       "t3": 0,
+       "horizontal": 1381,
+       "horizontal_combo": 874
+      },
+      "best": {
+       "score": 41.5,
+       "cells": 25,
+       "rounds": 4,
+       "lines": 6,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 35.486,
+      "combos": 19.294,
+      "chains": 15.882,
+      "t1_plus": 0.393,
+      "t2_plus": 0.138,
+      "t3_plus": 0.0,
+      "horizontal": 9.52,
+      "horizontal_combo": 6.025,
+      "attacks": 19.294,
+      "garbage": 42.883,
+      "quads": 0.882,
+      "waste": 0.117,
+      "quad_share": 0.0457,
+      "horizontal_share_of_clears": 0.2683,
+      "lines_per_clear": 1.668
+     },
+     "base": {
+      "placements": 14400,
+      "counts": {
+       "clears": 5346,
+       "t1": 41,
+       "t2": 19,
+       "t3": 1,
+       "horizontal": 1442,
+       "horizontal_combo": 820
+      },
+      "best": {
+       "score": 45.5,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 7,
+       "viruses": 1,
+       "horizontal": true
+      },
+      "clears": 37.125,
+      "combos": 18.819,
+      "chains": 15.479,
+      "t1_plus": 0.285,
+      "t2_plus": 0.132,
+      "t3_plus": 0.007,
+      "horizontal": 10.014,
+      "horizontal_combo": 5.694,
+      "attacks": 18.819,
+      "garbage": 40.708,
+      "quads": 0.479,
+      "waste": 0.097,
+      "quad_share": 0.0255,
+      "horizontal_share_of_clears": 0.2697,
+      "lines_per_clear": 1.592
+     }
+    }
+   }
+  ],
+  "quad 2.0": [
+   {
+    "lam": 2.0,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5909,
+    "ci95": [
+     0.4882,
+     0.6936
+    ],
+    "elo": 63.9,
+    "elo_ci95": [
+     -8.2,
+     142.0
+    ],
+    "wins": 52,
+    "losses": 36,
+    "draws": 0,
+    "decisions_per_sec": 88.2,
+    "wall_seconds": 331.1,
+    "style": {
+     "knob": {
+      "placements": 14638,
+      "counts": {
+       "clears": 4981,
+       "t1": 125,
+       "t2": 69,
+       "t3": 1,
+       "horizontal": 1372,
+       "horizontal_combo": 911
+      },
+      "best": {
+       "score": 52.0,
+       "cells": 25,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 10,
+       "horizontal": true
+      },
+      "clears": 34.028,
+      "combos": 18.165,
+      "chains": 15.064,
+      "t1_plus": 0.854,
+      "t2_plus": 0.471,
+      "t3_plus": 0.007,
+      "horizontal": 9.373,
+      "horizontal_combo": 6.224,
+      "attacks": 18.165,
+      "garbage": 41.741,
+      "quads": 1.496,
+      "waste": 0.246,
+      "quad_share": 0.0824,
+      "horizontal_share_of_clears": 0.2754,
+      "lines_per_clear": 1.7
+     },
+     "base": {
+      "placements": 14531,
+      "counts": {
+       "clears": 5361,
+       "t1": 42,
+       "t2": 24,
+       "t3": 3,
+       "horizontal": 1387,
+       "horizontal_combo": 801
+      },
+      "best": {
+       "score": 49.0,
+       "cells": 30,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 36.894,
+      "combos": 18.092,
+      "chains": 15.002,
+      "t1_plus": 0.289,
+      "t2_plus": 0.165,
+      "t3_plus": 0.021,
+      "horizontal": 9.545,
+      "horizontal_combo": 5.512,
+      "attacks": 18.092,
+      "garbage": 39.426,
+      "quads": 0.537,
+      "waste": 0.158,
+      "quad_share": 0.0297,
+      "horizontal_share_of_clears": 0.2587,
+      "lines_per_clear": 1.583
+     }
+    }
+   },
+   {
+    "lam": 2.0,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4773,
+    "ci95": [
+     0.3729,
+     0.5816
+    ],
+    "elo": -15.8,
+    "elo_ci95": [
+     -90.3,
+     57.2
+    ],
+    "wins": 42,
+    "losses": 46,
+    "draws": 0,
+    "decisions_per_sec": 88.6,
+    "wall_seconds": 366.3,
+    "style": {
+     "knob": {
+      "placements": 16520,
+      "counts": {
+       "clears": 5620,
+       "t1": 142,
+       "t2": 70,
+       "t3": 3,
+       "horizontal": 1582,
+       "horizontal_combo": 1078
+      },
+      "best": {
+       "score": 43.0,
+       "cells": 26,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 2,
+       "horizontal": true
+      },
+      "clears": 34.019,
+      "combos": 18.977,
+      "chains": 15.847,
+      "t1_plus": 0.86,
+      "t2_plus": 0.424,
+      "t3_plus": 0.018,
+      "horizontal": 9.576,
+      "horizontal_combo": 6.525,
+      "attacks": 18.977,
+      "garbage": 43.396,
+      "quads": 1.628,
+      "waste": 0.26,
+      "quad_share": 0.0858,
+      "horizontal_share_of_clears": 0.2815,
+      "lines_per_clear": 1.725
+     },
+     "base": {
+      "placements": 15924,
+      "counts": {
+       "clears": 5877,
+       "t1": 35,
+       "t2": 12,
+       "t3": 1,
+       "horizontal": 1625,
+       "horizontal_combo": 1006
+      },
+      "best": {
+       "score": 44.5,
+       "cells": 26,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 36.907,
+      "combos": 19.009,
+      "chains": 15.718,
+      "t1_plus": 0.22,
+      "t2_plus": 0.075,
+      "t3_plus": 0.006,
+      "horizontal": 10.205,
+      "horizontal_combo": 6.318,
+      "attacks": 19.009,
+      "garbage": 41.397,
+      "quads": 0.484,
+      "waste": 0.031,
+      "quad_share": 0.0254,
+      "horizontal_share_of_clears": 0.2765,
+      "lines_per_clear": 1.607
+     }
+    }
+   },
+   {
+    "lam": 2.0,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4091,
+    "ci95": [
+     0.3064,
+     0.5118
+    ],
+    "elo": -63.9,
+    "elo_ci95": [
+     -142.0,
+     8.2
+    ],
+    "wins": 36,
+    "losses": 52,
+    "draws": 0,
+    "decisions_per_sec": 101.5,
+    "wall_seconds": 316.5,
+    "style": {
+     "knob": {
+      "placements": 16108,
+      "counts": {
+       "clears": 5449,
+       "t1": 146,
+       "t2": 78,
+       "t3": 3,
+       "horizontal": 1551,
+       "horizontal_combo": 1026
+      },
+      "best": {
+       "score": 45.0,
+       "cells": 24,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 33.828,
+      "combos": 18.481,
+      "chains": 15.601,
+      "t1_plus": 0.906,
+      "t2_plus": 0.484,
+      "t3_plus": 0.019,
+      "horizontal": 9.629,
+      "horizontal_combo": 6.37,
+      "attacks": 18.481,
+      "garbage": 42.376,
+      "quads": 1.608,
+      "waste": 0.317,
+      "quad_share": 0.087,
+      "horizontal_share_of_clears": 0.2846,
+      "lines_per_clear": 1.716
+     },
+     "base": {
+      "placements": 16013,
+      "counts": {
+       "clears": 5828,
+       "t1": 38,
+       "t2": 19,
+       "t3": 0,
+       "horizontal": 1654,
+       "horizontal_combo": 995
+      },
+      "best": {
+       "score": 37.5,
+       "cells": 21,
+       "rounds": 5,
+       "lines": 5,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 36.395,
+      "combos": 19.409,
+      "chains": 16.299,
+      "t1_plus": 0.237,
+      "t2_plus": 0.119,
+      "t3_plus": 0.0,
+      "horizontal": 10.329,
+      "horizontal_combo": 6.214,
+      "attacks": 19.409,
+      "garbage": 42.209,
+      "quads": 0.456,
+      "waste": 0.081,
+      "quad_share": 0.0235,
+      "horizontal_share_of_clears": 0.2838,
+      "lines_per_clear": 1.629
+     }
+    }
+   },
+   {
+    "lam": 2.0,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.6023,
+    "ci95": [
+     0.5,
+     0.7045
+    ],
+    "elo": 72.1,
+    "elo_ci95": [
+     0.0,
+     151.0
+    ],
+    "wins": 53,
+    "losses": 35,
+    "draws": 0,
+    "decisions_per_sec": 89.5,
+    "wall_seconds": 344.2,
+    "style": {
+     "knob": {
+      "placements": 15630,
+      "counts": {
+       "clears": 5294,
+       "t1": 166,
+       "t2": 83,
+       "t3": 4,
+       "horizontal": 1563,
+       "horizontal_combo": 1067
+      },
+      "best": {
+       "score": 48.5,
+       "cells": 25,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 33.871,
+      "combos": 18.733,
+      "chains": 15.579,
+      "t1_plus": 1.062,
+      "t2_plus": 0.531,
+      "t3_plus": 0.026,
+      "horizontal": 10.0,
+      "horizontal_combo": 6.827,
+      "attacks": 18.733,
+      "garbage": 43.487,
+      "quads": 1.887,
+      "waste": 0.294,
+      "quad_share": 0.1008,
+      "horizontal_share_of_clears": 0.2952,
+      "lines_per_clear": 1.74
+     },
+     "base": {
+      "placements": 15183,
+      "counts": {
+       "clears": 5591,
+       "t1": 43,
+       "t2": 27,
+       "t3": 1,
+       "horizontal": 1497,
+       "horizontal_combo": 894
+      },
+      "best": {
+       "score": 43.0,
+       "cells": 24,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 36.824,
+      "combos": 18.843,
+      "chains": 15.517,
+      "t1_plus": 0.283,
+      "t2_plus": 0.178,
+      "t3_plus": 0.007,
+      "horizontal": 9.86,
+      "horizontal_combo": 5.888,
+      "attacks": 18.843,
+      "garbage": 41.059,
+      "quads": 0.547,
+      "waste": 0.105,
+      "quad_share": 0.029,
+      "horizontal_share_of_clears": 0.2678,
+      "lines_per_clear": 1.606
+     }
+    }
+   }
+  ],
+  "quad 1.5 + t2 1.0": [
+   {
+    "lam": 1.5,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.3295,
+    "ci95": [
+     0.2313,
+     0.4278
+    ],
+    "elo": -123.4,
+    "elo_ci95": [
+     -208.6,
+     -50.6
+    ],
+    "wins": 29,
+    "losses": 59,
+    "draws": 0,
+    "decisions_per_sec": 66.7,
+    "wall_seconds": 453.2,
+    "style": {
+     "knob": {
+      "placements": 15090,
+      "counts": {
+       "clears": 4891,
+       "t1": 201,
+       "t2": 130,
+       "t3": 10,
+       "horizontal": 1444,
+       "horizontal_combo": 997
+      },
+      "best": {
+       "score": 52.0,
+       "cells": 32,
+       "rounds": 3,
+       "lines": 8,
+       "viruses": 1,
+       "horizontal": true
+      },
+      "clears": 32.412,
+      "combos": 17.966,
+      "chains": 15.209,
+      "t1_plus": 1.332,
+      "t2_plus": 0.861,
+      "t3_plus": 0.066,
+      "horizontal": 9.569,
+      "horizontal_combo": 6.607,
+      "attacks": 17.966,
+      "garbage": 42.2,
+      "quads": 2.048,
+      "waste": 0.471,
+      "quad_share": 0.114,
+      "horizontal_share_of_clears": 0.2952,
+      "lines_per_clear": 1.762
+     },
+     "base": {
+      "placements": 15077,
+      "counts": {
+       "clears": 5451,
+       "t1": 51,
+       "t2": 24,
+       "t3": 3,
+       "horizontal": 1574,
+       "horizontal_combo": 935
+      },
+      "best": {
+       "score": 44.0,
+       "cells": 24,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 2,
+       "horizontal": false
+      },
+      "clears": 36.154,
+      "combos": 18.863,
+      "chains": 15.726,
+      "t1_plus": 0.338,
+      "t2_plus": 0.159,
+      "t3_plus": 0.02,
+      "horizontal": 10.44,
+      "horizontal_combo": 6.201,
+      "attacks": 18.863,
+      "garbage": 41.401,
+      "quads": 0.677,
+      "waste": 0.126,
+      "quad_share": 0.0359,
+      "horizontal_share_of_clears": 0.2888,
+      "lines_per_clear": 1.627
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4432,
+    "ci95": [
+     0.3394,
+     0.547
+    ],
+    "elo": -39.7,
+    "elo_ci95": [
+     -115.7,
+     32.7
+    ],
+    "wins": 39,
+    "losses": 49,
+    "draws": 0,
+    "decisions_per_sec": 70.8,
+    "wall_seconds": 493.3,
+    "style": {
+     "knob": {
+      "placements": 17559,
+      "counts": {
+       "clears": 5736,
+       "t1": 215,
+       "t2": 140,
+       "t3": 12,
+       "horizontal": 1705,
+       "horizontal_combo": 1168
+      },
+      "best": {
+       "score": 53.0,
+       "cells": 29,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 32.667,
+      "combos": 18.35,
+      "chains": 15.451,
+      "t1_plus": 1.224,
+      "t2_plus": 0.797,
+      "t3_plus": 0.068,
+      "horizontal": 9.71,
+      "horizontal_combo": 6.652,
+      "attacks": 18.35,
+      "garbage": 42.873,
+      "quads": 2.073,
+      "waste": 0.501,
+      "quad_share": 0.113,
+      "horizontal_share_of_clears": 0.2972,
+      "lines_per_clear": 1.766
+     },
+     "base": {
+      "placements": 17355,
+      "counts": {
+       "clears": 6287,
+       "t1": 38,
+       "t2": 18,
+       "t3": 1,
+       "horizontal": 1746,
+       "horizontal_combo": 1062
+      },
+      "best": {
+       "score": 42.0,
+       "cells": 21,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 36.226,
+      "combos": 19.291,
+      "chains": 16.013,
+      "t1_plus": 0.219,
+      "t2_plus": 0.104,
+      "t3_plus": 0.006,
+      "horizontal": 10.061,
+      "horizontal_combo": 6.119,
+      "attacks": 19.291,
+      "garbage": 42.201,
+      "quads": 0.565,
+      "waste": 0.052,
+      "quad_share": 0.0293,
+      "horizontal_share_of_clears": 0.2777,
+      "lines_per_clear": 1.634
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5682,
+    "ci95": [
+     0.4647,
+     0.6717
+    ],
+    "elo": 47.7,
+    "elo_ci95": [
+     -24.6,
+     124.3
+    ],
+    "wins": 50,
+    "losses": 38,
+    "draws": 0,
+    "decisions_per_sec": 70.5,
+    "wall_seconds": 472.9,
+    "style": {
+     "knob": {
+      "placements": 16979,
+      "counts": {
+       "clears": 5600,
+       "t1": 232,
+       "t2": 150,
+       "t3": 8,
+       "horizontal": 1652,
+       "horizontal_combo": 1130
+      },
+      "best": {
+       "score": 57.5,
+       "cells": 29,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 9,
+       "horizontal": true
+      },
+      "clears": 32.982,
+      "combos": 18.358,
+      "chains": 15.484,
+      "t1_plus": 1.366,
+      "t2_plus": 0.883,
+      "t3_plus": 0.047,
+      "horizontal": 9.73,
+      "horizontal_combo": 6.655,
+      "attacks": 18.358,
+      "garbage": 43.265,
+      "quads": 2.232,
+      "waste": 0.501,
+      "quad_share": 0.1216,
+      "horizontal_share_of_clears": 0.295,
+      "lines_per_clear": 1.77
+     },
+     "base": {
+      "placements": 16360,
+      "counts": {
+       "clears": 5993,
+       "t1": 53,
+       "t2": 30,
+       "t3": 2,
+       "horizontal": 1705,
+       "horizontal_combo": 1020
+      },
+      "best": {
+       "score": 42.0,
+       "cells": 24,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 36.632,
+      "combos": 18.943,
+      "chains": 15.758,
+      "t1_plus": 0.324,
+      "t2_plus": 0.183,
+      "t3_plus": 0.012,
+      "horizontal": 10.422,
+      "horizontal_combo": 6.235,
+      "attacks": 18.943,
+      "garbage": 41.369,
+      "quads": 0.562,
+      "waste": 0.159,
+      "quad_share": 0.0297,
+      "horizontal_share_of_clears": 0.2845,
+      "lines_per_clear": 1.617
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5227,
+    "ci95": [
+     0.4184,
+     0.6271
+    ],
+    "elo": 15.8,
+    "elo_ci95": [
+     -57.2,
+     90.3
+    ],
+    "wins": 46,
+    "losses": 42,
+    "draws": 0,
+    "decisions_per_sec": 67.7,
+    "wall_seconds": 452.7,
+    "style": {
+     "knob": {
+      "placements": 15435,
+      "counts": {
+       "clears": 5068,
+       "t1": 195,
+       "t2": 126,
+       "t3": 8,
+       "horizontal": 1523,
+       "horizontal_combo": 1031
+      },
+      "best": {
+       "score": 48.0,
+       "cells": 27,
+       "rounds": 4,
+       "lines": 6,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 32.834,
+      "combos": 18.62,
+      "chains": 15.711,
+      "t1_plus": 1.263,
+      "t2_plus": 0.816,
+      "t3_plus": 0.052,
+      "horizontal": 9.867,
+      "horizontal_combo": 6.68,
+      "attacks": 18.62,
+      "garbage": 43.596,
+      "quads": 2.203,
+      "waste": 0.434,
+      "quad_share": 0.1183,
+      "horizontal_share_of_clears": 0.3005,
+      "lines_per_clear": 1.774
+     },
+     "base": {
+      "placements": 15193,
+      "counts": {
+       "clears": 5570,
+       "t1": 49,
+       "t2": 23,
+       "t3": 2,
+       "horizontal": 1552,
+       "horizontal_combo": 939
+      },
+      "best": {
+       "score": 42.5,
+       "cells": 22,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 36.662,
+      "combos": 19.377,
+      "chains": 16.198,
+      "t1_plus": 0.323,
+      "t2_plus": 0.151,
+      "t3_plus": 0.013,
+      "horizontal": 10.215,
+      "horizontal_combo": 6.18,
+      "attacks": 19.377,
+      "garbage": 42.296,
+      "quads": 0.619,
+      "waste": 0.086,
+      "quad_share": 0.0319,
+      "horizontal_share_of_clears": 0.2786,
+      "lines_per_clear": 1.627
+     }
+    }
+   }
+  ],
+  "quad 1.5 + t2 0.5": [
+   {
+    "lam": 1.5,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.625,
+    "ci95": [
+     0.5238,
+     0.7262
+    ],
+    "elo": 88.7,
+    "elo_ci95": [
+     16.6,
+     169.4
+    ],
+    "wins": 55,
+    "losses": 33,
+    "draws": 0,
+    "decisions_per_sec": 73.6,
+    "wall_seconds": 421.6,
+    "style": {
+     "knob": {
+      "placements": 15473,
+      "counts": {
+       "clears": 5250,
+       "t1": 147,
+       "t2": 91,
+       "t3": 5,
+       "horizontal": 1469,
+       "horizontal_combo": 989
+      },
+      "best": {
+       "score": 44.5,
+       "cells": 26,
+       "rounds": 5,
+       "lines": 6,
+       "viruses": 2,
+       "horizontal": true
+      },
+      "clears": 33.93,
+      "combos": 18.645,
+      "chains": 15.479,
+      "t1_plus": 0.95,
+      "t2_plus": 0.588,
+      "t3_plus": 0.032,
+      "horizontal": 9.494,
+      "horizontal_combo": 6.392,
+      "attacks": 18.645,
+      "garbage": 42.526,
+      "quads": 1.506,
+      "waste": 0.271,
+      "quad_share": 0.0808,
+      "horizontal_share_of_clears": 0.2798,
+      "lines_per_clear": 1.712
+     },
+     "base": {
+      "placements": 15507,
+      "counts": {
+       "clears": 5743,
+       "t1": 44,
+       "t2": 24,
+       "t3": 2,
+       "horizontal": 1598,
+       "horizontal_combo": 922
+      },
+      "best": {
+       "score": 49.0,
+       "cells": 30,
+       "rounds": 4,
+       "lines": 7,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 37.035,
+      "combos": 18.34,
+      "chains": 15.38,
+      "t1_plus": 0.284,
+      "t2_plus": 0.155,
+      "t3_plus": 0.013,
+      "horizontal": 10.305,
+      "horizontal_combo": 5.946,
+      "attacks": 18.34,
+      "garbage": 39.847,
+      "quads": 0.484,
+      "waste": 0.123,
+      "quad_share": 0.0264,
+      "horizontal_share_of_clears": 0.2783,
+      "lines_per_clear": 1.584
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.6023,
+    "ci95": [
+     0.5,
+     0.7045
+    ],
+    "elo": 72.1,
+    "elo_ci95": [
+     0.0,
+     151.0
+    ],
+    "wins": 53,
+    "losses": 35,
+    "draws": 0,
+    "decisions_per_sec": 65.9,
+    "wall_seconds": 488.4,
+    "style": {
+     "knob": {
+      "placements": 16222,
+      "counts": {
+       "clears": 5468,
+       "t1": 158,
+       "t2": 102,
+       "t3": 6,
+       "horizontal": 1586,
+       "horizontal_combo": 1032
+      },
+      "best": {
+       "score": 51.5,
+       "cells": 30,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 33.707,
+      "combos": 19.165,
+      "chains": 15.972,
+      "t1_plus": 0.974,
+      "t2_plus": 0.629,
+      "t3_plus": 0.037,
+      "horizontal": 9.777,
+      "horizontal_combo": 6.362,
+      "attacks": 19.165,
+      "garbage": 43.836,
+      "quads": 1.59,
+      "waste": 0.339,
+      "quad_share": 0.083,
+      "horizontal_share_of_clears": 0.2901,
+      "lines_per_clear": 1.742
+     },
+     "base": {
+      "placements": 15975,
+      "counts": {
+       "clears": 5900,
+       "t1": 44,
+       "t2": 23,
+       "t3": 1,
+       "horizontal": 1633,
+       "horizontal_combo": 985
+      },
+      "best": {
+       "score": 48.0,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 36.933,
+      "combos": 18.836,
+      "chains": 15.643,
+      "t1_plus": 0.275,
+      "t2_plus": 0.144,
+      "t3_plus": 0.006,
+      "horizontal": 10.222,
+      "horizontal_combo": 6.166,
+      "attacks": 18.836,
+      "garbage": 41.083,
+      "quads": 0.526,
+      "waste": 0.1,
+      "quad_share": 0.0279,
+      "horizontal_share_of_clears": 0.2768,
+      "lines_per_clear": 1.605
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5,
+    "ci95": [
+     0.3955,
+     0.6045
+    ],
+    "elo": -0.0,
+    "elo_ci95": [
+     -73.7,
+     73.7
+    ],
+    "wins": 44,
+    "losses": 44,
+    "draws": 0,
+    "decisions_per_sec": 64.0,
+    "wall_seconds": 471.7,
+    "style": {
+     "knob": {
+      "placements": 15214,
+      "counts": {
+       "clears": 5239,
+       "t1": 147,
+       "t2": 93,
+       "t3": 6,
+       "horizontal": 1471,
+       "horizontal_combo": 971
+      },
+      "best": {
+       "score": 50.5,
+       "cells": 32,
+       "rounds": 4,
+       "lines": 8,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 34.435,
+      "combos": 18.628,
+      "chains": 15.558,
+      "t1_plus": 0.966,
+      "t2_plus": 0.611,
+      "t3_plus": 0.039,
+      "horizontal": 9.669,
+      "horizontal_combo": 6.382,
+      "attacks": 18.628,
+      "garbage": 42.605,
+      "quads": 1.531,
+      "waste": 0.388,
+      "quad_share": 0.0822,
+      "horizontal_share_of_clears": 0.2808,
+      "lines_per_clear": 1.708
+     },
+     "base": {
+      "placements": 14963,
+      "counts": {
+       "clears": 5487,
+       "t1": 37,
+       "t2": 21,
+       "t3": 0,
+       "horizontal": 1521,
+       "horizontal_combo": 906
+      },
+      "best": {
+       "score": 37.5,
+       "cells": 21,
+       "rounds": 5,
+       "lines": 5,
+       "viruses": 3,
+       "horizontal": true
+      },
+      "clears": 36.67,
+      "combos": 19.154,
+      "chains": 16.2,
+      "t1_plus": 0.247,
+      "t2_plus": 0.14,
+      "t3_plus": 0.0,
+      "horizontal": 10.165,
+      "horizontal_combo": 6.055,
+      "attacks": 19.154,
+      "garbage": 41.79,
+      "quads": 0.541,
+      "waste": 0.08,
+      "quad_share": 0.0283,
+      "horizontal_share_of_clears": 0.2772,
+      "lines_per_clear": 1.619
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4545,
+    "ci95": [
+     0.3505,
+     0.5586
+    ],
+    "elo": -31.7,
+    "elo_ci95": [
+     -107.1,
+     40.9
+    ],
+    "wins": 40,
+    "losses": 48,
+    "draws": 0,
+    "decisions_per_sec": 63.3,
+    "wall_seconds": 499.0,
+    "style": {
+     "knob": {
+      "placements": 15852,
+      "counts": {
+       "clears": 5412,
+       "t1": 129,
+       "t2": 81,
+       "t3": 3,
+       "horizontal": 1578,
+       "horizontal_combo": 1041
+      },
+      "best": {
+       "score": 51.5,
+       "cells": 30,
+       "rounds": 6,
+       "lines": 7,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 34.141,
+      "combos": 18.723,
+      "chains": 15.563,
+      "t1_plus": 0.814,
+      "t2_plus": 0.511,
+      "t3_plus": 0.019,
+      "horizontal": 9.955,
+      "horizontal_combo": 6.567,
+      "attacks": 18.723,
+      "garbage": 42.79,
+      "quads": 1.514,
+      "waste": 0.271,
+      "quad_share": 0.0809,
+      "horizontal_share_of_clears": 0.2916,
+      "lines_per_clear": 1.713
+     },
+     "base": {
+      "placements": 15731,
+      "counts": {
+       "clears": 5792,
+       "t1": 39,
+       "t2": 26,
+       "t3": 2,
+       "horizontal": 1606,
+       "horizontal_combo": 971
+      },
+      "best": {
+       "score": 48.0,
+       "cells": 25,
+       "rounds": 2,
+       "lines": 7,
+       "viruses": 6,
+       "horizontal": true
+      },
+      "clears": 36.819,
+      "combos": 19.325,
+      "chains": 15.822,
+      "t1_plus": 0.248,
+      "t2_plus": 0.165,
+      "t3_plus": 0.013,
+      "horizontal": 10.209,
+      "horizontal_combo": 6.173,
+      "attacks": 19.325,
+      "garbage": 41.86,
+      "quads": 0.502,
+      "waste": 0.153,
+      "quad_share": 0.026,
+      "horizontal_share_of_clears": 0.2773,
+      "lines_per_clear": 1.616
+     }
+    }
+   }
+  ],
+  "quad 1.5 wp12": [
+   {
+    "lam": 1.5,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5909,
+    "ci95": [
+     0.4882,
+     0.6936
+    ],
+    "elo": 63.9,
+    "elo_ci95": [
+     -8.2,
+     142.0
+    ],
+    "wins": 52,
+    "losses": 36,
+    "draws": 0,
+    "decisions_per_sec": 92.4,
+    "wall_seconds": 286.0,
+    "style": {
+     "knob": {
+      "placements": 13213,
+      "counts": {
+       "clears": 4656,
+       "t1": 79,
+       "t2": 49,
+       "t3": 0,
+       "horizontal": 1289,
+       "horizontal_combo": 815
+      },
+      "best": {
+       "score": 40.5,
+       "cells": 22,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 35.238,
+      "combos": 18.346,
+      "chains": 14.766,
+      "t1_plus": 0.598,
+      "t2_plus": 0.371,
+      "t3_plus": 0.0,
+      "horizontal": 9.756,
+      "horizontal_combo": 6.168,
+      "attacks": 18.346,
+      "garbage": 41.285,
+      "quads": 1.196,
+      "waste": 0.061,
+      "quad_share": 0.0652,
+      "horizontal_share_of_clears": 0.2768,
+      "lines_per_clear": 1.653
+     },
+     "base": {
+      "placements": 13183,
+      "counts": {
+       "clears": 4870,
+       "t1": 30,
+       "t2": 15,
+       "t3": 1,
+       "horizontal": 1253,
+       "horizontal_combo": 726
+      },
+      "best": {
+       "score": 47.0,
+       "cells": 24,
+       "rounds": 5,
+       "lines": 6,
+       "viruses": 5,
+       "horizontal": true
+      },
+      "clears": 36.942,
+      "combos": 18.357,
+      "chains": 14.837,
+      "t1_plus": 0.228,
+      "t2_plus": 0.114,
+      "t3_plus": 0.008,
+      "horizontal": 9.505,
+      "horizontal_combo": 5.507,
+      "attacks": 18.357,
+      "garbage": 39.748,
+      "quads": 0.379,
+      "waste": 0.068,
+      "quad_share": 0.0207,
+      "horizontal_share_of_clears": 0.2573,
+      "lines_per_clear": 1.581
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5682,
+    "ci95": [
+     0.4647,
+     0.6717
+    ],
+    "elo": 47.7,
+    "elo_ci95": [
+     -24.6,
+     124.3
+    ],
+    "wins": 50,
+    "losses": 38,
+    "draws": 0,
+    "decisions_per_sec": 85.1,
+    "wall_seconds": 366.7,
+    "style": {
+     "knob": {
+      "placements": 15810,
+      "counts": {
+       "clears": 5494,
+       "t1": 82,
+       "t2": 31,
+       "t3": 1,
+       "horizontal": 1543,
+       "horizontal_combo": 1028
+      },
+      "best": {
+       "score": 52.5,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 2,
+       "horizontal": true
+      },
+      "clears": 34.75,
+      "combos": 19.38,
+      "chains": 16.072,
+      "t1_plus": 0.519,
+      "t2_plus": 0.196,
+      "t3_plus": 0.006,
+      "horizontal": 9.76,
+      "horizontal_combo": 6.502,
+      "attacks": 19.38,
+      "garbage": 43.757,
+      "quads": 1.233,
+      "waste": 0.044,
+      "quad_share": 0.0636,
+      "horizontal_share_of_clears": 0.2809,
+      "lines_per_clear": 1.703
+     },
+     "base": {
+      "placements": 15374,
+      "counts": {
+       "clears": 5680,
+       "t1": 34,
+       "t2": 16,
+       "t3": 0,
+       "horizontal": 1483,
+       "horizontal_combo": 908
+      },
+      "best": {
+       "score": 41.5,
+       "cells": 19,
+       "rounds": 3,
+       "lines": 4,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 36.945,
+      "combos": 19.253,
+      "chains": 16.014,
+      "t1_plus": 0.221,
+      "t2_plus": 0.104,
+      "t3_plus": 0.0,
+      "horizontal": 9.646,
+      "horizontal_combo": 5.906,
+      "attacks": 19.253,
+      "garbage": 41.856,
+      "quads": 0.488,
+      "waste": 0.091,
+      "quad_share": 0.0253,
+      "horizontal_share_of_clears": 0.2611,
+      "lines_per_clear": 1.614
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5114,
+    "ci95": [
+     0.4069,
+     0.6158
+    ],
+    "elo": 7.9,
+    "elo_ci95": [
+     -65.4,
+     82.0
+    ],
+    "wins": 45,
+    "losses": 43,
+    "draws": 0,
+    "decisions_per_sec": 85.6,
+    "wall_seconds": 374.8,
+    "style": {
+     "knob": {
+      "placements": 16345,
+      "counts": {
+       "clears": 5654,
+       "t1": 98,
+       "t2": 26,
+       "t3": 0,
+       "horizontal": 1617,
+       "horizontal_combo": 1047
+      },
+      "best": {
+       "score": 40.0,
+       "cells": 23,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 4,
+       "horizontal": false
+      },
+      "clears": 34.592,
+      "combos": 19.315,
+      "chains": 16.133,
+      "t1_plus": 0.6,
+      "t2_plus": 0.159,
+      "t3_plus": 0.0,
+      "horizontal": 9.893,
+      "horizontal_combo": 6.406,
+      "attacks": 19.315,
+      "garbage": 43.347,
+      "quads": 1.058,
+      "waste": 0.037,
+      "quad_share": 0.0548,
+      "horizontal_share_of_clears": 0.286,
+      "lines_per_clear": 1.696
+     },
+     "base": {
+      "placements": 15720,
+      "counts": {
+       "clears": 5723,
+       "t1": 46,
+       "t2": 23,
+       "t3": 2,
+       "horizontal": 1595,
+       "horizontal_combo": 976
+      },
+      "best": {
+       "score": 46.0,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 7,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 36.406,
+      "combos": 19.205,
+      "chains": 16.094,
+      "t1_plus": 0.293,
+      "t2_plus": 0.146,
+      "t3_plus": 0.013,
+      "horizontal": 10.146,
+      "horizontal_combo": 6.209,
+      "attacks": 19.205,
+      "garbage": 41.997,
+      "quads": 0.528,
+      "waste": 0.146,
+      "quad_share": 0.0275,
+      "horizontal_share_of_clears": 0.2787,
+      "lines_per_clear": 1.63
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.6136,
+    "ci95": [
+     0.5119,
+     0.7154
+    ],
+    "elo": 80.4,
+    "elo_ci95": [
+     8.3,
+     160.1
+    ],
+    "wins": 54,
+    "losses": 34,
+    "draws": 0,
+    "decisions_per_sec": 83.4,
+    "wall_seconds": 364.6,
+    "style": {
+     "knob": {
+      "placements": 15233,
+      "counts": {
+       "clears": 5370,
+       "t1": 84,
+       "t2": 31,
+       "t3": 0,
+       "horizontal": 1527,
+       "horizontal_combo": 979
+      },
+      "best": {
+       "score": 37.0,
+       "cells": 19,
+       "rounds": 4,
+       "lines": 4,
+       "viruses": 8,
+       "horizontal": true
+      },
+      "clears": 35.252,
+      "combos": 18.795,
+      "chains": 15.598,
+      "t1_plus": 0.551,
+      "t2_plus": 0.204,
+      "t3_plus": 0.0,
+      "horizontal": 10.024,
+      "horizontal_combo": 6.427,
+      "attacks": 18.795,
+      "garbage": 42.618,
+      "quads": 1.306,
+      "waste": 0.013,
+      "quad_share": 0.0695,
+      "horizontal_share_of_clears": 0.2844,
+      "lines_per_clear": 1.676
+     },
+     "base": {
+      "placements": 15187,
+      "counts": {
+       "clears": 5604,
+       "t1": 40,
+       "t2": 20,
+       "t3": 1,
+       "horizontal": 1465,
+       "horizontal_combo": 826
+      },
+      "best": {
+       "score": 49.5,
+       "cells": 27,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 5,
+       "horizontal": true
+      },
+      "clears": 36.9,
+      "combos": 18.74,
+      "chains": 15.421,
+      "t1_plus": 0.263,
+      "t2_plus": 0.132,
+      "t3_plus": 0.007,
+      "horizontal": 9.646,
+      "horizontal_combo": 5.439,
+      "attacks": 18.74,
+      "garbage": 40.719,
+      "quads": 0.468,
+      "waste": 0.072,
+      "quad_share": 0.0249,
+      "horizontal_share_of_clears": 0.2614,
+      "lines_per_clear": 1.598
+     }
+    }
+   }
+  ],
+  "quad 1.5 wp12 + t2 1.0": [
+   {
+    "lam": 1.5,
+    "pace": "fast",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.3295,
+    "ci95": [
+     0.2313,
+     0.4278
+    ],
+    "elo": -123.4,
+    "elo_ci95": [
+     -208.6,
+     -50.6
+    ],
+    "wins": 29,
+    "losses": 59,
+    "draws": 0,
+    "decisions_per_sec": 71.5,
+    "wall_seconds": 430.7,
+    "style": {
+     "knob": {
+      "placements": 15425,
+      "counts": {
+       "clears": 4992,
+       "t1": 199,
+       "t2": 119,
+       "t3": 4,
+       "horizontal": 1487,
+       "horizontal_combo": 1024
+      },
+      "best": {
+       "score": 48.5,
+       "cells": 24,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 32.363,
+      "combos": 18.042,
+      "chains": 15.358,
+      "t1_plus": 1.29,
+      "t2_plus": 0.771,
+      "t3_plus": 0.026,
+      "horizontal": 9.64,
+      "horizontal_combo": 6.639,
+      "attacks": 18.042,
+      "garbage": 42.34,
+      "quads": 2.062,
+      "waste": 0.266,
+      "quad_share": 0.1143,
+      "horizontal_share_of_clears": 0.2979,
+      "lines_per_clear": 1.759
+     },
+     "base": {
+      "placements": 15332,
+      "counts": {
+       "clears": 5513,
+       "t1": 47,
+       "t2": 23,
+       "t3": 3,
+       "horizontal": 1606,
+       "horizontal_combo": 967
+      },
+      "best": {
+       "score": 44.0,
+       "cells": 24,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 2,
+       "horizontal": false
+      },
+      "clears": 35.957,
+      "combos": 18.98,
+      "chains": 15.862,
+      "t1_plus": 0.307,
+      "t2_plus": 0.15,
+      "t3_plus": 0.02,
+      "horizontal": 10.475,
+      "horizontal_combo": 6.307,
+      "attacks": 18.98,
+      "garbage": 41.612,
+      "quads": 0.613,
+      "waste": 0.13,
+      "quad_share": 0.0323,
+      "horizontal_share_of_clears": 0.2913,
+      "lines_per_clear": 1.633
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "top_humans",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4091,
+    "ci95": [
+     0.3064,
+     0.5118
+    ],
+    "elo": -63.9,
+    "elo_ci95": [
+     -142.0,
+     8.2
+    ],
+    "wins": 36,
+    "losses": 52,
+    "draws": 0,
+    "decisions_per_sec": 71.8,
+    "wall_seconds": 501.4,
+    "style": {
+     "knob": {
+      "placements": 18108,
+      "counts": {
+       "clears": 5895,
+       "t1": 223,
+       "t2": 141,
+       "t3": 1,
+       "horizontal": 1722,
+       "horizontal_combo": 1180
+      },
+      "best": {
+       "score": 43.0,
+       "cells": 22,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 4,
+       "horizontal": true
+      },
+      "clears": 32.555,
+      "combos": 18.357,
+      "chains": 15.512,
+      "t1_plus": 1.231,
+      "t2_plus": 0.779,
+      "t3_plus": 0.006,
+      "horizontal": 9.51,
+      "horizontal_combo": 6.516,
+      "attacks": 18.357,
+      "garbage": 42.788,
+      "quads": 2.005,
+      "waste": 0.276,
+      "quad_share": 0.1092,
+      "horizontal_share_of_clears": 0.2921,
+      "lines_per_clear": 1.759
+     },
+     "base": {
+      "placements": 17890,
+      "counts": {
+       "clears": 6468,
+       "t1": 37,
+       "t2": 14,
+       "t3": 1,
+       "horizontal": 1855,
+       "horizontal_combo": 1158
+      },
+      "best": {
+       "score": 42.0,
+       "cells": 21,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 36.154,
+      "combos": 19.413,
+      "chains": 16.02,
+      "t1_plus": 0.207,
+      "t2_plus": 0.078,
+      "t3_plus": 0.006,
+      "horizontal": 10.369,
+      "horizontal_combo": 6.473,
+      "attacks": 19.413,
+      "garbage": 42.521,
+      "quads": 0.57,
+      "waste": 0.028,
+      "quad_share": 0.0294,
+      "horizontal_share_of_clears": 0.2868,
+      "lines_per_clear": 1.64
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "super_human",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.5114,
+    "ci95": [
+     0.4069,
+     0.6158
+    ],
+    "elo": 7.9,
+    "elo_ci95": [
+     -65.4,
+     82.0
+    ],
+    "wins": 45,
+    "losses": 43,
+    "draws": 0,
+    "decisions_per_sec": 71.8,
+    "wall_seconds": 465.5,
+    "style": {
+     "knob": {
+      "placements": 17185,
+      "counts": {
+       "clears": 5638,
+       "t1": 207,
+       "t2": 123,
+       "t3": 2,
+       "horizontal": 1663,
+       "horizontal_combo": 1132
+      },
+      "best": {
+       "score": 43.0,
+       "cells": 24,
+       "rounds": 4,
+       "lines": 5,
+       "viruses": 0,
+       "horizontal": false
+      },
+      "clears": 32.808,
+      "combos": 18.301,
+      "chains": 15.502,
+      "t1_plus": 1.205,
+      "t2_plus": 0.716,
+      "t3_plus": 0.012,
+      "horizontal": 9.677,
+      "horizontal_combo": 6.587,
+      "attacks": 18.301,
+      "garbage": 42.939,
+      "quads": 2.106,
+      "waste": 0.256,
+      "quad_share": 0.1151,
+      "horizontal_share_of_clears": 0.295,
+      "lines_per_clear": 1.759
+     },
+     "base": {
+      "placements": 16230,
+      "counts": {
+       "clears": 5947,
+       "t1": 51,
+       "t2": 29,
+       "t3": 1,
+       "horizontal": 1695,
+       "horizontal_combo": 994
+      },
+      "best": {
+       "score": 42.0,
+       "cells": 24,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 0,
+       "horizontal": true
+      },
+      "clears": 36.642,
+      "combos": 18.755,
+      "chains": 15.502,
+      "t1_plus": 0.314,
+      "t2_plus": 0.179,
+      "t3_plus": 0.006,
+      "horizontal": 10.444,
+      "horizontal_combo": 6.124,
+      "attacks": 18.755,
+      "garbage": 41.054,
+      "quads": 0.542,
+      "waste": 0.148,
+      "quad_share": 0.0289,
+      "horizontal_share_of_clears": 0.285,
+      "lines_per_clear": 1.613
+     }
+    }
+   },
+   {
+    "lam": 1.5,
+    "pace": "frame_perfect",
+    "pairs_done": 44,
+    "games": 88,
+    "timeouts": 0,
+    "knob_score": 0.4773,
+    "ci95": [
+     0.3729,
+     0.5816
+    ],
+    "elo": -15.8,
+    "elo_ci95": [
+     -90.3,
+     57.2
+    ],
+    "wins": 42,
+    "losses": 46,
+    "draws": 0,
+    "decisions_per_sec": 68.3,
+    "wall_seconds": 451.9,
+    "style": {
+     "knob": {
+      "placements": 15574,
+      "counts": {
+       "clears": 5086,
+       "t1": 174,
+       "t2": 99,
+       "t3": 1,
+       "horizontal": 1511,
+       "horizontal_combo": 1042
+      },
+      "best": {
+       "score": 44.0,
+       "cells": 24,
+       "rounds": 3,
+       "lines": 5,
+       "viruses": 2,
+       "horizontal": true
+      },
+      "clears": 32.657,
+      "combos": 18.685,
+      "chains": 15.725,
+      "t1_plus": 1.117,
+      "t2_plus": 0.636,
+      "t3_plus": 0.006,
+      "horizontal": 9.702,
+      "horizontal_combo": 6.691,
+      "attacks": 18.685,
+      "garbage": 43.496,
+      "quads": 2.061,
+      "waste": 0.193,
+      "quad_share": 0.1103,
+      "horizontal_share_of_clears": 0.2971,
+      "lines_per_clear": 1.766
+     },
+     "base": {
+      "placements": 15291,
+      "counts": {
+       "clears": 5580,
+       "t1": 45,
+       "t2": 23,
+       "t3": 3,
+       "horizontal": 1533,
+       "horizontal_combo": 932
+      },
+      "best": {
+       "score": 45.0,
+       "cells": 25,
+       "rounds": 3,
+       "lines": 6,
+       "viruses": 7,
+       "horizontal": true
+      },
+      "clears": 36.492,
+      "combos": 19.286,
+      "chains": 16.036,
+      "t1_plus": 0.294,
+      "t2_plus": 0.15,
+      "t3_plus": 0.02,
+      "horizontal": 10.026,
+      "horizontal_combo": 6.095,
+      "attacks": 19.286,
+      "garbage": 42.018,
+      "quads": 0.549,
+      "waste": 0.092,
+      "quad_share": 0.0285,
+      "horizontal_share_of_clears": 0.2747,
+      "lines_per_clear": 1.625
+     }
+    }
+   }
+  ]
+ }
+}
