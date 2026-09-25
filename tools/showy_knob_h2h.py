@@ -119,7 +119,11 @@ class Runner:
         base = dict(name="champion", delay=4, checkpoint=self.args.checkpoint)
         knob = dict(base, name=f"champion+showy{lam}")
         if lam is not None:
-            knob.update(showy_lambda=float(lam), showy_model=model)
+            knob.update(showy_lambda=float(lam), showy_model=model, showy_tier_bar=self.args.tier_bar)
+            if self.args.extra_model and lam:
+                from drmc_rl.style.showy_knob import ShowyModel
+                knob["showy_terms"] = [dict(model=ShowyModel.load(self.args.extra_model).spec,
+                                            **{"lambda": self.args.extra_lambda})]
         return dict(knob=knob, base=base)
 
     def play(self, variants, pace, seeds, *, policies=None):
@@ -189,6 +193,9 @@ def main():
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--planner-workers", type=int, default=0)
     ap.add_argument("--model", default=None, help="showy model JSON (default: built-in stub)")
+    ap.add_argument("--tier-bar", type=float, default=30.0, help="own-clear score treated as showy (V ~ 1)")
+    ap.add_argument("--extra-model", help="second knob term's model JSON (no own-clear override)")
+    ap.add_argument("--extra-lambda", type=float, default=0.0)
     ap.add_argument("--lambdas", type=float, nargs="+", default=[0.0, 1.0])
     ap.add_argument("--paces", nargs="+", default=["normal", "top_humans"])
     ap.add_argument("--pairs", type=int, default=4, help="seed pairs per (lambda, pace)")
@@ -206,6 +213,7 @@ def main():
     seeds = pick_seeds(args.pairs, args.seed_start)
     report = dict(schema="drmc-showy-h2h-v1", checkpoint=args.checkpoint, device=args.device, level=14, speed="hi",
                   delay=4, backend="events", model=model if not args.model else args.model, model_spec=model,
+                  tier_bar=args.tier_bar, extra_model=args.extra_model, extra_lambda=args.extra_lambda,
                   seeds=seeds, started=time.strftime("%Y-%m-%dT%H:%M:%S"), checks={}, results=[])
 
     def save():

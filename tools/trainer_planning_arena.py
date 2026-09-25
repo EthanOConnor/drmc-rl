@@ -405,7 +405,12 @@ def variant_policy(config, params, parent):
     lam = float(params.get("showy_lambda", 0) or 0)
     if lam:
         from drmc_rl.style.showy_knob import ShowyModel, ShowyPolicy
-        actor = ShowyPolicy(actor, ShowyModel.load(params["showy_model"]), lam)
+        actor = ShowyPolicy(actor, ShowyModel.load(params["showy_model"]), lam,
+                            tier_bar=float(params.get("showy_tier_bar", 30.0)))
+        # Optional further terms (e.g. horizontal-combo setups), each {model, lambda[, tier_bar]}.
+        for term in params.get("showy_terms", ()):
+            actor = ShowyPolicy(actor, ShowyModel.load(term["model"]), float(term["lambda"]),
+                                tier_bar=float(term.get("tier_bar", float("inf"))))
     return actor
 
 
