@@ -18,6 +18,8 @@ import sys
 import numpy as np
 
 PACES = ('sloth', 'relaxed', 'normal', 'fast', 'top_humans', 'super_human', 'frame_perfect')
+# Adoption addendum 3: strength weights for the primary adoption statistic.
+STRENGTH_WEIGHTS = dict(frame_perfect=3, super_human=3, top_humans=2, fast=1.5, normal=1, relaxed=.5, sloth=.5)
 
 
 def elo(score):
@@ -80,25 +82,36 @@ def assess(config_path, *, allow_partial=False):
     pooled_draws = np.mean(np.stack([draws[p] for p in paces]), axis=0)
     pooled = float(np.mean([r['score'] for r in summaries]))
     pooled_ci = np.quantile(pooled_draws, [.025, .975]).tolist()
+    weights = np.asarray([STRENGTH_WEIGHTS[p] for p in paces], dtype=np.float64)
+    weights /= weights.sum()
+    weighted_draws = np.tensordot(weights, np.stack([draws[p] for p in paces]), axes=1)
+    weighted = float(sum(w * r['score'] for w, r in zip(weights, summaries)))
+    weighted_ci = np.quantile(weighted_draws, [.025, .975]).tolist()
     report = dict(
         schema='drmc-afterstate-arena-assessment-v1', config=str(config_path), complete=complete,
         games=len(seen), expected_games=expected, candidate=config['variants']['candidate'],
         champion=config['variants']['champion'], pooled_score=pooled, pooled_ci95=pooled_ci,
-        pooled_elo=elo(pooled), simultaneous_critical_value=critical, comparisons=summaries,
+        pooled_elo=elo(pooled), weighted_pooled_score=weighted, weighted_pooled_ci95=weighted_ci,
+        weighted_pace_weights={p: float(w) for p, w in zip(paces, weights)}, simultaneous_critical_value=critical, comparisons=summaries,
         censored_games=sum(r['censored'] for r in summaries),
     )
     pre = config.get('preregistration')
     if pre is not None:
         assert complete, 'a pre-registered verdict requires the complete schedule'
         clear_regression = any(r['simultaneous_score_ci95'][1] < .45 for r in summaries)
+        def rule(ci):
+            if ci[0] > .50 and not clear_regression:
+                return 'PROMOTE'
+            if ci[0] <= .50 <= ci[1] and not clear_regression:
+                return 'PARITY'
+            return 'REJECT'
         if pre['schema'] == 'drmc-afterstate-shipped-timing-confirmation-v1':
             verdict = 'FAIL' if pooled_ci[0] < .45 else 'PASS'
-        elif pooled_ci[0] > .50 and not clear_regression:
-            verdict = 'PROMOTE'
-        elif pooled_ci[0] <= .50 <= pooled_ci[1] and not clear_regression:
-            verdict = 'PARITY'
         else:
-            verdict = 'REJECT'
+            # Addendum 3: the strength-weighted pooled score is primary; equal weight is secondary.
+            verdict = rule(weighted_ci)
+            report.update(equal_weight_verdict=rule(pooled_ci),
+                          adoption_addendum='afterstate-core-v1/adoption-addendum-3-strength-weighted.json')
         report.update(verdict=verdict, decision_rule=pre['decision'], preregistered_candidate=pre['candidate'])
     return report
 
@@ -113,7 +126,8 @@ def main():
         print(f"{r['pace']:>13} score {r['score']:.4f} marginal95 [{r['marginal_score_ci95'][0]:.3f}, "
               f"{r['marginal_score_ci95'][1]:.3f}] sim95 [{lo:.3f}, {hi:.3f}]  W/L/D {r['wins']}/{r['losses']}/{r['draws']}")
     print(f"pooled {report['pooled_score']:.4f} 95% [{report['pooled_ci95'][0]:.4f}, {report['pooled_ci95'][1]:.4f}] "
-          f"games {report['games']}/{report['expected_games']}", report.get('verdict', ''))
+          f"weighted {report['weighted_pooled_score']:.4f} 95% [{report['weighted_pooled_ci95'][0]:.4f}, "
+          f"{report['weighted_pooled_ci95'][1]:.4f}] games {report['games']}/{report['expected_games']}", report.get('verdict', ''))
 
 
 if __name__ == '__main__':

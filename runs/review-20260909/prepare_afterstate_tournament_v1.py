@@ -266,6 +266,9 @@ PREREGISTRATION = dict(
     analysis='20000 whole-seed bootstrap resamples (numpy default_rng(20260924)) per pace; seven-pace simultaneous 95% '
              'intervals by max-|studentized deviation|; pooled score = equal-weight mean of the seven pace scores with '
              'its own 95% bootstrap interval from the same resamples',
+    adoption_addendum='afterstate-core-v1/adoption-addendum-3-strength-weighted.json: the strength-weighted pooled score '
+                      '(FP 3, SH 3, TH 2, Fast 1.5, Normal 1, Relaxed 0.5, Sloth 0.5) replaces the equal-weight pooled score '
+                      'in the rule below; equal weight is reported as secondary',
     decision=dict(
         PROMOTE='pooled 95% lower bound > 0.50 AND no pace with simultaneous 95% upper bound < 0.45',
         PARITY='not PROMOTE AND pooled 95% interval contains 0.50 AND no pace with simultaneous 95% upper bound < 0.45',
