@@ -46,6 +46,11 @@ ARMS = {
               parent='afterstate-core-v1/ppo-v1',
               parent_state=Path('/Users/ethan/dev/drmario/drmc-rl-afterstate/runs/review-20260909/afterstate-core-v1/stop-rule.json'),
               parent_data=Path('/Users/ethan/dev/drmario/drmc-rl-afterstate-data'), fork_frames=109_335_507),
+    # C+S needs the arm C model code: run this watcher from the trainer/stranded-edge-armc worktree.
+    'C': dict(variant='afterstate-core-full-v1/ppo-v1-stranded', session='afterstate-full-ppo-stranded-C',
+              parent='afterstate-core-full-v1/ppo-v1',
+              parent_state=Path('/Users/ethan/dev/drmario/drmc-rl-afterstate-full/runs/review-20260909/afterstate-core-full-v1/stop-rule.json'),
+              parent_data=Path('/Users/ethan/dev/drmario/drmc-rl-afterstate-full-data'), fork_frames=None),
 }
 ENV = dict(PYTHONPATH=str(REPO), PATH='/usr/bin:/bin:/usr/local/bin', HOME=str(Path.home()),
            DRMARIO_REACH_LIB=str(NATIVE / 'libdrm_reach_full.dylib'), DRMARIO_POOL_LIB=str(NATIVE / 'libdrmario_pool.dylib'))
@@ -158,6 +163,12 @@ def main():
     (DATA / 'panels').mkdir(exist_ok=True)
     (DATA / 'checkpoints').mkdir(exist_ok=True)
     state_path = out_dir / 'stop-rule.json'
+    while arm['fork_frames'] is None:  # the fork point is known once the variant has started
+        fork = remote_training(arm['variant']).get('fork')
+        if fork:
+            arm['fork_frames'] = int(fork['frames'])
+        else:
+            time.sleep(600)
     if state_path.exists():
         state = json.loads(state_path.read_text())
     else:
