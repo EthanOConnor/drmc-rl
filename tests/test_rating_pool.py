@@ -1102,3 +1102,21 @@ def test_equal_priority_jobs_share_workers(tmp_path):
         kinds.append(lease["batch"]["job"])
         submit(c, lease, dict(anchor=0, a=0, b=0))
     assert kinds.count("old") >= 4 and kinds.count("new") >= 4
+
+
+def test_equal_priority_jobs_share_in_proportion_to_targets_even_when_one_is_far_ahead(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a", "b"))
+    state.add_games(rows_for(key, "a", "anchor", BANK[:100], score_a=0.5))          # "old" is 200/768 done
+    state.record("job", dict(id="old", status="active", games=768, conditions=["set:main"], entrants=["a"],
+                             priority=70))
+    state.record("job", dict(id="new", status="active", games=1536, conditions=["set:main"], entrants=["b"],
+                             priority=70))
+    c = coordinator(tmp_path, settings=dict(background_min_share=0, max_inflight_per_pairing=100))
+    available_everything(c)
+    kinds = []
+    for i in range(30):
+        lease = c.lease(worker(f"w{i}"))
+        kinds.append(lease["batch"]["job"])
+        submit(c, lease, dict(anchor=0, a=0, b=0))
+    # Leases split about 1:2 by target, not all to the job that is further behind.
+    assert 8 <= kinds.count("old") <= 12 and 18 <= kinds.count("new") <= 22

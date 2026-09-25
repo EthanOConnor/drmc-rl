@@ -4,8 +4,8 @@ Priority list (highest first), evaluated at every lease:
 
 1. Replicate audits and calibration (fidelity; handled by the coordinator).
 2. Focused jobs whose ``priority`` exceeds ``background_priority``, in order of
-   priority, then deadline, then the share of their target already played (so
-   equal-priority jobs share workers), then submission. Within a job the (pairing,
+   priority, then deadline, then leases so far per target game (so equal-priority
+   jobs share workers in proportion to their targets), then submission. Within a job the (pairing,
    condition) furthest below its game target goes first.
 3. Background fill by value of information (drmc_rl/pool/voi.py): the batch
    that most reduces the posterior variance of the rating differences that
@@ -41,6 +41,7 @@ class Scheduler:
         self.opponent_mix = opponent_mix or (lambda name: {})
         self.leases = 0
         self.background_leases = 0
+        self.job_leases = {}
 
     # -- eligibility --------------------------------------------------------------
     def playable(self, condition, entrant, worker_caps):
@@ -177,10 +178,11 @@ class Scheduler:
         active = [j for j in state.jobs.values() if j["status"] == "active"]
 
         def behind(job):
-            # Equal-priority jobs share workers: the one furthest behind its target goes first.
-            rows = self.job_progress(job)
-            target = sum(r["target"] for r in rows)
-            return sum(min(r["games"], r["target"]) for r in rows) / target if target else 1.0
+            # Equal-priority jobs share workers in proportion to their targets: the job with the
+            # fewest leases (this coordinator session) per target game goes first, so a new job
+            # neither starves nor monopolises an old one.
+            target = sum(r["target"] for r in self.job_progress(job))
+            return self.job_leases.get(job["id"], 0) / target if target else 1.0
         share = {j["id"]: behind(j) for j in active} if len({j.get("priority", 50) for j in active}) < len(active) else {}
         jobs = sorted(active, key=lambda j: (-j.get("priority", 50), j.get("deadline") or "9999",
                                              share.get(j["id"], 0.0), j.get("created_at", ""), j["id"]))
@@ -195,6 +197,7 @@ class Scheduler:
                 break
             batch = self.job_batch(job, worker_caps, inflight)
             if batch is not None:
+                self.job_leases[job["id"]] = self.job_leases.get(job["id"], 0) + 1
                 return batch
         if not background_first:
             batch = self.background_batch(fits, worker_caps, inflight)
