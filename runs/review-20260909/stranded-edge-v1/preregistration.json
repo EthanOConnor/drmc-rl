@@ -1,0 +1,609 @@
+{
+ "schema": "drmc-stranded-edge-preregistration-v1",
+ "created_at": "2026-09-24",
+ "definition": {
+  "max_viruses": 3,
+  "min_gap": 4,
+  "max_other_cells": 24,
+  "include_pillar": true
+ },
+ "detector": "drmc_rl/eval/stranded_edge.py (drmc-stranded-edge-v1)",
+ "benchmark": {
+  "bank": "drmc-rl-stranded-edge-data/bank/stranded-edge-benchmark-v1.npz",
+  "bank_sha256": "9d4866a176708c2005df5af8e55218a41f1426c26e1bf7ad6404271776754cfa",
+  "rows": 330,
+  "groups": 96,
+  "strata": {
+   "stranded_left": 80,
+   "stranded_right": 80,
+   "pillar_left": 16,
+   "pillar_right": 16,
+   "grounded_left": 69,
+   "grounded_right": 69
+  },
+  "sources": {
+   "corpus": 168,
+   "arena": 162
+  },
+  "study": "stranded-edge-benchmark-v1",
+  "seeds_sha256": "2bb2a27f1a4a906073e13abbdd3c7ae4ace6ebac57f2655a3c157772e185363d",
+  "level": 14,
+  "speed": 2,
+  "schedule": [
+   {
+    "mode": "solo",
+    "pace": "frame_perfect"
+   },
+   {
+    "mode": "solo",
+    "pace": "normal"
+   },
+   {
+    "mode": "race",
+    "pace": "normal",
+    "reference": "champion"
+   }
+  ],
+  "evaluator": "tools/eval_stranded_edge.py",
+  "horizon": 40,
+  "note": "Both bottles start from the row; pills after the preview come from reserve[(pill_counter + k) % 128] of the group seed. Public context starts with an empty event history and game_age 0."
+ },
+ "training_bank": {
+  "path": "/home/ethan/.cache/drmc-rl/trainer-output/stranded-edge-v1/stranded-edge-train-v1.npz",
+  "sha256": "dd2673d0fec5a5e83026e4389c41107528c37ffc7ba43bb360439bae5eb333d6",
+  "rows": 54457,
+  "sources": {
+   "corpus": 18513,
+   "arena": 35944
+  },
+  "excludes": "every benchmark source game and board; arena positions from reserve-seed games"
+ },
+ "primary": {
+  "metric": "paired solo difference in restricted-mean pills to clear the stranded virus (horizon 40, uncleared = 40), strata 0-1, pooled over frame_perfect and normal, candidate minus champion-v1, bootstrap over bank groups",
+  "command": "python -m tools.eval_stranded_edge --compare CANDIDATE_OUT champion-v1 --baseline-id champion  (paired.pooled.pills_restricted)",
+  "success": "point estimate <= -1.5 pills and 95% upper bound < 0"
+ },
+ "guards": [
+  {
+   "metric": "same paired difference on pillar (strata 2-3) and grounded (4-5) rows",
+   "rule": "95% upper bound <= +1.0 pill"
+  },
+  {
+   "metric": "896-game panel (prepare_afterstate_tournament_v1.py panel) versus the fine-tune parent",
+   "rule": "pooled score 95% lower bound >= 0.45; also report versus the champion"
+  }
+ ],
+ "secondary": [
+  "target_cleared and support_destroying paired differences",
+  "race score versus the champion on strata 0-1 at normal (320 games)",
+  "reference gap: --reference-gap against reference-preview-fp.jsonl (target) and reference-preview-round-fp.jsonl (--whole-round)"
+ ],
+ "decision": "A curriculum checkpoint is kept only if the primary success rule and both guards pass; otherwise the start mix is dropped and the parent stands.",
+ "baseline": {
+  "champion_v1": {
+   "checkpoint_sha256": "fae04a599635cbf600914e5dede2f5dcdfeff7e5436dd53053c7d9fc1c85b3a3",
+   "summary_sha256": "bbe7ea7afbe08b43828c8460b8260b91597b10382eea30b7a69bb512f58f13e1",
+   "solo_restricted_mean_pills": {
+    "frame_perfect": {
+     "stranded": 16.38,
+     "pillar": 4.12,
+     "grounded": 24.17
+    },
+    "normal": {
+     "stranded": 17.69,
+     "pillar": 4.06,
+     "grounded": 24.13
+    }
+   },
+   "solo_target_cleared": {
+    "frame_perfect": {
+     "stranded": 0.775,
+     "pillar": 0.969,
+     "grounded": 0.688
+    },
+    "normal": {
+     "stranded": 0.762,
+     "pillar": 0.969,
+     "grounded": 0.667
+    }
+   },
+   "solo_support_destroying_per_position": {
+    "frame_perfect": 0.53,
+    "normal": 0.66
+   },
+   "solo_support_destroying_per_clear": {
+    "frame_perfect": 0.199,
+    "normal": 0.207
+   },
+   "race_vs_public_core_300m_normal_strata01": 0.528
+  },
+  "paired_armA_f50m_minus_champion": {
+   "frame_perfect": {
+    "pills_restricted": [
+     -0.4062,
+     -2.4438,
+     1.7063
+    ],
+    "cleared": [
+     0.0312,
+     -0.0437,
+     0.1062
+    ],
+    "support_destroying": [
+     0.0125,
+     -0.1125,
+     0.1437
+    ],
+    "rows": 160
+   },
+   "normal": {
+    "pills_restricted": [
+     -0.5813,
+     -2.2377,
+     1.1442
+    ],
+    "cleared": [
+     0.0125,
+     -0.0625,
+     0.0814
+    ],
+    "support_destroying": [
+     -0.0437,
+     -0.175,
+     0.0877
+    ],
+    "rows": 160
+   },
+   "pooled": {
+    "pills_restricted": [
+     -0.4938,
+     -1.9157,
+     0.997
+    ],
+    "cleared": [
+     0.0219,
+     -0.0312,
+     0.0719
+    ],
+    "support_destroying": [
+     -0.0156,
+     -0.1187,
+     0.1
+    ],
+    "rows": 320
+   }
+  },
+  "paired_public_core_300m_minus_champion": {
+   "frame_perfect": {
+    "pills_restricted": [
+     -1.6187,
+     -3.0377,
+     -0.3375
+    ],
+    "cleared": [
+     0.075,
+     0.025,
+     0.1375
+    ],
+    "support_destroying": [
+     -0.025,
+     -0.1187,
+     0.075
+    ],
+    "rows": 160
+   },
+   "pooled": {
+    "pills_restricted": [
+     -1.6187,
+     -3.0377,
+     -0.3375
+    ],
+    "cleared": [
+     0.075,
+     0.025,
+     0.1375
+    ],
+    "support_destroying": [
+     -0.025,
+     -0.1187,
+     0.075
+    ],
+    "rows": 160
+   }
+  },
+  "reference_gaps": {
+   "preview-champion": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 4.125,
+      "reference": 2.5,
+      "ratio": 1.65,
+      "excess": [
+       1.625,
+       0.125,
+       4.1875
+      ],
+      "reference_failed": 0.0
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 16.375,
+      "reference": 7.812,
+      "ratio": 2.096,
+      "excess": [
+       8.5625,
+       5.85,
+       11.2505
+      ],
+      "reference_failed": 0.044
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 24.167,
+      "reference": 22.094,
+      "ratio": 1.094,
+      "excess": [
+       2.0725,
+       -0.6596,
+       4.9203
+      ],
+      "reference_failed": 0.333
+     }
+    },
+    "normal": {
+     "pillar": {
+      "rows": 32,
+      "agent": 4.062,
+      "reference": 2.5,
+      "ratio": 1.625,
+      "excess": [
+       1.5625,
+       0.0938,
+       4.1875
+      ],
+      "reference_failed": 0.0
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 17.688,
+      "reference": 7.812,
+      "ratio": 2.264,
+      "excess": [
+       9.875,
+       7.2311,
+       12.6566
+      ],
+      "reference_failed": 0.044
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 24.13,
+      "reference": 22.094,
+      "ratio": 1.092,
+      "excess": [
+       2.0362,
+       -0.8199,
+       5.0072
+      ],
+      "reference_failed": 0.333
+     }
+    }
+   },
+   "round-champion": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 10.562,
+      "reference": 8.0,
+      "ratio": 1.32,
+      "excess": [
+       2.5625,
+       -1.875,
+       7.625
+      ],
+      "reference_failed": 0.031
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 24.506,
+      "reference": 19.113,
+      "ratio": 1.282,
+      "excess": [
+       5.3937,
+       2.5934,
+       8.1625
+      ],
+      "reference_failed": 0.263
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 28.145,
+      "reference": 25.275,
+      "ratio": 1.114,
+      "excess": [
+       2.8696,
+       -0.1812,
+       5.8487
+      ],
+      "reference_failed": 0.428
+     }
+    },
+    "normal": {
+     "pillar": {
+      "rows": 32,
+      "agent": 9.812,
+      "reference": 8.0,
+      "ratio": 1.227,
+      "excess": [
+       1.8125,
+       -3.1875,
+       7.4383
+      ],
+      "reference_failed": 0.031
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 25.875,
+      "reference": 19.113,
+      "ratio": 1.354,
+      "excess": [
+       6.7625,
+       4.0187,
+       9.575
+      ],
+      "reference_failed": 0.263
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 28.246,
+      "reference": 25.275,
+      "ratio": 1.118,
+      "excess": [
+       2.971,
+       -0.0797,
+       5.9495
+      ],
+      "reference_failed": 0.428
+     }
+    }
+   },
+   "preview-armA_f50m": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 3.906,
+      "reference": 2.5,
+      "ratio": 1.562,
+      "excess": [
+       1.4062,
+       0.0625,
+       3.3438
+      ],
+      "reference_failed": 0.0
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 15.969,
+      "reference": 7.812,
+      "ratio": 2.044,
+      "excess": [
+       8.1562,
+       5.9184,
+       10.325
+      ],
+      "reference_failed": 0.044
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 24.464,
+      "reference": 22.094,
+      "ratio": 1.107,
+      "excess": [
+       2.3696,
+       -0.4275,
+       5.3697
+      ],
+      "reference_failed": 0.333
+     }
+    },
+    "normal": {
+     "pillar": {
+      "rows": 32,
+      "agent": 4.75,
+      "reference": 2.5,
+      "ratio": 1.9,
+      "excess": [
+       2.25,
+       0.0938,
+       5.6562
+      ],
+      "reference_failed": 0.0
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 17.106,
+      "reference": 7.812,
+      "ratio": 2.19,
+      "excess": [
+       9.2937,
+       6.7811,
+       11.9066
+      ],
+      "reference_failed": 0.044
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 25.529,
+      "reference": 22.094,
+      "ratio": 1.155,
+      "excess": [
+       3.4348,
+       0.8036,
+       5.8915
+      ],
+      "reference_failed": 0.333
+     }
+    }
+   },
+   "round-armA_f50m": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 9.719,
+      "reference": 8.0,
+      "ratio": 1.215,
+      "excess": [
+       1.7188,
+       -2.0633,
+       5.4688
+      ],
+      "reference_failed": 0.031
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 24.6,
+      "reference": 19.113,
+      "ratio": 1.287,
+      "excess": [
+       5.4875,
+       2.5498,
+       8.2627
+      ],
+      "reference_failed": 0.263
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 29.609,
+      "reference": 25.275,
+      "ratio": 1.171,
+      "excess": [
+       4.3333,
+       1.4346,
+       7.3487
+      ],
+      "reference_failed": 0.428
+     }
+    },
+    "normal": {
+     "pillar": {
+      "rows": 32,
+      "agent": 11.406,
+      "reference": 8.0,
+      "ratio": 1.426,
+      "excess": [
+       3.4062,
+       -1.375,
+       8.7188
+      ],
+      "reference_failed": 0.031
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 25.431,
+      "reference": 19.113,
+      "ratio": 1.331,
+      "excess": [
+       6.3187,
+       3.3687,
+       9.2567
+      ],
+      "reference_failed": 0.263
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 29.746,
+      "reference": 25.275,
+      "ratio": 1.177,
+      "excess": [
+       4.471,
+       1.5072,
+       7.2248
+      ],
+      "reference_failed": 0.428
+     }
+    }
+   },
+   "preview-public_core_300m": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 4.281,
+      "reference": 2.5,
+      "ratio": 1.712,
+      "excess": [
+       1.7812,
+       0.1562,
+       4.3758
+      ],
+      "reference_failed": 0.0
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 14.756,
+      "reference": 7.812,
+      "ratio": 1.889,
+      "excess": [
+       6.9437,
+       4.7562,
+       9.1253
+      ],
+      "reference_failed": 0.044
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 24.239,
+      "reference": 22.094,
+      "ratio": 1.097,
+      "excess": [
+       2.1449,
+       -0.6453,
+       5.0654
+      ],
+      "reference_failed": 0.333
+     }
+    }
+   },
+   "round-public_core_300m": {
+    "frame_perfect": {
+     "pillar": {
+      "rows": 32,
+      "agent": 11.5,
+      "reference": 8.0,
+      "ratio": 1.438,
+      "excess": [
+       3.5,
+       -0.4695,
+       8.0312
+      ],
+      "reference_failed": 0.031
+     },
+     "stranded": {
+      "rows": 160,
+      "agent": 22.644,
+      "reference": 19.113,
+      "ratio": 1.185,
+      "excess": [
+       3.5312,
+       0.6936,
+       6.3128
+      ],
+      "reference_failed": 0.263
+     },
+     "grounded": {
+      "rows": 138,
+      "agent": 29.116,
+      "reference": 25.275,
+      "ratio": 1.152,
+      "excess": [
+       3.8406,
+       1.1014,
+       6.7393
+      ],
+      "reference_failed": 0.428
+     }
+    }
+   }
+  }
+ }
+}
