@@ -1,0 +1,337 @@
+{
+ "schema": "drmc-rating-pool-intentions-v1",
+ "note": "Seeded 2026-09-24 from the AI program plan. Pre-registered contracts (stop rules, tournaments, guards) stand as written; the pool rates the same entrants additionally and offers its panel jobs to future runs.",
+ "intentions": [
+  {
+   "id": "stronger3-arm-a",
+   "title": "Stronger-3 arm A: distilled afterstate core, outcome PPO",
+   "status": "running",
+   "owner": "program",
+   "due": "2026-09-25",
+   "hypothesis": "A 15M-parameter afterstate core distilled from the champion and fine-tuned with outcome PPO beats the champion at the spawn contract.",
+   "entrants": [
+    "armA-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pre-registered 896-game panel score per snapshot",
+    "pool pooled rating over l14-spawn (report only)"
+   ],
+   "decision_rule": "Pre-registered: stop after two consecutive snapshots whose pooled panel score does not exceed the best so far; the best snapshot is the single tournament candidate (afterstate_stop_rule_v1.py).",
+   "depends": [],
+   "notes": "PPO on tf3090 (tmux afterstate-ppo-18h). Snapshots join the pool through watch-run on the Mac data directory; the pool does not replace the pre-registered panel."
+  },
+  {
+   "id": "stronger3-arm-c",
+   "title": "Stronger-3 arm C: full-size champion plus zero-initialised afterstate branch, outcome PPO",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-09-27",
+   "hypothesis": "Keeping the champion's full network and adding an afterstate branch (warm start, function-identical at step 0) improves on the champion without the distillation loss of arm A.",
+   "entrants": [
+    "armC-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pre-registered 896-game panel score per snapshot",
+    "pool pooled rating over l14-spawn (report only)"
+   ],
+   "decision_rule": "Pre-registered: the arm A stop rule applied to arm C snapshots (afterstate_full_stop_rule_v1.py).",
+   "depends": [
+    "entrant:armC-*"
+   ],
+   "job": {
+    "title": "Arm C snapshots vs the anchor (report only)",
+    "mode": "vs",
+    "entrants": [
+     "armC-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 128,
+    "priority": 55,
+    "open": true
+   },
+   "notes": "Queued on tf3090 after arm A. Register snapshots with watch-run on /Users/ethan/dev/drmario/drmc-rl-afterstate-full-data (run armC-ppo-v1)."
+  },
+  {
+   "id": "stronger3-arm-b",
+   "title": "Stronger-3 arm B: human-corpus-bootstrapped afterstate core, imitation then outcome PPO",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-09-30",
+   "hypothesis": "Bootstrapping the afterstate core from human games instead of the champion gives a stronger or more human-compatible starting point for the same PPO.",
+   "entrants": [
+    "armB-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pool pooled rating over l14-spawn per snapshot",
+    "stop rule from pool ratings"
+   ],
+   "decision_rule": "Pool stop rule (tools.rating_pool stop-rule --run armB-ppo-v1): stop after two consecutive snapshots whose pooled l14-spawn rating does not exceed the best of the parent and earlier snapshots; select the best.",
+   "depends": [
+    "external:arm B imitation run on green",
+    "entrant:armB-*"
+   ],
+   "job": {
+    "title": "Arm B stop-rule panel",
+    "mode": "vs",
+    "entrants": [
+     "armB-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 128,
+    "priority": 60,
+    "open": true
+   },
+   "notes": "Imitation on green, PPO on tf3090 after arm C. New run: hooks into the pool from the start (watch-run --panel-set l14-spawn)."
+  },
+  {
+   "id": "stronger3-tournament",
+   "title": "Stronger-3 tournament: arm winners vs the champion",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-10-02",
+   "hypothesis": "At least one afterstate arm is promotable over the champion at the spawn contract.",
+   "entrants": [
+    "armA-*",
+    "armC-*",
+    "armB-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pre-registered 3584-game tournament per arm (tournament seeds)",
+    "pool round robin among arm selections, champion and public-core-300m"
+   ],
+   "decision_rule": "Pre-registered per arm: PROMOTE if pooled 95% lower bound > 0.50 and no pace simultaneous 95% upper bound < 0.45; PARITY / REJECT otherwise. The pool round robin is additional evidence only.",
+   "depends": [
+    "intention:stronger3-arm-a",
+    "intention:stronger3-arm-c",
+    "intention:stronger3-arm-b"
+   ],
+   "notes": "Each arm's selection plays its own pre-registered tournament seeds exactly once (prepare_afterstate_tournament_v1.py tournament). Import the tournament journal afterwards with import-study."
+  },
+  {
+   "id": "shipped-timing-confirmation",
+   "title": "Shipped timing confirmation of the tournament winner",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-10-03",
+   "hypothesis": "The spawn-contract winner is not worse than the champion under the shipped lock_safe + repeat timing.",
+   "entrants": [
+    "champion-retention-mixed-v2"
+   ],
+   "conditions": [
+    "set:l14-shipped"
+   ],
+   "metrics": [
+    "pre-registered 896-game confirmation (confirmation-seeds.json)",
+    "pool l14-shipped ratings"
+   ],
+   "decision_rule": "Pre-registered addendum: FAIL if the pooled 95% lower bound < 0.45, PASS otherwise.",
+   "depends": [
+    "intention:stronger3-tournament"
+   ],
+   "notes": "Frames backend. The pool keeps the l14-shipped condition set rated in the background (weight 0.3)."
+  },
+  {
+   "id": "stranded-edge-variants",
+   "title": "Stranded edge-virus curriculum variants A+S, C+S, B+S",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-10-04",
+   "hypothesis": "A dense stranded-edge start mix decaying to the natural rate over 40-50M frames reduces pills-to-clear on stranded edge viruses without losing general strength.",
+   "entrants": [
+    "armA-S-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pre-registered primary: paired restricted-mean pills to clear (benchmark bank)",
+    "guard: 896-game panel vs the fine-tune parent",
+    "pool: vs_parent ratings (report only)"
+   ],
+   "decision_rule": "Pre-registered: keep a curriculum checkpoint only if the primary success rule and both guards pass; otherwise the parent stands.",
+   "depends": [
+    "entrant:armA-S-*"
+   ],
+   "job": {
+    "title": "Stranded-edge variants vs their parents (report only)",
+    "mode": "vs_parent",
+    "entrants": [
+     "armA-S-*",
+     "armC-S-*",
+     "armB-S-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 128,
+    "priority": 55,
+    "open": true
+   },
+   "notes": "Branch trainer/stranded-edge-endgame. The panel guard runs as pre-registered; the pool additionally rates each variant against its parent."
+  },
+  {
+   "id": "human-movement-finetune",
+   "title": "Human-movement fine-tune at Fast, Top Humans and Super Human",
+   "status": "blocked",
+   "owner": "program",
+   "hypothesis": "Fine-tuning the champion under human-like movement recovers strength lost to slower human steering at the fast paces.",
+   "entrants": [
+    "hm-finetune-*"
+   ],
+   "conditions": [
+    "set:l14-human-movement"
+   ],
+   "metrics": [
+    "pool rating under l14-human-movement vs the motor-limit champion"
+   ],
+   "decision_rule": "Ship human movement at a pace when the fine-tuned core's rating there is within the pool's 95% interval of the motor-limit champion's.",
+   "depends": [
+    "external:real-player data shows human-movement strength at the fast paces",
+    "capability:movement:human"
+   ],
+   "job": {
+    "title": "Human-movement fine-tune panel",
+    "mode": "vs",
+    "entrants": [
+     "hm-finetune-*"
+    ],
+    "conditions": [
+     "set:l14-human-movement"
+    ],
+    "games": 128,
+    "priority": 60,
+    "open": true
+   },
+   "notes": "On hold (user decision Sep 24). Recipe ready on trainer/human-movement-training 9be59275; the pool engine needs that branch's movement model before these conditions can play."
+  },
+  {
+   "id": "one-ply-lookahead-retry",
+   "title": "One-ply lookahead retry (Stronger-4)",
+   "status": "blocked",
+   "owner": "program",
+   "hypothesis": "One-ply lookahead over the value head beats the policy argmax once the value head ranks alternatives.",
+   "entrants": [
+    "lookahead-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "value-head ranking accuracy on held-out alternatives",
+    "pool rating vs its base core"
+   ],
+   "decision_rule": "Retry only after the value head ranks alternatives above chance; then promote if the pooled rating exceeds the base core's by more than its 95% interval.",
+   "depends": [
+    "external:value head ranks alternatives above chance"
+   ],
+   "job": {
+    "title": "Lookahead vs base core",
+    "mode": "vs_parent",
+    "entrants": [
+     "lookahead-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 256,
+    "priority": 60
+   },
+   "notes": "Shelved Sep 24: the value head ranked alternatives at chance. Branch trainer/one-ply-lookahead."
+  },
+  {
+   "id": "int8-inference",
+   "title": "int8 inference core",
+   "status": "planned",
+   "owner": "program",
+   "due": "2026-10-31",
+   "hypothesis": "An int8-quantised export of the champion plays at the same strength for a fraction of the browser compute.",
+   "entrants": [
+    "int8-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "decision agreement with the fp32 parent",
+    "pool rating vs the fp32 parent"
+   ],
+   "decision_rule": "Ship when decision agreement >= 99% and the pooled rating difference to the parent is within +/- 15 with 95% confidence.",
+   "depends": [
+    "external:int8 export and a pool loader for it",
+    "capability:loader:int8"
+   ],
+   "job": {
+    "title": "int8 vs fp32 parent",
+    "mode": "vs_parent",
+    "entrants": [
+     "int8-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 256,
+    "priority": 60
+   },
+   "notes": "Later. Needs a quantised export and a loader registered as a runtime capability."
+  },
+  {
+   "id": "big-clear-setups",
+   "title": "Big-clear setups from the Fightcade corpus",
+   "status": "planned",
+   "owner": "main session",
+   "hypothesis": "Training from the human positions that led up to the biggest and deepest clears in Fightcade play teaches the core to build and cash in large combos and chains, which may increase both strength and spectacular play.",
+   "entrants": [
+    "bigclear-std-*",
+    "bigclear-shaped-*"
+   ],
+   "conditions": [
+    "set:l14-spawn"
+   ],
+   "metrics": [
+    "pool strength per pace (l14-spawn, by-pace drill-down)",
+    "rate and size of big clears in pool games",
+    "held-out big-clear-setup benchmark: realises the clear from the setup",
+    "guard: no strength regression on the standard panel vs the parent"
+   ],
+   "decision_rule": "Keep an arm only if it improves the big-clear benchmark and clear rate/size while passing the standard-panel guard (pooled 95% lower bound of the difference to the parent >= -15 Elo); compare (a) standard reward vs (b) standard + small shaped big-clear bonus from the same parent.",
+   "depends": [
+    "intention:stronger3-tournament",
+    "external:corpus_public_state (arm B, trainer/afterstate-core-human)",
+    "external:start_mix curriculum (trainer/stranded-edge-endgame)",
+    "external:tf3090 GPU slot",
+    "external:evaluation-seed allocation for the big-clear benchmark"
+   ],
+   "job": {
+    "title": "Big-clear arms vs their parent",
+    "mode": "vs_parent",
+    "entrants": [
+     "bigclear-std-*",
+     "bigclear-shaped-*"
+    ],
+    "conditions": [
+     "set:l14-spawn"
+    ],
+    "games": 256,
+    "priority": 60,
+    "open": true
+   },
+   "notes": "Recorded 2026-09-24. Plan: (1) mine human-v2-20260924T170224Z and drmariostats leaderboards (reuse any big-clear/combo boards) for the largest clears by cells cleared, viruses cleared and chain/combo depth; (2) take positions 3, 6, 10 and 20 placements before each clear, rebuild public context with corpus_public_state, add as start states via the decaying start_mix; (3) arms (a) standard reward and (b) standard plus a small shaped bonus for size, virus count and chain depth, kept small enough not to trade away wins; parent = the Stronger-3 winner."
+  }
+ ]
+}

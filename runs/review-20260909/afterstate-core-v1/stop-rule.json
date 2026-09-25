@@ -1,0 +1,65 @@
+{
+ "schema": "drmc-afterstate-stop-rule-v1",
+ "rule": "stop after two consecutive snapshots whose pooled panel score does not exceed the best so far; select the best pooled snapshot",
+ "snapshots": [
+  {
+   "label": "distill-v1",
+   "frames": 0,
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/student-final-inference.pt",
+   "pooled": 0.5245535714285714,
+   "pooled_ci95": [
+    0.48660714285714285,
+    0.5613839285714286
+   ],
+   "paces": {
+    "sloth": 0.5078125,
+    "relaxed": 0.546875,
+    "normal": 0.5390625,
+    "fast": 0.4375,
+    "top_humans": 0.5,
+    "super_human": 0.5703125,
+    "frame_perfect": 0.5703125
+   }
+  },
+  {
+   "label": "ppo-f00050000000",
+   "frames": 50000000,
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/core-f00050000000.pt",
+   "pooled": 0.5680803571428571,
+   "pooled_ci95": [
+    0.5301339285714286,
+    0.6049107142857143
+   ],
+   "paces": {
+    "sloth": 0.5078125,
+    "relaxed": 0.609375,
+    "normal": 0.6015625,
+    "fast": 0.46875,
+    "top_humans": 0.5703125,
+    "super_human": 0.5859375,
+    "frame_perfect": 0.6328125
+   },
+   "improved": true
+  },
+  {
+   "label": "ppo-f00100000000",
+   "frames": 100000000,
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/core-f00100000000.pt",
+   "pooled": 0.5948660714285714,
+   "pooled_ci95": [
+    0.5580357142857143,
+    0.6316964285714286
+   ],
+   "paces": {
+    "sloth": 0.5234375,
+    "relaxed": 0.6015625,
+    "normal": 0.640625,
+    "fast": 0.6015625,
+    "top_humans": 0.5625,
+    "super_human": 0.6484375,
+    "frame_perfect": 0.5859375
+   },
+   "improved": true
+  }
+ ]
+}

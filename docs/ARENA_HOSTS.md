@@ -7,6 +7,9 @@ authenticated HTTP, fetch checkpoints by SHA-256, and upload rows plus move
 journals. The coordinator writes `games.jsonl`, `moves/`, `arena.sqlite` and
 `results.json` exactly as `tools.trainer_planning_arena` would.
 
+The continuously running rating pool (docs/RATING_POOL.md) uses this transport,
+its fidelity checks and the same host setup; its workers are `tools.rating_pool worker`.
+
 ## What is exact
 
 - **Same batches.** Leases are the single-host batches: `pairs`, sequential

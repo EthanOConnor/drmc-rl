@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rating Pool</title>
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#1b1b1a;--muted:#6d6c67;--line:#e6e4df;--head:#f6f5f2;--warn:#8a5a12;--bad:#a2321f;--up:#1f6b4f}
+@media (prefers-color-scheme:dark){:root{--bg:#141414;--fg:#e8e7e3;--muted:#98968f;--line:#2c2b29;--head:#1c1c1b;--warn:#d9a55a;--bad:#e8816f;--up:#6cc49e}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1080px;margin:0 auto;padding:16px}
+h1{font-size:18px;margin:0}
+h2{font-size:15px;margin:28px 0 6px;padding-bottom:4px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;margin:16px 0 2px}
+p{margin:2px 0 6px}
+.muted,small{color:var(--muted)}
+.top{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline}
+.summary{margin:6px 0 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+th,td{padding:3px 8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top;white-space:nowrap}
+th{font-weight:600;color:var(--muted);font-size:12px;background:var(--head)}
+td.wrap{white-space:normal;min-width:16em}
+.n{text-align:right}
+td.e{max-width:30em;overflow:hidden;text-overflow:ellipsis}
+@media (max-width:600px){main{padding:12px}td.e{max-width:10.5em}th,td{padding:3px 5px}}
+.warn{color:var(--warn)}.bad{color:var(--bad)}
+.up{color:var(--up);font-weight:600}.down{color:var(--bad);font-weight:600}
+.by-pace{margin:6px 0 14px;padding-left:10px;border-left:2px solid var(--line)}
+details{margin:4px 0}summary{cursor:pointer;padding:3px 0}
+summary b{font-weight:600}
+a{color:inherit}
+</style>
+</head>
+<body>
+<main>
+<div class="top"><h1>Rating pool</h1><small id="updated">loading…</small></div>
+<p class="summary" id="summary"></p>
+
+<h2>Ratings by condition set</h2>
+<p class="muted">Elo, anchor fixed. Pooled = mean over the set's conditions, only for entrants rated in all of them. LOS = probability the entrant is stronger than the next row.</p>
+<div id="sets"></div>
+
+<h2>Era leaderboard</h2><div class="scroll" id="eras"></div>
+<h2>New and underplayed</h2><div class="scroll" id="new"></div>
+<h2>Jobs</h2><div class="scroll" id="jobs"></div>
+<h2>Roadmap</h2><div class="scroll" id="intentions"></div>
+<h2>Workers</h2><div class="scroll" id="workers"></div>
+<h2>Per-condition ratings</h2><div id="conditions"></div>
+
+<p class="muted" style="margin-top:24px"><a href="report.json">report.json</a> · ratings are recomputable from games.jsonl alone (docs/RATING_POOL.md)</p>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const int = x => x == null ? "" : Math.round(x).toLocaleString("en-US", {useGrouping:false});
+const los = x => x == null ? "–" : Math.round(100 * x) + "%";
+const num = x => x == null ? "" : Number(x).toLocaleString("en-US");
+function table(cols, rows, empty) {
+  if (!rows.length) return `<p class="muted">${empty || "none"}</p>`;
+  return `<table><thead><tr>${cols.map(c => `<th class="${c[2] || ""}">${c[0]}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r, i) => `<tr>${cols.map(c => `<td class="${c[2] || ""}">${c[1](r, i)}</td>`).join("")}</tr>`).join("") +
+    "</tbody></table>";
+}
+function ratings(rows) {
+  return `<div class="scroll">${table([
+    ["#", (r, i) => i + 1, "n"],
+    ["Entrant", r => `<span title="${esc(r.entrant)}">${esc(r.entrant)}</span>`, "e"],
+    ["Elo", r => int(r.rating), "n"],
+    ["95% CI", r => `${int(r.ci95[0])}–${int(r.ci95[1])}`, "n"],
+    ['<span title="Probability this entrant is stronger than the next row">LOS</span>', r => los(r.los), "n"],
+    ["Games", r => num(r.games), "n"],
+  ], rows, "no rated entrants yet")}</div>`;
+}
+function paceBreakdown(s) {
+  if (!s.paces || s.paces.length < 2) return "";
+  const idx = s.paces.map(p => Object.fromEntries(p.ratings.map(r => [r.entrant, r])));
+  const rows = s.pooled.length ? s.pooled : [];
+  const cell = (r, pooled) => {
+    if (!r) return '<span class="muted">·</span>';
+    // Marked when this pace's 95% interval excludes the entrant's pooled rating.
+    const mark = pooled != null && (pooled < r.ci95[0] ? "▲" : pooled > r.ci95[1] ? "▼" : "");
+    return `<span title="95% CI ${int(r.ci95[0])}–${int(r.ci95[1])} · ${num(r.games)} games · LOS ${los(r.los)}" class="${mark ? (mark === "▲" ? "up" : "down") : ""}">${int(r.rating)}${mark ? " " + mark : ""}</span>`;
+  };
+  const matrix = `<div class="scroll">${table([
+    ["Entrant", r => esc(r.entrant), "e"], ["Pooled", r => int(r.rating), "n"],
+    ...s.paces.map((p, i) => [esc(p.pace), r => cell(idx[i][r.entrant], r.rating), "n"])],
+    rows, "no entrant is rated at every pace yet")}</div>
+    <p class="muted"><small>▲ / ▼: that pace's 95% interval lies above / below the pooled rating. Hover a cell for its CI, games and LOS.</small></p>`;
+  const tables = s.paces.map(p => `<details data-key="pace-${esc(s.name)}-${esc(p.key)}"><summary>${esc(p.pace)} <span class="muted">· ${esc(p.condition)} · ${p.ratings.length} rated</span></summary>${ratings(p.ratings)}</details>`).join("");
+  return `<details class="by-pace" data-key="bypace-${esc(s.name)}"><summary>By pace</summary>${matrix}${tables}</details>`;
+}
+function render(d) {
+  const t = d.totals;
+  $("summary").textContent = `${num(t.games)} games (${num(t.pool || 0)} pool, ${num(t.imported || 0)} imported) · ` +
+    `${num(t.games_last_hour)} last hour · ${num(t.games_last_day)} last day · ${t.active_entrants}/${t.entrants} entrants active · ` +
+    `${t.leases} leases · anchor ${int(d.anchor_rating)}`;
+  $("updated").textContent = `updated ${new Date(d.generated).toLocaleTimeString()} · refreshes every 60 s`;
+  $("sets").innerHTML = d.condition_sets.map(s => {
+    const head = `<b>${esc(s.name)}</b>${s.primary ? " · primary" : ""} <span class="muted">· anchor ${esc(s.anchor)} · ${s.conditions.length} conditions · weight ${s.weight}</span>`;
+    const body = `<p class="muted">${esc(s.notes)}</p>${ratings(s.pooled)}${paceBreakdown(s)}`;
+    return s.primary ? `<h3>${head}</h3>${body}` : `<details data-key="set-${esc(s.name)}"><summary>${head}</summary>${body}</details>`;
+  }).join("");
+  $("eras").innerHTML = table([
+    ["Era", e => esc(e.era)], ["Best entrant", e => e.best ? esc(e.best.entrant) : '<span class="muted">unrated</span>', "e"],
+    ["Elo", e => e.best ? int(e.best.rating) : "", "n"], ["95% CI", e => e.best ? `${int(e.best.ci95[0])}–${int(e.best.ci95[1])}` : "", "n"],
+    ["Entrants", e => e.entrants, "n"]], d.eras);
+  $("new").innerHTML = table([
+    ["Entrant", e => esc(e.id), "e"], ["Era", e => esc(e.era)], ["Status", e => esc(e.status)],
+    ["Games (min / max per primary condition)", e => { const v = Object.values(e.games); return v.length ? `${Math.min(...v)} / ${Math.max(...v)}` : ""; }, "n"],
+    ["Pooled Elo", e => int(e.pooled), "n"], ["Added", e => esc((e.added_at || "").slice(0, 10))]], d.new_entrants, "none");
+  $("jobs").innerHTML = table([
+    ["Job", j => esc(j.id) + (j.title ? `<br><small>${esc(j.title)}</small>` : ""), "wrap"], ["Status", j => esc(j.status)],
+    ["Priority", j => j.priority, "n"], ["Games", j => `${num(j.games)} / ${num(j.target)}`, "n"],
+    ["Blocked", j => j.blocked_items ? `<span class="warn">${j.blocked_items}</span>` : "", "n"],
+    ["Deadline", j => esc(j.deadline || "")], ["Owner", j => esc(j.owner)]], d.jobs, "no jobs");
+  $("intentions").innerHTML = table([
+    ["Intention", i => `<b>${esc(i.id)}</b><br><small>${esc(i.title)}</small>`, "wrap"],
+    ["Status", i => `<span class="${i.overdue ? "bad" : i.view === "blocked" ? "warn" : ""}">${esc(i.view)}${i.overdue ? " · overdue" : ""}</span>` + (i.job ? `<br><small>job ${esc(i.job.status)}</small>` : "")],
+    ["Waiting on", i => i.waiting_on.map(esc).join("<br>"), "wrap"], ["Due", i => esc(i.due || "")],
+    ["Decision rule", i => `<small>${esc(i.decision_rule)}</small>`, "wrap"]], d.intentions, "no intentions");
+  $("workers").innerHTML = table([
+    ["Worker", w => esc(w.worker)], ["Numerics", w => `<small>${esc(w.numerics)}</small>`],
+    ["Admitted", w => w.admitted === true ? "yes" : w.admitted == null ? "pending" : `<span class="bad">no</span>`],
+    ["Seen", w => `${w.seen_seconds_ago} s`, "n"], ["Games", w => num(w.games), "n"], ["Games/h", w => num(w.games_per_hour), "n"],
+    ["Fail", w => w.failures ? `<span class="warn">${w.failures}</span>` : 0, "n"],
+    ["Status", w => `<small>${esc(w.status)}</small>` + (w.last_error ? `<br><small class="bad">${esc(w.last_error)}</small>` : ""), "wrap"]],
+    d.workers, "no workers seen since the coordinator started");
+  $("conditions").innerHTML = d.conditions.map(c =>
+    `<details data-key="cond-${esc(c.key)}"><summary><b>${esc(c.name)}</b> <span class="muted">· ${num(c.games)} games · ${c.ratings.length} rated</span></summary>` +
+    ratings(c.ratings) + (c.unanchored.length ? `<p class="warn">Not connected to the anchor: ${c.unanchored.map(esc).join(", ")}</p>` : "") +
+    `</details>`).join("");
+}
+function load() {
+  fetch("report.json", {cache: "no-store"}).then(r => r.json()).then(d => {
+    const open = new Set([...document.querySelectorAll("details[open]")].map(e => e.dataset.key));
+    const x = window.scrollX, y = window.scrollY;
+    render(d);
+    document.querySelectorAll("details").forEach(e => { if (open.has(e.dataset.key)) e.open = true; });
+    window.scrollTo(x, y);
+  }).catch(e => { $("updated").textContent = "update failed: " + e + " (retrying)"; });
+}
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>
