@@ -1,23 +1,45 @@
 {
   "schema": "drmc-fork-proposal-v1",
   "status": "proposed; not launched",
-  "revised": "2026-09-25: fork point moved from core-u00058 (150M, pooled 1525) to f100M (pooled 1558) per coordinator",
+  "revised": [
+    "2026-09-25: fork point moved from core-u00058 (150M, pooled 1525) to f100M (pooled 1558) per coordinator",
+    "2026-09-25: F1 = GNS recipe (analysis/gradient-noise-scale ff852474); F1b dropped; F2 folded onto F1 at equal per-update compute"
+  ],
   "fork_point": {
     "checkpoint": "~/.cache/drmc-rl/trainer-output/afterstate-core-v1/ppo-v1/core-f00100000000.pt",
     "frames": 100000000,
-    "pooled_strength_weighted_rating": [1558, "ci95 1535-1580"],
+    "pooled_strength_weighted_rating": [
+      1558,
+      "ci95 1535-1580"
+    ],
     "why": "statistically tied with f50M (1559) and the strongest arm A snapshot; 150M sits about 2 sigma below the peak; f100M is also the parent of showiness candidate 2, so both share a baseline",
     "optimizer_state": "none (61.7 MB weights-only snapshot; core-u00058.pt with optimizer is 185 MB). Every arm, including the control, starts with a fresh AdamW at the same settings.",
     "retention_baseline": "each arm measures its per-pace anchor KL baseline at f100M on start, identically"
   },
   "arms": {
-    "control": "unchanged arm A recipe (ppo-v1 config) from f100M, fresh Adam",
-    "F1_optimizer_batch": "larger effective batch per GNS (B_noise about 3.5e5 decisions; policy signal about 5.7% of per-update |G|^2), learning rate rescaled and gradient clipping per the GNS study's recommendation; one change set",
-    "F2_objective_alignment": "strength-weighted allocation (games per update about sloth 16 floor, relaxed 16 floor, normal 20, fast 28, top_humans 37, super_human 56, frame_perfect 57, rescaled to the control's decisions per update) plus pace weights (FP 3, SH 3, TH 2, Fast 1.5, Normal 1, Relaxed 0.5, Sloth 0.5) in balance_pace_credit",
-    "F3_retention_hinge": "retention penalises only anchor KL above each pace's fork-point baseline (no pull below baseline); coefficient and hard limit unchanged"
+    "control": "unchanged arm A recipe (ppo-v1 config: 544 games, minibatch 128, 2 epochs, lr 3e-6, clip-norm 0.7) from f100M, fresh Adam",
+    "F1_gns_recipe": "optimizer changes only at 544 games/update: minibatch 2048; lr 1.2e-5 (sqrt(B) scaling) with KL targeting at 0.003-0.005 and the hard max_update_kl cap kept; gradient clip-norm about 4 (2-3x median pre-clip norm); 1 epoch. Compared against control.",
+    "F2_allocation_on_F1": "F1 plus strength-weighted allocation at equal per-update compute (games/update sloth 16, relaxed 16, normal 20, fast 28, top_humans 37, super_human 56, frame_perfect 57 = about 3.0M frames/update, same as the current 2.98M) plus pace weights (FP 3, SH 3, TH 2, Fast 1.5, Normal 1, Relaxed 0.5, Sloth 0.5) in balance_pace_credit. Compared against F1.",
+    "F3_retention_hinge": "control recipe; retention penalises only anchor KL above each pace's fork-point baseline; coefficient and hard limit unchanged. Compared against control."
   },
   "budget": "equal frames per arm, about 50M (100M -> 150M), snapshots every 12.5M",
   "primary_metric": "slope of the pooled strength-weighted L14-spawn rating (tools.rating_pool, anchor champion-retention-mixed-v2) versus frames, arm minus control, over the 5 snapshots including the shared f100M point",
   "power_note": "about +-12 Elo per snapshot; 50M-frame arms resolve slope differences of about 50 Elo per 100M or more",
-  "evidence": "drmc-rl-diag-data: curve.json, replay.json, gradients-u58.json, gns/analysis-u58.json; GPU diagnostics (value fits, epochs, branch rollouts) pending in morning_queue.sh and may revise F1/F3"
+  "evidence": "drmc-rl-diag-data: curve.json, replay.json, gradients-u58.json, gns/analysis-u58.json; GPU diagnostics (value fits, epochs, branch rollouts) pending in morning_queue.sh and may revise F1/F3; GNS: drmc-rl-gns-data/analysis.{json,txt} (policy B_noise about 3e5 decisions, flat across training; 4-10% of full-update gradient is signal)",
+  "F1b_decision": "Not run. 4x games (about 2176/update, about 11.9M frames) fits only about 4 updates in 50M frames, so each 12.5M snapshot is a single update and the slope rests on about 4 noisy points. GNS's other point, extra games for the 32-game paces instead of sloth, agrees with the strength-weighted allocation, and F2 delivers it at equal compute by moving games from sloth/relaxed (sloth and relaxed currently use 24% of rollout compute; under the weights 2-3%). So F2 is folded onto F1 instead of into an F1b. Revisit a larger games-per-update arm with a 150M+ budget.",
+  "wall_time_estimates": {
+    "basis": "arm A ppo-v1: about 3,535 frames/s overall (rollout about 540 s + optimizer about 390 s per 2.98M-frame update; inference-bound). F1/F2 optimizer: 1 epoch at 2048 is estimated at about 200 s/update including checks. These are estimates, not benchmarks.",
+    "per_arm_alone": {
+      "control": "about 3.9 h",
+      "F1": "about 3.4 h",
+      "F2": "about 3.4 h",
+      "F3": "about 3.9 h"
+    },
+    "sequential_all_four": "about 14.6 h of GPU time, plus rating-pool evaluation on the distributed arena (not tf3090)",
+    "in_pairs": "(control, F1) then (F2, F3): about 5.5-6.5 h per pair, about 11-13 h total, assuming about 1.3-1.5x aggregate throughput. The binding limit is 4 CPU cores (planner_workers 3 each would oversubscribe; use 2 each), not RAM or GPU memory. The pairing is untested; measure the first pair's frames/s in the first update and fall back to sequential if aggregate < 1.2x.",
+    "memory": "keep MemAvailable >= 4 GB; the GPU (24 GB) fits two trainers at minibatch 2048 per the GNS bench"
+  },
+  "preconditions": [
+    "/dev/shm/afterstate-core on tf3090 was cleared: the source snapshot (src-0f36d78d), native libdrmario_pool.so and ppo.log are gone. Re-stage the trainer source and native library before any fork, and before diag-scratch/morning_queue.sh (it runs from that snapshot)."
+  ]
 }
