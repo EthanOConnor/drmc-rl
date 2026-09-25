@@ -4468,10 +4468,10 @@
  "max_game_frames": 120000,
  "seed": 20260925,
  "async_planning": true,
- "source_commit": "4f2be2ce",
+ "source_commit": "b009b12e",
  "native_commit": "19f292c",
  "updates": 20000,
- "lr": 3e-06,
+ "lr": 1e-05,
  "epochs": 2,
  "minibatch": 128,
  "clip": 0.15,
@@ -4504,12 +4504,17 @@
  "start_mix": {
   "bank": "/home/ethan/.cache/drmc-rl/trainer-output/big-clear-v1/bank/big-clear-train-v1.npz",
   "bank_sha256": "96cf5e45bdb0d083eaa4f5f74c5f0bfdf4591c21d338dc39c8485f29adffce8b",
-  "fraction": 0.35,
+  "fraction": 0.4,
   "levels": [
    14
   ],
   "paces": [],
-  "replay_share": 0.5
+  "replay_share": 0.5,
+  "tier_weights": [
+   1,
+   3,
+   6
+  ]
  },
  "showiness_bonus": {
   "threshold": 20.0,
@@ -4521,5 +4526,11 @@
  "keep_update_checkpoints": true,
  "journal_showiness": true,
  "fill_inference_batches": true,
- "deferred_reference": true
+ "deferred_reference": true,
+ "lr_kl_target": {
+  "target": 0.005,
+  "alarm": 0.015,
+  "min_lr": 1e-06,
+  "max_lr": 3e-05
+ }
 }
