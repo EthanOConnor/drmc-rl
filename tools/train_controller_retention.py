@@ -178,12 +178,13 @@ def update_precision(config):
 
 
 # Keys a resume may change: numerics of the update step only, never the objective or data.
-RESUME_FREE_KEYS=('resume','update_tf32')
+RESUME_FREE_KEYS=('resume','update_tf32','stop_on_retention_rejection')
 
 
 # Keys a fork may change relative to the run it branches from.
 FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve',
-           'start_mixes','showiness_bonus','checkpoint_every_frames')
+           'start_mixes','showiness_bonus','checkpoint_every_frames',
+           'retention_accept_limit','stop_on_retention_rejection')
 
 
 def fork_contract(config):
@@ -248,7 +249,8 @@ def main():
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
         paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
         coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
-        pressure_strength=config.get('retention_pressure_strength',0.),hinge=bool(config.get('retention_hinge',False)))
+        pressure_strength=config.get('retention_pressure_strength',0.),hinge=bool(config.get('retention_hinge',False)),
+        accept_limit=config.get('retention_accept_limit'))
     require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
     available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
     start_mix=(StartMix(config['start_mix'],available) if config.get('start_mix')
@@ -382,9 +384,21 @@ def main():
               losses=update_adapter(actor,optimizer,records,dict(config,lr=progress['adaptive_lr']) if kl_lr else config,
                 config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
+            if config.get('stop_on_retention_rejection') and losses.get('retention_rejections',0)>0:
+                # Stop at the first retention-guard refusal: discard this update (not saved, not
+                # journaled) and point at the last accepted full checkpoint for a follow-on lineage.
+                guard_hit=dict(update=update,last_accepted_update=progress['updates'],
+                    last_accepted=str(output/progress['checkpoints'][-1]) if progress['checkpoints'] else None,
+                    frames=progress['frames'],retention_rejections=losses['retention_rejections'],
+                    retention_kl_by_pace=losses.get('retention_kl_by_pace'),baseline=retention.baseline,
+                    limit=retention.accept_limit,at=datetime.now(UTC).isoformat())
+                dump(output/'retention-guard-hit.json',guard_hit)
+                progress.update(status='Stopped at retention guard',retention_guard_hit=guard_hit)
+                break
             progress['optimizer_steps']+=losses['optimizer_steps']
             if getattr(retention,'hinge',False):
                 progress['retention_hinge_active']=retention.pop_hinge_stats()
+            progress['retention_kl_update']={p:round(v,5) for p,v in (losses.get('retention_kl_by_pace') or {}).items()}
             progress['gradient']=dict(pre_clip_norm=round(losses.get('gradient_norm',0.),4),
                                       clipped_fraction=round(losses.get('gradient_clipped',0.),4))
             if kl_lr:
@@ -463,12 +477,13 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','start_mix_update_decision_fraction_by_bank','showiness_bonus_update','adaptive_lr','style_update','gradient','retention_hinge_active') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','start_mix_update_decision_fraction_by_bank','showiness_bonus_update','adaptive_lr','style_update','gradient','retention_hinge_active','retention_kl_update') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):
                 raise RuntimeError('learning rate fell below the declared useful floor; preserve the checkpoint and review retention')
             del records,games,batch,shards
+        if progress.get('retention_guard_hit'): return
         if not target_met(progress,config): raise RuntimeError('safety update cap reached before learning allocation')
         progress.update(status='Training complete',final_checkpoint='core-final.pt',updated_at=datetime.now(UTC).isoformat())
         actor.save(output/'core-final.pt',update=progress['updates'],optimizer=optimizer.state_dict(),

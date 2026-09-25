@@ -257,3 +257,16 @@ def test_update_tf32_applies_only_inside_the_update_and_restores_strict_fp32():
     with update_precision({}):
         assert not torch.backends.cudnn.benchmark
     assert "update_tf32" in RESUME_FREE_KEYS
+
+
+def test_accept_limit_lifts_only_the_retention_acceptance_guard():
+    from drmc_rl.training.controller_retention import PaceRetention
+
+    r = PaceRetention.__new__(PaceRetention)
+    r.paces, r.baseline, r.max_kl_increase, r.pressure_strength = ("fast",), {"fast": 0.02}, 0.03, 31.0
+    r.accept_limit = 0.03
+    assert r.accepts({"fast": 0.049}) and not r.accepts({"fast": 0.051})
+    r.accept_limit = 10.0
+    assert r.accepts({"fast": 0.5})
+    r.set_pressure({"fast": 0.051})
+    assert r.pressure["fast"] == pytest.approx(32.0)  # the pressure scale still uses max_kl_increase

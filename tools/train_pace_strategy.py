@@ -358,6 +358,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
     if not np.isfinite(max_kl) or max_kl <= 0:
         raise ValueError("max_update_kl must be finite and positive")
     accepted_kl, rejected, steps, stopped = 0.0, 0, 0, False
+    retention_rejections = 0  # attempts whose update KL passed but the retention guard refused
     first_step_kl = None
     value_mse = float(np.mean([(r["old_value"] - r["return"]) ** 2 for r in records]))
     initial_mse = value_mse
@@ -426,9 +427,11 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
                 actor, records, size, reference=old_distributions, activity=activity, pace_kl=per_pace_kl
             )
             candidate_retention = retention.measure() if retention is not None else {}
-            if (np.isfinite(measured_kl) and measured_kl <= max_kl
-                    and (per_pace_kl is None or all(np.isfinite(v) and v <= max_kl for v in per_pace_kl.values()))
-                    and (retention is None or retention.accepts(candidate_retention))):
+            kl_ok = (np.isfinite(measured_kl) and measured_kl <= max_kl
+                     and (per_pace_kl is None or all(np.isfinite(v) and v <= max_kl for v in per_pace_kl.values())))
+            retention_ok = retention is None or retention.accepts(candidate_retention)
+            retention_rejections += int(kl_ok and not retention_ok)
+            if kl_ok and retention_ok:
                 retained = candidate_retention
                 if retention is not None and hasattr(retention, "set_pressure"):
                     retention.set_pressure(retained)
@@ -462,6 +465,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
         optimizer_steps=steps,
         effective_learning_rate=min(group["lr"] for group in optimizer.param_groups),
         kl_backtracks=rejected,
+        retention_rejections=retention_rejections,
         early_kl_stop=stopped,
         completed_learning_games=int(round(inverse_lengths.sum())),
         mean_episode_decisions=float(len(records) / inverse_lengths.sum()),

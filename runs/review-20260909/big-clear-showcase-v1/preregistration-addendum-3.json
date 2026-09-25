@@ -1,0 +1,9 @@
+{
+ "schema": "drmc-big-clear-preregistration-addendum-v1",
+ "created_at": "2026-09-25T08:40-07:00",
+ "amends": "runs/review-20260909/big-clear-showcase-v1/preregistration-addendum-2.json",
+ "rule": "For turbo and candidate 1: at the first update whose steps the retention max-increase guard refuses at any pace (update KL within its cap), the trainer stops without saving that update (stop_on_retention_rejection). The last accepted update becomes core-guard-hit-uNNNNN.pt (model without optimizer state), registered as bigclear-<run>-guard-uNN (era style:big-combo; parent bigclear-champ-f00100000000 for turbo, champion-retention-mixed-v2 for candidate 1). A free lineage bigclear-<run>-free forks that update's full checkpoint with retention_accept_limit 10 (the guard effectively removed), keeping the hinge loss, its pressure scale (max_anchor_kl_increase 0.03), max_update_kl 0.03 and parent-KL; snapshots every 12.5M frames, parent the guard-hit entrant.",
+ "automation": "tf3090 tmux guard-watch (guard_watch_v1.sh + guard_fork.py) detects the stop, snapshots, forks and launches; mombox tmux guard-pool (guard_pool_v1.sh) registers the guard-hit entrant and watches the free run. Relaunch path tested on the Mac (snapshot loads; fork contract passes; collection starts).",
+ "logging": "per update: retention_kl_update (per-pace retention KL), retention_hinge_active, retention_rejections in losses",
+ "nature": "exploratory showcase lineage, not a controlled test; reported as guard-hit snapshot vs free continuation (pooled Elo with super_human and frame_perfect drill-down, cumulative style)"
+}

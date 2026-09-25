@@ -83,7 +83,7 @@ def save_anchor_bank(path, records, metadata):
 
 class PaceRetention:
     def __init__(self, actor, bank_paths, *, excluded_seeds, paces, max_kl_increase=.03,
-                 coefficient=.1, batch_size=64, pressure_strength=0., hinge=False):
+                 coefficient=.1, batch_size=64, pressure_strength=0., hinge=False, accept_limit=None):
         if (not np.isfinite(max_kl_increase) or max_kl_increase < 0
                 or not np.isfinite(coefficient) or coefficient <= 0 or batch_size < 1):
             raise ValueError("invalid retention budget")
@@ -95,6 +95,8 @@ class PaceRetention:
         # Hinge: penalise only per-pace KL above its starting value (self.baseline), so
         # retention bounds drift without distilling the actor further toward the teachers.
         self.hinge=bool(hinge)
+        # accept_limit overrides only the acceptance guard (the pressure scale keeps max_kl_increase).
+        self.accept_limit=float(max_kl_increase if accept_limit is None else accept_limit)
         self.hinge_counts={}
         self.records,self.identities,self.by_pace=[],{},{}
         excluded=set(map(int,excluded_seeds))
@@ -179,7 +181,7 @@ class PaceRetention:
 
     def accepts(self, measured):
         return set(measured)==set(self.baseline) and all(
-            np.isfinite(measured[p]) and measured[p]<=self.baseline[p]+self.max_kl_increase
+            np.isfinite(measured[p]) and measured[p]<=self.baseline[p]+getattr(self,"accept_limit",self.max_kl_increase)
             for p in self.paces)
 
 
