@@ -3,7 +3,8 @@
 Both copy arm A's PPO config (captured in armA-ppo-v1.base.json) and change only:
 checkpoint (candidate 1: the shipped champion retention-mixed-v2, fresh optimizer;
 candidate 2: arm A f100M, fresh optimizer), output, a shared seed, the big-clear
-start bank at a CONSTANT 0.35 of level-14 seed pairs (replay_share 0.5), the
+start bank at a CONSTANT 0.40 of level-14 seed pairs (replay_share 0.5, rows
+weighted 1/3/6 by target tier T1/T2/T3), lr 1e-5 steered to an update KL of 0.005, the
 raised showiness bonus (per clear min(0.20, 0.07 + 0.007 x (score - 20)), cap
 0.45 per game), 25M-frame snapshots, every checkpoint kept, per-game showiness,
 fill_inference_batches and deferred_reference. Retention and KL guards unchanged.
@@ -22,7 +23,10 @@ PARENTS = {
 }
 ENTRANTS = {'champ': 'champion-retention-mixed-v2', 'armA': 'armA-ppo-v1-f00100000000'}
 BONUS = dict(threshold=20.0, base=0.07, per_point=0.007, event_cap=0.20, game_cap=0.45)
-START_MIX = dict(fraction=0.35, levels=[14], paces=[], replay_share=0.5)
+START_MIX = dict(fraction=0.40, levels=[14], paces=[], replay_share=0.5, tier_weights=[1, 3, 6])
+# Arm A's steps barely move the policy (update KL ~0.0015); start at 1e-5 and steer update KL to 0.005.
+LR = 1e-5
+LR_KL_TARGET = dict(target=0.005, alarm=0.015, min_lr=1e-6, max_lr=3e-5)
 
 
 def main():
@@ -36,7 +40,8 @@ def main():
                  showiness_bonus=BONUS, target_decisions=3_000_000,
                  minimum_decisions_per_pace=base['minimum_decisions_per_pace'], milestone_decisions=[],
                  checkpoint_every_frames=25_000_000, keep_update_checkpoints=True, journal_showiness=True,
-                 fill_inference_batches=True, deferred_reference=True, source_commit=commit)
+                 fill_inference_batches=True, deferred_reference=True, source_commit=commit,
+                 lr=LR, lr_kl_target=LR_KL_TARGET)
         (HERE / f'finetune-{name}.json').write_text(json.dumps(c, indent=1) + '\n')
         print(HERE / f'finetune-{name}.json')
 

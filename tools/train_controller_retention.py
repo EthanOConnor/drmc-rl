@@ -83,6 +83,12 @@ class StartMix:
         if self.replay_share>0:
             require_training_seeds([int(s) for s in self.replay_seed if s>0],config=None,what='start_mix replay seeds')
         self.replayable=int((self.replay_seed>0).sum())
+        # Optional per-tier row weights (bank ``target_tier`` 1..3), e.g. [1, 3, 6] to favour T2/T3 setups.
+        self.row_p=None
+        if spec.get('tier_weights'):
+            tiers=np.asarray(data['target_tier'],dtype=np.int64)
+            w=np.asarray(spec['tier_weights'],dtype=np.float64)[np.clip(tiers-1,0,len(spec['tier_weights'])-1)]
+            self.row_p=w/w.sum()
 
     def share(self, frames_since_start):
         if self.half_life is None:
@@ -97,7 +103,8 @@ class StartMix:
         if share<=0 or (self.paces and match['pace'] not in self.paces) or match['level'] not in self.levels:
             return None
         rng=np.random.default_rng([config['seed'],cycle,index,0x5E])
-        rows=[int(rng.integers(len(self.bank))) if rng.random()<share else None for _ in range(pairs)]
+        rows=[(int(rng.integers(len(self.bank))) if self.row_p is None else int(rng.choice(len(self.bank),p=self.row_p)))
+              if rng.random()<share else None for _ in range(pairs)]
         if all(r is None for r in rows): return None
         replay=np.random.default_rng([config['seed'],cycle,index,0x5F])
         seeds=[int(self.replay_seed[r]) if r is not None and self.replay_seed[r]>0 and replay.random()<self.replay_share
@@ -296,9 +303,19 @@ def main():
                         selected,games,update=update,pace=match['pace'],level=match['level'])
             tick=time.monotonic()
             revised=config['arm']=='mixed_retention'
-            losses=update_adapter(actor,optimizer,records,config,config['seed']+update,activity=activity,
+            kl_lr=config.get('lr_kl_target')
+            if kl_lr and 'adaptive_lr' not in progress: progress['adaptive_lr']=config['lr']
+            losses=update_adapter(actor,optimizer,records,dict(config,lr=progress['adaptive_lr']) if kl_lr else config,
+                config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
             progress['optimizer_steps']+=losses['optimizer_steps']
+            if kl_lr:
+                # KL-target step size (needs reset_update_lr): move lr toward the target update KL,
+                # at most x1.5 or x0.5 per update; halve on a KL above the alarm level.
+                kl=float(losses.get('update_kl',0.)); lr=progress['adaptive_lr']
+                factor=0.5 if kl>kl_lr.get('alarm',0.015) else float(np.clip((kl_lr['target']/max(kl,1e-6))**0.5,0.5,1.5))
+                progress['adaptive_lr']=float(np.clip(lr*factor,kl_lr.get('min_lr',1e-6),kl_lr.get('max_lr',3e-5)))
+                progress['adaptive_lr_trace']=(progress.get('adaptive_lr_trace',[])+[[update,lr,kl]])[-200:]
             progress['consecutive_stalled_updates']=(progress['consecutive_stalled_updates']+1
                 if losses['optimizer_steps']==0 else 0)
             breakdown['optimizer_seconds']=time.monotonic()-tick
@@ -323,7 +340,9 @@ def main():
                                     +sum('start_seed_replay' in r for r in games))
             if bonus is not None:
                 total=Counter(progress.get('showiness_bonus_totals',{})); total.update(bonus_stats)
-                progress.update(showiness_bonus_update=dict(bonus_stats),showiness_bonus_totals=dict(total))
+                progress.update(showiness_bonus_update=dict(bonus_stats,
+                                    fire_per_100_decisions=round(100*bonus_stats['events']/max(1,bonus_stats['decisions']),4)),
+                                showiness_bonus_totals=dict(total))
             elapsed=time.monotonic()-started
             progress.update(updates=update,games=progress['games']+len(games),
                 frames=progress['frames']+sum(r['frames'] for r in games),decisions=progress['decisions']+len(records),
@@ -352,7 +371,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):
