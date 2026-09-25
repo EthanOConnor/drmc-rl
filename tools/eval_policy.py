@@ -66,9 +66,15 @@ def _build_net_from_cfg(cfg: Dict[str, Any], in_channels: int, device: str):
     public_schema = (
         g("aux_spec", "none") if g("aux_spec", "none") in PUBLIC_CONTEXT_DIMS else None
     )
-    if public_schema and architecture != "g5":
-        raise ValueError("public_pair_context_v3 requires its G5 architecture contract")
-    if architecture == "g5":
+    if public_schema and architecture not in ("g5", "afterstate"):
+        raise ValueError("public_pair_context_v3 requires its G5 or afterstate architecture contract")
+    if architecture == "afterstate":
+        from drmc_rl.models.policy.afterstate_core import build_afterstate_core
+
+        if not public_schema:
+            raise ValueError("the afterstate core is defined only on a public context schema")
+        net = build_afterstate_core(sp, in_channels, aux_dim).to(device)
+    elif architecture == "g5":
         from drmc_rl.models.policy.candidate_policy_g5 import G5CandidatePlacementPolicyNet
 
         net = G5CandidatePlacementPolicyNet(
