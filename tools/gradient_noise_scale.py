@@ -87,7 +87,13 @@ def load_collection(replay_dir, update, paces, natural):
     present = {r["pace"] for r in records}
     if not records or present != set(paces):
         raise FileNotFoundError(f"update {update} replay incomplete: {sorted(present)}")
-    return records, {p: natural[update, p] for p in paces}
+    completed = {p: natural[update, p] for p in paces}
+    if not all(completed.values()):
+        # An interrupted update has replay but no journal rows. Natural games with
+        # zero learner decisions are then uncounted (they are rare; see report).
+        completed = Counter(r["game"][0] for r in {r["game"]: r for r in records}.values())
+        completed = {p: completed[p] for p in paces}
+    return records, completed
 
 
 # ------------------------------------------------------------------------ measure
@@ -212,8 +218,8 @@ def measure(args):
     game_sketch = []     # per game: [4, d]
     chunk_out = []
     collections = []
-    for c in range(args.collections):
-        u = update + 1 + c
+    targets = args.updates or [update + 1 + c for c in range(args.collections)]
+    for c, u in enumerate(targets):
         try:
             records, completed = load_collection(run / "public-replay", u, config["paces"], natural)
         except FileNotFoundError as error:
@@ -244,7 +250,7 @@ def measure(args):
                 _, _, dd, ch = row_terms(records[start:start + 512])
                 errors.append(float((ch - dd["old_logprob"]).abs().max()))
             info["max_logprob_shift"] = max(errors)
-            if c == 0 and info["max_logprob_shift"] > 1e-3:
+            if u == update + 1 and info["max_logprob_shift"] > 1e-3:
                 raise RuntimeError("checkpoint is not the behavior policy of its next collection")
 
         # Game pass: exact collection gradient and per-game sketches.
@@ -604,6 +610,7 @@ def main():
     m.add_argument("--out", required=True)
     m.add_argument("--log", help="trainer stdout log (per-update JSON) for record validation")
     m.add_argument("--collections", type=int, default=3)
+    m.add_argument("--updates", type=int, nargs="+", help="explicit collection updates (default u+1..u+C)")
     m.add_argument("--permutations", type=int, default=2)
     m.add_argument("--chunk", type=int, default=128)
     m.add_argument("--sketch-dim", type=int, default=2 ** 15)
