@@ -50,7 +50,7 @@ class Knob:
     version: int
     schema: str                       # the model-spec schema this knob accepts
     tier_bar: float                   # default immediate-clear override bar (inf: none)
-    bias: Callable                    # (model, root_field, pill, actions, mask, tier_bar) -> centered bias [K]
+    bias: Callable                    # (model, root_field, pill, actions, mask, tier_bar[, decision]) -> centered bias [K]
     summary: str
     default_model: str = ""           # bundled model file used when an entrant names none
 
@@ -63,14 +63,14 @@ class Knob:
         return f"knob:{self.key}"
 
 
-def _showy_bias(model, root_field, pill, actions, mask, tier_bar):
+def _showy_bias(model, root_field, pill, actions, mask, tier_bar, decision=None):
     from drmc_rl.style.showy_knob import showy_bias
-    return showy_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar)
+    return showy_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar, decision=decision)
 
 
-def _quad_bias(model, root_field, pill, actions, mask, tier_bar):
+def _quad_bias(model, root_field, pill, actions, mask, tier_bar, decision=None):
     from drmc_rl.style.showy_knob import quad_bias
-    return quad_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar)
+    return quad_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar, decision=decision)
 
 
 REGISTRY: dict[str, Knob] = {k.key: k for k in (
@@ -172,13 +172,19 @@ def suffix(knobs) -> str:
 
 
 def total_bias(knobs, root_field, pill, actions, mask, *, models=None) -> np.ndarray:
-    """sum_i lambda_i * bias_i for one decision (each bias centered over legal candidates)."""
+    """sum_i lambda_i * bias_i for one decision (each bias centered over legal candidates).
+
+    The knobs share one ``Decision``: candidate afterstates and features are computed once
+    per decision (natively when ``drmc_rl.style.native`` is built), not once per knob.
+    """
+    from drmc_rl.style.showy_knob import Decision
     out = np.zeros(np.asarray(actions).shape, np.float32)
+    decision = Decision(root_field, pill, actions, mask)
     for i, entry in enumerate(active(knobs)):
         knob = REGISTRY[f"{entry['id']}@{entry['version']}"]
         model = models[i] if models is not None else load_model(entry)
         bar = float(entry.get("tier_bar", knob.tier_bar))
-        out += np.float32(entry["lambda"]) * knob.bias(model, root_field, pill, actions, mask, bar).astype(np.float32)
+        out += np.float32(entry["lambda"]) * knob.bias(model, root_field, pill, actions, mask, bar, decision).astype(np.float32)
     return out
 
 
