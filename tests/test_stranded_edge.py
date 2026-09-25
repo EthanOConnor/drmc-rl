@@ -86,7 +86,7 @@ def test_start_mix_leaves_the_natural_schedule_unchanged(tmp_path):
             continue
         assert len(starts) == len(jobs)
         assert all(starts[2 * i][0] == starts[2 * i + 1][0] for i in range(len(jobs) // 2))  # whole pairs
-        assert 0 < sum(r is not None for r, _ in starts) < len(starts)
+        assert 0 < sum(r is not None for r, *_ in starts) < len(starts)
 
 
 def test_frame_pool_starts_both_bottles_from_a_checkpoint():
@@ -138,7 +138,7 @@ def test_decaying_share_controls_how_many_pairs_start_from_the_bank(tmp_path):
     counts = []
     for share in (0.4, 0.1, 0.0):
         starts = [mix.starts(config, c, 0, match, 64, share) for c in range(40)]
-        counts.append(sum(sum(r is not None for r, _ in s) // 2 for s in starts if s is not None))
+        counts.append(sum(sum(r is not None for r, *_ in s) // 2 for s in starts if s is not None))
     assert counts[0] > 3 * counts[1] > 0 and counts[2] == 0
     assert 0.3 < counts[0] / (40 * 64) < 0.5
 

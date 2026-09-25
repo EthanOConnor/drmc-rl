@@ -235,6 +235,45 @@ fine-tune's parent: the pooled 95% lower bound must be at least 0.45. Report
 the panel against the champion too. Benchmark results are diagnostic. They
 never replace the panel or tournament outcome evidence.
 
+## Big-clear setups (style lever)
+
+Trains on human positions that led up to big, showy clears, as a skill test
+and a "personality" lever. `drmc_rl/eval/big_clear.py` owns the definition:
+exact clear features for one placement (cells, cascade rounds, lines per
+round, line lengths, viruses, rows spanned, crosses, colors, garbage) and a
+showiness score that is zero for a plain 4-line. Ordinary 2-line/2-garbage
+combos score 10-13. The tiers are T1 >= 20, T2 >= 30 and T3 >= 42, which are
+the top 2.4%, 0.44% and 0.035% of the 20.2M clears in human play. Garbage
+counts only as a small bonus at 3-4 pieces.
+
+1. Mine: `python -m tools.mine_big_clears mine --remote HOST:RELEASE --out DIR`
+   streams one month at a time and resolves every placement. It keeps each
+   clear with score >= 10 plus drmariostats `big_clear` rows, together with
+   its context and path facts, then runs `... summarize`. The games-table
+   `seed` is byte-swapped relative to the arena seed, and corpus placement k
+   falls `reserve[k + 1]`. `clean_run` counts the preceding placements that
+   settled exactly into the next bottle, with no garbage.
+2. Bank: `python -m tools.build_big_clear_bank select | extract | write`.
+   `select` samples targets with player, level, speed and type balance, and
+   holds out whole players and games. `extract` rebuilds starts 3/6/10/20
+   placements back with `CorpusGame` and replays the human path exactly.
+   `write` emits StartBank rows, both real (against the settled causal
+   opponent) and mirror. Each row also stores the source `seed`. A reserve
+   seed is never stored for training rows.
+3. Curriculum: `start_mix.replay_share` replays a row's source seed
+   (training-pool seeds only), so the human pill stream follows. The native
+   stream is verified. `showiness_bonus` adds a capped, event-based bonus to
+   the return-to-go (`drmc_rl/training/showiness.py`). `journal_showiness`
+   logs per-game tiers for both sides. `keep_update_checkpoints` keeps every
+   update checkpoint.
+4. Evaluate: `tools.eval_big_clear` runs a solo benchmark from held-out
+   setups and matched controls, on replay and fresh seeds. It also has a
+   `natural` style panel against the parent. `tools.big_clear_pool_metrics`
+   measures rates in rating-pool traces.
+
+The runs, queue, pool hook and pre-registration are in
+`runs/review-20260909/big-clear-v1/`.
+
 ## Authority and supported entrypoints
 
 Run this before any work:

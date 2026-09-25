@@ -25,6 +25,7 @@ from drmc_rl.program.seed_reserve import require_training_seeds, training_seed_p
 from drmc_rl.training.controller_retention import PaceRetention
 from drmc_rl.training.episodic_objective import objective_contract
 from drmc_rl.training.public_league import PublicOpponentPool
+from drmc_rl.training.showiness import apply_bonus, side_summary, validate_spec
 from tools.train_pace_strategy import (
     TrainingActivity, add_game_totals, restore_game_journal, terminal_samples, update_adapter,
 )
@@ -46,8 +47,17 @@ class StartMix:
     run has simulated since the mix began: ``share0 * 0.5 ** (t / half_life_frames)``,
     never below ``floor``, and exactly 0 once it falls under ``cutoff``
     (default 0.01) with a zero floor, leaving only natural occurrences.
+
+    ``replay_share`` (default 0): a bank carrying a per-row ``seed`` (the source
+    game's arena seed, -1 when unknown) can replay that seed for a mixed pair
+    with this probability, so the pills after the preview are the source
+    game's own (the row's ``pill_counter`` is the source reserve index). Only
+    seeds in the run's training pool (reserve, holdout and anchor seeds
+    excluded) are ever replayed; other rows always use the pair's pool seed.
+    Replay decisions use a separate random stream, so a bank without seeds
+    or ``replay_share`` 0 draws exactly as before.
     """
-    def __init__(self, spec):
+    def __init__(self, spec, available=None):
         from drmc_rl.training.envs.start_bank import StartBank
         self.spec=dict(spec); self.bank=StartBank(spec['bank'])
         if ('fraction' in spec)==('share0' in spec):
@@ -63,6 +73,16 @@ class StartMix:
         self.sha256=hashlib.sha256(Path(spec['bank']).read_bytes()).hexdigest()
         if spec.get('bank_sha256') not in (None,self.sha256):
             raise ValueError('start_mix bank bytes differ from the declared bank_sha256')
+        self.replay_share=float(spec.get('replay_share',0.))
+        if not 0<=self.replay_share<=1:
+            raise ValueError('start_mix replay_share must lie in [0, 1]')
+        data=np.load(spec['bank'],allow_pickle=False)
+        seeds=np.asarray(data['seed'],dtype=np.int64) if 'seed' in data.files else np.full(len(self.bank),-1)
+        pool=set(int(s) for s in available) if available is not None else set()
+        self.replay_seed=np.where(np.isin(seeds,list(pool)),seeds,-1) if self.replay_share>0 else np.full(len(seeds),-1)
+        if self.replay_share>0:
+            require_training_seeds([int(s) for s in self.replay_seed if s>0],config=None,what='start_mix replay seeds')
+        self.replayable=int((self.replay_seed>0).sum())
 
     def share(self, frames_since_start):
         if self.half_life is None:
@@ -79,7 +99,10 @@ class StartMix:
         rng=np.random.default_rng([config['seed'],cycle,index,0x5E])
         rows=[int(rng.integers(len(self.bank))) if rng.random()<share else None for _ in range(pairs)]
         if all(r is None for r in rows): return None
-        return [(r,None if r is None else self.bank.spec_kwargs(r)) for r in rows for _ in (0,1)]
+        replay=np.random.default_rng([config['seed'],cycle,index,0x5F])
+        seeds=[int(self.replay_seed[r]) if r is not None and self.replay_seed[r]>0 and replay.random()<self.replay_share
+               else None for r in rows]
+        return [(r,None if r is None else self.bank.spec_kwargs(r),s) for r,s in zip(rows,seeds) for _ in (0,1)]
 
 
 # Keys a fork may change relative to the run it branches from.
@@ -110,6 +133,9 @@ def collection_schedule(config, update, available, opponents, start_mix=None, sh
         jobs=[(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
         match=dict(id=f'train-{update}-{pace}',a='learner',b=opponent,games=count,pace=pace,level=level)
         starts=None if start_mix is None else start_mix.starts(config,cycle,index,match,len(seeds),share)
+        if starts is not None:
+            # A replayed pair plays its bank row's source seed on both sides.
+            jobs=[(seed if s[2] is None else s[2],side,i) for (seed,side,i),s in zip(jobs,starts)]
         result.append((match,jobs,starts))
     return result
 
@@ -147,7 +173,8 @@ def main():
         pressure_strength=config.get('retention_pressure_strength',0.))
     require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
     available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
-    start_mix=StartMix(config['start_mix']) if config.get('start_mix') else None
+    start_mix=StartMix(config['start_mix'],available) if config.get('start_mix') else None
+    bonus=validate_spec(config['showiness_bonus']) if config.get('showiness_bonus') else None
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
                     execution_profiles={p:resolve_pace(p).to_dict() for p in config['paces']})
@@ -221,7 +248,7 @@ def main():
             if target_met(progress,config): break
             share=None if start_mix is None else start_mix.share(progress['frames']-progress['start_mix_origin_frames'])
             started=time.monotonic(); schedules=collection_schedule(config,update,available,opponents,start_mix,share)
-            records=[]; games=[]; shards=[]; natural=Counter(); breakdown=defaultdict(float)
+            records=[]; games=[]; shards=[]; natural=Counter(); breakdown=defaultdict(float); bonus_stats=Counter()
             progress.update(current_pace='mixed' if len(schedules)>1 else schedules[0][0]['pace'],
                             collecting_update=update,collecting_target=sum(m['games'] for m,_,_ in schedules),
                             collecting_games=0,phase='collecting',activity=None,updated_at=datetime.now(UTC).isoformat())
@@ -240,15 +267,21 @@ def main():
                     metrics={}
                     part,elapsed=run_event_batch(runtime,match,jobs[start:start+chunk],None,planner,None,
                         policies={'learner':actor,match['b']:opponent},activity=collecting,metrics=metrics,
-                        starts=None if starts is None else [k for _,k in starts[start:start+chunk]])
+                        starts=None if starts is None else [s[1] for s in starts[start:start+chunk]])
                     batch.extend(part); breakdown['rollout_seconds']+=elapsed
                     for k,v in metrics.items(): breakdown[k]+=v
                 selected=terminal_samples(batch)
+                if bonus is not None:
+                    for k,v in apply_bonus(batch,selected,bonus).items(): bonus_stats[k]+=v
                 for r in selected:
                     r.update(game_id=r['game_id']+offset,pace=match['pace'])
                 rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b'],
-                           **({} if starts is None or starts[j][0] is None else {'start_row':starts[j][0]}))
-                      for j,(r,_,_) in enumerate(batch)]
+                           **({} if starts is None or starts[j][0] is None else {'start_row':starts[j][0]}),
+                           **({'start_seed_replay':True} if starts is not None and starts[j][2] is not None else {}),
+                           **({'showiness':{'learner':side_summary(moves,jobs[j][1]),
+                                            'opponent':side_summary(moves,1-jobs[j][1])}}
+                              if config.get('journal_showiness') else {}))
+                      for j,(r,moves,_) in enumerate(batch)]
                 natural[match['pace']]+=sum(r['reason']!='timeout' for r in rows)
                 records.extend(selected); games.extend(rows); shards.append((match,selected))
                 progress.update(collecting_games=len(games),collecting_frames=sum(r['frames'] for r in games),collecting_decisions=len(records))
@@ -276,7 +309,12 @@ def main():
             if start_mix is not None:
                 mixed=sum('start_row' in r for r in games)
                 progress.update(start_mix_share=share,start_mix_games=progress.get('start_mix_games',0)+mixed,
-                                start_mix_update_games=mixed)
+                                start_mix_update_games=mixed,
+                                start_mix_replay_games=progress.get('start_mix_replay_games',0)
+                                    +sum('start_seed_replay' in r for r in games))
+            if bonus is not None:
+                total=Counter(progress.get('showiness_bonus_totals',{})); total.update(bonus_stats)
+                progress.update(showiness_bonus_update=dict(bonus_stats),showiness_bonus_totals=dict(total))
             elapsed=time.monotonic()-started
             progress.update(updates=update,games=progress['games']+len(games),
                 frames=progress['frames']+sum(r['frames'] for r in games),decisions=progress['decisions']+len(records),
@@ -289,8 +327,9 @@ def main():
             path=output/f'core-u{update:05d}.pt'; progress['checkpoints'].append(path.name)
             actor.save(path,update=update,optimizer=optimizer.state_dict(),sampling_rng=actor.rng.get_state(),
                        progress=progress,training_config=config)
-            for name in progress['checkpoints'][:-2]: (output/name).unlink(missing_ok=True)
-            progress['checkpoints']=progress['checkpoints'][-2:]
+            if not config.get('keep_update_checkpoints'):
+                for name in progress['checkpoints'][:-2]: (output/name).unlink(missing_ok=True)
+                progress['checkpoints']=progress['checkpoints'][-2:]
             every=config.get('checkpoint_every_frames')
             if every and progress['frames']>=every and progress['frames']//every*every>progress.get('fork',{}).get('frames',-1):
                 # Stop-rule snapshots: one per crossed frame multiple (an update is far shorter).
@@ -304,7 +343,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','showiness_bonus_update') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):

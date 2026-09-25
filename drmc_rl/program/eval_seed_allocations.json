@@ -24,6 +24,30 @@
    "status_at_creation": {
     "trained_lineage": 512
    }
+  },
+  {
+   "study": "big-clear-benchmark-v1",
+   "purpose": "Big-clear setup benchmark: one fresh pill-stream seed per bank group (held-out human T2+ setup at lookbacks 6 and 10 plus its matched no-big-clear control), shared by every candidate and pace; the replay condition uses each row's own source-game seed",
+   "start": 608,
+   "count": 139,
+   "created_at": "2026-09-25T04:20:29+00:00",
+   "reserve_sha256": "9a60df54a10719cb0624e57b0345ca59d834398123e08679a4c7187ac56a1635",
+   "seeds_sha256": "617f4acc999b3ee912fc824bf182441d4d8a8d70c3e68e4676b36d1d2e586d82",
+   "status_at_creation": {
+    "trained_lineage": 139
+   }
+  },
+  {
+   "study": "big-clear-natural-v1",
+   "purpose": "Big-clear natural style panel: level-14 natural games from the start, candidate vs the parent, side-swapped seed pairs, full move traces for big-clear rate and size",
+   "start": 747,
+   "count": 128,
+   "created_at": "2026-09-25T04:20:30+00:00",
+   "reserve_sha256": "9a60df54a10719cb0624e57b0345ca59d834398123e08679a4c7187ac56a1635",
+   "seeds_sha256": "b7545e19b0bbc35487be34b1f3f425687f171b8597fa9fe7312c6bc80f2c4dcc",
+   "status_at_creation": {
+    "trained_lineage": 128
+   }
   }
  ]
 }
