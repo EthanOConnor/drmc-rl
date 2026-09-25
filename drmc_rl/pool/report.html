@@ -168,8 +168,11 @@ const STYLE_COLS = [
   ["games", "Games", r => num(r.games), "n"],
   ["combos", "Combos", r => f1(r.combos), "n"], ["chains", "Chains", r => f1(r.chains), "n"],
   ["lines_per_clear", "Lines/clear", r => r.lines_per_clear ?? "", "n"],
-  ["garbage", "Garbage", r => f1(r.garbage), "n"],
+  ["garbage", '<span title="Garbage pieces sent per 100 placements (min(lines, 4) per attack of 2+ lines)">Garbage</span>', r => f1(r.garbage), "n"],
   ["share34", "3–4 share", r => r.share34 == null ? "" : Math.round(100 * r.share34) + "%", "n"],
+  ["quads", '<span title="Attacks at the 4-piece garbage cap (4+ matched lines in one resolution) per 100 placements">Quads</span>', r => r.quads == null ? "" : f2(r.quads), "n"],
+  ["quad_share", '<span title="Share of attacks (2+ lines) that reach the 4-piece cap">Quad share</span>', r => r.quad_share == null ? "" : Math.round(100 * r.quad_share) + "%", "n"],
+  ["wasted", '<span title="Matched lines beyond the 4-piece cap per 100 placements (the engine drops the excess)">Wasted</span>', r => r.wasted == null ? "" : f2(r.wasted), "n"],
   ["t1", '<span title="Clears scoring >= 20 (the original T1 bar) per 100 placements">T1 (≥20, old)</span>', r => f2(r.t1), "n"],
   ["t1p", '<span title="Cumulative: clears scoring >= 27 per 100 placements">T1+ (≥27)</span>', r => f3(r.t1p), "n"],
   ["t2", '<span title="Cumulative: clears scoring >= 30 per 100 placements">T2+ (≥30)</span>', r => f3(r.t2), "n"],
@@ -203,7 +206,8 @@ function renderStyle(st) {
       (st.human_rows || []).map(h => `<tr class="sub">${STYLE_COLS.map(c => `<td class="${c[3]}">${
         c[0] === "label" ? `<span title="Human reference, 14-Hi-rated corpus, per 100 placements; Horiz. clears = share of clears containing at least one horizontal line of 4+">${esc(h.label)} <small>(human reference)</small></span>`
         : c[0] === "horizontal" ? `<span title="Share of clears containing at least one horizontal line of 4+">${Math.round(1000 * h.horizontal) / 10}%</span>`
-        : ["t1", "t1p", "t2", "t3"].includes(c[0]) ? h[c[0]] : ""}</td>`).join("")}</tr>`).join("");
+        : ["t1", "t1p", "t2", "t3", "quads", "wasted"].includes(c[0]) ? (h[c[0]] ?? "")
+        : c[0] === "quad_share" && h.quad_share != null ? Math.round(100 * h.quad_share) + "%" : ""}</td>`).join("")}</tr>`).join("");
     const paceNames = Object.keys(s.paces);
     const byPace = paceNames.length > 1 ? `<details data-key="style-pace-${esc(s.condition_set)}"><summary>By pace <span class="muted">(combos / T1+ per 100)</span></summary><div class="scroll"><table><thead><tr><th>Entrant</th>${paceNames.map(p => `<th class="n">${esc(p)}</th>`).join("")}</tr></thead><tbody>` +
       rows.map(r => `<tr><td class="e">${esc(r.label)}</td>${paceNames.map(p => { const m = s.paces[p][r.entrant]; return `<td class="n">${m ? `${f1(m.combos)} / ${f2(m.t1)}` : '<span class="muted">·</span>'}</td>`; }).join("")}</tr>`).join("") +

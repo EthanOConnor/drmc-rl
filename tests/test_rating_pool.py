@@ -1120,3 +1120,13 @@ def test_equal_priority_jobs_share_in_proportion_to_targets_even_when_one_is_far
         submit(c, lease, dict(anchor=0, a=0, b=0))
     # Leases split about 1:2 by target, not all to the job that is further behind.
     assert 8 <= kinds.count("old") <= 12 and 18 <= kinds.count("new") <= 22
+
+
+def test_attack_efficiency_counts_quads_and_wasted_lines_at_the_engine_cap():
+    from drmc_rl.pool.style import metrics, add
+    old = dict(placements=100, clears=30, lines=40, attacks=10, t1=0)                 # pre-V4 game
+    new = dict(placements=100, placements4=100, clears=30, lines=50, attacks=12, attacks4=12, quads=3, wasted=2)
+    m = metrics(add(add({}, old), new))
+    assert m["quads"] == 3.0 and m["wasted"] == 2.0 and m["quad_share"] == 0.25      # over V4 games only
+    from drmc_rl.pool.report import PAGE
+    assert "Quad share" in PAGE and "Wasted" in PAGE
