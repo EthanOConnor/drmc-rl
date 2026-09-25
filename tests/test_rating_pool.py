@@ -1050,3 +1050,20 @@ def test_knob_entrants_register_with_derived_requires_and_lease_only_to_capable_
     assert knobbed in lease_for(base + ["knob:showy-t2@1", "knob:showy-hcombo@1"])
     report = build_report(c)
     assert next(e for e in report["entrants"] if e["id"] == knobbed)["knobs"] == ["showy-t2@1:1.5", "showy-hcombo@1:0.5"]
+
+
+def test_watch_run_survives_a_coordinator_outage(tmp_path, monkeypatch):
+    from tools import rating_pool
+    calls = {"n": 0}
+
+    class Flaky:
+        def get(self, path, **q):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("connection refused (coordinator restarting)")
+            raise KeyboardInterrupt        # end the test after the second scan
+    args = SimpleNamespace(dir=str(tmp_path), step_regex=r"f(\d+)", once=False, poll=0, auto_conclude=False,
+                           panel_set=None, final_marker=None, pattern="*.pt", exclude=None)
+    with pytest.raises(KeyboardInterrupt):
+        rating_pool.cmd_watch_run(args, Flaky())
+    assert calls["n"] == 2                  # the outage was logged and the watch went on

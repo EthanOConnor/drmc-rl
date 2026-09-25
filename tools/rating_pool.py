@@ -642,7 +642,23 @@ def cmd_watch_run(args, client):
     step_re = re.compile(args.step_regex)
     configured = False
     while True:
-        registered_now = False
+        try:
+            if _watch_once(args, client, directory, seen, step_re, configured):
+                return
+            configured = configured or bool(args.auto_conclude and args.panel_set)
+        except Exception as error:     # a coordinator restart or network loss must not end the watch
+            if args.once:
+                raise
+            print(json.dumps(dict(watch_error=f"{type(error).__name__}: {error}"[:300])), flush=True)
+        if args.once:
+            return
+        time.sleep(args.poll)
+
+
+def _watch_once(args, client, directory, seen, step_re, configured):
+    """One scan; True when the run's final marker was handled (the watch ends)."""
+    registered_now = False
+    if True:
         registry = client.get("/api/v1/pool/registry")
         present = {e["checkpoint"]["sha256"] for e in registry["entrants"].values()}
         for path in sorted(directory.glob(args.pattern)):
@@ -672,14 +688,11 @@ def cmd_watch_run(args, client):
             client.register(dict(type="lineage", run=args.run, stop_rule=dict(
                 set=args.panel_set, min_games=args.panel_games, patience=2, step_every=args.panel_step_every,
                 auto=True), by=f"watch-run:{args.run}"))
-            configured = True
         if args.final_marker and not registered_now and list(directory.glob(args.final_marker)):
             print(json.dumps(client.register(dict(type="conclude", run=args.run,
                                                   reason=f"final marker {args.final_marker} present"))), flush=True)
-            return
-        if args.once:
-            return
-        time.sleep(args.poll)
+            return True
+        return False
 
 
 # ---------------------------------------------------------------------------- reports
