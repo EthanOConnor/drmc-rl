@@ -27,18 +27,22 @@ KEYS_V3 = ("clears3", "hclears")
 # attack at the cap (4+ lines); *wasted* counts matched lines beyond 4 in one resolution. Attacks
 # that accumulate across two resolutions before the opponent's release are not modelled (rare).
 KEYS_V4 = ("placements4", "attacks4", "quads", "wasted")
+# Horizontal-in-combo (corpus definition): a clear with at least one horizontal line of 4+ in a
+# resolution that clears 2 or more lines in total. Counted since it was added.
+KEYS_V5 = ("placements5", "hcombos")
 
 # Human reference rows, per 100 placements (14-Hi-rated corpus analysis): old T1 (>=20),
 # T1+ (>=27), T2+ (>=30), T3+ (>=42), share of clears containing a horizontal line (4+).
+# Horizontal-in-combo references per 100 placements: >2000 6.23, top 5 6.78, all 4.72.
 # Attack references (knob agent, 14-Hi; "All humans" attack values from 2026-05..06): attacks, garbage,
 # quads and waste per 100 placements, quad share.
 HUMAN_ROWS = (
     dict(label="Humans >2000", t1=1.25, t1p=0.442, t2=0.254, t3=0.022, horizontal=0.288,
-         attacks=18.6, garbage=41.4, quads=0.738, quad_share=0.040, wasted=0.186),
+         attacks=18.6, garbage=41.4, quads=0.738, quad_share=0.040, wasted=0.186, hcombo=6.23),
     dict(label="Top 5 by 14-Hi", t1=1.49, t1p=0.557, t2=0.329, t3=0.032, horizontal=0.306,
-         attacks=19.2, garbage=43.3, quads=0.908, quad_share=0.047, wasted=0.259),
+         attacks=19.2, garbage=43.3, quads=0.908, quad_share=0.047, wasted=0.259, hcombo=6.78),
     dict(label="All humans", t1=0.855, t1p=0.279, t2=0.156, t3=0.013, horizontal=0.241,
-         attacks=16.2, garbage=35.6, quads=0.531, quad_share=0.033, wasted=0.119),
+         attacks=16.2, garbage=35.6, quads=0.531, quad_share=0.033, wasted=0.119, hcombo=4.72),
 )
 
 # Human reference rates from the full Fightcade corpus (drmc-rl-bigclear-data
@@ -51,7 +55,7 @@ def side_style(moves, physical):
     from drmc_rl.eval import big_clear as bc
     t1p, t2, t3 = (bar for _, bar in bc.TIERS)          # cumulative T1+ (27), T2+ (30), T3+ (42)
     t1 = bc.LEGACY_T1                                    # the original T1 bar (20), kept as "t1"
-    out = dict.fromkeys(KEYS + KEYS_V2 + KEYS_V3 + KEYS_V4, 0)
+    out = dict.fromkeys(KEYS + KEYS_V2 + KEYS_V3 + KEYS_V4 + KEYS_V5, 0)
     out["t1_score"] = 0.0
     best = None
     for move in moves:
@@ -60,6 +64,7 @@ def side_style(moves, physical):
         out["placements"] += 1
         out["placements2"] += 1
         out["placements4"] += 1
+        out["placements5"] += 1
         try:
             f = bc.placement_features(bytes(move["board"]), move["pill"], int(move["placement"]["action"]))
         except (ValueError, KeyError, TypeError):
@@ -81,6 +86,7 @@ def side_style(moves, physical):
         out["attacks4"] += int(f.lines >= 2)
         out["quads"] += int(f.lines >= 4)
         out["wasted"] += max(0, f.lines - 4)
+        out["hcombos"] += int(getattr(f, "horizontal_lines", 0) > 0 and f.lines >= 2)
         out["attacks34"] += int(f.garbage >= 3)
         out["t1"] += int(score >= t1)
         out["t2"] += int(score >= t2)
@@ -103,7 +109,7 @@ def game_style(row, moves):
 
 
 def add(total, counters):
-    for k in KEYS + KEYS_V2 + KEYS_V3 + KEYS_V4:
+    for k in KEYS + KEYS_V2 + KEYS_V3 + KEYS_V4 + KEYS_V5:
         total[k] = total.get(k, 0) + counters.get(k, 0)
     total["games"] = total.get("games", 0) + 1
     best = counters.get("best")
@@ -131,5 +137,6 @@ def metrics(total, *, min_games=64):
                 wasted=round(100.0 * total["wasted"] / total["placements4"], 3) if total.get("placements4") else None,
                 quad_share=round(total["quads"] / total["attacks4"], 3) if total.get("attacks4") else None,
                 attacks=round(100.0 * total["attacks4"] / total["placements4"], 3) if total.get("placements4") else None,
+                hcombo=round(100.0 * total["hcombos"] / total["placements5"], 3) if total.get("placements5") else None,
                 t1_mean=round(total["t1_score"] / total["t1"], 1) if total.get("t1") else None,
                 best=total.get("best"))

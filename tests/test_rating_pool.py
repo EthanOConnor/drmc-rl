@@ -1133,3 +1133,26 @@ def test_attack_efficiency_counts_quads_and_wasted_lines_at_the_engine_cap():
     assert HUMAN_ROWS[0]["quads"] == 0.738 and HUMAN_ROWS[2]["quad_share"] == 0.033
     from drmc_rl.pool.report import PAGE
     assert "Quad share" in PAGE and "Wasted" in PAGE
+
+
+def test_horizontal_in_combo_counts_horizontal_clears_in_multi_line_resolutions():
+    import numpy as np
+    from drmc_rl.pool.style import HUMAN_ROWS, metrics, side_style
+
+    def bottle(cells):
+        g = np.full(128, 0xFF, np.uint8)
+        for (r, c), tile in cells.items():
+            g[r * 8 + c] = tile
+        return list(bytes(g))
+    single_h = dict(board=bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81}), pill=(0, 2),
+                    placement=dict(action=15 * 8 + 3), side=0)                   # horizontal, 1 line: not a combo
+    cross = dict(board=bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81, (12, 3): 0x81, (13, 3): 0x81,
+                               (14, 3): 0x81}), pill=(0, 2), placement=dict(action=15 * 8 + 3), side=0)  # H + V, 2 lines
+    vertical = dict(board=bottle({(15, 0): 0x80, (14, 0): 0x81, (13, 0): 0x81, (12, 0): 0x81, (9, 0): 0x80,
+                                  (8, 0): 0x80}), pill=(1, 0), placement=dict(action=128 + 10 * 8), side=0)  # 2 vertical lines
+    c = side_style([single_h, cross, vertical], 0)
+    assert (c["placements5"], c["hcombos"]) == (3, 1)
+    assert metrics(dict(c, games=1))["hcombo"] == round(100 / 3, 3)
+    assert [r["hcombo"] for r in HUMAN_ROWS] == [6.23, 6.78, 4.72]
+    from drmc_rl.pool.report import PAGE
+    assert "Horiz. combos" in PAGE
