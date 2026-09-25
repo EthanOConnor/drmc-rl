@@ -92,17 +92,12 @@ const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;
 const int = x => x == null ? "" : Math.round(x).toLocaleString("en-US", {useGrouping:false});
 const los = x => x == null ? "–" : Math.round(100 * x) + "%";
 const num = x => x == null ? "" : Number(x).toLocaleString("en-US");
-function table(cols, rows, empty, after) {
+function table(cols, rows, empty) {
   if (!rows.length) return `<p class="muted">${empty || "none"}</p>`;
   return `<table><thead><tr>${cols.map(c => `<th class="${c[2] || ""}">${c[0]}</th>`).join("")}</tr></thead><tbody>` +
-    rows.map((r, i) => `<tr>${cols.map(c => `<td class="${c[2] || ""}">${c[1](r, i)}</td>`).join("")}</tr>` + (after ? after(r) : "")).join("") +
+    rows.map((r, i) => `<tr>${cols.map(c => `<td class="${c[2] || ""}">${c[1](r, i)}</td>`).join("")}</tr>`).join("") +
     "</tbody></table>";
 }
-// An active run whose latest snapshot is not its best: a muted, unranked sub-row under it.
-const latestRow = r => !r.latest ? "" : `<tr class="sub"><td></td><td class="e" title="${esc(r.latest.entrant)}">&nbsp;&nbsp;↳ latest ${esc(r.latest.frames)}</td>` +
-  `<td class="n">${int(r.latest.rating)}</td><td class="n">${int(r.latest.ci95[0])}–${int(r.latest.ci95[1])}</td>` +
-  `<td class="n" title="Probability the latest snapshot is stronger than the best">${los(r.latest.los)}</td>` +
-  `<td class="n">${num(r.latest.games)}</td><td class="n">${num(r.latest.recent)}</td></tr>`;
 function spark(t) {
   // Rating against frames for one training run; the shown snapshot is the filled dot.
   if (t.length < 2) return "";
@@ -131,7 +126,7 @@ function ratings(rows) {
     ['<span title="Probability this entrant is stronger than the next row">LOS</span>', r => los(r.los), "n"],
     ["Games", r => num(r.games), "n"],
     ['<span title="Games journaled in the last 60 minutes">Last h</span>', r => num(r.recent), "n"],
-  ], rows, "no rated entrants yet", latestRow)}</div>`;
+  ], rows, "no rated entrants yet")}</div>`;
 }
 function paceBreakdown(s) {
   if (!s.paces || s.paces.length < 2) return "";

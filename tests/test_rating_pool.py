@@ -525,11 +525,6 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     # Shown by its strongest snapshot (50M, truth 0.6), labelled with the latest registered one.
     assert len(run_rows) == 1 and run_rows[0]["entrant"] == "run-f2"
     assert run_rows[0]["label"] == "run · best 50M (latest 100M)" and run_rows[0]["newest"] == "run-f4"
-    # The latest rated snapshot (75M; 100M is unplayed) is not in the table itself, so no sub-row;
-    # with the latest rated, it rides under the best row with LOS vs the best.
-    assert run_rows[0]["latest"] is None
-    from drmc_rl.pool.report import PAGE
-    assert "↳ latest" in PAGE
     assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M"]
     # Per-pace drill-down: the run's row in each pace table carries that pace's snapshots,
     # each with LOS vs the next snapshot (covariance-aware), the last one "–".
@@ -560,7 +555,6 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     rows = build_report(c)["condition_sets"][0]["pooled"]
     shown = [r for r in rows if r.get("lineage") == "run"][0]
     assert shown["entrant"] == "run-f2" and any(p["retired"] for p in shown["trajectory"])
-    assert shown["latest"] is None                     # concluded runs get no latest sub-row
     # Replay reproduces the concluded lineage.
     assert PoolState(tmp_path).lineages["run"]["status"] == "concluded"
 
@@ -895,29 +889,3 @@ def test_access_headers_are_sent_and_access_denials_are_explained(tmp_path, monk
         assert seen["cf-access-client-secret"] == "s3cret" and seen["authorization"] == "Bearer t"
     finally:
         server.shutdown()
-
-
-def test_active_run_shows_its_latest_snapshot_under_the_best(tmp_path):
-    from statistics import NormalDist
-    state, (key,) = setup_state(tmp_path, entrants=("anchor",))
-    for i, t in enumerate([0.7, 0.2]):
-        e = f"lr-f{i}"
-        state.record("entrant", entrant(e, lineage=dict(run="lr", step=50_000_000 * (i + 1), parent="anchor")))
-        p = 1 / (1 + math.exp(-t))
-        rng = random.Random(i)
-        for seed in BANK[:200]:
-            rows = rows_for(key, e, "anchor", [seed])
-            for row in rows:
-                won = float(rng.random() < p)
-                row["score"] = won if row["a"] == e else 1 - won
-            state.add_games(rows)
-    c = coordinator(tmp_path)
-    for table in (build_report(c)["condition_sets"][0]["pooled"], build_report(c)["condition_sets"][0]["paces"][0]["ratings"]):
-        row = next(r for r in table if r.get("lineage") == "lr")
-        assert row["entrant"] == "lr-f0" and row["label"] == "lr · best 50M (latest 100M)"
-        latest = row["latest"]
-        assert latest["entrant"] == "lr-f1" and latest["frames"] == "100M" and type(latest["rating"]) is int
-        f = c.all_fits()[key]
-        d = f.ratings["lr-f1"].rating - f.ratings["lr-f0"].rating
-        assert latest["los"] == pytest.approx(NormalDist().cdf(d / f.difference_se("lr-f1", "lr-f0")), abs=1e-4)
-        assert sum(1 for r in table if r.get("lineage") == "lr") == 1      # no extra ranked row
