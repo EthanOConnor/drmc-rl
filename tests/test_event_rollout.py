@@ -22,11 +22,11 @@ class FixedPolicy:
 
 
 @pytest.mark.parametrize("pace", ["sloth","relaxed","normal","fast","top_humans"])
-@pytest.mark.parametrize("asynchronous", [False,True])
+@pytest.mark.parametrize("asynchronous", [False,True,"fill"])
 def test_event_batch_matches_reference_inputs_and_outcomes(pace,asynchronous):
     config = {"native_library":os.environ.get("DRMC_FRAME_LIBRARY"),
         "variants":{"a":{"delay":4},"b":{"delay":4}},"max_game_frames":3000,"replay_games":0,
-        "async_planning":asynchronous}
+        "async_planning":bool(asynchronous),"fill_inference_batches":asynchronous == "fill"}
     match = {"a":"a","b":"b","games":4,"level":14,"pace":pace}
     jobs = [(19071,0,0),(19071,1,1),(17291,0,2),(17291,1,3)]
     planner, parallel, actor = NativeReachabilityRunner(), ParallelPlanning(2), FixedPolicy()

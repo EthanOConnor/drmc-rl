@@ -84,6 +84,9 @@ class ControllerCorePolicy(PlainPolicy):
         self.training = training
         self.rng = torch.Generator(device="cpu").manual_seed(seed)
         self.learning_records = None
+        # When set, collection skips the per-call reference forward and the
+        # trainer fills base_logits in batches with fill_reference_logits.
+        self.defer_reference = False
         self._collection_id = 0
         self._collection_versions = None
 
@@ -115,11 +118,11 @@ class ControllerCorePolicy(PlainPolicy):
         inputs, aux, actions, masks = self.model_inputs(obs, infos)
         with torch.inference_mode():
             logits, values = self.net(*inputs, aux=aux)
-            reference, _ = self.reference(*inputs, aux=aux)
+            reference = None if self.defer_reference else self.reference(*inputs, aux=aux)[0]
             logs = logits.float().log_softmax(-1).cpu()
             slots = torch.multinomial(logs.exp(), 1, generator=self.rng).squeeze(1)
             arrays = [t.detach().cpu().numpy() for t in (*inputs, aux)]
-            reference = reference.float().cpu().numpy()
+            reference = None if reference is None else reference.float().cpu().numpy()
             values = values.reshape(-1).float().cpu().numpy()
             scores = logits.float().cpu().numpy().copy()
         self.learning_records = []
@@ -137,7 +140,7 @@ class ControllerCorePolicy(PlainPolicy):
                 costs=arrays[4][i, :n].astype(np.uint16),
                 mask=arrays[5][i, :n].copy(),
                 public_context=arrays[6][i].copy(),
-                base_logits=reference[i, :n].copy(),
+                base_logits=None if reference is None else reference[i, :n].copy(),
                 behavior_logp=logs[i, :n].numpy().copy(),
                 slot=slot, action=int(actions[i, slot]),
                 old_logprob=float(logs[i, slot]), old_value=float(values[i]),
@@ -157,7 +160,25 @@ class ControllerCorePolicy(PlainPolicy):
         scores[~masks] = -np.inf
         return actions, masks, scores
 
-    def training_batch(self, records, *, candidate_width=None):
+    @torch.inference_mode()
+    def fill_reference_logits(self, records, batch_size=128):
+        """Reference-policy logits for rows collected with ``defer_reference``.
+
+        The fixed reference has no batch-dependent normalization or
+        cross-example attention, so batching rows after collection gives each
+        row the logits of its own inputs (up to FP32 kernel-shape rounding).
+        """
+        missing = [r for r in records if r.get("base_logits") is None]
+        for start in range(0, len(missing), batch_size):
+            rows = missing[start:start + batch_size]
+            features = self._features(rows)
+            logits, _ = self.reference(*features[:6], aux=features[6])
+            logits = logits.float().cpu().numpy()
+            for i, row in enumerate(rows):
+                row["base_logits"] = logits[i, :len(row["actions"])].copy()
+        return len(missing)
+
+    def _features(self, records, candidate_width=None):
         count = len(records)
         width = max(32, max(len(r["actions"]) for r in records))
         if candidate_width is not None:
@@ -173,13 +194,18 @@ class ControllerCorePolicy(PlainPolicy):
             mask=np.zeros((count, width), bool),
             public_context=np.stack([r["public_context"] for r in records]),
         )
-        parent = np.full((count, width), -1e9, np.float32)
         for i, row in enumerate(records):
             n = len(row["actions"])
             for key in ("actions", "costs", "mask"):
                 arrays[key][i, :n] = row[key]
-            parent[i, :n] = row["base_logits"]
-        features = tuple(torch.as_tensor(arrays[key], device=self.device) for key in INPUT_FIELDS)
+        return tuple(torch.as_tensor(arrays[key], device=self.device) for key in INPUT_FIELDS)
+
+    def training_batch(self, records, *, candidate_width=None):
+        features = self._features(records, candidate_width)
+        count, width = features[3].shape
+        parent = np.full((count, width), -1e9, np.float32)
+        for i, row in enumerate(records):
+            parent[i, :len(row["actions"])] = row["base_logits"]
         keys = ("slot", "old_logprob", "old_value", "return", "weight", "advantage",
                 "actor_weight", "value_weight", "entropy_weight", "parent_kl_weight")
         data = {key: torch.as_tensor([r[key] for r in records], device=self.device,
