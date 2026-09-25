@@ -71,6 +71,12 @@ def remote_training(path):
         return {}
 
 
+def held(remote_dir):
+    """A guard stop (stopped-for-throughput) or an operator pause is not the end of the run."""
+    marks = remote(f'ls {remote_dir}/stopped-for-throughput {remote_dir}/paused 2>/dev/null').split()
+    return bool(marks)
+
+
 def mac_busy():
     return any(subprocess.run(['pgrep', '-f', pattern], capture_output=True).returncode == 0
                for pattern in ('trainer_arena_distributed', 'tools.eval_stranded_edge', 'tools.trainer_planning_arena'))
@@ -187,7 +193,7 @@ def main():
         names = sorted(n for n in listing if n.startswith('core-f') and n.endswith('.pt') and int(n[6:-3]) not in done)
         status = remote_training(arm['variant']).get('status', 'unknown')
         if not names:
-            if status not in ('Running', 'unknown'):
+            if status not in ('Running', 'unknown') and not held(remote_dir):
                 state.update(fired=f'variant ended with status {status}')
                 break
             time.sleep(300)
