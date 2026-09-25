@@ -40,6 +40,26 @@
     "frame_perfect": 0.6328125
    },
    "improved": true
+  },
+  {
+   "label": "ppo-f00100000000",
+   "frames": 100000000,
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/core-f00100000000.pt",
+   "pooled": 0.5948660714285714,
+   "pooled_ci95": [
+    0.5580357142857143,
+    0.6316964285714286
+   ],
+   "paces": {
+    "sloth": 0.5234375,
+    "relaxed": 0.6015625,
+    "normal": 0.640625,
+    "fast": 0.6015625,
+    "top_humans": 0.5625,
+    "super_human": 0.6484375,
+    "frame_perfect": 0.5859375
+   },
+   "improved": true
   }
  ]
 }
