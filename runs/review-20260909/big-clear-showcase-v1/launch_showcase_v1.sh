@@ -5,6 +5,8 @@
 # Containment: systemd scope MemoryMax (champ 5000M, armA 4500M), MemorySwapMax=0, nice 10,
 # oom_score_adj 500 (champ) / 1000 (armA: the first OOM victim). Guard: below 1500 MB available
 # SIGINT armA first, then champ; every checkpoint is kept, resume by setting "resume" by hand.
+# Restart after candidate 1 is up: CHAMP_LAUNCHED=1. Hold candidate 2 while $R/hold-armA exists,
+# at most until HOLD_UNTIL (epoch seconds; 0 = no hold).
 set -u
 R=/home/ethan/.cache/drmc-rl/trainer-output/big-clear-showcase-v1
 LOG=$R/launch.log
@@ -17,11 +19,12 @@ launch() {
   say "launched $name ($(cat $R/src/COMMIT)) avail_mb=$(avail)"
 }
 say "launcher started"
-champ=0; arma=0
+champ=${CHAMP_LAUNCHED:-0}; arma=0; HOLD_UNTIL=${HOLD_UNTIL:-0}
+held() { [ -f $R/hold-armA ] && [ "$(date +%s)" -lt "$HOLD_UNTIL" ]; }
 while true; do
   a=$(avail)
   if [ $champ = 0 ] && [ "$a" -ge 7500 ]; then launch champ 5000M 500; champ=1; sleep 240; continue; fi
-  if [ $champ = 1 ] && [ $arma = 0 ] && ! tmux has-session -t gns-v1 2>/dev/null && [ "$a" -ge 5500 ]; then
+  if [ $champ = 1 ] && [ $arma = 0 ] && ! held && ! tmux has-session -t gns-v1 2>/dev/null && [ "$a" -ge 5500 ]; then
     launch armA 4500M 1000; arma=1; sleep 240; continue; fi
   if [ "$a" -lt 1500 ]; then
     p=$(pid_of armA); [ -z "$p" ] && p=$(pid_of champ)

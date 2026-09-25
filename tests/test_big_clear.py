@@ -242,3 +242,18 @@ def test_start_mixes_split_pairs_between_banks_at_constant_shares(tmp_path):
     assert len(jobs) == len(starts) == 64
     with pytest.raises(ValueError):
         StartMixes([dict(bank=paths[0], fraction=0.6), dict(bank=paths[1], fraction=0.5)])
+
+
+def test_update_tf32_applies_only_inside_the_update_and_restores_strict_fp32():
+    import torch
+    from tools.train_controller_retention import RESUME_FREE_KEYS, update_precision
+
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cudnn.benchmark = False
+    with update_precision(dict(update_tf32=True)):
+        assert torch.backends.cuda.matmul.allow_tf32 and torch.backends.cudnn.allow_tf32 and torch.backends.cudnn.benchmark
+    assert not (torch.backends.cuda.matmul.allow_tf32 or torch.backends.cudnn.allow_tf32 or torch.backends.cudnn.benchmark)
+    with update_precision({}):
+        assert not torch.backends.cudnn.benchmark
+    assert "update_tf32" in RESUME_FREE_KEYS

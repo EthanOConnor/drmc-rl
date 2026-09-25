@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from datetime import UTC, datetime
 import json
 import hashlib
@@ -157,6 +158,29 @@ class StartMixes:
         return out if any_row else None
 
 
+@contextmanager
+def update_precision(config):
+    """``update_tf32``: TF32 matmul/cuDNN and cudnn.benchmark for the PPO update only.
+
+    Rollout inference stays strict FP32 (the flags are restored on exit). Batch
+    shapes are not padded here: fixed-multiple padding of the afterstate conv
+    batch belongs to the throughput branch (perf/ppo-throughput).
+    """
+    if not config.get('update_tf32'):
+        yield
+        return
+    saved=(torch.backends.cuda.matmul.allow_tf32,torch.backends.cudnn.allow_tf32,torch.backends.cudnn.benchmark)
+    torch.backends.cuda.matmul.allow_tf32=True; torch.backends.cudnn.allow_tf32=True; torch.backends.cudnn.benchmark=True
+    try:
+        yield
+    finally:
+        (torch.backends.cuda.matmul.allow_tf32,torch.backends.cudnn.allow_tf32,torch.backends.cudnn.benchmark)=saved
+
+
+# Keys a resume may change: numerics of the update step only, never the objective or data.
+RESUME_FREE_KEYS=('resume','update_tf32')
+
+
 # Keys a fork may change relative to the run it branches from.
 FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve')
 
@@ -249,7 +273,8 @@ def main():
     if config.get('resume'):
         old=torch.load(config['resume'],map_location=device,weights_only=True)
         previous=old['training_config']
-        if {k:v for k,v in previous.items() if k!='resume'}!={k:v for k,v in config.items() if k!='resume'}:
+        if ({k:v for k,v in previous.items() if k not in RESUME_FREE_KEYS}
+                !={k:v for k,v in config.items() if k not in RESUME_FREE_KEYS}):
             raise ValueError('resume changed the continuation contract')
         if old['progress']['identities']!=identities:
             raise ValueError('resume changed model, opponent, anchor or motor bytes')
@@ -352,7 +377,8 @@ def main():
             revised=config['arm']=='mixed_retention'
             kl_lr=config.get('lr_kl_target')
             if kl_lr and 'adaptive_lr' not in progress: progress['adaptive_lr']=config['lr']
-            losses=update_adapter(actor,optimizer,records,dict(config,lr=progress['adaptive_lr']) if kl_lr else config,
+            with update_precision(config):
+              losses=update_adapter(actor,optimizer,records,dict(config,lr=progress['adaptive_lr']) if kl_lr else config,
                 config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
             progress['optimizer_steps']+=losses['optimizer_steps']
