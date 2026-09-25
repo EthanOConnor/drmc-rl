@@ -192,7 +192,13 @@ def background_voi(scheduler, fits, worker_caps, inflight, *, coverage):
             if not pairs:
                 continue
             games = 2 * scheduler.pairs_per_batch(condition)
-            values, labels = condition_values(fits.get(condition), cset["weight"] * (w_c / total) ** 2, targets,
+            fit_c = fits.get(condition)
+            # A new entrant's first games at a pace it has not played carry flat weight (1/K)^2 x 4
+            # instead of its pace weight: its pooled rating needs every pace, slow ones included.
+            flat = 4.0 * (total / len(keys) / w_c) ** 2 if w_c else 1.0
+            local = [(a, b, w * flat if label.startswith("new entrant") and (fit_c is None or a not in fit_c.ratings)
+                      and flat > 1 else w, label) for a, b, w, label in targets]
+            values, labels = condition_values(fit_c, cset["weight"] * (w_c / total) ** 2, local,
                                               active, anchor, pairs, games=games,
                                               prior_var=settings["prior_sd"] ** 2)
             for (a, b), value, label in zip(pairs, values, labels):

@@ -909,3 +909,18 @@ def test_trajectories_include_snapshots_not_yet_rated_everywhere(tmp_path):
     fast = next(p for p in s0["paces"] if p["pace"] == "fast")
     t = {p["entrant"]: p for p in next(r for r in fast["ratings"] if r.get("lineage") == "tr")["trajectory"]}
     assert t["tr-f1"]["rating"] is None and t["tr-f1"]["incomplete"] == "—"
+
+
+def test_a_new_entrant_reaches_every_pace_quickly(tmp_path):
+    state, keys = setup_state(tmp_path, entrants=("anchor", "a"), paces=("sloth", "normal", "frame_perfect"))
+    for key in keys:
+        state.add_games(rows_for(key, "a", "anchor", BANK[:100], score_a=0.5))
+    c = coordinator(tmp_path, settings=dict(background_min_share=0, max_inflight_per_pairing=100))
+    available_everything(c)
+    c.register(dict(type="entrant", **entrant("n")))
+    paces = []
+    for i in range(6):
+        spec = c.lease(worker(f"w{i}"))["batch"]
+        if "n" in (spec["a"], spec["b"]):
+            paces.append(c.state.conditions[spec["condition"]]["spec"]["pace"])
+    assert set(paces) == {"sloth", "normal", "frame_perfect"}          # not only the heavy paces
