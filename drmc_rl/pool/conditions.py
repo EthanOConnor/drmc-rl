@@ -25,7 +25,7 @@ DECISION_POINTS = ("spawn", "settled", "lock", "lock_safe", "commit_safe")
 EARLY_PREVIEWS = ("marginal", "repeat", "branches")
 # The engine resets at the NES "HI" speed setting; no other speed is executable yet.
 SPEEDS = (2,)
-_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+@:-]*")
 # Decision-contract keys a condition may set, with the evaluator's defaults.
 DECISION_DEFAULTS = dict(decision_point="spawn", early_preview="marginal", preview_input="visible",
                          compute_input_frames=None, early_delay_input="actual")
