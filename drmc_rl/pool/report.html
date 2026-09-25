@@ -169,23 +169,30 @@ const STYLE_COLS = [
   ["lines_per_clear", "Lines/clear", r => r.lines_per_clear ?? "", "n"],
   ["garbage", "Garbage", r => f1(r.garbage), "n"],
   ["share34", "3–4 share", r => r.share34 == null ? "" : Math.round(100 * r.share34) + "%", "n"],
-  ["t1", "T1+", r => f2(r.t1), "n"], ["t2", "T2+", r => f2(r.t2), "n"], ["t3", "T3+", r => f3(r.t3), "n"],
-  ["t1_mean", "T1+ mean", r => r.t1_mean ?? "", "n"],
+  ["t1", '<span title="Clears scoring >= 20 (the original T1 bar) per 100 placements">T1 (≥20, old)</span>', r => f2(r.t1), "n"],
+  ["t1p", '<span title="Cumulative: clears scoring >= 27 per 100 placements">T1+ (≥27)</span>', r => f3(r.t1p), "n"],
+  ["t2", '<span title="Cumulative: clears scoring >= 30 per 100 placements">T2+ (≥30)</span>', r => f3(r.t2), "n"],
+  ["t3", '<span title="Cumulative: clears scoring >= 42 per 100 placements">T3+ (≥42)</span>', r => f3(r.t3), "n"],
+  ["horizontal", '<span title="Share of matched lines that are horizontal">Horiz.</span>', r => r.horizontal == null ? "" : Math.round(1000 * r.horizontal) / 10 + "%", "n"],
+  ["t1_mean", '<span title="Mean showiness of clears scoring >= 20">T1 mean</span>', r => r.t1_mean ?? "", "n"],
   ["best", "Best clear", r => r.best ? `${r.best.score} <small class="muted">${r.best.cells}c ${r.best.rounds}r ${r.best.lines}l</small>` : "", "n"],
 ];
 const f1 = x => x == null ? "" : Number(x).toFixed(1), f2 = x => x == null ? "" : Number(x).toFixed(2), f3 = x => x == null ? "" : Number(x).toFixed(3);
 function renderStyle(st) {
   if (!st) { $("style").innerHTML = '<p class="muted">no data</p>'; return; }
   const h = st.human;
-  $("style-note").innerHTML = `Per 100 placements, pool games only (new games carry the counters); not part of any rating. Combo = 2+ lines or 2+ rounds; T1/T2/T3 = showiness ≥ 20/30/42. ` +
-    `Human corpus: combos ${h.combos}, chains ${h.chains}, garbage ${h.garbage} (3–4 share ${Math.round(100 * h.share34)}%), T1+ ${h.t1}, T2+ ${h.t2}, T3+ ${h.t3}. Click a header to sort.`;
+  $("style-note").innerHTML = `Per 100 placements, pool games only (new games carry the counters); not part of any rating. Combo = 2+ lines or 2+ rounds; T1+/T2+/T3+ = cumulative showiness ≥ 27/30/42 (T1 ≥ 20 is the old bar; T1+ and horizontal share count games played since they were added). ` +
+    `Human corpus: combos ${h.combos}, chains ${h.chains}, garbage ${h.garbage} (3–4 share ${Math.round(100 * h.share34)}%), human reference rows (14-Hi-rated corpus) below each table. Click a header to sort.`;
   $("style").innerHTML = st.sets.map(s => {
     const key = styleSort.get(s.condition_set) || "t1";
     const col = STYLE_COLS.find(c => c[0] === key);
     const rows = [...s.entrants].sort((a, b) => key === "label" ? String(a.label).localeCompare(b.label)
       : ((key === "best" ? (b.best || {}).score : b[key]) ?? -1) - ((key === "best" ? (a.best || {}).score : a[key]) ?? -1));
     const head = STYLE_COLS.map(c => `<th class="${c[3]}"><button class="sort${c[0] === key ? " on" : ""}" data-sort="${esc(s.condition_set)}|${c[0]}">${c[1]}</button></th>`).join("");
-    const body = rows.map(r => `<tr>${STYLE_COLS.map(c => `<td class="${c[3]}">${c[2](r)}</td>`).join("")}</tr>`).join("");
+    const body = rows.map(r => `<tr>${STYLE_COLS.map(c => `<td class="${c[3]}">${c[2](r)}</td>`).join("")}</tr>`).join("") +
+      (st.human_rows || []).map(h => `<tr class="sub">${STYLE_COLS.map(c => `<td class="${c[3]}">${
+        c[0] === "label" ? esc(h.label) + ' <small>(human reference)</small>' : c[0] === "horizontal" ? Math.round(1000 * h.horizontal) / 10 + "%"
+        : ["t1", "t1p", "t2", "t3"].includes(c[0]) ? h[c[0]] : ""}</td>`).join("")}</tr>`).join("");
     const paceNames = Object.keys(s.paces);
     const byPace = paceNames.length > 1 ? `<details data-key="style-pace-${esc(s.condition_set)}"><summary>By pace <span class="muted">(combos / T1+ per 100)</span></summary><div class="scroll"><table><thead><tr><th>Entrant</th>${paceNames.map(p => `<th class="n">${esc(p)}</th>`).join("")}</tr></thead><tbody>` +
       rows.map(r => `<tr><td class="e">${esc(r.label)}</td>${paceNames.map(p => { const m = s.paces[p][r.entrant]; return `<td class="n">${m ? `${f1(m.combos)} / ${f2(m.t1)}` : '<span class="muted">·</span>'}</td>`; }).join("")}</tr>`).join("") +

@@ -229,7 +229,7 @@ them as `style: [a, b]`. They never enter a rating. The report's "Combos &
 style" section shows, per condition set (and per pace in a drill-down), per 100
 placements: combos (2+ lines or 2+ rounds), chains (2+ rounds), average lines per
 clear, garbage sent and the share of 3–4-piece attacks, T1+/T2+/T3+ clears
-(showiness >= 20/30/42; a plain 4-line clear scores 0), the mean score of T1+
+(cumulative showiness >= 27/30/42 from `big_clear.TIERS`; the old T1 bar 20, `LEGACY_T1`, is kept as "T1 (≥20, old)"; a plain 4-line clear scores 0), the horizontal share of matched lines, and human reference rows (>2000, top 5 by 14-Hi, all humans), the mean score of T1+
 clears and the best clear (score, cells, rounds, lines). Human corpus references:
 combos 15.6, chains 12.8, garbage 34.1 (3–4 share 16%), T1+ 0.85, T2+ 0.15, T3+
 0.012. Only games played since the counters were added carry them; entrants with

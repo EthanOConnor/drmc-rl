@@ -351,7 +351,7 @@ def worker_rows(coordinator, batches, now):
 def style_rows(coordinator):
     """Combo and showiness metrics per condition set (and per pace) from the counters workers
     report with each pool game. Visibility only. Earlier snapshots of an active run are omitted."""
-    from drmc_rl.pool.style import HUMAN, add, metrics
+    from drmc_rl.pool.style import HUMAN, HUMAN_ROWS, add, metrics
     state = coordinator.state
     min_games = int(coordinator.settings["min_rated_games"])
     set_of = {}
@@ -377,7 +377,7 @@ def style_rows(coordinator):
                                         key=lambda r: -r["t1"]),
                         paces={p: {e: metrics(t, min_games=min_games) for e, t in rows.items() if e in keep}
                                for p, rows in sorted(paces[name].items())}))
-    return dict(human=HUMAN, sets=out)
+    return dict(human=HUMAN, human_rows=list(HUMAN_ROWS), sets=out)
 
 
 def _style_label(state, e):

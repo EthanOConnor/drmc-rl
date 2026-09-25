@@ -924,3 +924,22 @@ def test_a_new_entrant_reaches_every_pace_quickly(tmp_path):
         if "n" in (spec["a"], spec["b"]):
             paces.append(c.state.conditions[spec["condition"]]["spec"]["pace"])
     assert set(paces) == {"sloth", "normal", "frame_perfect"}          # not only the heavy paces
+
+
+def test_style_reports_cumulative_t1_plus_horizontal_share_and_human_rows(tmp_path):
+    from drmc_rl.eval import big_clear as bc
+    from drmc_rl.pool.style import HUMAN_ROWS, add, metrics
+    from drmc_rl.pool.report import PAGE
+    assert bc.TIERS[0][1] == 27.0 and bc.LEGACY_T1 == 20.0
+    old = dict(placements=100, clears=30, lines=40, t1=2, t2=0, t3=0, t1_score=44.0)       # pre-T1+ game
+    new = dict(placements=100, placements2=100, clears=30, lines=40, lines2=40, hlines=10, t1=2, t1p=1,
+               t2=1, t3=0, t1_score=50.0)
+    total = add(add({}, old), new)
+    m = metrics(total)
+    assert m["t1"] == 2.0 and m["t1p"] == 1.0 and m["horizontal"] == 0.25    # T1+ over new games only
+    assert [r["label"] for r in HUMAN_ROWS] == ["Humans >2000", "Top 5 by 14-Hi", "All humans"]
+    assert HUMAN_ROWS[1]["t1p"] == 0.557 and HUMAN_ROWS[2]["horizontal"] == 0.241
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
+    report = build_report(coordinator(tmp_path))
+    assert report["style"]["human_rows"][0]["t1"] == 1.25
+    assert "T1 (≥20, old)" in PAGE and "T1+ (≥27)" in PAGE and "Cumulative: clears scoring >= 30" in PAGE
