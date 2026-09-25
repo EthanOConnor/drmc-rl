@@ -91,3 +91,64 @@ def test_entrant_validation():
     missing["requires"] = []
     with pytest.raises(ValueError):
         store.validate_entrant(missing)
+
+
+QUAD = json.loads((Path(sk.__file__).parent / "models" / "showy_quad_k4_v1.json").read_text())
+
+
+def _quad_field():
+    """A horizontal red/yellow pill at row 12, cols 3-4 completes four lines at once (a quad)."""
+    f = np.full(128, 0xFF, np.uint8)
+    R, Y, B = 0x01, 0x00, 0x02
+    for r in range(13, 16):
+        f[r * 8 + 3] = 0xD0 | R
+        f[r * 8 + 4] = 0xD0 | Y
+        for c in (0, 1, 2, 5, 6, 7):
+            f[r * 8 + c] = 0xD0 | B
+    for c in (0, 1, 2):
+        f[12 * 8 + c] = 0xD0 | R
+    for c in (5, 6, 7):
+        f[12 * 8 + c] = 0xD0 | Y
+    return f
+
+
+def test_quad_override_scores_the_placements_own_attack():
+    f = _quad_field()
+    actions = np.array([99, 1 * 128 + 83, 0 * 128 + 88, -1])     # the quad, and two quiet placements
+    mask = np.array([True, True, True, False])
+    score, lines = sk.immediate_clears(f, (0, 1), actions[:3])
+    assert lines.tolist() == [4, 0, 0]
+    m = sk.ShowyModel.load(QUAD)
+    b = sk.quad_bias(m, f, (0, 1), actions, mask, 1.0)
+    assert b[0] == b[mask].max() and b[0] > b[1] + 3 and b[3] == 0
+    assert abs(float(b[mask].mean())) < 1e-5
+
+
+def test_quad_stacks_with_showy_t2_and_is_inert_at_zero():
+    ref = knobs.default_model_ref("showy-quad@1")
+    both = [knob("showy-t2", 1.0), knob("showy-quad", 1.5, model=ref)]
+    t = knobs.total_bias(both, _field(), (0, 0), ACTIONS, MASK)
+    s = (knobs.total_bias(both[:1], _field(), (0, 0), ACTIONS, MASK)
+         + knobs.total_bias(both[1:], _field(), (0, 0), ACTIONS, MASK))
+    assert np.allclose(t, s, atol=1e-6) and t[4] == 0
+    zero = [knob("showy-t2", 1.0), knob("showy-quad", 0.0, model=ref)]
+    assert np.array_equal(knobs.total_bias(zero, _field(), (0, 0), ACTIONS, MASK),
+                          knobs.total_bias(both[:1], _field(), (0, 0), ACTIONS, MASK))
+    assert "knob:showy-quad@1" in conditions.runtime_capabilities(Path(__file__).resolve().parents[1])
+    assert knobs.suffix(both) == "+showy-t2@1:1+showy-quad@1:1.5"
+
+
+def test_waste_penalty_lowers_only_over_cap_attacks():
+    f = _quad_field()
+    actions = np.array([99, 1 * 128 + 83]); mask = np.array([True, True])
+    plain = sk.quad_bias(sk.ShowyModel.load(QUAD), f, (0, 1), actions, mask, 1.0)
+    penal = sk.quad_bias(sk.ShowyModel.load(dict(QUAD, waste_penalty=2.0)), f, (0, 1), actions, mask, 1.0)
+    assert np.allclose(plain, penal)                     # exactly 4 lines: nothing wasted
+
+
+def test_older_models_ignore_appended_trigger_columns():
+    boards = np.stack([_field(), _quad_field()])
+    t = sk.trigger_features(boards)
+    assert t.shape == (2, len(sk.TRIGGER_NAMES)) and len(sk.TRIGGER_NAMES) == 12
+    m = sk.ShowyModel.load(MODEL)
+    assert np.isfinite(m.logit(boards)).all()

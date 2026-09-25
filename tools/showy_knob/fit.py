@@ -5,7 +5,8 @@
 
 Labels (per placement t, same player and game): ``t2_kK`` = a T2+ clear
 (showiness >= 30) in placements t+1..t+K; ``t3_kK`` >= 42; ``t1_kK`` >= 27;
-``hc_kK`` = a horizontal clear with 2+ lines. The placement's own clear is not
+``hc_kK`` = a horizontal clear with 2+ lines; ``quad_kK`` = an attack at the ROM's 4-piece cap
+(4+ matched lines in one resolution). The placement's own clear is not
 part of the label: the knob scores it exactly. Players are split held-out by
 hash (pid % 5 == 0 is the test set). Needs scikit-learn (fit time only; the
 runtime model is pure numpy).
@@ -21,7 +22,7 @@ import numpy as np
 from drmc_rl.style import showy_knob as sk
 
 EVENTS = dict(t1=lambda s, h, l: s >= 27, t2=lambda s, h, l: s >= 30, t3=lambda s, h, l: s >= 42,
-              hc=lambda s, h, l: (h > 0) & (l >= 2))
+              hc=lambda s, h, l: (h > 0) & (l >= 2), quad=lambda s, h, l: l >= 4)
 
 
 def window_labels(seq, event, k):
@@ -58,6 +59,7 @@ def main(argv=None):
     ap.add_argument("--fraction", type=float, default=0.35)
     ap.add_argument("--out", required=True)
     ap.add_argument("--report")
+    ap.add_argument("--waste-penalty", type=float, default=0.0, help="quad knob: logit units per wasted line (stored in the spec)")
     args = ap.parse_args(argv)
     X, Y, pid = dataset(glob.glob(args.extracts), [args.label], args.fraction)
     names = list(sk.FEATURE_NAMES) + list(sk.TRIGGER_NAMES)
@@ -73,7 +75,7 @@ def main(argv=None):
                   top1pct_rate=float(y[test][p >= np.quantile(p, 0.99)].mean()),
                   calibration=[[float(p[b == i].mean()), float(y[test][b == i].mean())] for i in range(10)],
                   coef=sorted(((n, float(c)) for n, c in zip(names, lr.coef_[0])), key=lambda t: -abs(t[1])))
-    spec = dict(schema=sk.SCHEMA, label=args.label, features=names, mean=mean.tolist(), scale=scale.tolist(),
+    spec = dict(schema=sk.SCHEMA, label=args.label, **({"waste_penalty": args.waste_penalty} if args.waste_penalty else {}), features=names, mean=mean.tolist(), scale=scale.tolist(),
                 coef=lr.coef_[0].tolist(), intercept=float(lr.intercept_[0]), auc_heldout=report["auc"],
                 base_rate=report["base_rate"])
     with open(args.out, "w") as f:

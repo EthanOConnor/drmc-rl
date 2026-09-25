@@ -27,7 +27,8 @@ ANCHOR = "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-reten
 LIBS = "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-arena-0c76c0e-source/native-libraries"
 STUB = dict(schema="drmc-showy-knob-v1", features=["h3s_sum", "surf_run3_sum", "threats"],
             mean=[0, 0, 0], scale=[1, 1, 1], coef=[0.5, 0.5, 0.2], intercept=-4.0)
-STYLE_KEYS = ("placements", "clears", "lines", "combos", "chains", "t1", "t2", "t3", "horizontal", "horizontal_combo")
+STYLE_KEYS = ("placements", "clears", "lines", "combos", "chains", "t1", "t2", "t3", "horizontal", "horizontal_combo",
+              "attacks", "garbage", "quads", "waste")
 
 
 def side_counters(moves, physical):
@@ -57,6 +58,12 @@ def side_counters(moves, physical):
         horizontal = any(o == 0 for found, _, _ in detail for o, *_ in found)
         out["horizontal"] += int(horizontal)
         out["horizontal_combo"] += int(horizontal and f.lines >= 2)
+        # ROM attack: 2+ matched lines send min(lines, 4) pieces; lines beyond four are wasted
+        if f.lines >= 2:
+            out["attacks"] += 1
+            out["garbage"] += min(f.lines, 4)
+        out["quads"] += int(f.lines >= 4)
+        out["waste"] += max(f.lines - 4, 0)
         if score > out.get("best_score", -1):
             out["best_score"], out["best"] = score, dict(score=score, cells=f.cells, rounds=f.rounds, lines=f.lines,
                                                          viruses=f.viruses, horizontal=bool(horizontal))
@@ -71,6 +78,8 @@ def rates(total):
                 best=total.get("best"), clears=per("clears"), combos=per("combos"), chains=per("chains"),
                 t1_plus=per("t1"), t2_plus=per("t2"), t3_plus=per("t3"),
                 horizontal=per("horizontal"), horizontal_combo=per("horizontal_combo"),
+                attacks=per("attacks"), garbage=per("garbage"), quads=per("quads"), waste=per("waste"),
+                quad_share=round(total["quads"] / total["attacks"], 4) if total["attacks"] else None,
                 horizontal_share_of_clears=round(total["horizontal"] / total["clears"], 4) if total["clears"] else None,
                 lines_per_clear=round(total["lines"] / total["clears"], 3) if total["clears"] else None)
 
@@ -124,11 +133,13 @@ class Runner:
         base = dict(name="base", delay=4, checkpoint=self.args.base_checkpoint or self.args.checkpoint)
         knob = dict(base, name=f"knob{lam}", checkpoint=self.args.checkpoint)
         if lam is not None:
-            knob["knobs"] = [dict(id="showy-t2", version=1, model=model, tier_bar=self.args.tier_bar,
-                                  **{"lambda": float(lam)})]
+            entry = dict(id=self.args.knob_id, version=1, model=model, **{"lambda": float(lam)})
+            if self.args.tier_bar is not None:
+                entry["tier_bar"] = self.args.tier_bar
+            knob["knobs"] = [entry]
             if self.args.extra_model and lam:
                 from drmc_rl.style.showy_knob import ShowyModel
-                knob["knobs"].append(dict(id="showy-hcombo", version=1, model=ShowyModel.load(self.args.extra_model).spec,
+                knob["knobs"].append(dict(id=self.args.extra_knob_id, version=1, model=ShowyModel.load(self.args.extra_model).spec,
                                           **{"lambda": self.args.extra_lambda}))
         return dict(knob=knob, base=base)
 
@@ -210,7 +221,9 @@ def main():
     ap.add_argument("--threads", type=int, default=1)
     ap.add_argument("--planner-workers", type=int, default=0)
     ap.add_argument("--model", default=None, help="showy model JSON (default: built-in stub)")
-    ap.add_argument("--tier-bar", type=float, default=30.0, help="own-clear score treated as showy (V ~ 1)")
+    ap.add_argument("--knob-id", default="showy-t2", help="registry knob id (version 1), e.g. showy-t2, showy-quad")
+    ap.add_argument("--extra-knob-id", default="showy-hcombo", help="second knob's registry id")
+    ap.add_argument("--tier-bar", type=float, default=None, help="override the knob's immediate bar (default: registry)")
     ap.add_argument("--extra-model", help="second knob term's model JSON (no own-clear override)")
     ap.add_argument("--extra-lambda", type=float, default=0.0)
     ap.add_argument("--lambdas", type=float, nargs="+", default=[0.0, 1.0])

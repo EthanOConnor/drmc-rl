@@ -68,6 +68,11 @@ def _showy_bias(model, root_field, pill, actions, mask, tier_bar):
     return showy_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar)
 
 
+def _quad_bias(model, root_field, pill, actions, mask, tier_bar):
+    from drmc_rl.style.showy_knob import quad_bias
+    return quad_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar)
+
+
 REGISTRY: dict[str, Knob] = {k.key: k for k in (
     Knob("showy-t2", 1, "drmc-showy-knob-v1", 30.0, _showy_bias,
          "P(T2+ clear within 4 placements | afterstate), human-fit logistic model; a T2+ clear now counts as certain",
@@ -75,6 +80,11 @@ REGISTRY: dict[str, Knob] = {k.key: k for k in (
     Knob("showy-hcombo", 1, "drmc-showy-knob-v1", math.inf, _showy_bias,
          "P(combo with a horizontal line within 4 placements | afterstate), human-fit logistic model",
          "showy_hc_k4_v1.json"),
+    Knob("showy-quad", 1, "drmc-showy-knob-v1", 4.0, _quad_bias,
+         "P(quad: an attack of 4+ matched lines, the ROM's 4-piece cap, within 4 placements | afterstate), "
+         "human-fit logistic model; a 4+ line attack now counts as certain, optional per-wasted-line penalty "
+         "(model waste_penalty)",
+         "showy_quad_k4_v1.json"),
 )}
 
 
