@@ -28,7 +28,7 @@ import numpy as np
 from drmc_rl.eval import big_clear as bc
 from drmc_rl.training.showiness import validate_spec
 
-DEFAULT_BONUS = dict(threshold=20.0, base=0.05, per_point=0.005, event_cap=0.15, game_cap=0.30)
+DEFAULT_BONUS = dict(steps=[[27.0, 0.05], [30.0, 0.15], [42.0, 0.30]], event_cap=0.30, game_cap=0.60)
 
 
 def game_sides(path: Path, spec: dict | None):
@@ -37,7 +37,7 @@ def game_sides(path: Path, spec: dict | None):
     side_a = int(data["game"]["side"])
     out = []
     for entrant, side in ((a, side_a), (b, 1 - side_a)):
-        scores, placements, bonus = [], 0, 0.0
+        scores, placements, bonus, horizontal = [], 0, 0.0, 0
         for move in data["moves"]:
             if int(move["side"]) != side:
                 continue
@@ -48,12 +48,13 @@ def game_sides(path: Path, spec: dict | None):
                 continue
             if f.rounds:
                 scores.append(f.score())
+                horizontal += f.horizontal_lines > 0
                 if spec:
                     bonus += bc.showiness_bonus(f, spec)
         if spec:
             bonus = min(bonus, spec["game_cap"])
         out.append(dict(entrant=entrant, opponent=b if entrant == a else a, condition=condition, seed=int(seed),
-                        placements=placements, scores=scores, bonus=bonus,
+                        placements=placements, scores=scores, bonus=bonus, horizontal=horizontal,
                         score=data["game"]["score"] if entrant == a else 1 - data["game"]["score"]))
     return out
 
@@ -70,6 +71,9 @@ def summarize(games: list[dict], draws: int = 2000, seed: int = 0) -> dict:
     def stats(sample):
         clears = [s for g in sample for s in g["scores"]]
         return dict(
+            T1_20_per_100=_rate(sample, bc.LEGACY_T1),
+            horizontal_per_100=100.0 * sum(g["horizontal"] for g in sample) / max(1, sum(g["placements"] for g in sample)),
+            horizontal_share=sum(g["horizontal"] for g in sample) / max(1, len(clears)),
             T1_per_100=_rate(sample, t1), T2_per_100=_rate(sample, t2), T3_per_100=_rate(sample, t3),
             clear_mean_score=float(np.mean(clears)) if clears else 0.0,
             games_with_T1=float(np.mean([any(s >= t1 for s in g["scores"]) for g in sample])),

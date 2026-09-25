@@ -142,3 +142,44 @@ def test_start_mix_replays_only_training_pool_seeds(tmp_path):
             assert replayed == 4321 and seed_r == 4321
         else:
             assert replayed is None and seed_r == seed_p
+
+
+def test_stepped_bonus_pays_by_tier_and_t3_dominates():
+    from drmc_rl.training.showiness import validate_spec
+
+    spec = validate_spec(dict(steps=[[27.0, 0.05], [30.0, 0.15], [42.0, 0.30]], event_cap=0.30, game_cap=0.60))
+
+    def at(score):
+        return bc.showiness_bonus(bc.ClearFeatures(cells=int(score) + 4, rounds=1, lines=1, max_round_lines=1), spec)
+    assert [at(s) for s in (20, 26, 27, 29, 30, 41, 42, 70)] == [0, 0, 0.05, 0.05, 0.15, 0.15, 0.30, 0.30]
+    with pytest.raises(ValueError):
+        validate_spec(dict(steps=[[27.0, 0.2], [30.0, 0.1]], event_cap=0.3, game_cap=0.6))
+
+
+def test_score_weights_drop_rows_below_the_first_bar(tmp_path):
+    from tools.train_controller_retention import StartMix
+
+    board = np.full((16, 8), E, np.uint8)
+    board[15, 0] = 0xD1
+    path = tmp_path / "bank.npz"
+    np.savez(path, boards=np.stack([np.stack([board, board])] * 4), falling=np.ones((4, 2, 2), np.uint8),
+             preview=np.zeros((4, 2, 2), np.uint8), pill_counter=np.full((4, 2), 40, np.uint8),
+             speed_ups=np.zeros((4, 2), np.uint8), stratum=np.zeros(4, np.uint8),
+             target_score=np.asarray([21.0, 28.0, 33.0, 50.0], np.float32))
+    mix = StartMix(dict(bank=str(path), fraction=0.9, score_weights=[[20, 0], [27, 1], [30, 3], [42, 10]]))
+    assert mix.row_p.tolist() == pytest.approx([0, 1 / 14, 3 / 14, 10 / 14])
+
+
+def test_horizontal_bonus_counts_only_completed_horizontal_lines_under_its_own_cap(monkeypatch):
+    from drmc_rl.training import showiness
+
+    spec = showiness.validate_spec(dict(steps=[[27.0, 0.05]], event_cap=0.3, game_cap=0.6,
+                                        horizontal=dict(per_clear=0.004, combo_extra=0.008, game_cap=0.01)))
+    monkeypatch.setattr(showiness, "move_features", lambda move: move["f"])
+    plain_h = bc.ClearFeatures(cells=4, rounds=1, lines=1, max_round_lines=1, horizontal_lines=1)
+    combo_h = bc.ClearFeatures(cells=8, rounds=2, lines=2, max_round_lines=1, horizontal_lines=1)
+    vertical = bc.ClearFeatures(cells=4, rounds=1, lines=1, max_round_lines=1, horizontal_lines=0)
+    moves = [dict(side=0, f=f, learning={}) for f in (bc.ClearFeatures(), vertical, plain_h, combo_h, plain_h)]
+    assert showiness.learner_bonuses(moves, spec) == pytest.approx([0, 0, 0.004, 0.006, 0])  # 0.012 capped to 0.006 left
+    placed = bc.resolve(bc.place(bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81}), (0, 2), 15 * 8 + 3))[1]
+    assert placed.horizontal_lines == 1

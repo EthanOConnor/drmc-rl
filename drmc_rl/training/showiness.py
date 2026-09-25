@@ -22,17 +22,28 @@ from collections import Counter
 
 from drmc_rl.eval import big_clear as bc
 
-SPEC_KEYS = ("threshold", "base", "per_point", "event_cap", "game_cap")
+SPEC_KEYS = ("threshold", "base", "per_point", "event_cap", "game_cap", "steps", "horizontal")
 
 
 def validate_spec(spec: dict) -> dict:
     if set(spec) - set(SPEC_KEYS) - {"note"}:
         raise ValueError(f"unknown showiness_bonus keys {sorted(set(spec) - set(SPEC_KEYS))}")
     spec = dict(spec)
-    for key in ("threshold", "per_point", "event_cap", "game_cap"):
+    required = ("event_cap", "game_cap") if spec.get("steps") else ("threshold", "per_point", "event_cap", "game_cap")
+    if spec.get("steps"):
+        bars = [float(b) for b, _ in spec["steps"]]
+        values = [float(v) for _, v in spec["steps"]]
+        if bars != sorted(bars) or values != sorted(values) or min(values) < 0:
+            raise ValueError("showiness_bonus steps must rise with the bar")
+        spec.setdefault("threshold", bars[0])
+        spec.setdefault("per_point", 0.0)
+    for key in required:
         if key not in spec:
             raise ValueError(f"showiness_bonus needs {key}")
     spec.setdefault("base", 0.0)
+    h = spec.get("horizontal")
+    if h is not None and not (0 <= h["per_clear"] and 0 <= h.get("combo_extra", 0.0) and 0 < h["game_cap"] <= 0.2):
+        raise ValueError("showiness_bonus.horizontal needs per_clear, combo_extra >= 0 and 0 < game_cap <= 0.2")
     if not (0 <= spec["base"] <= spec["event_cap"] <= spec["game_cap"] < 1.0):
         raise ValueError("showiness_bonus caps must satisfy 0 <= base <= event_cap <= game_cap < 1")
     if spec["per_point"] < 0:
@@ -48,7 +59,7 @@ def side_summary(moves: list[dict], side: int) -> dict:
     """Clear counts by tier, largest score and feature maxima of one physical side."""
     tiers = Counter()
     best = 0.0
-    placements = clears = 0
+    placements = clears = legacy = horizontal_clears = 0
     maxima = Counter()
     for move in moves:
         if int(move["side"]) != side:
@@ -64,25 +75,43 @@ def side_summary(moves: list[dict], side: int) -> dict:
         score = f.score()
         best = max(best, score)
         tiers[bc.tier(score)] += 1
+        horizontal_clears += f.horizontal_lines > 0
+        legacy += score >= bc.LEGACY_T1
         for name in ("cells", "rounds", "max_round_lines", "max_line", "viruses"):
             maxima[name] = max(maxima[name], getattr(f, name))
     return dict(placements=placements, clears=clears, best=best,
-                **{t: tiers.get(t, 0) for t in ("T1", "T2", "T3")}, max=dict(maxima))
+                **{t: tiers.get(t, 0) for t in ("T1", "T2", "T3")}, T1_20=legacy,
+                horizontal=horizontal_clears, max=dict(maxima))
+
+
+def horizontal_bonus(features: bc.ClearFeatures, spec: dict | None) -> float:
+    """A completed horizontal line (4+ in a row) earns ``per_clear``; inside a combo (2+ lines) also ``combo_extra``."""
+    if not spec or not features.horizontal_lines:
+        return 0.0
+    return float(spec["per_clear"]) + (float(spec.get("combo_extra", 0.0)) if features.lines >= 2 else 0.0)
 
 
 def learner_bonuses(moves: list[dict], spec: dict) -> list[float]:
-    """Bonus per learner decision (moves carrying ``learning``), in move order, capped per game."""
-    out, total = [], 0.0
+    """Bonus per learner decision (moves carrying ``learning``), in move order.
+
+    The showiness bonus is capped at ``game_cap`` per game; the horizontal bonus
+    (only completed horizontal lines count) has its own ``horizontal.game_cap``.
+    """
+    out, total, total_h = [], 0.0, 0.0
+    horizontal = spec.get("horizontal")
     for move in moves:
         if "learning" not in move:
             continue
         try:
-            value = bc.showiness_bonus(move_features(move), spec)
+            features = move_features(move)
         except ValueError:
-            value = 0.0
-        value = max(0.0, min(value, spec["game_cap"] - total))
+            out.append(0.0)
+            continue
+        value = max(0.0, min(bc.showiness_bonus(features, spec), spec["game_cap"] - total))
+        extra = max(0.0, min(horizontal_bonus(features, horizontal), horizontal["game_cap"] - total_h)) if horizontal else 0.0
         total += value
-        out.append(value)
+        total_h += extra
+        out.append(value + extra)
     return out
 
 

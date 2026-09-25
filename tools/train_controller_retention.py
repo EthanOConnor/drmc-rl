@@ -85,7 +85,12 @@ class StartMix:
         self.replayable=int((self.replay_seed>0).sum())
         # Optional per-tier row weights (bank ``target_tier`` 1..3), e.g. [1, 3, 6] to favour T2/T3 setups.
         self.row_p=None
-        if spec.get('tier_weights'):
+        if spec.get('score_weights'):
+            # [[bar, weight], ...]: a row's weight is that of the highest bar its target score reaches (0 below all).
+            scores=np.asarray(data['target_score'],dtype=np.float64); w=np.zeros(len(scores))
+            for bar,weight in sorted(spec['score_weights']): w[scores>=bar]=weight
+            self.row_p=w/w.sum()
+        elif spec.get('tier_weights'):
             tiers=np.asarray(data['target_tier'],dtype=np.int64)
             w=np.asarray(spec['tier_weights'],dtype=np.float64)[np.clip(tiers-1,0,len(spec['tier_weights'])-1)]
             self.row_p=w/w.sum()
@@ -338,6 +343,14 @@ def main():
                                 start_mix_update_game_fraction=round(mixed/max(1,len(games)),4),
                                 start_mix_replay_games=progress.get('start_mix_replay_games',0)
                                     +sum('start_seed_replay' in r for r in games))
+            if config.get('journal_showiness'):
+                # Learner style this update, natural (non-bank) games only: per 100 placements.
+                nat=[r['showiness']['learner'] for r in games if 'start_row' not in r and 'showiness' in r]
+                pl=max(1,sum(x['placements'] for x in nat)); cl=max(1,sum(x['clears'] for x in nat))
+                progress['style_update']=dict(games=len(nat),placements=pl,
+                    **{f'{k}_per_100':round(100*sum(x.get(k,0) for x in nat)/pl,4) for k in ('T1_20','T1','T2','T3','horizontal')},
+                    horizontal_share=round(sum(x.get('horizontal',0) for x in nat)/cl,4),
+                    best=max([x['best'] for x in nat],default=0.))
             if bonus is not None:
                 total=Counter(progress.get('showiness_bonus_totals',{})); total.update(bonus_stats)
                 progress.update(showiness_bonus_update=dict(bonus_stats,
@@ -371,7 +384,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr','style_update') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):

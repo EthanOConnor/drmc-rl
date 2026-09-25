@@ -172,7 +172,7 @@ def natural_summary(items: list[dict]) -> dict:
         by_seed[r["seed"]].append(r)
     out = {}
     for who in ("candidate", "reference"):
-        for name, bar in bc.TIERS:
+        for name, bar in (("T1_20", bc.LEGACY_T1), *bc.TIERS):
             per = {s: [sum(c[1] >= bar for c in r[f"{who}_clears"]["clears"]) for r in v] for s, v in by_seed.items()}
             pills = {s: [r[f"{who}_clears"]["pills"] for r in v] for s, v in by_seed.items()}
             keys = sorted(per)

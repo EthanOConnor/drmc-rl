@@ -16,13 +16,29 @@
  "changes": {
   "bonus": {
    "spec": {
-    "threshold": 20.0,
-    "base": 0.07,
-    "per_point": 0.007,
-    "event_cap": 0.2,
-    "game_cap": 0.45
+    "steps": [
+     [
+      27.0,
+      0.05
+     ],
+     [
+      30.0,
+      0.15
+     ],
+     [
+      42.0,
+      0.3
+     ]
+    ],
+    "event_cap": 0.3,
+    "game_cap": 0.6,
+    "horizontal": {
+     "per_clear": 0.004,
+     "combo_extra": 0.008,
+     "game_cap": 0.1
+    }
    },
-   "why": "raised from 0.30 to 0.45 per game (22.5% of the win/loss swing) to move style within one night; both candidates use it so they differ only by parent"
+   "why": "stepped so T3 dominates (0.05/0.15/0.30 per clear), game cap 0.60 so one or two T3 clears are not capped away (30% of the win/loss swing). Parents' natural tier bonus at these bars: 0.009/game (arm A f100M) and 0.022/game (champion), pool traces. Horizontal: completed horizontal lines only (no reward for unclearing horizontal placements), 0.004 per clear plus 0.008 when the clear is a combo (2+ lines), own cap 0.10/game; parents clear 7-8 horizontal per game (~0.03-0.04/game), so the cap is not reached at baseline; per event a T2 is worth 12-37 horizontal clears. Note: the requested 0.02-0.04 per horizontal clear would pay ~0.2/game at baseline and swamp the tiers, and 'well under the T2/T3 bonus per game' is impossible at any useful size because big clears are rare, so the horizontal bonus is sized well under the tiers per event instead."
   },
   "curriculum": {
    "start_mix": {
@@ -31,13 +47,26 @@
      14
     ],
     "replay_share": 0.5,
-    "tier_weights": [
-     1,
-     3,
-     6
+    "score_weights": [
+     [
+      20.0,
+      0.0
+     ],
+     [
+      27.0,
+      1.0
+     ],
+     [
+      30.0,
+      3.0
+     ],
+     [
+      42.0,
+      10.0
+     ]
     ]
    },
-   "why": "constant, not decaying (the stranded-edge variant's decaying share fell to ~2% of frames and had no effect); target 20-25% of learner decisions from bank games, rows weighted toward T2/T3 targets (59% of draws T2+ vs 32% of rows), about 2-3x the natural T2+ opportunity rate; logged per update as start_mix_update_decision_fraction"
+   "why": "constant (the stranded-edge decaying share had no effect); rows weighted by target score band: old-T1-only rows (20-27) 0, T1 1, T2 3, T3 10, i.e. draws 8% T1 / 59% T2 / 33% T3 over the 15,250 eligible rows; target 20-25% of learner decisions from bank games, checked at update 1 (start_mix_update_decision_fraction). No horizontal weighting: the bank has no per-target horizontal signal."
   },
   "throughput": [
    "fill_inference_batches",
@@ -57,6 +86,27 @@
   }
  },
  "strength_rule": "Strong enough for the showcase: the pooled l14-spawn rating stays within 60 Elo of the champion (point estimate >= 1440 with the champion anchored at 1500). This replaces the -15 Elo guard for these two candidates only; the style trade-off report is unchanged.",
- "reporting": "per snapshot (every 25M frames): pooled Elo vs the champion, natural T1+/T2+/T3 per 100 placements (pool traces, training journal), best clear score, and ASCII boards of the largest clears",
- "pool": "runs bigclear-champ and bigclear-armA, era style:big-combo, parents as above; intention big-clear-setups (entrants bigclear-*)"
+ "reporting": "per snapshot: pooled Elo vs the champion; T1_20 (old), T1, T2, T3 per 100 placements; horizontal clears per 100 and horizontal share of clears; best clear; ASCII boards of the largest clears. Per update: update_kl, adaptive lr, bank decision fraction, bonus fire rate, learner style (natural games).",
+ "pool": "runs bigclear-champ and bigclear-armA, era style:big-combo, parents as above; intention big-clear-setups (entrants bigclear-*)",
+ "tiers": {
+  "T1": 27.0,
+  "T2": 30.0,
+  "T3": 42.0,
+  "legacy_T1": 20.0,
+  "why": "user focus on T2+/T3; T1 raised to the integer bar where the human corpus rate is ~0.3 per 100 placements: >=26.5 gives 0.301, >=27 gives 0.275, >=26 gives 0.327 (20.2M clears over 57.3M placements); old T1 (>=20, 0.85 per 100) still reported"
+ },
+ "horizontal_baseline": {
+  "definition": "a clear counts as horizontal if any matched line in any round is horizontal (4+ in a row)",
+  "champion-retention-mixed-v2": {
+   "per_100_placements": 9.18,
+   "share_of_clears": 0.24,
+   "source": "pool traces, 3,076 games"
+  },
+  "armA-ppo-v1-f00100000000": {
+   "per_100_placements": 8.36,
+   "share_of_clears": 0.213,
+   "source": "pool traces, 186 games"
+  },
+  "human": "pending (corpus sample run)"
+ }
 }

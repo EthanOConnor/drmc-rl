@@ -22,8 +22,12 @@ PARENTS = {
     'armA': f'{REMOTE}/afterstate-core-v1/ppo-v1/core-f00100000000.pt',
 }
 ENTRANTS = {'champ': 'champion-retention-mixed-v2', 'armA': 'armA-ppo-v1-f00100000000'}
-BONUS = dict(threshold=20.0, base=0.07, per_point=0.007, event_cap=0.20, game_cap=0.45)
-START_MIX = dict(fraction=0.40, levels=[14], paces=[], replay_share=0.5, tier_weights=[1, 3, 6])
+# Stepped tier bonus (T3 dominant) plus a small separately capped bonus for completed horizontal lines.
+BONUS = dict(steps=[[27.0, 0.05], [30.0, 0.15], [42.0, 0.30]], event_cap=0.30, game_cap=0.60,
+             horizontal=dict(per_clear=0.004, combo_extra=0.008, game_cap=0.10))
+# Rows weighted by target score band: 20-27 (old T1 only) 0, 27-30 (T1) 1, 30-42 (T2) 3, 42+ (T3) 10.
+START_MIX = dict(fraction=0.40, levels=[14], paces=[], replay_share=0.5,
+                 score_weights=[[20.0, 0.0], [27.0, 1.0], [30.0, 3.0], [42.0, 10.0]])
 # Arm A's steps barely move the policy (update KL ~0.0015); start at 1e-5 and steer update KL to 0.005.
 LR = 1e-5
 LR_KL_TARGET = dict(target=0.005, alarm=0.015, min_lr=1e-6, max_lr=3e-5)

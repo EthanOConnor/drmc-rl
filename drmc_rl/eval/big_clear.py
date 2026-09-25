@@ -42,8 +42,10 @@ SCHEMA = "drmc-big-clear-v1"
 WEIGHTS = dict(cells=1.0, rounds=3.0, simultaneous=2.0, long=1.5, viruses=1.0,
                span=0.5, cross=2.0, rainbow=2.0, garbage3=1.0, garbage4=2.0)
 # Showiness tiers, fixed from the human score distribution (scores are
-# multiples of 0.5). See ``tier``; T0 is any clear below T1.
-TIERS = (("T1", 20.0), ("T2", 30.0), ("T3", 42.0))
+# multiples of 0.5). See ``tier``; T0 is any clear below T1. T1 moved from 20
+# to 27 (human rate 0.28 per 100 placements, vs 0.85 at 20): addendum 1.
+TIERS = (("T1", 27.0), ("T2", 30.0), ("T3", 42.0))
+LEGACY_T1 = 20.0  # the original T1 bar, still reported for continuity
 _ATTACK_MIN, _ATTACK_MAX = 2, 4
 _CANONICAL_TO_NES = (1, 0, 2)
 _SECOND = ((0, 1), (1, 0), (0, -1), (-1, 0))
@@ -64,6 +66,7 @@ class ClearFeatures:
     cross: int = 0
     colors: int = 0
     garbage: int = 0
+    horizontal_lines: int = 0  # matched lines of 4+ in a row (any round)
 
     @property
     def cleared(self) -> bool:
@@ -160,7 +163,7 @@ def resolve(placed) -> tuple[bytes, ClearFeatures, list]:
     if len(board) != 128:
         raise ValueError("a bottle is 128 bytes")
     detail = []
-    cells = viruses = long_tiles = max_line = max_round = cross = 0
+    cells = viruses = long_tiles = max_line = max_round = cross = horizontal_count = 0
     total_lines = 0
     colors: set[int] = set()
     rows_hit: set[int] = set()
@@ -181,6 +184,7 @@ def resolve(placed) -> tuple[bytes, ClearFeatures, list]:
         cells += len(cleared)
         viruses += len(virus_cells)
         total_lines += len(found)
+        horizontal_count += sum(o == 0 for o, _, _, _ in found)
         max_round = max(max_round, len(found))
         for _, length, color, _ in found:
             long_tiles += length - 4
@@ -199,7 +203,7 @@ def resolve(placed) -> tuple[bytes, ClearFeatures, list]:
         long_tiles=long_tiles, max_line=max_line,
         span_rows=(max(rows_hit) - min(rows_hit) + 1) if rows_hit else 0,
         span_cols=(max(cols_hit) - min(cols_hit) + 1) if cols_hit else 0,
-        cross=cross, colors=len(colors), garbage=garbage)
+        cross=cross, colors=len(colors), garbage=garbage, horizontal_lines=horizontal_count)
     return bytes(board), features, detail
 
 
@@ -267,13 +271,18 @@ def ascii_board(field, highlight=()) -> list[str]:
 
 
 def showiness_bonus(features: ClearFeatures, spec: dict) -> float:
-    """Arm (b) event bonus for one learner placement (see ``ShowinessBonus`` in the trainer).
+    """Arm (b) event bonus for one learner placement (``drmc_rl.training.showiness``).
 
-    ``spec``: ``per_point`` reward per showiness point above ``threshold``
-    (clears below it earn nothing), capped at ``event_cap`` per placement.
+    ``spec``: either ``steps`` ``[[bar, bonus], ...]`` (the bonus of the highest
+    bar reached; nothing below the first), or ``per_point`` reward per showiness
+    point above ``threshold`` plus ``base``; capped at ``event_cap`` per placement.
     """
     if not features.rounds:
         return 0.0
+    if spec.get("steps"):
+        score = features.score()
+        value = max((float(v) for bar, v in spec["steps"] if score >= float(bar)), default=0.0)
+        return float(min(value, float(spec["event_cap"])))
     excess = features.score() - float(spec.get("threshold", TIERS[0][1]))
     if excess < 0:
         return 0.0
