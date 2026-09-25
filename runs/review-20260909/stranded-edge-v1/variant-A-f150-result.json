@@ -1,0 +1,71 @@
+{
+ "schema": "drmc-stranded-variant-result-v1",
+ "created_at": "2026-09-24",
+ "note": "Training paused by the user; A+S stopped at u52 (150.4M frames, weights equal core-f00150000000), arm A at u58 (172.9M). Panel for A+S f150 not played; benchmark only.",
+ "checkpoints": {
+  "as_f150": "drmc-rl-pool-data/snapshots/armA-S-ppo-v1-f00150415629-paused.pt (sha 3fc6059916bb5aa4...)",
+  "a_f150": "drmc-rl-afterstate-data/core-f00150000000.pt (sha b3c516b106e108fb...)",
+  "a_f173": "drmc-rl-pool-data/snapshots/armA-ppo-v1-f00172850534-paused.pt (sha b7c7813c76595ff9...)"
+ },
+ "bank_games_seen_by_A_plus_S": 996,
+ "primary": {
+  "metric": "as_f150 minus a_f150, restricted pills, strata 0-1, pooled",
+  "estimate": 0.097,
+  "ci95": [
+   -0.885,
+   1.05
+  ],
+  "rows": 320,
+  "success_rule": "<= -1.5 and upper < 0",
+  "verdict": "NOT MET"
+ },
+ "guards": {
+  "pillar": {
+   "estimate": 0.297,
+   "ci95": [
+    0.0,
+    0.828
+   ],
+   "rule": "upper <= +1.0",
+   "result": "pass"
+  },
+  "grounded": {
+   "estimate": -0.207,
+   "ci95": [
+    -1.098,
+    0.689
+   ],
+   "rule": "upper <= +1.0",
+   "result": "pass"
+  },
+  "panel": "not evaluated (A+S f150 panel not played)"
+ },
+ "curriculum_verdict": "NO_EFFECT_SHOWN at 150M",
+ "context_restricted_mean_pills_stranded": {
+  "champion": 17.03,
+  "a_f150": 16.28,
+  "as_f150": 16.38,
+  "a_f173": 15.94
+ },
+ "paired_vs_champion_stranded": {
+  "as_f150": [
+   -0.65,
+   -2.09,
+   0.78
+  ],
+  "a_f150": [
+   -0.75,
+   -2.39,
+   0.92
+  ],
+  "a_f173": [
+   -1.09,
+   -2.77,
+   0.68
+  ]
+ },
+ "identical_outcome_records_as_vs_a": [
+  291,
+  660
+ ]
+}
