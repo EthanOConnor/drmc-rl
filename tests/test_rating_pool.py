@@ -1086,3 +1086,19 @@ def test_job_exclude_leaves_out_knob_variants_and_keeps_counts(tmp_path):
     assert c.scheduler.job_progress(c.state.jobs["show"])[0]["games"] == 20
     with pytest.raises(ValueError):
         c.register(dict(type="job", id="show", exclude="*+*"))
+
+
+def test_equal_priority_jobs_share_workers(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a", "b"))
+    state.record("job", dict(id="old", status="active", games=512, conditions=["set:main"], entrants=["a"],
+                             priority=70))
+    state.record("job", dict(id="new", status="active", games=512, conditions=["set:main"], entrants=["b"],
+                             priority=70))
+    c = coordinator(tmp_path, settings=dict(background_min_share=0, max_inflight_per_pairing=100))
+    available_everything(c)
+    kinds = []
+    for i in range(10):
+        lease = c.lease(worker(f"w{i}"))
+        kinds.append(lease["batch"]["job"])
+        submit(c, lease, dict(anchor=0, a=0, b=0))
+    assert kinds.count("old") >= 4 and kinds.count("new") >= 4
