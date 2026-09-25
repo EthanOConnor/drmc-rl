@@ -7,14 +7,14 @@
 #   tmux new -d -s showcase-turbo-launch "bash $R/launch_turbo_v1.sh"
 set -u
 R=/home/ethan/.cache/drmc-rl/trainer-output/big-clear-showcase-v1
-T=$R/turbo
+T=$R/turbo  # source: $R/src-turbo (candidate 1 keeps $R/src)
 LOG=$T/launch.log
 mkdir -p $T/fork $T/tmp
 say() { echo "$(date -Is) $*" >> $LOG; }
 U=$(ls $R/champ/core-u*.pt | sort | tail -1)
 cp $U $T/fork/ && cp $R/champ/training-games.jsonl $T/fork/training-games.jsonl
 F=$T/fork/$(basename $U)
-python3 - $R/champ/finetune-champ.json $T/finetune-turbo.json $F $(cat $R/src/COMMIT) <<'PY'
+python3 - $R/champ/finetune-champ.json $T/finetune-turbo.json $F $(cat $R/src-turbo/COMMIT) <<'PY'
 import hashlib, json, sys
 src, dst, fork, commit = sys.argv[1:5]
 c = json.load(open(src))
@@ -29,8 +29,8 @@ mixes[0]['fraction'], mixes[1]['fraction'] = 0.50, 0.15
 json.dump(c, open(dst, 'w'), indent=1)
 PY
 say "forked $(basename $U); config written"
-tmux new -d -s showcase-turbo "systemd-run --user --scope --quiet -p MemoryMax=4500M -p MemorySwapMax=0 nice -n 10 bash -c \"echo 1000 > /proc/self/oom_score_adj; cd $R/src; exec env PATH=/home/ethan/dev/drmario/drmc-rl/.venv/bin:\\\$PATH PYTHONPATH=. OMP_NUM_THREADS=1 TMPDIR=$T/tmp DRMARIO_REACH_LIB=$R/native/libdrm_reach_full.so DRMARIO_POOL_LIB=$R/native/libdrmario_pool.so python -m tools.program launch trainer-controller-retention --set controller_retention_config=$T/finetune-turbo.json >> $T/ppo.log 2>&1\""
-say "launched turbo ($(cat $R/src/COMMIT)) avail_mb=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)"
+tmux new -d -s showcase-turbo "systemd-run --user --scope --quiet -p MemoryMax=4500M -p MemorySwapMax=0 nice -n 10 bash -c \"echo 1000 > /proc/self/oom_score_adj; cd $R/src-turbo; exec env PATH=/home/ethan/dev/drmario/drmc-rl/.venv/bin:\\\$PATH PYTHONPATH=. OMP_NUM_THREADS=1 TMPDIR=$T/tmp DRMARIO_REACH_LIB=$R/native/libdrm_reach_full.so DRMARIO_POOL_LIB=$R/native/libdrmario_pool.so python -m tools.program launch trainer-controller-retention --set controller_retention_config=$T/finetune-turbo.json >> $T/ppo.log 2>&1\""
+say "launched turbo ($(cat $R/src-turbo/COMMIT)) avail_mb=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)"
 sleep 120
 while pgrep -f "train_controller_retention --config $T/" >/dev/null; do
   a=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)
