@@ -6,7 +6,7 @@ arm A's 896-game panel (``afterstate-core-v1/seeds.json`` group ``panel``,
 as candidate versus the champion.
 
 ``watch`` (default) applies arm A's stop rule to arm C: every 50M-frame
-snapshot (``core-fNNNNNNNNNNN.pt`` in the tf3090 PPO output) plays that panel
+snapshot (PPO also writes 25M snapshots for the trajectory; those are ignored) (``core-fNNNNNNNNNNN.pt`` in the tf3090 PPO output) plays that panel
 on the Mac through the distributed coordinator (``local``, 3 MPS workers, this
 checkout). Snapshot 0 is the initialization, which computes the champion's
 function bit for bit, so its panel score is 0.500 by construction (both
@@ -100,7 +100,10 @@ def watch():
     while not state.get('fired'):
         done = {s['label'] for s in state['snapshots']}
         listing = remote(f'ls {REMOTE}; python3 -c "import json;print(json.load(open(\'{REMOTE}/training.json\'))[\'status\'])"')
-        names = sorted(n for n in listing.split() if n.startswith('core-f') and n.endswith('.pt'))
+        # PPO writes snapshots every 25M frames for the trajectory; the pre-registered
+        # rule panels and decides only at the 50M marks.
+        names = sorted(n for n in listing.split() if n.startswith('core-f') and n.endswith('.pt')
+                       and int(n[6:-3]) % 50_000_000 == 0)
         status = listing.strip().splitlines()[-1] if listing.strip() else 'unknown'
         pending = [n for n in names if n[:-3].replace('core-', 'ppo-') not in done]
         if not pending:

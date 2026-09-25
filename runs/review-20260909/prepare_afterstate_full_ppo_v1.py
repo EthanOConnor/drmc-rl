@@ -2,8 +2,8 @@
 
 Copies ``afterstate-core-v1/ppo-ppo-v1.json`` (the mixed-v2 retention recipe,
 opponents champion 0.4 / core300m 0.3 / pace_corrected 0.3, every registered
-evaluation seed held out, a snapshot every 50M frames, the same seed) and
-changes: ``checkpoint`` (the champion plus a zero-output afterstate branch,
+evaluation seed held out, the same seed) and changes: snapshots every 25M
+frames (the stop rule still reads only the 50M marks), ``checkpoint`` (the champion plus a zero-output afterstate branch,
 tools/build_afterstate_full_init.py), ``output``, ``native_library`` and
 ``source_commit`` (paths of this run), and adds the new-branch learning-rate
 schedule. Every champion tensor keeps arm A's rate (3e-6); the 0.32M new
@@ -39,7 +39,9 @@ def main():
                             capture_output=True, text=True, check=True).stdout.strip()
     config = dict(base, **BRANCH)
     config.update(checkpoint=f'{REMOTE}/init-arm-c.pt', output=f'{REMOTE}/ppo-v1',
-                  native_library=f'{REMOTE}/native/libdrmario_pool.so', source_commit=commit)
+                  native_library=f'{REMOTE}/native/libdrmario_pool.so', source_commit=commit,
+                  # Trajectory/pool-rating snapshots every 25M; the stop rule still uses only 50M marks.
+                  checkpoint_every_frames=25_000_000)
     if args.smoke is None:
         OUT.mkdir(exist_ok=True)
         path = OUT / 'ppo-full-v1.json'

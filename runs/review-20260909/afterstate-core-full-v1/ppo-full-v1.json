@@ -4499,7 +4499,7 @@
  "reset_update_lr": true,
  "retention_pressure_strength": 31.0,
  "minimum_learning_rate": 1e-08,
- "checkpoint_every_frames": 50000000,
+ "checkpoint_every_frames": 25000000,
  "new_branch_prefix": "afterstate.",
  "new_branch_lr_multiplier": 10.0,
  "new_branch_warmup_updates": 3
