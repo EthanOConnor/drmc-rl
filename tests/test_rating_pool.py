@@ -1067,3 +1067,22 @@ def test_watch_run_survives_a_coordinator_outage(tmp_path, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         rating_pool.cmd_watch_run(args, Flaky())
     assert calls["n"] == 2                  # the outage was logged and the watch went on
+
+
+def test_job_exclude_leaves_out_knob_variants_and_keeps_counts(tmp_path):
+    from drmc_rl.style import knobs
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "bc-f1"))
+    state.record("entrant", entrant("bc-f1+showy-t2@1:1.5", settings=dict(knobs=[knobs.parse("showy-t2@1:1.5")]),
+                                    requires=["knob:showy-t2@1"], lineage=dict(parent="bc-f1")))
+    state.add_games(rows_for(key, "bc-f1", "anchor", BANK[:10], score_a=0.5))
+    c = coordinator(tmp_path)
+    job = dict(id="show", status="active", games=64, conditions=["set:main"], entrants=["bc-*"], mode="vs_parent")
+    c.register(dict(type="job", **job))
+    assert {a for _, a, b in c.scheduler.job_items(c.state.jobs["show"])} | \
+        {b for _, a, b in c.scheduler.job_items(c.state.jobs["show"])} >= {"bc-f1+showy-t2@1:1.5"}
+    c.register(dict(type="job", id="show", exclude=["*+*"]))            # resubmitted: same id, same counts
+    items = c.scheduler.job_items(c.state.jobs["show"])
+    assert all("+" not in a and "+" not in b for _, a, b in items)
+    assert c.scheduler.job_progress(c.state.jobs["show"])[0]["games"] == 20
+    with pytest.raises(ValueError):
+        c.register(dict(type="job", id="show", exclude="*+*"))

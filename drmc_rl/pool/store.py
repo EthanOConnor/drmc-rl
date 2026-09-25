@@ -461,6 +461,9 @@ def validate_job(job):
     seeds = job.get("seeds", "bank")
     if seeds != "bank" and not (isinstance(seeds, dict) and ("allocation" in seeds or "explicit" in seeds)):
         raise ValueError("job seeds must be 'bank', {'allocation': study} or {'explicit': {condition: [seeds]}}")
+    exclude = job.get("exclude", [])
+    if not isinstance(exclude, list) or not all(isinstance(x, str) and x for x in exclude):
+        raise ValueError("job exclude must be a list of entrant id patterns")
     if job.get("step_every") is not None and (type(job["step_every"]) is not int or job["step_every"] < 1):
         raise ValueError("job step_every must be a positive integer (frames)")
     if not isinstance(job.get("priority", 50), (int, float)):

@@ -339,7 +339,7 @@ python -m tools.rating_pool entrant set old-thing --status retired
 
 A job is a priority spec: entrants (ids or globs), a mode (`vs` opponents, default
 each condition's anchor; `round_robin`; `vs_parent`; `explicit` pairings),
-conditions (names, keys or `set:NAME`), games per pairing and condition, priority,
+conditions (names, keys or `set:NAME`), optional `exclude` patterns (e.g. `*+*` leaves out knob variants), games per pairing and condition, priority,
 optional deadline and seeds.
 
 ```bash

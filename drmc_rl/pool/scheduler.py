@@ -81,6 +81,10 @@ class Scheduler:
         state = self.state
         conditions = state.expand_conditions(job["conditions"])
         entrants = state.resolve_entrants(job.get("entrants", []))
+        if job.get("exclude"):
+            # e.g. exclude ["*+*"]: the trained snapshots only, never their knob variants.
+            dropped = set(state.resolve_entrants(job["exclude"]))
+            entrants = [e for e in entrants if e not in dropped]
         if job.get("step_every"):
             # Stop-rule panels stay on their pre-registered snapshot marks (e.g. every 50M frames).
             entrants = [e for e in entrants if state.lineage_of(e) is None or state.step_of(e) % job["step_every"] == 0]

@@ -412,6 +412,8 @@ def cmd_job(args, client):
                      open=args.open)
         if args.opponents:
             event["opponents"] = csv(args.opponents)
+        if args.exclude:
+            event["exclude"] = csv(args.exclude)
         if args.pairings:
             event["pairings"] = [p.split(":") for p in csv(args.pairings)]
         if args.deadline:
@@ -420,6 +422,8 @@ def cmd_job(args, client):
         for key in ("status", "priority", "deadline", "title"):
             if getattr(args, key, None) is not None:
                 event[key] = getattr(args, key)
+        if args.exclude is not None:
+            event["exclude"] = csv(args.exclude)
     print(json.dumps(client.register(event)["event"], indent=1))
 
 
@@ -839,6 +843,7 @@ def main(argv=None):
     j.add_argument("--mode", default="vs", choices=("vs", "round_robin", "vs_parent", "explicit"))
     j.add_argument("--entrants", help="comma-separated ids or glob patterns")
     j.add_argument("--opponents", help="for mode vs (default: each condition's anchor)")
+    j.add_argument("--exclude", help="entrant id patterns to leave out, e.g. '*+*' (knob variants)")
     j.add_argument("--pairings", help="for mode explicit: a:b,c:d")
     j.add_argument("--conditions", help="names, keys or set:NAME")
     j.add_argument("--games", type=int, default=128, help="games per pairing and condition (even)")
