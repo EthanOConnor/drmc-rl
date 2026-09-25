@@ -29,7 +29,10 @@ ours() { pgrep -f "train_controller_retention --config $R/" | head -1; }
 others() { pgrep -f "train_controller_retention --config" | while read p; do
   grep -q "big-clear-v1" /proc/$p/cmdline 2>/dev/null || echo $p; done | wc -l; }
 arm_a_fps() { grep '^{"updates' /dev/shm/afterstate-core/ppo.log 2>/dev/null | tail -3 | python3 -c 'import sys,json;v=[json.loads(l)["throughput"]["frames_per_second"] for l in sys.stdin];print(int(sum(v)/len(v)) if v else 0)'; }
-done_arm() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d.get("status")=="Training complete" else 1)' $R/$1/training.json 2>/dev/null; }
+status() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("status",""))' $R/$1/training.json 2>/dev/null; }
+done_arm() { [ "$(status $1)" = "Training complete" ]; }
+# A run that failed on its own (not stopped by this queue) is left for a person; the next arm still runs.
+failed_arm() { [ "$(status $1)" = "Failed" ] && [ ! -f $R/$1/stopped-by-queue ]; }
 pending_commit() {
   if ! tmux has-session -t afterstate-ppo-18h 2>/dev/null && ! pgrep -f "config .*/ppo-full-v1.json" >/dev/null \
      && tmux has-session -t afterstate-full-ppo 2>/dev/null; then echo "arm C launch"; return; fi
@@ -40,6 +43,14 @@ pending_commit() {
 launch() {
   local arm=$1 cfg=$R/$1/finetune-$1.json
   local last=$(ls $R/$arm/core-u*.pt 2>/dev/null | sort | tail -1)
+  rm -f $R/$arm/stopped-by-queue
+  if [ -z "$last" ] && [ -f $R/$arm/training.json ]; then
+    # Stopped before its first update checkpoint: start over from the parent.
+    local aborted=$R/$arm/aborted-$(date +%s)
+    mkdir -p $aborted && mv $R/$arm/training.json $R/$arm/training-games.jsonl $R/$arm/config.json \
+      $R/$arm/core-initial.pt $R/$arm/public-replay $aborted/ 2>/dev/null
+    say "restarting $arm from the parent (no update checkpoint yet)"
+  fi
   if [ -n "$last" ]; then
     python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); c["resume"]=sys.argv[2]; json.dump(c,open(sys.argv[1],"w"),indent=1)' $cfg "$last"
     say "resuming $arm from $last"
@@ -58,15 +69,18 @@ while true; do
     fps=$(arm_a_fps)
     echo "$(date -Is) running=$arm pid=$pid avail_mb=$a others=$(others) armA_fps3=$fps gpu=$(nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader | tr -d ' ')" >> $R/watch.log
     if [ "$a" -lt 1500 ]; then
-      say "LOW MEMORY $a MB: stopping $arm ($pid)"; kill -INT $pid; sleep 120; continue
+      say "LOW MEMORY $a MB: stopping $arm ($pid)"; touch $R/$arm/stopped-by-queue; kill -INT $pid; sleep 120; continue
     fi
     if tmux has-session -t afterstate-ppo-18h 2>/dev/null && [ "${upd:-0}" -ge 3 ] && [ "$fps" -gt 0 ] && [ "$fps" -lt $((BASE/2)) ]; then
-      say "ARM A THROUGHPUT $fps < 50% of $BASE: stopping $arm ($pid)"; kill -INT $pid; sleep 120; continue
+      say "ARM A THROUGHPUT $fps < 50% of $BASE: stopping $arm ($pid)"; touch $R/$arm/stopped-by-queue; kill -INT $pid; sleep 120; continue
     fi
   else
     next=""
-    for arm in $ARMS; do done_arm $arm || { next=$arm; break; }; done
-    if [ -z "$next" ]; then say "both arms complete; queue exits"; exit 0; fi
+    for arm in $ARMS; do
+      if failed_arm $arm; then [ -f $R/$arm/failed-noted ] || { say "FAILED: $arm (see $arm/ppo.log); skipping"; touch $R/$arm/failed-noted; }; continue; fi
+      done_arm $arm || { next=$arm; break; }
+    done
+    if [ -z "$next" ]; then say "no arm left to run; queue exits"; exit 0; fi
     why=$(pending_commit)
     if [ -n "$why" ]; then
       echo "$(date -Is) waiting: $why pending (next=$next)" >> $R/watch.log
