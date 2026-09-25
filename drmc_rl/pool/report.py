@@ -70,7 +70,15 @@ def collapse_lineages(rows, state, difference_se=None, roles=None):
         newest = live[-1] if live else members[-1]["entrant"]
         label = f"{run} · {frames_label(state.step_of(pick))}" if pick == newest else \
             f"{run} · best {frames_label(state.step_of(pick))} (latest {frames_label(state.step_of(newest))})"
-        rep = dict(present[pick], lineage=run, lineage_status=state.lineage_status(run),
+        latest = None
+        if state.lineage_status(run) == "active" and newest != pick and newest in present:
+            r = present[newest]
+            se = None if difference_se is None else difference_se(newest, pick)
+            latest = dict(entrant=newest, frames=frames_label(state.step_of(newest)), rating=round(r["rating"]),
+                          ci95=_bounds(r), games=r["games"], recent=r.get("recent"),
+                          # P(the latest snapshot is stronger than the shown best).
+                          los=_round(superiority(r["rating"] - present[pick]["rating"], se)))
+        rep = dict(present[pick], lineage=run, lineage_status=state.lineage_status(run), latest=latest,
                    label=label, newest=newest,
                    trajectory=[dict(entrant=r["entrant"], step=state.step_of(r["entrant"]),
                                     frames=frames_label(state.step_of(r["entrant"])), rating=round(r["rating"]),

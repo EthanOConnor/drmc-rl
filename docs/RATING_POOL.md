@@ -210,7 +210,9 @@ final snapshot stay active; intermediates become retired (rated, never scheduled
 
 Reports show one row per lineage: its strongest snapshot in each table (the recorded
 best once concluded; per-pace tables by that pace's rating), labelled
-`run · best F (latest G)`, with an expandable trajectory (every
+`run · best F (latest G)`; an active run whose latest
+snapshot is not its best also gets a muted, unranked `↳ latest G` sub-row with that
+snapshot's Elo, CI, LOS vs the best, games and last-hour games, with an expandable trajectory (every
 snapshot's rating, CI and games against frames, retired ones included) and a
 sparkline. In the per-pace drill-down a run expands into its snapshots: matrix sub-rows (retired ones muted; ▲/▼ relative to each snapshot's own pooled rating) and, per pace, each snapshot's Elo, CI, games and LOS vs the next snapshot. Expanded rows survive the 60 s refresh. Other entrants are unchanged.
 
