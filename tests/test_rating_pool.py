@@ -802,3 +802,87 @@ def test_a_lopsided_floor_entrant_does_not_keep_new_entrant_priority(tmp_path):
     wide_but_played = {"x": dict(rating=700.0, se=80.0, games=7 * 64)}
     wide_and_new = {"x": dict(rating=700.0, se=80.0, games=40)}
     assert not is_new("x", wide_but_played, settings, 7) and is_new("x", wide_and_new, settings, 7)
+
+
+def _serve(tmp_path, monkeypatch, token="t0ken"):
+    from tools import rating_pool
+    monkeypatch.setattr("tools.trainer_arena_distributed.source_revision", lambda root=None: "test")
+    stopped, ready = threading.Event(), {}
+    args = SimpleNamespace(data=tmp_path, settings=json.dumps(dict(seed_bank=BANK, seed_sets=SEED_SETS,
+                                                                   default_anchor="anchor")),
+                           allow_source_mismatch=False, report_port=0, report_host=None, host="127.0.0.1", port=0,
+                           token_file="unused")
+    thread = threading.Thread(target=rating_pool.serve, args=(args,), kwargs=dict(
+        token=token, stopped=stopped, on_ready=lambda p: ready.setdefault("port", p)), daemon=True)
+    thread.start()
+    for _ in range(200):
+        if "port" in ready:
+            break
+        time.sleep(0.05)
+    return f"http://127.0.0.1:{ready['port']}", stopped
+
+
+def test_chunked_upload_through_parts_and_no_store_api(tmp_path, monkeypatch):
+    import hashlib
+    import urllib.request
+    from drmc_rl.pool.client import PoolClient
+    setup_state(tmp_path)
+    url, stopped = _serve(tmp_path, monkeypatch)
+    try:
+        blob = tmp_path / "ckpt.pt"
+        blob.write_bytes(bytes(range(256)) * 400)           # 100 KB in 7 parts of 16 KB
+        client = PoolClient(url, token="t0ken", access={})
+        digest = client.upload(blob, part_bytes=16 << 10, mb_per_second=1000)
+        assert digest == hashlib.sha256(blob.read_bytes()).hexdigest()
+        assert (tmp_path / "artifacts" / digest).read_bytes() == blob.read_bytes()
+        assert not list((tmp_path / "artifacts").glob(".upload-*"))
+        assert client.has_artifact(digest)
+        request = urllib.request.Request(url + "/api/v1/pool/study", headers={"Authorization": "Bearer t0ken"})
+        with urllib.request.urlopen(request) as response:
+            assert response.headers["Cache-Control"] == "no-store"
+    finally:
+        stopped.set()
+
+
+def test_access_headers_are_sent_and_access_denials_are_explained(tmp_path, monkeypatch):
+    import os
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from drmc_rl.pool.client import AccessDenied, PoolClient, read_access
+    seen = {}
+
+    class Stub(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            seen.update({k.lower(): v for k, v in self.headers.items()})
+            if self.headers.get("CF-Access-Client-Id") != "id-1":
+                self.send_response(302)
+                self.send_header("Location", "https://team.cloudflareaccess.com/cdn-cgi/access/login/pool")
+                self.end_headers()
+                return
+            body = b'{"exists": true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    url = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        with pytest.raises(AccessDenied, match="pool-access.env"):
+            PoolClient(url, token="t", access={}).has_artifact("0" * 64)
+        env = tmp_path / "pool-access.env"
+        env.write_text("CF_ACCESS_CLIENT_ID=id-1\nCF_ACCESS_CLIENT_SECRET=s3cret\n")
+        os.chmod(env, 0o644)
+        monkeypatch.delenv("CF_ACCESS_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CF_ACCESS_CLIENT_SECRET", raising=False)
+        with pytest.raises(PermissionError):
+            read_access(env)
+        os.chmod(env, 0o600)
+        headers = read_access(env)
+        assert PoolClient(url, token="t", access=headers).has_artifact("0" * 64)
+        assert seen["cf-access-client-secret"] == "s3cret" and seen["authorization"] == "Bearer t"
+    finally:
+        server.shutdown()

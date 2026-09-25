@@ -56,6 +56,11 @@ class PoolHandler(Handler):
     downloads: threading.BoundedSemaphore
     mb_per_second: float
 
+    def end_headers(self):
+        # API answers are live state: never cached by Cloudflare or any proxy.
+        self.send_header("Cache-Control", "no-store")
+        super().end_headers()
+
     def do_GET(self):  # noqa: N802
         if not self._authorized():
             return self._json(401, dict(error="unauthorized"))
@@ -111,7 +116,16 @@ class PoolHandler(Handler):
     def do_PUT(self):  # noqa: N802
         if not self._authorized():
             return self._json(401, dict(error="unauthorized"))
-        m = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})", self.path.split("?", 1)[0])
+        path = self.path.split("?", 1)[0]
+        part = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})/parts/(\d+)", path)
+        if part:
+            try:
+                self.coordinator.artifacts.store_part(part.group(1), int(part.group(2)), self.rfile,
+                                                      int(self.headers["Content-Length"]))
+                return self._json(200, dict(part=int(part.group(2))))
+            except (TypeError, ValueError) as error:
+                return self._json(400, dict(error=str(error)))
+        m = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})", path)
         if not m:
             return self._json(404, dict(error="not found"))
         try:
@@ -131,6 +145,11 @@ class PoolHandler(Handler):
             request = self._body()
             if path == "/api/v1/pool/leases":
                 return self._json(200, self._call(c.lease, request))
+            done = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})/complete", path)
+            if done:
+                # Joining and hashing run on this request thread, outside coordinator state.
+                c.artifacts.complete(done.group(1), int(request["parts"]), int(request["size"]))
+                return self._json(200, dict(sha256=done.group(1)))
             if path == "/api/v1/pool/heartbeat":
                 return self._json(200, self._call(c.heartbeat, request))
             if path == "/api/v1/pool/release":
@@ -185,7 +204,7 @@ class ReportHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
+        self.send_header("Cache-Control", "no-cache" if kind.startswith("text/html") else "no-store")
         self.end_headers()
         self.wfile.write(body)
 

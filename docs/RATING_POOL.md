@@ -255,6 +255,10 @@ an operator decision), hosts reach the coordinator through an ssh tunnel:
 `ssh -N -L 127.0.0.1:8097:192.168.157.190:8097 -L 127.0.0.1:8098:192.168.157.190:8098 mombox`
 (`drmc-rl-pool-data/tunnel.sh` on the Mac) with `DRMC_POOL_URL=http://127.0.0.1:8097`.
 
+Public access through Cloudflare Access (`pool.zudark.net`, `poolreport.zudark.net`)
+is described in docs/RATING_POOL_CLOUDFLARE.md; clients then read the service token
+from `~/.config/drmc-rl/pool-access.env` and upload checkpoints in 32 MB parts.
+
 It runs as the user systemd service `rating-pool` (`systemctl --user restart rating-pool`;
 it resumes from the journal). Checkpoint
 downloads are limited to 2 concurrent streams at 20 MB/s each; uploads from

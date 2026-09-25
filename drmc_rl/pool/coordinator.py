@@ -77,6 +77,61 @@ class Artifacts:
                 return Path(candidate)
         return None
 
+    def store_part(self, digest, index, stream, length, *, limit=48 << 20):
+        """One part of a chunked upload (idempotent: a retried part overwrites itself)."""
+        if length > limit or index < 0 or index > 4096:
+            raise ValueError("upload part too large or out of range")
+        folder = self.root / f".upload-{digest}"
+        folder.mkdir(exist_ok=True)
+        fd, temporary = tempfile.mkstemp(dir=folder, prefix=".part.")
+        try:
+            with os.fdopen(fd, "wb") as out:
+                remaining = length
+                while remaining:
+                    block = stream.read(min(1 << 20, remaining))
+                    if not block:
+                        raise ValueError("truncated upload part")
+                    remaining -= len(block)
+                    out.write(block)
+            os.replace(temporary, folder / f"{index:05d}")
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def complete(self, digest, parts, size, *, limit=4 << 30):
+        """Join uploaded parts, verify size and sha256, then publish the artifact atomically."""
+        folder = self.root / f".upload-{digest}"
+        target = self.root / digest
+        if target.is_file():
+            return target
+        if size > limit:
+            raise ValueError("artifact too large")
+        files = [folder / f"{i:05d}" for i in range(int(parts))]
+        missing = [f.name for f in files if not f.is_file()]
+        if missing:
+            raise ValueError(f"missing upload parts {missing[:5]}")
+        if sum(f.stat().st_size for f in files) != size:
+            raise ValueError("uploaded parts do not add up to the declared size")
+        fd, temporary = tempfile.mkstemp(dir=self.root, prefix=f".{digest}.")
+        sha = hashlib.sha256()
+        try:
+            with os.fdopen(fd, "wb") as out:
+                for f in files:
+                    with open(f, "rb") as part:
+                        for block in iter(lambda: part.read(1 << 20), b""):
+                            sha.update(block)
+                            out.write(block)
+            if sha.hexdigest() != digest:
+                raise ValueError("uploaded artifact hash mismatch; parts discarded")
+            os.replace(temporary, target)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+            for f in folder.glob("*"):
+                f.unlink()
+            folder.rmdir()
+        return target
+
     def store(self, digest, stream, length, *, limit=4 << 30):
         if length > limit:
             raise ValueError("artifact too large")
