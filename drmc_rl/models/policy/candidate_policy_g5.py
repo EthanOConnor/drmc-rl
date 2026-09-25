@@ -410,6 +410,7 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         return_aux: bool = False,
         motor_geometry: Optional[torch.Tensor] = None,
         prepared_bottles=None,
+        candidate_extra=None,
     ) -> (
         Tuple[torch.Tensor, torch.Tensor]
         | Tuple[torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]
@@ -522,6 +523,8 @@ class G5CandidatePlacementPolicyNet(nn.Module):
         else:
             candidate_features = torch.cat((pose, cost, patches, own_local, threat), dim=-1)
         candidate = self.candidate(candidate_features)
+        if candidate_extra is not None:
+            candidate = candidate + self._candidate_residual(own, obs, valid, candidate_extra)
         candidate = candidate + global_context.unsqueeze(1)
         padding = ~valid
         safe_padding = padding & ~padding.all(dim=1, keepdim=True)
@@ -564,6 +567,11 @@ class G5CandidatePlacementPolicyNet(nn.Module):
                 extra.update(self.motor_auxiliary(candidate, motor_geometry))
             return logits, value, extra
         return logits, value
+
+    def _candidate_residual(self, own, obs, valid, candidate_extra):
+        """Per-candidate additive token term for subclasses with extra candidate inputs."""
+
+        raise ValueError("G5 has no extra candidate inputs")
 
     def distributional_value_loss(
         self, value_logits: torch.Tensor, targets: torch.Tensor

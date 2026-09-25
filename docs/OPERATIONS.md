@@ -89,6 +89,22 @@ writes it, and it fails only if the pooled 95% lower bound is below 0.45.
 Pre-spawn decisions score the predicted spawn bottle, so its afterstates are
 computed from that bottle.
 
+## Full afterstate core (arm C)
+
+1. `tools/build_afterstate_full_init.py --champion CHAMPION --shard REPLAY...`
+   writes the initialization and an audit proving it equals the champion.
+2. `runs/review-20260909/prepare_afterstate_full_ppo_v1.py` derives the PPO
+   config from arm A's; only the initialization, paths and a new-branch rate
+   schedule (`new_branch_prefix`, `new_branch_lr_multiplier`,
+   `new_branch_warmup_updates`: a second optimizer group) change.
+   `--smoke DIR` writes a one-update CPU config for the Mac (the trainer's
+   retention audit uses float64, which MPS lacks).
+3. `runs/review-20260909/launch_afterstate_full_ppo_v1.sh` runs in tmux
+   `afterstate-full-ppo` on tf3090 and starts PPO once arm A's session ends.
+4. `runs/review-20260909/afterstate_full_stop_rule_v1.py` plays each 50M-frame
+   snapshot on arm A's panel seeds and applies the same stop rule. The
+   tournament addendum is `afterstate-core-full-v1/tournament-addendum-arm-c.json`.
+
 ## Public progress input experiment
 
 `trainer-controller-core` accepts optional `progress_schema` in its training

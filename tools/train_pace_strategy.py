@@ -367,7 +367,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
         retention.set_pressure(retained)
     if config.get("reset_update_lr", False):
         for group in optimizer.param_groups:
-            group["lr"] = config["lr"]
+            group["lr"] = group.get("update_lr", config["lr"])
     # Epoch guards avoid quadratic work from a full-batch check per minibatch.
     # Rejected updates restore BOTH weights and Adam moments before retrying.
     for _epoch in range(config.get("epochs", 2)):
