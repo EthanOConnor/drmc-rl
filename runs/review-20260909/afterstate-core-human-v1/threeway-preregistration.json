@@ -1,0 +1,49 @@
+{
+ "schema": "drmc-afterstate-threeway-preregistration-v1",
+ "question": "Does initializing the afterstate core from strong-human imitation (arm B) instead of champion distillation (arm A) produce a stronger core after identical outcome PPO?",
+ "arms": {
+  "arm_a": "trainer/afterstate-core: distilled from retention-mixed v2, then afterstate-core-v1/ppo-ppo-v1.json",
+  "arm_b": "trainer/afterstate-core-human: human-corpus imitation, then afterstate-core-human-v1/ppo-*.json (arm A config with only checkpoint/output/source_commit changed)",
+  "champion": {
+   "path": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt",
+   "sha256": "fae04a599635cbf600914e5dede2f5dcdfeff7e5436dd53053c7d9fc1c85b3a3",
+   "label": "retention-mixed v2"
+  }
+ },
+ "final_selection": "each arm: the PPO snapshot with the best pooled panel score versus the champion on the registered panel seeds (ties to the earlier snapshot); stop after two consecutive non-improving snapshots. No tournament seed is used for selection.",
+ "seeds": "afterstate-core-v1/seeds.json group \"tournament\": 256 reset seeds per pace, held out by both continuations; each seed played twice with sides swapped in every pairing",
+ "pairings": {
+  "b-vs-champion": "arm_b (candidate) vs champion",
+  "a-vs-b": "arm_a (candidate) vs arm_b",
+  "a-vs-champion": "arm_a (candidate) vs champion"
+ },
+ "games": {
+  "per_pairing": 3584,
+  "total": 10752,
+  "new_if_arm_a_tournament_imported": 7168
+ },
+ "settings": "level 14 HI; spawn decisions; delay max(4, reaction); reactive compute 4, preparation 6; events backend; strict FP32; 4 interleaved blocks of 64 seeds per pace; same as arm A tournament",
+ "score": "candidate score per game: win=1, draw=0.5, loss=0; per-seed mean of the two side-swapped games",
+ "analysis": "per pairing and pace: 20000 whole-seed bootstrap resamples (numpy default_rng(20260924)); seven-pace simultaneous 95% intervals by max-|studentized deviation|; pooled score = equal-weight mean of the seven pace scores with its 95% bootstrap interval from the same resamples. Paired difference D = score(B vs champion) - score(A vs champion) per seed, same resampling.",
+ "decision": {
+  "primary": "a-vs-b, arm B as candidate: B_STRONGER if pooled 95% lower bound > 0.50 and no pace with simultaneous 95% upper bound < 0.45; A_STRONGER if pooled 95% upper bound < 0.50 and no pace with simultaneous 95% lower bound > 0.55; otherwise NO_DIFFERENCE_SHOWN",
+  "consistency": "the paired difference D must have the same sign as (primary pooled score - 0.50) when the primary verdict is not NO_DIFFERENCE_SHOWN; a contradiction is reported and downgrades the primary verdict to NO_DIFFERENCE_SHOWN",
+  "versus_champion": "b-vs-champion and a-vs-champion each receive arm A's rule: PROMOTE if pooled lower bound > 0.50 and no pace simultaneous upper bound < 0.45; PARITY if not PROMOTE, pooled interval contains 0.50 and no clear pace regression; REJECT otherwise",
+  "adoption": "the browser core becomes the arm with PROMOTE versus the champion; if both PROMOTE, the primary winner; if both PROMOTE and NO_DIFFERENCE_SHOWN, the higher pooled score versus the champion; if neither PROMOTEs, the champion stays"
+ },
+ "censoring": "timeouts are reported and scored as recorded; any censored game flags the report",
+ "fallback_if_seed_reuse_refused": "after both continuations finish, rerun the prepare_afterstate_tournament_v1 seed audit (selection seed 20260925) additionally excluding both PPO training journals and arm A's tournament seeds, draw 256 seeds per pace (fewer if unavailable, equal per pace), and apply the same rules; the A-vs-champion pairing is then played on those seeds too",
+ "created_at": "2026-09-24T20:09:53.650993+00:00",
+ "seed_file": "runs/review-20260909/afterstate-core-v1/seeds.json",
+ "seed_file_sha256": "a861b70f1e1c72ad9ae0fa05c0784c7ad80a78244d94e0938f76b6d0011780a4",
+ "seeds_per_pace": {
+  "sloth": 256,
+  "relaxed": 256,
+  "normal": 256,
+  "fast": 256,
+  "top_humans": 256,
+  "super_human": 256,
+  "frame_perfect": 256
+ },
+ "source_commit": "f09475c4"
+}

@@ -101,6 +101,54 @@ before their entrants exist. Pre-registered contracts that predate the pool
 (the afterstate arms' stop rules and tournaments, the stranded-edge guards)
 stand as written; import their journals with `import-study` afterwards.
 
+### Arm B: human-imitation initialization
+
+Arm B keeps the architecture, the `public_pair_context_v3` contract and the
+outcome-PPO recipe and changes only the initialization: imitation of strong
+human players instead of distillation of the champion.
+
+1. `trainer-afterstate-human-dataset`
+   (`tools.imitate_afterstate_core build`) streams an immutable corpus release.
+   Rows need WHR-C ≥ 1900 on the placement day (HI speed, recorded lock) and
+   are kept with probability ∝ `exp((rating − 2000)/150)`, no player above 6%
+   of a split's weight. Splits: the release's 80/10/10 replay split, with player
+   folds 0–1 held out entirely (`heldout_players`). Each row gets the causal
+   public view reconstructed from both players' rows
+   (`drmc_rl/human/corpus_public_state.py`), one pace drawn uniformly among those
+   whose `max(4, reaction)`-delayed frontier contains the human's lock, that
+   exact frontier, the pace's execution fields and exact afterstates. Parts use
+   the distillation layout. About 20 CPU-ms and 2.7 KB per row.
+2. `trainer-afterstate-human-imitate` (`train`) fits cross-entropy to the human
+   choice (mass shared by candidates with the identical settled bottle) plus the
+   51-atom value head on the game outcome, from scratch, and reports held-out
+   top-1 and agreement with the champion on a champion-labelled distillation
+   part (`--champion-part`). Data stay in host memory; batches are built on the
+   host (about 2 ms per 256 rows).
+3. Read the imitation checkpoint with the `quick` arena group
+   (`prepare_afterstate_tournament_v1.py quick --candidate … --label human-imitation-v1`).
+4. Outcome PPO: `runs/review-20260909/prepare_afterstate_human_ppo_v1.py STUDENT`
+   copies arm A's registered continuation config and changes only `checkpoint`,
+   `output` and `source_commit` (same seed, so the same collection schedule).
+5. The three-way comparison (arm A final vs arm B final vs champion) is
+   registered in `afterstate-core-human-v1/threeway-preregistration.json`
+   (`prepare_afterstate_threeway_v1.py`, `assess_afterstate_threeway_v1.py`).
+
+On green (Pascal 1080 Ti) use a separate clone with
+`uv sync --locked --extra inference --extra corpus --group dev`, then install
+the sm_61-capable wheel from the cu126 index alone:
+`uv pip install --python .venv/bin/python --index-url https://download.pytorch.org/whl/cu126 --reinstall-package torch "torch==2.14.0"`.
+Do not add PyPI as an extra index: uv's first-index strategy then resolves the
+PyPI cu130 wheel, which has no Pascal kernels. Always `uv run --no-sync` after.
+Build the planner with `python -m tools.build_reach_native` and export
+`DRMARIO_REACH_LIB` before `build`.
+
+`tools.validate_corpus_public_state` measures the reconstruction against native
+games (exact per decision on 30 games: own side 100%, opponent pill/phase/virus
+count 99.5%, event kinds and sides 91%; the rest are ±1-frame animation timing
+that reorders same-moment events and shifts log ages by under 0.01). Volley
+timing is modelled but unvalidated there, because the heuristic native games
+rarely combo.
+
 ## Public progress input experiment
 
 `trainer-controller-core` accepts optional `progress_schema` in its training

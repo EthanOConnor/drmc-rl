@@ -389,6 +389,32 @@ recipes:
       - Agreement is not strength. Paired side-swapped arena reads against the teacher decide whether outcome PPO starts from the student.
       - Outcome PPO reuses trainer-controller-retention with the student as checkpoint and every registered evaluation seed in holdout_seeds.
 
+  trainer-afterstate-human-dataset:
+    status: active
+    stage: 3
+    purpose: Rebuild strong-human corpus placements as live public-context actor inputs with exact paced frontiers and afterstates (Stronger-3 arm B).
+    requires_paths: [tools/imitate_afterstate_core.py, drmc_rl/human/corpus_public_state.py, "{human_corpus_root}"]
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.imitate_afterstate_core, build, --corpus-root, "{human_corpus_root}", --release, "{human_corpus_release}", --out, "{afterstate_human_dataset}"]
+    produces: [Dataset parts in the distillation layout with the human choice, outcome, rating, split and pace per row]
+    resources: {preferred_host: green, accelerator: cpu}
+    notes:
+      - Public views are reconstructed from both players' corpus rows; tools.validate_corpus_public_state measures them against native games.
+      - Replay split and player folds come from the release contracts; held-out folds never enter training.
+
+  trainer-afterstate-human-imitate:
+    status: active
+    stage: 3
+    purpose: Initialise the 256x6 afterstate core by imitating strong humans and report held-out top-1 and champion agreement.
+    requires_paths: [tools/imitate_afterstate_core.py, drmc_rl/models/policy/afterstate_core.py, "{afterstate_human_dataset}"]
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.imitate_afterstate_core, train, --dataset, "{afterstate_human_dataset}", --out, "{afterstate_human_output}", --champion-part, "{afterstate_champion_part}"]
+    produces: [Imitation afterstate-core checkpoint loadable by PlainPolicy and ControllerCorePolicy]
+    resources: {preferred_host: green, accelerator: cuda}
+    notes:
+      - Imitation accuracy and champion agreement are diagnostics; the quick arena read and the pre-registered three-way tournament decide.
+      - Outcome PPO uses runs/review-20260909/prepare_afterstate_human_ppo_v1.py (arm A's config with only the initialization changed).
+
   trainer-controller-gradient-audit:
     status: active
     stage: 3

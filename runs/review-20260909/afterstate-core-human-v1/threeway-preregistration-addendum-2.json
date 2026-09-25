@@ -1,0 +1,16 @@
+{
+ "schema": "drmc-afterstate-threeway-preregistration-addendum-v1",
+ "amends": "threeway-preregistration.json (seed file sha256 a861b70f1e1c72ad9ae0fa05c0784c7ad80a78244d94e0938f76b6d0011780a4) and addendum-1; the three-way design, seeds and verdict rules are unchanged",
+ "created_at": "2026-09-24",
+ "shipping_confirmation": {
+  "when": "after the three-way assessment, only if its adoption is arm_a or arm_b; the champion staying needs no confirmation",
+  "match": "the adopted core versus the champion (retention-mixed v2), both under the shipped v17 browser timing contract",
+  "timing_contract": {"decision_point": "lock_safe", "early_preview": "repeat", "delay": 4,
+                       "rollout_backend": "frames", "reactive_compute_frames": 4, "preparation_compute_frames": 6},
+  "settings": "level 14 HI, seven paces, strict FP32, sides swapped per seed, same scoring and whole-seed bootstrap analysis as the three-way",
+  "seeds_and_games": "as specified by arm A's tournament addendum for its v17 confirmation; if arm A's addendum is absent or does not fix them, 64 seeds per pace drawn by the prepare_afterstate_tournament_v1 audit rule (selection seed 20260926) excluding every registered seed and both PPO training journals",
+  "rule": "SHIP if the pooled 95% lower bound > 0.50 and no pace has a simultaneous 95% upper bound < 0.45 (arm A's PROMOTE rule); otherwise the core does not ship and the champion stays. If arm A's addendum states a stricter rule, the stricter rule applies to either arm",
+  "coherence": "both arms face the same confirmation rule, so the choice of arm cannot favour a looser confirmation"
+ },
+ "arm_b_prespawn_support": "Arm B uses the unchanged drmc-afterstate-core-v1 class, whose exact afterstates are computed from the public model tensors, so lock_safe requests score the predicted spawn bottle exactly as arm A does. Smoke-tested on the Mac with the frame runner: decision_point lock_safe + early_preview repeat on both sides, early requests accepted from the predicted bottle (12 of 13 and 13 of 14 decisions per game, one lock_unsafe fallback each). Neither arm trains on pre-spawn views (the outcome-PPO recipe uses the spawn contract), so the confirmation is the evidence for both."
+}
