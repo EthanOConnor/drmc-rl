@@ -44,7 +44,12 @@ def _vwindows(a: np.ndarray, w: int) -> np.ndarray:
     return c[:, w:, :] - c[:, :-w, :]
 
 
-FEATURE_NAMES: list[str] = []
+_PER_NAMES = ("h3", "h3s", "h2", "h2s", "h5_4", "h6_4", "h6_5", "v3", "v2", "hv3", "vir_h3", "vir_v3",
+              "surf_run3", "surf_run2", "stack")
+# board_features' columns, in order (checked against the computed dict on every call).
+FEATURE_NAMES: list[str] = ["occupied", "viruses", "height_max", "height_mean", "bumpiness", "holes", "spawn_danger",
+                            "tall_cols", *(f"{k}_{a}" for k in _PER_NAMES for a in ("sum", "max", "colors")),
+                            "threats", "threats_sq", "threat_rows", "surface_cells", "log_occ"]
 
 
 def board_features(fields: np.ndarray) -> np.ndarray:
@@ -69,8 +74,7 @@ def board_features(fields: np.ndarray) -> np.ndarray:
     feats["tall_cols"] = (heights >= 12).sum(axis=1)
     e_h4 = _hwindows(empty, 4); sup_h4 = _hwindows(supported, 4)
     e_v4 = _vwindows(empty, 4)
-    per = {k: [] for k in ("h3", "h3s", "h2", "h2s", "h5_4", "h6_4", "h6_5", "v3", "v2", "hv3", "vir_h3", "vir_v3",
-                           "surf_run3", "surf_run2", "stack")}
+    per = {k: [] for k in _PER_NAMES}
     for c in range(3):
         cc = color == c
         n4 = _hwindows(cc, 4)
@@ -122,10 +126,9 @@ def board_features(fields: np.ndarray) -> np.ndarray:
     feats["threat_rows"] = feats["stack_sum"]
     feats["surface_cells"] = surface.sum(axis=(1, 2))
     feats["log_occ"] = np.log1p(feats["occupied"])
-    names = list(feats)
-    if not FEATURE_NAMES:
-        FEATURE_NAMES.extend(names)
-    return np.stack([np.asarray(feats[k], np.float32) for k in names], axis=1)
+    if list(feats) != FEATURE_NAMES:
+        raise AssertionError("board_features columns drifted from FEATURE_NAMES")
+    return np.stack([np.asarray(feats[k], np.float32) for k in FEATURE_NAMES], axis=1)
 
 
 class ShowyModel:
@@ -148,10 +151,18 @@ class ShowyModel:
             return cls(source)
         return cls(json.loads(Path(source).read_text()))
 
+    @property
+    def uses_triggers(self) -> bool:
+        return any(k in TRIGGER_NAMES for k in self.names)
+
     def logit(self, fields: np.ndarray) -> np.ndarray:
         x = board_features(fields)
-        if any(k in TRIGGER_NAMES for k in self.names):
+        if self.uses_triggers:
             x = np.concatenate([x, trigger_features(fields)], axis=1)
+        return self.logit_features(x)
+
+    def logit_features(self, x: np.ndarray) -> np.ndarray:
+        """``logit`` from precomputed ``[board_features | trigger_features]`` columns (float32)."""
         if self.index is None:
             pos = {k: i for i, k in enumerate(list(FEATURE_NAMES) + list(TRIGGER_NAMES))}
             self.index = np.asarray([pos[k] for k in self.names])
@@ -193,44 +204,84 @@ def immediate_clears(fields: np.ndarray, pill, actions):
 
 
 def showy_bias(model: ShowyModel, root_field, pill, actions, mask, lam: float, *, tier_bar: float = 30.0,
-               eps: float = 1e-3) -> np.ndarray:
+               eps: float = 1e-3, decision: "Decision | None" = None) -> np.ndarray:
     """Per-candidate bias ``lam * (logit V - mean logit V over legal)`` for one decision ``[K]``."""
-    return _bias(model, root_field, pill, actions, mask, lam, eps=eps,
+    return _bias(model, root_field, pill, actions, mask, lam, eps=eps, decision=decision,
                  certain=lambda score, lines: score >= tier_bar)
 
 
 def quad_bias(model: ShowyModel, root_field, pill, actions, mask, lam: float, *, tier_bar: float = 4.0,
-              eps: float = 1e-3) -> np.ndarray:
+              eps: float = 1e-3, decision: "Decision | None" = None) -> np.ndarray:
     """The quad knob: V = P(quad within the next placements | afterstate), certain when this
     placement itself matches ``tier_bar`` (4) or more lines, minus ``model["waste_penalty"]``
     logit units per line beyond four in this placement's own attack (the ROM sends at most 4)."""
     penalty = float(model.spec.get("waste_penalty", 0.0))
-    return _bias(model, root_field, pill, actions, mask, lam, eps=eps,
+    return _bias(model, root_field, pill, actions, mask, lam, eps=eps, decision=decision,
                  certain=lambda score, lines: lines >= tier_bar,
                  adjust=(lambda score, lines: -penalty * np.maximum(lines - 4, 0)) if penalty else None)
 
 
-def _bias(model, root_field, pill, actions, mask, lam, *, eps, certain, adjust=None):
+class Decision:
+    """One decision's shared candidate facts: legal slots, settled afterstates, features
+    ``[board_features | trigger_features]`` and each placement's own clear (score or -1, lines).
+
+    Stacked knobs share one instance, so the afterstates and features are computed once.
+    The native library (``drmc_rl.style.native``) produces the same values when present.
+    """
+
+    def __init__(self, root_field, pill, actions, mask):
+        self.actions = np.asarray(actions)
+        self.legal = np.flatnonzero(np.asarray(mask, bool))
+        self.root = np.asarray(root_field, np.uint8).reshape(128)
+        self.colors = (int(pill[0]), int(pill[1]))
+        self._x = None
+        self._trig = False
+        self.after = self.score = self.lines = None
+
+    def features(self, want_trig: bool):
+        if self._x is not None and (self._trig or not want_trig):
+            return self._x
+        want_trig = want_trig or self._trig
+        from drmc_rl.style import native
+        out = native.decision_features(self.root, self.colors, self.actions[self.legal], want_trig)
+        if out is None:
+            if self.after is None:
+                self.after = reference_afterstates(self.root, self.colors, self.actions[self.legal])
+            x = board_features(self.after)
+            if want_trig:
+                x = np.concatenate([x, trigger_features(self.after)], axis=1)
+            if self.score is None:
+                self.score, self.lines = immediate_clears(self.root, self.colors, self.actions[self.legal])
+        else:
+            self.after, x, self.score, self.lines = out
+        self._x, self._trig = x, want_trig
+        return x
+
+
+def reference_afterstates(root, colors, actions) -> np.ndarray:
+    """Settled afterstate of each placement (numpy/Python reference)."""
     from drmc_rl.game.afterstate import resolve_placement
     try:  # fast path for quiet placements where available (newer afterstate module)
         from drmc_rl.game.afterstate import _quiet_placement, _stable_root
     except ImportError:
         _quiet_placement = _stable_root = None
+    stable = _stable_root(root) if _stable_root is not None else None
+    after = np.empty((len(actions), 128), np.uint8)
+    for j, action in enumerate(actions):
+        quiet = _quiet_placement(stable, colors, int(action)) if stable is not None else None
+        after[j] = np.frombuffer((quiet or resolve_placement(root, colors, int(action)))[0], np.uint8)
+    return after
+
+
+def _bias(model, root_field, pill, actions, mask, lam, *, eps, certain, adjust=None, decision=None):
     actions = np.asarray(actions)
-    mask = np.asarray(mask, bool)
     bias = np.zeros(actions.shape, np.float32)
-    legal = np.flatnonzero(mask)
+    d = decision if decision is not None else Decision(root_field, pill, actions, mask)
+    legal = d.legal
     if lam == 0 or len(legal) == 0:
         return bias
-    root = np.asarray(root_field, np.uint8).reshape(128)
-    colors = (int(pill[0]), int(pill[1]))
-    stable = _stable_root(root) if _stable_root is not None else None
-    after = np.empty((len(legal), 128), np.uint8)
-    for j, k in enumerate(legal):
-        quiet = _quiet_placement(stable, colors, int(actions[k])) if stable is not None else None
-        after[j] = np.frombuffer((quiet or resolve_placement(root, colors, int(actions[k])))[0], np.uint8)
-    z = model.logit(after).astype(np.float64)
-    score, lines = immediate_clears(root, colors, actions[legal])
+    z = model.logit_features(d.features(model.uses_triggers)).astype(np.float64)
+    score, lines = d.score, d.lines
     z[certain(score, lines)] = np.log((1 - eps) / eps)
     z = np.clip(z, -12.0, 12.0)
     if adjust is not None:
@@ -269,7 +320,7 @@ class ShowyPolicy:
         return acts.astype(np.int32)
 
 
-__all__ = ["FEATURE_NAMES", "SCHEMA", "TRIGGER_NAMES", "ShowyModel", "ShowyPolicy", "board_features", "immediate_clears",
+__all__ = ["Decision", "FEATURE_NAMES", "SCHEMA", "TRIGGER_NAMES", "ShowyModel", "ShowyPolicy", "board_features", "immediate_clears",
            "immediate_scores", "quad_bias", "showy_bias", "trigger_features"]
 
 

@@ -251,6 +251,20 @@ every one of its knobs. A version bump is a new capability. Create variants with
 shows the variants in BASE's run trajectory. The old `showy_lambda`/`showy_model`
 settings are not accepted.
 
+Knob cost and the optional native path: stacked knobs share one per-decision
+computation of the candidate afterstates and features (`showy_knob.Decision`), and
+an optional C library computes those features about 30× faster than numpy with
+bit-identical values (`drmc_rl/style/native.py`, `tests/test_knob_native.py`).
+Build it once per worker checkout (any C compiler; the library is not committed):
+
+    python -m drmc_rl.style.native build     # drmc_rl/style/native/libknob_features.{dylib,so}
+    python -m drmc_rl.style.native status
+
+A worker without the library uses numpy and plays the same decisions, only slower;
+knob capabilities do not change. `DRMC_KNOB_NATIVE=0` forces numpy.
+`python -m tools.showy_knob.bench --synthetic 2000` (or `--decisions FILE` from
+`bench record`) times both paths and checks they agree.
+
 Browser mirror (later): the professorPills web build currently takes one `showy` λ.
 Its config should carry the same knob list (`[{id, version, lambda, model: "sha256:…"}]`)
 with the models bundled by hash, so a pool entrant and a browser player with the same
