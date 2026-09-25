@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 import json
 import hashlib
 from pathlib import Path
+import shutil
 import time
 
 import numpy as np
@@ -32,7 +33,7 @@ from tools.vs_head_to_head import PlainPolicy
 
 
 class StartMix:
-    """Replace a fraction of each collection's seed pairs with start-bank positions.
+    """Replace a share of each collection's seed pairs with start-bank positions.
 
     The mix draws from its own random stream, so the natural seeds, opponents and
     levels of a collection are exactly those of the same run without a mix. A
@@ -40,27 +41,56 @@ class StartMix:
     the bank position's preview), plays both side assignments from the bank
     row, and is journaled with ``start_row``. Outcomes stay natural terminal
     results from that position; no scenario-specific reward is added.
+
+    The share is either constant (``fraction``) or decays with the frames the
+    run has simulated since the mix began: ``share0 * 0.5 ** (t / half_life_frames)``,
+    never below ``floor``, and exactly 0 once it falls under ``cutoff``
+    (default 0.01) with a zero floor, leaving only natural occurrences.
     """
     def __init__(self, spec):
         from drmc_rl.training.envs.start_bank import StartBank
         self.spec=dict(spec); self.bank=StartBank(spec['bank'])
-        self.fraction=float(spec['fraction'])
-        if not 0<self.fraction<1: raise ValueError('start_mix fraction must be in (0, 1)')
+        if ('fraction' in spec)==('share0' in spec):
+            raise ValueError('start_mix needs exactly one of fraction or share0')
+        self.share0=float(spec.get('fraction',spec.get('share0')))
+        self.half_life=spec.get('half_life_frames')
+        self.floor=float(spec.get('floor',0.)); self.cutoff=float(spec.get('cutoff',.01))
+        if 'share0' in spec and not (self.half_life and self.half_life>0):
+            raise ValueError('a decaying start_mix needs a positive half_life_frames')
+        if not (0<self.share0<1 and 0<=self.floor<=self.share0 and 0<=self.cutoff<1):
+            raise ValueError('start_mix shares must satisfy 0 <= floor <= share0 < 1')
         self.paces=set(spec.get('paces') or []); self.levels=set(spec.get('levels',[14]))
         self.sha256=hashlib.sha256(Path(spec['bank']).read_bytes()).hexdigest()
         if spec.get('bank_sha256') not in (None,self.sha256):
             raise ValueError('start_mix bank bytes differ from the declared bank_sha256')
 
-    def starts(self, config, cycle, index, match, pairs):
-        if (self.paces and match['pace'] not in self.paces) or match['level'] not in self.levels:
+    def share(self, frames_since_start):
+        if self.half_life is None:
+            return self.share0
+        value=self.share0*0.5**(max(0,frames_since_start)/self.half_life)
+        if value<self.cutoff and self.floor==0.:
+            return 0.
+        return max(self.floor,value)
+
+    def starts(self, config, cycle, index, match, pairs, share=None):
+        share=self.share0 if share is None else share
+        if share<=0 or (self.paces and match['pace'] not in self.paces) or match['level'] not in self.levels:
             return None
         rng=np.random.default_rng([config['seed'],cycle,index,0x5E])
-        rows=[int(rng.integers(len(self.bank))) if rng.random()<self.fraction else None for _ in range(pairs)]
+        rows=[int(rng.integers(len(self.bank))) if rng.random()<share else None for _ in range(pairs)]
         if all(r is None for r in rows): return None
         return [(r,None if r is None else self.bank.spec_kwargs(r)) for r in rows for _ in (0,1)]
 
 
-def collection_schedule(config, update, available, opponents, start_mix=None):
+# Keys a fork may change relative to the run it branches from.
+FORK_KEYS=('resume','fork','start_mix','output','source_commit','seed_reserve')
+
+
+def fork_contract(config):
+    return {k:v for k,v in config.items() if k not in FORK_KEYS}
+
+
+def collection_schedule(config, update, available, opponents, start_mix=None, share=None):
     paces=config['paces']
     if config['arm']=='mixed_retention':
         cycle=update-1; selected=list(enumerate(paces))
@@ -79,7 +109,7 @@ def collection_schedule(config, update, available, opponents, start_mix=None):
         seeds=rng.choice(available,count//2,replace=False)
         jobs=[(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
         match=dict(id=f'train-{update}-{pace}',a='learner',b=opponent,games=count,pace=pace,level=level)
-        starts=None if start_mix is None else start_mix.starts(config,cycle,index,match,len(seeds))
+        starts=None if start_mix is None else start_mix.starts(config,cycle,index,match,len(seeds),share)
         result.append((match,jobs,starts))
     return result
 
@@ -104,7 +134,11 @@ def main():
     torch.manual_seed(config['seed'])
     torch.backends.cuda.matmul.allow_tf32=False; torch.backends.cudnn.allow_tf32=False
     device=config.get('device','cuda')
-    actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],resume=config.get('resume'))
+    fork=config.get('fork')
+    if fork and config.get('resume') is None and fork.get('sha256') != hashlib.sha256(Path(fork['checkpoint']).read_bytes()).hexdigest():
+        raise ValueError('fork checkpoint bytes differ from the declared sha256')
+    actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],
+                               resume=config.get('resume') or (fork['checkpoint'] if fork else None))
     parent=PlainPolicy(Path(config['opponent_parent']),device,public_only=True)
     opponents=PublicOpponentPool(config['opponent_pool'],parent,config['opponent_parent'],device)
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
@@ -149,9 +183,34 @@ def main():
             row=json.loads(line); add_game_totals(totals.setdefault(row['pace'],{}),row)
         if totals!=progress['paces']:
             raise ValueError('resume journal and per-pace checkpoint counts disagree')
+    elif fork:
+        # Branch a variant off a running arm: identical model, optimizer, sampler,
+        # retention baseline, counters and journal at the fork update; only the
+        # FORK_KEYS may differ, so continued arm and variant share one history.
+        old=torch.load(fork['checkpoint'],map_location=device,weights_only=True)
+        if fork_contract(old['training_config'])!=fork_contract(config):
+            raise ValueError('fork changed the parent run contract beyond start_mix/output/source')
+        expected={k:v for k,v in identities.items() if k!='start_mix_bank'}
+        if {k:v for k,v in old['progress']['identities'].items() if k!='start_mix_bank'}!=expected:
+            raise ValueError('fork changed model, opponent, anchor or motor bytes')
+        progress.update(old['progress']); progress.update(status='Running',checkpoints=[],identities=identities,
+            fork=dict(checkpoint=fork['checkpoint'],sha256=fork['sha256'],update=old['update'],
+                      frames=old['progress']['frames'],decisions=old['progress']['decisions']))
+        retention.baseline=progress['retention_baseline']
+        optimizer.load_state_dict(old['optimizer']); actor.rng.set_state(old['sampling_rng'].cpu())
+        journal=output/'training-games.jsonl'
+        shutil.copyfile(fork['journal'],journal); restore_game_journal(journal,old['update'])
+        totals={}
+        for line in journal.read_text().splitlines():
+            row=json.loads(line); add_game_totals(totals.setdefault(row['pace'],{}),row)
+        if totals!=progress['paces']:
+            raise ValueError('fork journal and parent per-pace counts disagree')
+        dump(output/'config.json',config)
     else:
         actor.save(output/'core-initial.pt',update=0,training_config=config)
         dump(output/'config.json',config)
+    if start_mix is not None and 'start_mix_origin_frames' not in progress:
+        progress['start_mix_origin_frames']=progress['frames']
     runtime=dict(config,variants={id:{'delay':4} for id in ('learner',*opponents.names)},
                  replay_games=0,mixed_core_actor=None,reactive_compute_frames=4,preparation_compute_frames=6)
     planner=ParallelPlanning(config.get('planner_workers',4))
@@ -160,7 +219,8 @@ def main():
     try:
         for update in range(progress['updates']+1,config['updates']+1):
             if target_met(progress,config): break
-            started=time.monotonic(); schedules=collection_schedule(config,update,available,opponents,start_mix)
+            share=None if start_mix is None else start_mix.share(progress['frames']-progress['start_mix_origin_frames'])
+            started=time.monotonic(); schedules=collection_schedule(config,update,available,opponents,start_mix,share)
             records=[]; games=[]; shards=[]; natural=Counter(); breakdown=defaultdict(float)
             progress.update(current_pace='mixed' if len(schedules)>1 else schedules[0][0]['pace'],
                             collecting_update=update,collecting_target=sum(m['games'] for m,_,_ in schedules),
@@ -213,6 +273,10 @@ def main():
                 for row in games:
                     add_game_totals(progress['paces'].setdefault(row['pace'],{}),row)
                     journal.write(json.dumps(row)+'\n')
+            if start_mix is not None:
+                mixed=sum('start_row' in r for r in games)
+                progress.update(start_mix_share=share,start_mix_games=progress.get('start_mix_games',0)+mixed,
+                                start_mix_update_games=mixed)
             elapsed=time.monotonic()-started
             progress.update(updates=update,games=progress['games']+len(games),
                 frames=progress['frames']+sum(r['frames'] for r in games),decisions=progress['decisions']+len(records),
@@ -228,7 +292,7 @@ def main():
             for name in progress['checkpoints'][:-2]: (output/name).unlink(missing_ok=True)
             progress['checkpoints']=progress['checkpoints'][-2:]
             every=config.get('checkpoint_every_frames')
-            if every and progress['frames']>=every:
+            if every and progress['frames']>=every and progress['frames']//every*every>progress.get('fork',{}).get('frames',-1):
                 # Stop-rule snapshots: one per crossed frame multiple (an update is far shorter).
                 path=output/f"core-f{progress['frames']//every*every:011d}.pt"
                 if not path.exists():
@@ -239,7 +303,8 @@ def main():
                     actor.save(path,update=update,progress=progress,training_config=config)
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
-            print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput')}),flush=True)
+            print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
+                                                      'start_mix_share','start_mix_update_games') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):

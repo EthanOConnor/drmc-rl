@@ -106,3 +106,47 @@ def test_frame_pool_starts_both_bottles_from_a_checkpoint():
         pool.reset([0x1234, 0x2345], starts=[overlay, None])
         assert all(bytes(pool.states[s].board) == board.tobytes() for s in (0, 1))
         assert bytes(pool.states[2].board) != board.tobytes()
+
+
+def test_decaying_start_mix_halves_and_stops_under_the_cutoff(tmp_path):
+    import pytest
+
+    from tools.train_controller_retention import StartMix
+
+    bank = str(_tiny_bank(tmp_path / "bank.npz"))
+    mix = StartMix(dict(bank=bank, share0=0.4, half_life_frames=8_000_000))
+    assert mix.share(0) == pytest.approx(0.4)
+    assert mix.share(8_000_000) == pytest.approx(0.2)
+    assert mix.share(16_000_000) == pytest.approx(0.1)
+    assert mix.share(42_000_000) > 0.01  # 0.4 * 2**-5.25 = 0.0105
+    assert mix.share(43_000_000) == 0.0
+    floored = StartMix(dict(bank=bank, share0=0.4, half_life_frames=8_000_000, floor=0.02))
+    assert floored.share(10**9) == pytest.approx(0.02)
+    assert StartMix(dict(bank=bank, fraction=0.15)).share(10**9) == pytest.approx(0.15)
+    with pytest.raises(ValueError):
+        StartMix(dict(bank=bank, share0=0.4))  # decay without a half-life
+    with pytest.raises(ValueError):
+        StartMix(dict(bank=bank, share0=0.4, fraction=0.1, half_life_frames=1))
+
+
+def test_decaying_share_controls_how_many_pairs_start_from_the_bank(tmp_path):
+    from tools.train_controller_retention import StartMix
+
+    mix = StartMix(dict(bank=str(_tiny_bank(tmp_path / "bank.npz")), share0=0.4, half_life_frames=1000))
+    match = dict(pace="normal", level=14)
+    config = dict(seed=3)
+    counts = []
+    for share in (0.4, 0.1, 0.0):
+        starts = [mix.starts(config, c, 0, match, 64, share) for c in range(40)]
+        counts.append(sum(sum(r is not None for r, _ in s) // 2 for s in starts if s is not None))
+    assert counts[0] > 3 * counts[1] > 0 and counts[2] == 0
+    assert 0.3 < counts[0] / (40 * 64) < 0.5
+
+
+def test_fork_contract_ignores_only_the_variant_keys():
+    from tools.train_controller_retention import fork_contract
+
+    parent = dict(seed=1, lr=3e-6, output="a", source_commit="x", paces=["normal"])
+    variant = dict(parent, output="b", source_commit="y", start_mix=dict(share0=0.4), fork=dict(checkpoint="c"))
+    assert fork_contract(parent) == fork_contract(variant)
+    assert fork_contract(parent) != fork_contract(dict(variant, lr=1e-5))
