@@ -1,0 +1,869 @@
+{
+ "schema": "drmc-showy-knob-results-v1",
+ "checkpoint": "champion-retention-mixed-v2 (core-final-inference.pt, sha256 fae04a59...)",
+ "opponent": "unbiased champion",
+ "conditions": "events backend, level 14, speed Hi, delay 4, both sides of each seed; seeds from 7919 outside the eval reserve",
+ "model": "drmc_rl/style/models/showy_t2k4_v1.json",
+ "heldout_fit": {
+  "t2_k4": {
+   "base": 0.012495255628244478,
+   "auc": 0.8250695358506948,
+   "ap": 0.23234496420845668,
+   "top1pct_rate": 0.3606214520466089
+  },
+  "t2_k8": {
+   "base": 0.02465877880618158,
+   "auc": 0.7243913493748538,
+   "ap": 0.17997798727834358,
+   "top1pct_rate": 0.40723035554227666
+  },
+  "t2_k12": {
+   "base": 0.03667287295244869,
+   "auc": 0.6718840959538681,
+   "ap": 0.15649400171674205,
+   "top1pct_rate": 0.42067523155064235
+  },
+  "t3_k4": {
+   "base": 0.0010997976730911189,
+   "auc": 0.882762856687944,
+   "ap": 0.20237006168367308,
+   "top1pct_rate": 0.05168807887660592
+  },
+  "t3_k8": {
+   "base": 0.002208561088082437,
+   "auc": 0.7919701433542006,
+   "ap": 0.13146169246540534,
+   "top1pct_rate": 0.06513295488497162
+  },
+  "hc_k4": {
+   "base": 0.26745405804421307,
+   "auc": 0.7322327160664679,
+   "ap": 0.5426044092751038,
+   "top1pct_rate": 0.8234239617567971
+  },
+  "hc_k8": {
+   "base": 0.46934762273353514,
+   "auc": 0.6809124964244737,
+   "ap": 0.6689625421995898,
+   "top1pct_rate": 0.9052883178966239
+  },
+  "t1_k4": {
+   "base": 0.021057539142934845,
+   "auc": 0.806506358316302,
+   "ap": 0.2531590091837403,
+   "top1pct_rate": 0.5019420376456528
+  }
+ },
+ "results": [
+  {
+   "model": "t2_k4",
+   "lam": 1.0,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.4958,
+   "ci95": [
+    0.4326,
+    0.5591
+   ],
+   "elo": -2.9,
+   "elo_ci95": [
+    -47.1,
+    41.3
+   ],
+   "decisions_per_sec": 129.3,
+   "style": {
+    "knob": {
+     "placements": 22128,
+     "clears": 36.04,
+     "combos": 16.838,
+     "chains": 13.643,
+     "t1_plus": 0.352,
+     "t2_plus": 0.199,
+     "t3_plus": 0.0,
+     "horizontal": 8.659,
+     "horizontal_combo": 5.07,
+     "horizontal_share_of_clears": 0.2403,
+     "lines_per_clear": 1.554
+    },
+    "base": {
+     "placements": 21864,
+     "clears": 37.409,
+     "combos": 16.287,
+     "chains": 13.04,
+     "t1_plus": 0.174,
+     "t2_plus": 0.091,
+     "t3_plus": 0.018,
+     "horizontal": 8.722,
+     "horizontal_combo": 4.555,
+     "horizontal_share_of_clears": 0.2332,
+     "lines_per_clear": 1.498
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.0,
+   "pace": "top_humans",
+   "games": 240,
+   "knob_score": 0.5167,
+   "ci95": [
+    0.4534,
+    0.5799
+   ],
+   "elo": 11.6,
+   "elo_ci95": [
+    -32.4,
+    56.0
+   ],
+   "decisions_per_sec": 123.0,
+   "style": {
+    "knob": {
+     "placements": 37581,
+     "clears": 37.027,
+     "combos": 18.946,
+     "chains": 15.835,
+     "t1_plus": 0.407,
+     "t2_plus": 0.269,
+     "t3_plus": 0.005,
+     "horizontal": 9.273,
+     "horizontal_combo": 5.527,
+     "horizontal_share_of_clears": 0.2504,
+     "lines_per_clear": 1.619
+    },
+    "base": {
+     "placements": 37349,
+     "clears": 38.542,
+     "combos": 18.413,
+     "chains": 15.302,
+     "t1_plus": 0.214,
+     "t2_plus": 0.099,
+     "t3_plus": 0.008,
+     "horizontal": 9.069,
+     "horizontal_combo": 5.063,
+     "horizontal_share_of_clears": 0.2353,
+     "lines_per_clear": 1.558
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 4.0,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.1625,
+   "ci95": [
+    0.1158,
+    0.2092
+   ],
+   "elo": -284.9,
+   "elo_ci95": [
+    -353.1,
+    -231.0
+   ],
+   "decisions_per_sec": 95.9,
+   "style": {
+    "knob": {
+     "placements": 12206,
+     "clears": 29.461,
+     "combos": 12.183,
+     "chains": 9.528,
+     "t1_plus": 1.303,
+     "t2_plus": 1.286,
+     "t3_plus": 0.057,
+     "horizontal": 6.448,
+     "horizontal_combo": 3.826,
+     "horizontal_share_of_clears": 0.2189,
+     "lines_per_clear": 1.551
+    },
+    "base": {
+     "placements": 11777,
+     "clears": 36.809,
+     "combos": 16.677,
+     "chains": 12.966,
+     "t1_plus": 0.238,
+     "t2_plus": 0.11,
+     "t3_plus": 0.0,
+     "horizontal": 8.084,
+     "horizontal_combo": 4.492,
+     "horizontal_share_of_clears": 0.2196,
+     "lines_per_clear": 1.511
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 2.0,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.3417,
+   "ci95": [
+    0.2817,
+    0.4017
+   ],
+   "elo": -113.9,
+   "elo_ci95": [
+    -162.6,
+    -69.2
+   ],
+   "decisions_per_sec": 127.3,
+   "style": {
+    "knob": {
+     "placements": 21162,
+     "clears": 33.418,
+     "combos": 15.84,
+     "chains": 12.806,
+     "t1_plus": 0.907,
+     "t2_plus": 0.832,
+     "t3_plus": 0.066,
+     "horizontal": 8.236,
+     "horizontal_combo": 5.108,
+     "horizontal_share_of_clears": 0.2465,
+     "lines_per_clear": 1.598
+    },
+    "base": {
+     "placements": 20735,
+     "clears": 37.695,
+     "combos": 16.354,
+     "chains": 13.147,
+     "t1_plus": 0.135,
+     "t2_plus": 0.053,
+     "t3_plus": 0.005,
+     "horizontal": 8.917,
+     "horizontal_combo": 4.504,
+     "horizontal_share_of_clears": 0.2366,
+     "lines_per_clear": 1.493
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 2.0,
+   "pace": "top_humans",
+   "games": 240,
+   "knob_score": 0.4042,
+   "ci95": [
+    0.3421,
+    0.4663
+   ],
+   "elo": -67.4,
+   "elo_ci95": [
+    -113.6,
+    -23.5
+   ],
+   "decisions_per_sec": 118.6,
+   "style": {
+    "knob": {
+     "placements": 39188,
+     "clears": 35.041,
+     "combos": 18.077,
+     "chains": 15.165,
+     "t1_plus": 1.125,
+     "t2_plus": 1.021,
+     "t3_plus": 0.079,
+     "horizontal": 8.707,
+     "horizontal_combo": 5.456,
+     "horizontal_share_of_clears": 0.2485,
+     "lines_per_clear": 1.672
+    },
+    "base": {
+     "placements": 38410,
+     "clears": 38.245,
+     "combos": 18.654,
+     "chains": 15.233,
+     "t1_plus": 0.263,
+     "t2_plus": 0.135,
+     "t3_plus": 0.01,
+     "horizontal": 9.383,
+     "horizontal_combo": 5.184,
+     "horizontal_share_of_clears": 0.2453,
+     "lines_per_clear": 1.568
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 0.5,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.4708,
+   "ci95": [
+    0.4077,
+    0.534
+   ],
+   "elo": -20.3,
+   "elo_ci95": [
+    -64.9,
+    23.7
+   ],
+   "decisions_per_sec": 104.1,
+   "style": {
+    "knob": {
+     "placements": 24171,
+     "clears": 36.564,
+     "combos": 16.623,
+     "chains": 13.462,
+     "t1_plus": 0.236,
+     "t2_plus": 0.124,
+     "t3_plus": 0.004,
+     "horizontal": 8.398,
+     "horizontal_combo": 4.667,
+     "horizontal_share_of_clears": 0.2297,
+     "lines_per_clear": 1.527
+    },
+    "base": {
+     "placements": 23856,
+     "clears": 37.638,
+     "combos": 16.503,
+     "chains": 13.292,
+     "t1_plus": 0.151,
+     "t2_plus": 0.075,
+     "t3_plus": 0.0,
+     "horizontal": 8.987,
+     "horizontal_combo": 4.762,
+     "horizontal_share_of_clears": 0.2388,
+     "lines_per_clear": 1.502
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 0.5,
+   "pace": "top_humans",
+   "games": 240,
+   "knob_score": 0.4792,
+   "ci95": [
+    0.416,
+    0.5424
+   ],
+   "elo": -14.5,
+   "elo_ci95": [
+    -59.0,
+    29.5
+   ],
+   "decisions_per_sec": 106.3,
+   "style": {
+    "knob": {
+     "placements": 36752,
+     "clears": 37.677,
+     "combos": 18.706,
+     "chains": 15.523,
+     "t1_plus": 0.297,
+     "t2_plus": 0.19,
+     "t3_plus": 0.005,
+     "horizontal": 9.069,
+     "horizontal_combo": 5.189,
+     "horizontal_share_of_clears": 0.2407,
+     "lines_per_clear": 1.585
+    },
+    "base": {
+     "placements": 36077,
+     "clears": 38.174,
+     "combos": 18.652,
+     "chains": 15.492,
+     "t1_plus": 0.249,
+     "t2_plus": 0.114,
+     "t3_plus": 0.008,
+     "horizontal": 9.239,
+     "horizontal_combo": 5.067,
+     "horizontal_share_of_clears": 0.242,
+     "lines_per_clear": 1.571
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.5,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.4625,
+   "ci95": [
+    0.3994,
+    0.5256
+   ],
+   "elo": -26.1,
+   "elo_ci95": [
+    -70.9,
+    17.8
+   ],
+   "decisions_per_sec": 122.5,
+   "style": {
+    "knob": {
+     "placements": 22835,
+     "clears": 34.697,
+     "combos": 16.794,
+     "chains": 13.523,
+     "t1_plus": 0.604,
+     "t2_plus": 0.486,
+     "t3_plus": 0.044,
+     "horizontal": 8.566,
+     "horizontal_combo": 5.168,
+     "horizontal_share_of_clears": 0.2469,
+     "lines_per_clear": 1.589
+    },
+    "base": {
+     "placements": 22467,
+     "clears": 36.863,
+     "combos": 16.184,
+     "chains": 13.117,
+     "t1_plus": 0.147,
+     "t2_plus": 0.093,
+     "t3_plus": 0.004,
+     "horizontal": 8.924,
+     "horizontal_combo": 4.718,
+     "horizontal_share_of_clears": 0.2421,
+     "lines_per_clear": 1.506
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.5,
+   "pace": "top_humans",
+   "games": 240,
+   "knob_score": 0.4583,
+   "ci95": [
+    0.3953,
+    0.5214
+   ],
+   "elo": -29.0,
+   "elo_ci95": [
+    -73.8,
+    14.9
+   ],
+   "decisions_per_sec": 106.6,
+   "style": {
+    "knob": {
+     "placements": 38105,
+     "clears": 36.092,
+     "combos": 18.664,
+     "chains": 15.665,
+     "t1_plus": 0.688,
+     "t2_plus": 0.567,
+     "t3_plus": 0.037,
+     "horizontal": 8.666,
+     "horizontal_combo": 5.322,
+     "horizontal_share_of_clears": 0.2401,
+     "lines_per_clear": 1.642
+    },
+    "base": {
+     "placements": 37977,
+     "clears": 38.223,
+     "combos": 18.832,
+     "chains": 15.665,
+     "t1_plus": 0.255,
+     "t2_plus": 0.153,
+     "t3_plus": 0.018,
+     "horizontal": 9.387,
+     "horizontal_combo": 5.187,
+     "horizontal_share_of_clears": 0.2456,
+     "lines_per_clear": 1.577
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.5,
+   "pace": "super_human",
+   "games": 192,
+   "knob_score": 0.5156,
+   "ci95": [
+    0.4449,
+    0.5863
+   ],
+   "elo": 10.9,
+   "elo_ci95": [
+    -38.4,
+    60.6
+   ],
+   "decisions_per_sec": 105.5,
+   "style": {
+    "knob": {
+     "placements": 32304,
+     "clears": 35.751,
+     "combos": 18.79,
+     "chains": 15.911,
+     "t1_plus": 0.752,
+     "t2_plus": 0.628,
+     "t3_plus": 0.037,
+     "horizontal": 8.878,
+     "horizontal_combo": 5.377,
+     "horizontal_share_of_clears": 0.2483,
+     "lines_per_clear": 1.657
+    },
+    "base": {
+     "placements": 31721,
+     "clears": 38.259,
+     "combos": 18.515,
+     "chains": 15.267,
+     "t1_plus": 0.199,
+     "t2_plus": 0.076,
+     "t3_plus": 0.0,
+     "horizontal": 9.697,
+     "horizontal_combo": 5.299,
+     "horizontal_share_of_clears": 0.2535,
+     "lines_per_clear": 1.561
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.5,
+   "pace": "frame_perfect",
+   "games": 192,
+   "knob_score": 0.5208,
+   "ci95": [
+    0.4502,
+    0.5915
+   ],
+   "elo": 14.5,
+   "elo_ci95": [
+    -34.7,
+    64.3
+   ],
+   "decisions_per_sec": 107.9,
+   "style": {
+    "knob": {
+     "placements": 30247,
+     "clears": 36.513,
+     "combos": 18.432,
+     "chains": 15.423,
+     "t1_plus": 0.764,
+     "t2_plus": 0.595,
+     "t3_plus": 0.06,
+     "horizontal": 9.383,
+     "horizontal_combo": 5.693,
+     "horizontal_share_of_clears": 0.257,
+     "lines_per_clear": 1.636
+    },
+    "base": {
+     "placements": 29989,
+     "clears": 38.264,
+     "combos": 18.834,
+     "chains": 15.536,
+     "t1_plus": 0.23,
+     "t2_plus": 0.103,
+     "t3_plus": 0.007,
+     "horizontal": 9.347,
+     "horizontal_combo": 5.192,
+     "horizontal_share_of_clears": 0.2443,
+     "lines_per_clear": 1.57
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.5,
+   "pace": "fast",
+   "games": 192,
+   "knob_score": 0.5417,
+   "ci95": [
+    0.4712,
+    0.6121
+   ],
+   "elo": 29.0,
+   "elo_ci95": [
+    -20.0,
+    79.3
+   ],
+   "decisions_per_sec": 128.3,
+   "style": {
+    "knob": {
+     "placements": 29321,
+     "clears": 35.531,
+     "combos": 18.226,
+     "chains": 14.993,
+     "t1_plus": 0.645,
+     "t2_plus": 0.518,
+     "t3_plus": 0.027,
+     "horizontal": 8.854,
+     "horizontal_combo": 5.474,
+     "horizontal_share_of_clears": 0.2492,
+     "lines_per_clear": 1.638
+    },
+    "base": {
+     "placements": 28764,
+     "clears": 37.773,
+     "combos": 18.127,
+     "chains": 15.06,
+     "t1_plus": 0.247,
+     "t2_plus": 0.104,
+     "t3_plus": 0.0,
+     "horizontal": 9.512,
+     "horizontal_combo": 5.173,
+     "horizontal_share_of_clears": 0.2518,
+     "lines_per_clear": 1.56
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.25,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.4625,
+   "ci95": [
+    0.3994,
+    0.5256
+   ],
+   "elo": -26.1,
+   "elo_ci95": [
+    -70.9,
+    17.8
+   ],
+   "decisions_per_sec": 101.9,
+   "style": {
+    "knob": {
+     "placements": 22380,
+     "clears": 35.353,
+     "combos": 16.823,
+     "chains": 13.727,
+     "t1_plus": 0.416,
+     "t2_plus": 0.29,
+     "t3_plus": 0.013,
+     "horizontal": 8.695,
+     "horizontal_combo": 5.268,
+     "horizontal_share_of_clears": 0.246,
+     "lines_per_clear": 1.572
+    },
+    "base": {
+     "placements": 21793,
+     "clears": 37.507,
+     "combos": 16.372,
+     "chains": 13.064,
+     "t1_plus": 0.184,
+     "t2_plus": 0.106,
+     "t3_plus": 0.014,
+     "horizontal": 8.751,
+     "horizontal_combo": 4.676,
+     "horizontal_share_of_clears": 0.2333,
+     "lines_per_clear": 1.501
+    }
+   }
+  },
+  {
+   "model": "t2_k4",
+   "lam": 1.25,
+   "pace": "top_humans",
+   "games": 240,
+   "knob_score": 0.5042,
+   "ci95": [
+    0.4409,
+    0.5674
+   ],
+   "elo": 2.9,
+   "elo_ci95": [
+    -41.3,
+    47.1
+   ],
+   "decisions_per_sec": 119.7,
+   "style": {
+    "knob": {
+     "placements": 38471,
+     "clears": 36.76,
+     "combos": 18.929,
+     "chains": 15.799,
+     "t1_plus": 0.481,
+     "t2_plus": 0.374,
+     "t3_plus": 0.016,
+     "horizontal": 8.952,
+     "horizontal_combo": 5.492,
+     "horizontal_share_of_clears": 0.2435,
+     "lines_per_clear": 1.626
+    },
+    "base": {
+     "placements": 37543,
+     "clears": 38.239,
+     "combos": 18.677,
+     "chains": 15.494,
+     "t1_plus": 0.221,
+     "t2_plus": 0.123,
+     "t3_plus": 0.011,
+     "horizontal": 9.12,
+     "horizontal_combo": 4.973,
+     "horizontal_share_of_clears": 0.2385,
+     "lines_per_clear": 1.571
+    }
+   }
+  },
+  {
+   "model": "ablation: own-clear override only",
+   "lam": 1.5,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.5083,
+   "ci95": [
+    0.4451,
+    0.5716
+   ],
+   "elo": 5.8,
+   "elo_ci95": [
+    -38.3,
+    50.1
+   ],
+   "decisions_per_sec": 171.7,
+   "style": {
+    "knob": {
+     "placements": 24696,
+     "clears": 37.585,
+     "combos": 16.387,
+     "chains": 13.338,
+     "t1_plus": 0.198,
+     "t2_plus": 0.109,
+     "t3_plus": 0.0,
+     "horizontal": 8.686,
+     "horizontal_combo": 4.555,
+     "horizontal_share_of_clears": 0.2311,
+     "lines_per_clear": 1.497
+    },
+    "base": {
+     "placements": 24705,
+     "clears": 37.559,
+     "combos": 16.361,
+     "chains": 13.337,
+     "t1_plus": 0.182,
+     "t2_plus": 0.093,
+     "t3_plus": 0.0,
+     "horizontal": 8.776,
+     "horizontal_combo": 4.627,
+     "horizontal_share_of_clears": 0.2336,
+     "lines_per_clear": 1.497
+    }
+   }
+  },
+  {
+   "model": "ablation: own-clear override only",
+   "lam": 2.0,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.5083,
+   "ci95": [
+    0.4451,
+    0.5716
+   ],
+   "elo": 5.8,
+   "elo_ci95": [
+    -38.3,
+    50.1
+   ],
+   "decisions_per_sec": 175.6,
+   "style": {
+    "knob": {
+     "placements": 24696,
+     "clears": 37.585,
+     "combos": 16.387,
+     "chains": 13.338,
+     "t1_plus": 0.198,
+     "t2_plus": 0.109,
+     "t3_plus": 0.0,
+     "horizontal": 8.686,
+     "horizontal_combo": 4.555,
+     "horizontal_share_of_clears": 0.2311,
+     "lines_per_clear": 1.497
+    },
+    "base": {
+     "placements": 24705,
+     "clears": 37.559,
+     "combos": 16.361,
+     "chains": 13.337,
+     "t1_plus": 0.182,
+     "t2_plus": 0.093,
+     "t3_plus": 0.0,
+     "horizontal": 8.776,
+     "horizontal_combo": 4.627,
+     "horizontal_share_of_clears": 0.2336,
+     "lines_per_clear": 1.497
+    }
+   }
+  },
+  {
+   "model": "t2_k4 + hc_k4 lambda 1",
+   "lam": 1.5,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.3208,
+   "ci95": [
+    0.2618,
+    0.3799
+   ],
+   "elo": -130.3,
+   "elo_ci95": [
+    -180.1,
+    -85.1
+   ],
+   "decisions_per_sec": 74.6,
+   "style": {
+    "knob": {
+     "placements": 20752,
+     "clears": 33.298,
+     "combos": 15.57,
+     "chains": 12.553,
+     "t1_plus": 0.867,
+     "t2_plus": 0.81,
+     "t3_plus": 0.058,
+     "horizontal": 8.746,
+     "horizontal_combo": 5.349,
+     "horizontal_share_of_clears": 0.2627,
+     "lines_per_clear": 1.594
+    },
+    "base": {
+     "placements": 20074,
+     "clears": 37.501,
+     "combos": 16.773,
+     "chains": 13.515,
+     "t1_plus": 0.13,
+     "t2_plus": 0.07,
+     "t3_plus": 0.0,
+     "horizontal": 8.763,
+     "horizontal_combo": 4.683,
+     "horizontal_share_of_clears": 0.2337,
+     "lines_per_clear": 1.51
+    }
+   }
+  },
+  {
+   "model": "hc_k4 only, no own-clear override",
+   "lam": 1.0,
+   "pace": "normal",
+   "games": 240,
+   "knob_score": 0.5667,
+   "ci95": [
+    0.504,
+    0.6294
+   ],
+   "elo": 46.6,
+   "elo_ci95": [
+    2.8,
+    92.0
+   ],
+   "decisions_per_sec": 105.8,
+   "style": {
+    "knob": {
+     "placements": 25087,
+     "clears": 36.258,
+     "combos": 16.917,
+     "chains": 13.358,
+     "t1_plus": 0.223,
+     "t2_plus": 0.104,
+     "t3_plus": 0.0,
+     "horizontal": 9.674,
+     "horizontal_combo": 5.792,
+     "horizontal_share_of_clears": 0.2668,
+     "lines_per_clear": 1.544
+    },
+    "base": {
+     "placements": 24465,
+     "clears": 37.077,
+     "combos": 16.211,
+     "chains": 13.092,
+     "t1_plus": 0.127,
+     "t2_plus": 0.082,
+     "t3_plus": 0.008,
+     "horizontal": 9.091,
+     "horizontal_combo": 4.721,
+     "horizontal_share_of_clears": 0.2452,
+     "lines_per_clear": 1.503
+    }
+   }
+  }
+ ]
+}
