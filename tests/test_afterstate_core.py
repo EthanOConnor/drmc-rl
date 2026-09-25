@@ -232,3 +232,83 @@ def test_controller_core_trainer_accepts_the_afterstate_core(tmp_path):
     assert logits.shape[0] == len(records) and value.shape == (len(records),)
     (logits.log_softmax(-1)[:, 0].sum() + value.sum()).backward()
     assert net is not actor.net and actor.net.bottle.stem.weight.grad is not None
+
+
+def _settled_fields(rng, count):
+    """Gravity-consistent bottles: stacked viruses, singles and pill pairs."""
+
+    fields = []
+    for _ in range(count):
+        board = bytearray([0xFF] * 128)
+        heights = rng.integers(0, 14, size=8)
+        for col in range(8):
+            for row in range(15, 15 - int(heights[col]), -1):
+                board[row * 8 + col] = int(rng.choice((0x80, 0xD0, 0xD0))) | int(rng.integers(3))
+        for _ in range(int(rng.integers(0, 6))):
+            row, col = int(rng.integers(1, 16)), int(rng.integers(0, 7))
+            if board[row * 8 + col] != 0xFF and board[row * 8 + col + 1] != 0xFF:
+                board[row * 8 + col] = 0x60 | int(rng.integers(3))
+                board[row * 8 + col + 1] = 0x70 | int(rng.integers(3))
+        for _ in range(int(rng.integers(0, 6))):
+            row, col = int(rng.integers(1, 16)), int(rng.integers(0, 8))
+            if board[row * 8 + col] != 0xFF and board[(row - 1) * 8 + col] != 0xFF:
+                board[(row - 1) * 8 + col] = 0x40 | int(rng.integers(3))
+                board[row * 8 + col] = 0x50 | int(rng.integers(3))
+        fields.append(np.frombuffer(bytes(board), np.uint8))
+    return np.stack(fields)
+
+
+@pytest.mark.parametrize("generator", ["settled", "random"])
+def test_quiet_placements_equal_the_reference_cascade_exactly(generator):
+    from drmc_rl.game.afterstate import _quiet_placement, _stable_root
+
+    rng = np.random.default_rng(7)
+    fields = (_settled_fields(rng, 300) if generator == "settled"
+              else _random_fields(rng, 300))
+    quiet = checked = 0
+    for field in fields:
+        stable = _stable_root(field)
+        for action in range(512):
+            for pill in ((0, 0), (1, 2), (2, 1)):
+                try:
+                    after, raw = resolve_placement(field, pill, action)
+                except ValueError:
+                    if stable is not None:
+                        assert _quiet_placement(stable, pill, action) is None
+                    continue
+                checked += 1
+                if stable is None:
+                    continue
+                fast = _quiet_placement(stable, pill, action)
+                if fast is None:
+                    continue
+                quiet += 1
+                assert fast[0] == after
+                assert np.array_equal(fast[1], raw)
+    # Random placements are mostly mid-air or on lined roots; real lock
+    # positions are far more often quiet. Both paths must still be exercised.
+    assert checked and (quiet > 1000 or generator == "random")
+
+
+def test_batch_uses_the_fast_path_without_changing_results():
+    from drmc_rl.game import afterstate
+
+    rng = np.random.default_rng(3)
+    fields = _settled_fields(rng, 40)
+    planes = np.stack([board_bytes_to_semantic_planes(f) for f in fields])
+    actions = np.stack([rng.permutation(512)[:64] for _ in fields])
+    pills = rng.integers(0, 3, size=(len(fields), 2))
+    legal = np.zeros(actions.shape, bool)
+    for b, field in enumerate(fields):
+        for k, action in enumerate(actions[b]):
+            try:
+                resolve_placement(field, tuple(pills[b]), int(action))
+                legal[b, k] = True
+            except ValueError:
+                pass
+    tiles, facts = afterstate_batch(planes, pills, np.where(legal, actions, -1), legal)
+    for b, field in enumerate(fields):
+        for k in np.flatnonzero(legal[b]):
+            after, raw = resolve_placement(field, tuple(pills[b]), int(actions[b, k]))
+            assert np.array_equal(tiles[b, k], np.frombuffer(after, np.uint8))
+            assert np.array_equal(facts[b, k], raw / _FACT_SCALE)

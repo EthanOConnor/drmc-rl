@@ -199,6 +199,95 @@ def resolve_placement(field, pill, action: int) -> tuple[bytes, np.ndarray]:
     return after, facts
 
 
+def _stable_root(field):
+    """Root facts when the bottle is already settled with no line, else ``None``.
+
+    On such a bottle a placement that neither completes a line nor leaves one
+    of its own halves free to fall is a single no-op cascade pass, so
+    ``_quiet_placement`` can write the two tiles directly. Every other root or
+    placement takes the reference ``resolve_placement`` path.
+    """
+
+    root = bytes(np.asarray(field, dtype=np.uint8).reshape(128))
+    board = bytearray(root)
+    if _cascade._drop_pass(board) or bytes(board) != root or _mark_lines(board):
+        return None
+    return root, _viruses(root), _height(root), sum(tile != 0xFF for tile in root)
+
+
+def _run(board, index: int, step: int, color: int) -> int:
+    """Length of the same-color run through ``index`` along one axis."""
+
+    row, col = divmod(index, 8)
+    dr, dc = (0, 1) if step == 1 else (1, 0)
+    length = 1
+    for sign in (1, -1):
+        r, c = row + sign * dr, col + sign * dc
+        while 0 <= r < 16 and 0 <= c < 8 and board[r * 8 + c] & _cascade.MASK_COLOR == color:
+            length += 1
+            r, c = r + sign * dr, c + sign * dc
+    return length
+
+
+def _quiet_placement(stable, pill, action: int):
+    """Exact ``resolve_placement`` result for a placement that triggers no cascade, else ``None``.
+
+    With a settled, line-free root, the only tiles a gravity pass can move are
+    the two new halves (filling cells never unblocks anything), and any new
+    line must pass through a new half. When neither happens the ROM loop ends
+    after one pass that changes nothing.
+    """
+
+    root, before_viruses, root_height, occupied = stable
+    orientation, cell = divmod(int(action), 128)
+    if not 0 <= orientation < 4:
+        return None
+    row, col = divmod(cell, 8)
+    dr, dc = _SECOND[orientation]
+    row2, col2 = row + dr, col + dc
+    if not (0 <= row < 16 and 0 <= col < 8 and 0 <= row2 < 16 and 0 <= col2 < 8):
+        return None
+    first, second = row * 8 + col, row2 * 8 + col2
+    if root[first] != 0xFF or root[second] != 0xFF:
+        return None
+    board = bytearray(root)
+    low = (int(_CANONICAL_TO_NES[int(pill[0])]), int(_CANONICAL_TO_NES[int(pill[1])]))
+    board[first] = _TILE_TYPES[orientation][0] | low[0]
+    board[second] = _TILE_TYPES[orientation][1] | low[1]
+    if orientation in (1, 3):
+        # Vertical: only the bottom half can fall, into an empty cell below it.
+        below = max(first, second) + 8
+        if below < 128 and board[below] >= _cascade.TILE_JUST_EMPTIED:
+            return None
+    else:
+        # Horizontal: the ROM drops the pill only when both cells below are empty.
+        left, right = min(first, second), max(first, second)
+        if (right + 8 < 128 and board[right + 8] >= _cascade.TILE_JUST_EMPTIED
+                and board[left + 8] >= _cascade.TILE_JUST_EMPTIED):
+            return None
+    for index, color in ((first, low[0]), (second, low[1])):
+        if (_run(board, index, 1, color) >= _cascade.MIN_CHAIN
+                or _run(board, index, 8, color) >= _cascade.MIN_CHAIN):
+            return None
+    after = bytes(board)
+    after_height = max(root_height, 16 - min(row, row2))
+    facts = np.asarray(
+        (
+            0, 0, 0, 0, 0, 0, 0, 0,
+            after[_SPAWN_CELLS[0]] != 0xFF or after[_SPAWN_CELLS[1]] != 0xFF,
+            before_viruses,
+            False,
+            after_height,
+            after_height - root_height,
+            occupied + 2,
+            2,
+            before_viruses,
+        ),
+        dtype=np.float32,
+    )
+    return after, facts
+
+
 def afterstate_batch(
     own_planes: np.ndarray,
     pill: np.ndarray,
@@ -221,13 +310,15 @@ def afterstate_batch(
     for b in range(batch):
         colors = (int(pill[b, 0]), int(pill[b, 1]))
         seen: dict[int, int] = {}
+        stable = _stable_root(fields[b])
         for k in np.flatnonzero(mask[b]):
             action = int(actions[b, k])
             if action in seen:
                 j = seen[action]
                 tiles[b, k], facts[b, k] = tiles[b, j], facts[b, j]
                 continue
-            after, raw = resolve_placement(fields[b], colors, action)
+            quiet = _quiet_placement(stable, colors, action) if stable is not None else None
+            after, raw = quiet if quiet is not None else resolve_placement(fields[b], colors, action)
             tiles[b, k] = np.frombuffer(after, dtype=np.uint8)
             facts[b, k] = raw / _FACT_SCALE
             seen[action] = int(k)
