@@ -308,6 +308,27 @@ def csv(value):
 
 
 def cmd_entrant(args, client):
+    if args.action == "add-knob":
+        # A knob variant of an existing entrant: same weights, its own identity, parent = the base.
+        from drmc_rl.style import knobs
+        registry = client.get("/api/v1/pool/registry")
+        base = registry["entrants"][args.id]
+        entries = [knobs.parse(k) for k in args.knob]
+        knobs.validate_knobs(entries)
+        if not knobs.active(entries):
+            raise SystemExit("every lambda is 0: that is the base entrant itself")
+        settings = {k: v for k, v in (base.get("settings") or {}).items() if k != "knobs"}
+        settings["knobs"] = entries
+        eid = args.variant_id or (args.id + knobs.suffix(entries))
+        event = dict(type="entrant", id=eid, name=f"{base.get('name', args.id)} {knobs.suffix(entries)}",
+                     loader=base["loader"], checkpoint=base["checkpoint"], era=base["era"], status="active",
+                     settings=settings, tags=sorted(set(base.get("tags", [])) | {"knob"}),
+                     lineage=dict(parent=args.id, recipe="knob:" + "+".join(f"{k['id']}@{k['version']}" for k in entries)),
+                     notes=args.notes or f"knob variant of {args.id}")
+        if base.get("adapter"):
+            event["adapter"] = base["adapter"]
+        print(json.dumps(client.register(event)["event"]["id"]))
+        return
     if args.action == "list":
         registry = client.get("/api/v1/pool/registry")
         for e in sorted(registry["entrants"].values(), key=lambda r: (r["era"], r["id"])):
@@ -754,7 +775,9 @@ def main(argv=None):
 
     e = commands.add_parser("entrant", help="add, update or list entrants")
     remote(e)
-    e.add_argument("action", choices=("add", "set", "list"))
+    e.add_argument("action", choices=("add", "set", "list", "add-knob"))
+    e.add_argument("--knob", action="append", default=[], help="add-knob: id@version:lambda (repeatable, applied in order)")
+    e.add_argument("--variant-id", help="add-knob: override the id (default: base id + knob suffix)")
     e.add_argument("id", nargs="?")
     e.add_argument("--checkpoint")
     e.add_argument("--adapter")

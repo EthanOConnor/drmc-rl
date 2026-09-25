@@ -1,3 +1,8 @@
+> Superseded in the pool release by the general knob registry (`drmc_rl/style/knobs.py`,
+> docs/RATING_POOL.md "Knobs"): entrants use `settings.knobs = [{id: "showy-t2", version: 1,
+> lambda, model}]` and capabilities `knob:<id>@<version>`; the `showy_*` settings below are
+> no longer accepted.
+
 # Showy knob entrants in the rating pool (proposal)
 
 Branch `style/showy-knob` (based on `trainer/rating-pool` @79c3e1fd). The pool

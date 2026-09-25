@@ -3,7 +3,7 @@
 Mirrors one rating-pool match (``drmc_rl.pool.worker.Runtimes.play``): events
 backend, the pool's DEFAULT_RUNTIME, level 14, speed Hi, decision delay 4, both
 sides of every seed. Entrant ``knob`` is the anchor checkpoint with
-``showy_lambda``/``showy_model`` variant params (see ``variant_policy``);
+``knobs`` variant params (``drmc_rl.style.knobs``, see ``variant_policy``);
 entrant ``base`` is the bare anchor. Writes one small JSON summary (no traces).
 
     nice -n 10 python -m tools.showy_knob_h2h --tag "tools.trainer_planning_arena " \
@@ -124,11 +124,12 @@ class Runner:
         base = dict(name="base", delay=4, checkpoint=self.args.base_checkpoint or self.args.checkpoint)
         knob = dict(base, name=f"knob{lam}", checkpoint=self.args.checkpoint)
         if lam is not None:
-            knob.update(showy_lambda=float(lam), showy_model=model, showy_tier_bar=self.args.tier_bar)
+            knob["knobs"] = [dict(id="showy-t2", version=1, model=model, tier_bar=self.args.tier_bar,
+                                  **{"lambda": float(lam)})]
             if self.args.extra_model and lam:
                 from drmc_rl.style.showy_knob import ShowyModel
-                knob["showy_terms"] = [dict(model=ShowyModel.load(self.args.extra_model).spec,
-                                            **{"lambda": self.args.extra_lambda})]
+                knob["knobs"].append(dict(id="showy-hcombo", version=1, model=ShowyModel.load(self.args.extra_model).spec,
+                                          **{"lambda": self.args.extra_lambda}))
         return dict(knob=knob, base=base)
 
     def bare_policies(self, model):

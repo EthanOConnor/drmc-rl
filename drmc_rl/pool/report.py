@@ -11,9 +11,17 @@ from drmc_rl.pool import intentions as intent
 from drmc_rl.pool.ratings import MODEL, pooled, pooled_difference_se, superiority
 
 
+def knob_list(state, e):
+    """An entrant's active knobs as short labels, e.g. ['showy-t2@1:1.5']."""
+    from drmc_rl.style import knobs
+    return [f"{k['id']}@{k['version']}:{k['lambda']:g}"
+            for k in knobs.active((state.entrants.get(e, {}).get("settings") or {}).get("knobs"))]
+
+
 def _entrant_view(state, e):
     r = state.entrants[e]
     return dict(id=e, name=r.get("name", e), era=r["era"], status=r["status"], tags=r.get("tags", []),
+                knobs=knob_list(state, e),
                 lineage=r.get("lineage", {}), added_at=r.get("added_at"), notes=r.get("notes", ""))
 
 
@@ -52,6 +60,7 @@ def collapse_lineages(rows, state, difference_se=None, roles=None, partial=None,
     """
     if state is None:
         return rows
+    rows_all = rows
     out, groups = [], {}
     for r in rows:
         run = state.lineage_of(r["entrant"])
@@ -98,6 +107,19 @@ def collapse_lineages(rows, state, difference_se=None, roles=None, partial=None,
                 recent=recent(e) if recent else None, role=_role(roles, e, state), los=None,
                 incomplete=est.get("paces", "—")))
         rep["trajectory"].sort(key=lambda t: (t["step"], t["entrant"]))
+        # Knob variants of the run's snapshots (their lineage parent) follow as their own rows.
+        members_set = set(state.lineage_members(run))
+        by_entrant = {r["entrant"]: r for r in rows_all}
+        for e, record in sorted(state.entrants.items()):
+            parent = (record.get("lineage") or {}).get("parent")
+            if parent in members_set and knob_list(state, e):
+                r = by_entrant.get(e)
+                rep["trajectory"].append(dict(
+                    entrant=e, step=state.step_of(parent), frames=frames_label(state.step_of(parent)),
+                    rating=None if r is None else round(r["rating"]), ci95=None if r is None else _bounds(r),
+                    games=0 if r is None else r["games"], retired=record["status"] == "retired", shown=False,
+                    recent=recent(e) if recent else None, role="knob variant", los=None,
+                    knobs=knob_list(state, e), knob_of=parent))
         if recent is not None:
             # A run's row counts the last hour of every snapshot; the trajectory breaks it down.
             rep["recent_shown"] = rep.get("recent")
@@ -113,6 +135,8 @@ def display_rows(rows, difference_se, state=None, recent=None, roles=None, parti
     With ``state``, snapshots of a training run collapse to one row with its trajectory."""
     if recent is not None:
         rows = [dict(r, recent=recent(r["entrant"])) for r in rows]
+    if state is not None:
+        rows = [dict(r, knobs=knob_list(state, r["entrant"])) for r in rows]
     rows = sorted(collapse_lineages(rows, state, difference_se, roles, partial, recent), key=lambda r: -r["rating"])
     out = []
     for i, r in enumerate(rows):

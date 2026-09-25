@@ -235,6 +235,27 @@ combos 15.6, chains 12.8, garbage 34.1 (3–4 share 16%), T1+ 0.85, T2+ 0.15, T3
 0.012. Only games played since the counters were added carry them; entrants with
 fewer than 64 such games are marked.
 
+### Knobs (decision-time biases)
+
+An entrant may carry `settings.knobs = [{id, version, lambda, model[, tier_bar]}]`
+from the registry in `drmc_rl/style/knobs.py` (today `showy-t2@1`, `showy-hcombo@1`).
+Its logits become `logits + Σ λ_i · bias_i` over legal candidates, each bias centered
+over them, applied in the listed order; an empty list or every λ = 0 installs nothing
+(byte-identical to the plain entrant). Models are inline specs or `sha256:` of a model
+bundled in `drmc_rl/style/models`. Workers advertise `knob:<id>@<version>` for every
+registered knob; the coordinator refuses unknown knobs (or ids, versions, keys, paths),
+stores the derived `requires`, and leases a knob entrant only to workers advertising
+every one of its knobs. A version bump is a new capability. Create variants with
+`entrant add-knob BASE --knob showy-t2@1:1.5 [--knob ...]`: the id is
+`BASE+showy-t2@1:1.5`, the lineage parent is BASE, and the report lists the knobs and
+shows the variants in BASE's run trajectory. The old `showy_lambda`/`showy_model`
+settings are not accepted.
+
+Browser mirror (later): the professorPills web build currently takes one `showy` λ.
+Its config should carry the same knob list (`[{id, version, lambda, model: "sha256:…"}]`)
+with the models bundled by hash, so a pool entrant and a browser player with the same
+list are the same player.
+
 ## Operations
 
 Coordinator: **mombox** (always on, 458 GB free), `~/drmc-rl-pool/{src,venv,data}`,

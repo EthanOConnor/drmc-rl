@@ -749,6 +749,17 @@ class PoolCoordinator:
             self.validate_job_seeds(merged)
         if kind == "entrant":
             body.setdefault("status", self.state.entrants.get(body["id"], {}).get("status", "active"))
+            settings = body.get("settings", self.state.entrants.get(body["id"], {}).get("settings", {}))
+            from drmc_rl.pool.conditions import settings_requirements, validate_knob_settings
+            from drmc_rl.style import knobs as knob_registry
+            validate_knob_settings(settings)
+            unknown = settings_requirements(settings) - self.capabilities
+            if unknown:
+                raise ValueError(f"this coordinator does not implement {sorted(unknown)}")
+            if settings.get("knobs") is not None:
+                current = body.get("requires", self.state.entrants.get(body["id"], {}).get("requires", []))
+                body["requires"] = sorted(set(current) - {c for c in current if c.startswith("knob:")}
+                                          | knob_registry.requirements(settings.get("knobs")))
         if kind == "intention":
             body.setdefault("status", self.state.intentions.get(body["id"], {}).get("status", "planned"))
         event = self.state.record(kind, body, by=by)

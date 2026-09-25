@@ -1015,3 +1015,38 @@ def test_horizontal_clear_share_counts_clears_with_a_horizontal_line():
     assert (c["clears3"], c["hclears"]) == (2, 1)
     m = metrics(dict(c, games=1))
     assert m["horizontal"] == 0.5 and m["horizontal_lines"] == round(c["hlines"] / c["lines2"], 3)
+
+
+def test_knob_entrants_register_with_derived_requires_and_lease_only_to_capable_workers(tmp_path):
+    from drmc_rl.style import knobs
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
+    c = coordinator(tmp_path, settings=dict(background_min_share=0))
+    available_everything(c)
+    t2 = knobs.parse("showy-t2@1:1.5")
+    hc = knobs.parse("showy-hcombo@1:0.5")
+    c.register(dict(type="entrant", **dict(entrant("a+showy-t2@1:1.5+showy-hcombo@1:0.5"),
+                                          settings=dict(knobs=[t2, hc]), lineage=dict(parent="a"))))
+    rec = c.state.entrants["a+showy-t2@1:1.5+showy-hcombo@1:0.5"]
+    assert set(rec["requires"]) == {"knob:showy-t2@1", "knob:showy-hcombo@1"}
+    with pytest.raises(ValueError, match="unknown knob"):
+        c.register(dict(type="entrant", **dict(entrant("bad"), settings=dict(knobs=[dict(t2, id="showy-x")]))))
+    with pytest.raises(ValueError, match="unknown knob"):
+        c.register(dict(type="entrant", **dict(entrant("bad2"), settings=dict(knobs=[dict(t2, version=2)]))))
+    c.state.record("entrant", dict(id="a", status="benched"))
+    knobbed = "a+showy-t2@1:1.5+showy-hcombo@1:0.5"
+
+    def lease_for(caps):
+        w = dict(worker("w-" + str(len(caps))), capabilities=caps)
+        out = set()
+        for _ in range(6):
+            lease = c.lease(w)
+            if lease["status"] != "lease":
+                break
+            out |= {lease["batch"]["a"], lease["batch"]["b"]}
+        return out
+    base = [x for x in worker()["capabilities"] if not x.startswith("knob:")]
+    assert knobbed not in lease_for(base + ["knob:showy-t2@1"])                     # missing hcombo
+    assert knobbed not in lease_for(base + ["knob:showy-t2@2", "knob:showy-hcombo@1"])  # wrong version
+    assert knobbed in lease_for(base + ["knob:showy-t2@1", "knob:showy-hcombo@1"])
+    report = build_report(c)
+    assert next(e for e in report["entrants"] if e["id"] == knobbed)["knobs"] == ["showy-t2@1:1.5", "showy-hcombo@1:0.5"]

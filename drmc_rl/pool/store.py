@@ -435,11 +435,12 @@ def validate_entrant(record):
                  "early_delay_input", "movement", "checkpoint", "adapter_checkpoint", "anticipation"}
     if set(settings) & forbidden:
         raise ValueError(f"entrant settings may not set condition or loader keys: {sorted(set(settings) & forbidden)}")
-    from drmc_rl.pool.conditions import SHOWY_CAPABILITY, settings_requirements, validate_showy_settings
-    validate_showy_settings(settings)
-    if settings_requirements(settings) and SHOWY_CAPABILITY not in record.get("requires", []):
-        # Stored explicitly too, so a coordinator that predates the derived rule still withholds it.
-        raise ValueError(f"knob entrants must list requires: [{SHOWY_CAPABILITY!r}]")
+    from drmc_rl.pool.conditions import settings_requirements, validate_knob_settings
+    validate_knob_settings(settings)
+    missing = settings_requirements(settings) - set(record.get("requires", []))
+    if missing:
+        # Stored explicitly too (the coordinator fills them in), so an older coordinator still withholds it.
+        raise ValueError(f"knob entrants must list requires {sorted(missing)}")
     if not record.get("era"):
         raise ValueError("entrant needs an era tag")
 
