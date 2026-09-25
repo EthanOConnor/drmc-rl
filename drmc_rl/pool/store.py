@@ -60,6 +60,7 @@ DEFAULT_SETTINGS = dict(
     # Value-of-information background scheduling (drmc_rl/pool/voi.py).
     coverage_share=0.12,          # background leases that only keep every rating fresh
     new_entrant_ci=50.0,          # pooled 95% half-width above which an entrant is "new"
+    new_entrant_games=64,         # ... unless it already has this many games per condition of the set
     new_entrant_peers=4,          # established opponents (besides the anchor) a new entrant may play
     opponent_cap=0.25,            # max share of one opponent in an entrant's recent games per set
     anchor_floor=0.15,            # min anchor share in an entrant's recent games per set

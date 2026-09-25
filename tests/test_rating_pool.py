@@ -785,10 +785,20 @@ def test_a_new_entrant_plays_only_the_anchor_and_established_near_peers(tmp_path
     strengths["newbie"] = 0.1
     seen = set()
     for i in range(40):
+        early = sum(1 for r in c.state.games.values() if "newbie" in (r["a"], r["b"])) < 64
         lease = c.lease(worker(f"w{i % 3}"))
         spec = lease["batch"]
-        if "newbie" in (spec["a"], spec["b"]):
+        if early and "newbie" in (spec["a"], spec["b"]):
             seen.add(spec["b"] if spec["a"] == "newbie" else spec["a"])
         submit(c, lease, strengths)
     assert seen and "far" not in seen and seen <= {"anchor", "peer-up", "peer-down", "x-f100", "x-f150"}
     assert "anchor" in seen
+
+
+def test_a_lopsided_floor_entrant_does_not_keep_new_entrant_priority(tmp_path):
+    from drmc_rl.pool.voi import is_new
+    settings = dict(new_entrant_ci=50.0, new_entrant_games=64)
+    assert is_new("x", {}, settings, 7)
+    wide_but_played = {"x": dict(rating=700.0, se=80.0, games=7 * 64)}
+    wide_and_new = {"x": dict(rating=700.0, se=80.0, games=40)}
+    assert not is_new("x", wide_but_played, settings, 7) and is_new("x", wide_and_new, settings, 7)

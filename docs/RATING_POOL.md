@@ -143,14 +143,17 @@ pre-registered rule keep their own.
    counted at (pace weight / Σ weights)² on the condition dimension and times the
    set weight: each active run's newest vs best vs anchor and every resolving
    snapshot vs its open neighbours (weight 4 and 3); every new or uncertain
-   entrant's own rating (weight 8 while its pooled 95% half-width exceeds 50);
-   adjacent rows of the default weighted ranking (1.5·0.85^k from the top).
+   entrant's own rating (weight 8 while unrated, or while its pooled 95% half-width
+   exceeds 50 and it has fewer than 64 games per condition of the set);
+   adjacent rows of the default weighted ranking while their order is uncertain
+   (1.5·0.85^k from the top, times 4q(1−q) with q their LOS).
    Because the variance of X − Y is dominated by X's own when Y is well
    determined, this pairs uncertain entrants with established, near-rated
    opponents. 12% of background leases (`coverage_share`) are coverage leases
    whose targets are every active entrant's own rating, so none goes stale.
-   Rails: an entrant with a pooled half-width above 50 (or unrated) plays only the
-   anchor and the 4 most established entrants nearest its provisional rating;
+   Rails: such a new entrant plays only the
+   anchor and the 4 most established (pooled half-width ≤ 50) entrants nearest its
+   provisional rating;
    over an entrant's last 400 pool games in a set, a non-anchor opponent above 25%
    is discounted 20× and an anchor share below 15% triples the value of the
    anchor. Each lease records its reason and value (report: Recent leases), and

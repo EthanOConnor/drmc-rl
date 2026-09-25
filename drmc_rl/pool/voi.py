@@ -21,14 +21,15 @@ mean over conditions:
   anchor, and each resolving snapshot vs its unresolved neighbours;
 * new or uncertain entrants (weight ``new_entrant_boost``): own rating vs the
   anchor while its pooled 95% half-width exceeds ``new_entrant_ci``;
-* table (weight 1.5 * 0.85^k): adjacent rows k, k+1 of the default ranking.
+* table (weight 1.5 * 0.85^k * 4q(1-q), q their LOS): adjacent rows k, k+1 of the
+  default ranking while their order is uncertain.
 
 A separate coverage budget (``coverage_share`` of background leases) targets
 every active entrant's own rating at weight 1, so no rating goes stale and
 uncertain entrants improve.
 
-Safety rails: an entrant whose pooled half-width exceeds ``new_entrant_ci`` (or
-that is unrated) plays only the anchor and the ``new_entrant_peers`` most
+Safety rails: a new entrant (unrated, or pooled half-width above ``new_entrant_ci``
+with under ``new_entrant_games`` games per condition) plays only the anchor and the ``new_entrant_peers`` most
 established entrants nearest its provisional rating; over each entrant's last
 ``mix_window`` pool games in a set, an opponent above ``opponent_cap`` of them is
 discounted 20x and an anchor share below ``anchor_floor`` triples the value of
@@ -36,9 +37,11 @@ playing the anchor.
 """
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
-from drmc_rl.pool.ratings import pooled
+from drmc_rl.pool.ratings import pooled, superiority
 
 FRONTIER, RESOLVE = 4.0, 3.0
 
@@ -71,23 +74,38 @@ def set_targets(state, cset, view, roles, anchor, active, *, coverage, settings)
             if roles[e][0] == "resolving":
                 for o in roles[e][2]:
                     targets.append((e, o, RESOLVE, f"resolving {e} vs {o}"))
-    half = settings["new_entrant_ci"]
     for e in active:
         if e == anchor or e in side:
             continue
-        if e not in view or 1.96 * view[e]["se"] > half:
+        if is_new(e, view, settings, len(cset["conditions"])):
             targets.append((e, anchor, settings["new_entrant_boost"], f"new entrant {e}"))
     table = [e for e in sorted(view, key=lambda e: -view[e]["rating"]) if e in active and e not in side]
     for k in range(len(table) - 1):
-        targets.append((table[k], table[k + 1], 1.5 * 0.85 ** k, f"table #{k + 1} {table[k]} vs {table[k + 1]}"))
+        a, b = view[table[k]], view[table[k + 1]]
+        # Worth measuring only while the order is uncertain: 4 q (1 - q) with q the rows' LOS.
+        q = superiority(a["rating"] - b["rating"], math.hypot(a["se"], b["se"])) or 0.5
+        weight = 1.5 * 0.85 ** k * 4 * q * (1 - q)
+        if weight > 1e-3:
+            targets.append((table[k], table[k + 1], weight, f"table #{k + 1} {table[k]} vs {table[k + 1]}"))
     return targets
 
 
-def allowed_opponents(view, active, anchor, settings):
+def is_new(e, view, settings, conditions):
+    """Unrated, or uncertain (pooled 95% half-width above new_entrant_ci) with fewer than
+    new_entrant_games games per condition of the set: a lopsided record (e.g. a floor entrant
+    that loses every game) stays wide forever and must not keep new-entrant priority."""
+    if e not in view:
+        return True
+    return 1.96 * view[e]["se"] > settings["new_entrant_ci"] and \
+        view[e]["games"] < settings["new_entrant_games"] * conditions
+
+
+def allowed_opponents(view, active, anchor, settings, conditions=1):
     """New or uncertain entrants: anchor plus the most established entrants near their provisional rating."""
-    half = settings["new_entrant_ci"]
-    new = {e for e in active if e != anchor and (e not in view or 1.96 * view[e]["se"] > half)}
-    established = [e for e in active if e not in new and e != anchor and e in view]
+    new = {e for e in active if e != anchor and is_new(e, view, settings, conditions)}
+    # Established = well determined, not merely past the new-entrant game count.
+    established = [e for e in active if e not in new and e != anchor and e in view
+                   and 1.96 * view[e]["se"] <= settings["new_entrant_ci"]]
     allowed = {}
     for e in new:
         guess = view[e]["rating"] if e in view else settings["anchor_rating"]
@@ -155,7 +173,7 @@ def background_voi(scheduler, fits, worker_caps, inflight, *, coverage):
         targets = set_targets(state, cset, view, roles, anchor, active_all, coverage=coverage, settings=settings)
         if not targets:
             continue
-        new, allowed = allowed_opponents(view, active_all, anchor, settings)
+        new, allowed = allowed_opponents(view, active_all, anchor, settings, len(keys))
         mix = scheduler.opponent_mix(cset["name"])
         for condition, w_c in zip(keys, weights):
             active = [e for e in active_all if scheduler.playable(condition, e, worker_caps)]

@@ -160,8 +160,9 @@ class Scheduler:
         share = self.state.settings["coverage_share"]
         coverage = share > 0 and self.background_leases % max(1, round(1 / share)) == 0
         batch = background_voi(self, fits, worker_caps, inflight, coverage=coverage)
-        if batch is None and coverage:
-            batch = background_voi(self, fits, worker_caps, inflight, coverage=False)
+        if batch is None:
+            # Nothing undecided of the other kind: never leave a worker idle while ratings can improve.
+            batch = background_voi(self, fits, worker_caps, inflight, coverage=not coverage)
         return batch
 
     # -- the priority list -----------------------------------------------------------
