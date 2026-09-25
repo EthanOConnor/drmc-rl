@@ -189,7 +189,15 @@ function renderStyle(st) {
     const rows = [...s.entrants].sort((a, b) => key === "label" ? String(a.label).localeCompare(b.label)
       : ((key === "best" ? (b.best || {}).score : b[key]) ?? -1) - ((key === "best" ? (a.best || {}).score : a[key]) ?? -1));
     const head = STYLE_COLS.map(c => `<th class="${c[3]}"><button class="sort${c[0] === key ? " on" : ""}" data-sort="${esc(s.condition_set)}|${c[0]}">${c[1]}</button></th>`).join("");
-    const body = rows.map(r => `<tr>${STYLE_COLS.map(c => `<td class="${c[3]}">${c[2](r)}</td>`).join("")}</tr>`).join("") +
+    const body = rows.map(r => {
+      const key = `sty-${s.condition_set}-${r.lineage || ""}`;
+      const open = r.snapshots && expanded.has(key);
+      const cells = STYLE_COLS.map(c => `<td class="${c[3]}">${c[0] === "label" && r.snapshots
+        ? `<button class="tog" data-toggle="${esc(key)}" aria-expanded="${open}">${open ? "▾" : "▸"}</button>` + c[2](r) : c[2](r)}</td>`).join("");
+      const subs = open ? r.snapshots.map(x => `<tr class="sub">${STYLE_COLS.map(c => `<td class="${c[3]}">${
+        c[0] === "label" ? `&nbsp;&nbsp;${esc(x.frames)}${x.shown ? " <small>shown</small>" : ""}${x.few_games ? " <small>few games</small>" : ""}` : c[2](x)}</td>`).join("")}</tr>`).join("") : "";
+      return `<tr>${cells}</tr>${subs}`;
+    }).join("") +
       (st.human_rows || []).map(h => `<tr class="sub">${STYLE_COLS.map(c => `<td class="${c[3]}">${
         c[0] === "label" ? esc(h.label) + ' <small>(human reference)</small>' : c[0] === "horizontal" ? Math.round(1000 * h.horizontal) / 10 + "%"
         : ["t1", "t1p", "t2", "t3"].includes(c[0]) ? h[c[0]] : ""}</td>`).join("")}</tr>`).join("");

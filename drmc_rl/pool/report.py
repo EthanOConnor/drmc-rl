@@ -378,7 +378,7 @@ def worker_rows(coordinator, batches, now):
 
 def style_rows(coordinator):
     """Combo and showiness metrics per condition set (and per pace) from the counters workers
-    report with each pool game. Visibility only. Earlier snapshots of an active run are omitted."""
+    report with each pool game. Visibility only. One row per run with every snapshot in it."""
     from drmc_rl.pool.style import HUMAN, HUMAN_ROWS, add, metrics
     state = coordinator.state
     min_games = int(coordinator.settings["min_rated_games"])
@@ -396,15 +396,39 @@ def style_rows(coordinator):
             if counters:
                 add(totals.setdefault(name, {}).setdefault(e, {}), counters)
                 add(paces.setdefault(name, {}).setdefault(pace, {}).setdefault(e, {}), counters)
+    # The snapshot a run is shown by in the rankings: its strongest in the primary set's weighted view.
+    primary = primary_set(state)
+    fits = coordinator.all_fits()
+    view = {}
+    if primary and all(k in fits for k in primary["conditions"]):
+        view = pooled(fits, primary["conditions"], min_games=1, weights=coordinator.pace_weights(primary["conditions"]))
     out = []
     for name in sorted(totals, key=lambda n: (not state.condition_sets[n]["primary"], n)):
-        keep = [e for e in totals[name] if state.snapshot_role(e) != "older"]
-        out.append(dict(condition_set=name,
-                        entrants=sorted((dict(entrant=e, label=_style_label(state, e),
-                                              **metrics(totals[name][e], min_games=min_games)) for e in keep),
-                                        key=lambda r: -r["t1"]),
-                        paces={p: {e: metrics(t, min_games=min_games) for e, t in rows.items() if e in keep}
-                               for p, rows in sorted(paces[name].items())}))
+        table = totals[name]
+        rows, runs = [], {}
+        for e in table:
+            run = state.lineage_of(e)
+            if run is None:
+                rows.append(dict(entrant=e, label=e, **metrics(table[e], min_games=min_games)))
+            else:
+                runs.setdefault(run, []).append(e)
+        for run, members in runs.items():
+            # Every run with style data here appears: by its displayed snapshot when that one has data
+            # in this set, otherwise by its snapshot with the most games; the rest are expandable.
+            ranked = [e for e in state.lineage_members(run) if e in view]
+            shown = max(ranked, key=lambda e: (view[e]["rating"], state.step_of(e))) if ranked else None
+            pick = shown if shown in table else max(members, key=lambda e: (table[e].get("games", 0), state.step_of(e)))
+            snaps = [dict(entrant=e, label=_style_label(state, e), frames=frames_label(state.step_of(e)),
+                          shown=e == pick, **metrics(table[e], min_games=min_games))
+                     for e in sorted(members, key=lambda e: (state.step_of(e), e))]
+            rep = next(x for x in snaps if x["entrant"] == pick)
+            rows.append(dict(rep, label=_style_label(state, pick) + ("" if pick == shown or shown is None else
+                                                                       " (ranked snapshot has no style data here)"),
+                             lineage=run, snapshots=snaps))
+        keep = set(table)
+        out.append(dict(condition_set=name, entrants=sorted(rows, key=lambda r: -r["t1"]),
+                        paces={p: {e: metrics(t, min_games=min_games) for e, t in prow.items() if e in keep}
+                               for p, prow in sorted(paces[name].items())}))
     return dict(human=HUMAN, human_rows=list(HUMAN_ROWS), sets=out)
 
 

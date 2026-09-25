@@ -971,3 +971,24 @@ def test_last_hour_counts_reconcile_with_the_totals(tmp_path):
     assert hr["ranked"] + hr["unranked"] == hr["entrant_games"] and hr["unranked_entrants"] == ["b"]
     run = next(r for r in s0["pooled"] if r.get("lineage") == "h")
     assert run["recent"] == sum(t["recent"] for t in run["trajectory"]) == 3 * 2 * 2 * 20
+
+
+def test_style_lists_every_run_even_when_its_ranked_snapshot_has_no_style_data(tmp_path):
+    from drmc_rl.pool.style import side_style
+    state, (key,) = setup_state(tmp_path, entrants=("anchor",))
+    for i in range(3):
+        state.record("entrant", entrant(f"bc-f{i}", lineage=dict(run="bc", step=25_000_000 * (i + 1), parent="anchor")))
+    counters = dict(side_style([], 0), placements=100, placements2=100, clears=30, lines=40, lines2=40, t1=1)
+    # f0 and f1 have style counters; f2 (the strongest, newest) has rated games but none with counters.
+    for e, n, styled, score in (("bc-f0", 40, True, 0.4), ("bc-f1", 60, True, 0.5), ("bc-f2", 80, False, 1.0)):
+        rows = rows_for(key, e, "anchor", BANK[:n], score_a=score if score in (0.0, 1.0) else 0.5)
+        for r in rows:
+            if styled:
+                r["style"] = [counters, counters]
+        state.add_games(rows)
+    report = build_report(coordinator(tmp_path))
+    rows = {r.get("lineage") or r["entrant"]: r for r in report["style"]["sets"][0]["entrants"]}
+    assert "bc" in rows                                     # the run is listed although its best has no data
+    bc = rows["bc"]
+    assert bc["entrant"] == "bc-f1" and bc["label"].startswith("bc · 50M")      # most games among styled
+    assert [x["frames"] for x in bc["snapshots"]] == ["25M", "50M"] and bc["games"] == 120
