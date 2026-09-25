@@ -4468,7 +4468,7 @@
  "max_game_frames": 120000,
  "seed": 609151,
  "async_planning": true,
- "source_commit": "a180b2b0",
+ "source_commit": "47e03f03",
  "native_commit": "19f292c",
  "updates": 20000,
  "lr": 3e-06,
@@ -4502,5 +4502,7 @@
  "checkpoint_every_frames": 25000000,
  "new_branch_prefix": "afterstate.",
  "new_branch_lr_multiplier": 10.0,
- "new_branch_warmup_updates": 3
+ "new_branch_warmup_updates": 3,
+ "fill_inference_batches": true,
+ "deferred_reference": true
 }
