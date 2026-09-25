@@ -73,7 +73,8 @@ class PoolHandler(Handler):
                 return self._json(200, self._call(c.export_registry))
             if path == "/api/v1/pool/stop-rule":
                 q = dict(run=query["run"], condition_set=query.get("set"),
-                         min_games=int(query.get("min_games", 128)), patience=int(query.get("patience", 2)))
+                         min_games=int(query.get("min_games", 128)), patience=int(query.get("patience", 2)),
+                         step_every=int(query["step_every"]) if query.get("step_every") else None)
                 return self._json(200, self._call(c.stop_rule, q))
             m = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})/exists", path)
             if m:
@@ -596,7 +597,9 @@ def cmd_watch_run(args, client):
     directory = Path(args.dir).expanduser()
     seen = {}
     step_re = re.compile(args.step_regex)
+    configured = False
     while True:
+        registered_now = False
         registry = client.get("/api/v1/pool/registry")
         present = {e["checkpoint"]["sha256"] for e in registry["entrants"].values()}
         for path in sorted(directory.glob(args.pattern)):
@@ -617,9 +620,20 @@ def cmd_watch_run(args, client):
             entrant = args.id_format.format(run=args.run, step=step, stem=path.stem)
             register_snapshot(client, path, run=args.run, entrant_id=entrant, era=args.era, step=step,
                               parent=args.parent, recipe=args.recipe, panel_set=args.panel_set,
-                              panel_games=args.panel_games, panel_priority=args.panel_priority, anchor=args.anchor)
+                              panel_games=args.panel_games, panel_priority=args.panel_priority,
+                              panel_step_every=args.panel_step_every, anchor=args.anchor)
             present.add(record["sha256"])
+            registered_now = True
             print(json.dumps(dict(registered=entrant, step=step, sha256=record["sha256"])), flush=True)
+        if args.auto_conclude and args.panel_set and not configured:
+            client.register(dict(type="lineage", run=args.run, stop_rule=dict(
+                set=args.panel_set, min_games=args.panel_games, patience=2, step_every=args.panel_step_every,
+                auto=True), by=f"watch-run:{args.run}"))
+            configured = True
+        if args.final_marker and not registered_now and list(directory.glob(args.final_marker)):
+            print(json.dumps(client.register(dict(type="conclude", run=args.run,
+                                                  reason=f"final marker {args.final_marker} present"))), flush=True)
+            return
         if args.once:
             return
         time.sleep(args.poll)
@@ -640,10 +654,28 @@ def cmd_summary(args, client):
 
 def cmd_stop_rule(args, client):
     result = client.get("/api/v1/pool/stop-rule", run=args.run, set=args.set, min_games=args.min_games,
-                        patience=args.patience)
+                        patience=args.patience, step_every=args.step_every)
     print(json.dumps(result, indent=1))
     if args.exit_code:
         sys.exit(10 if result["fired"] else 0)
+
+
+def cmd_lineage(args, client):
+    if args.action == "list":
+        for row in client.get("/api/v1/pool/report")["lineages"]:
+            print(f"{row['status']:<10} {row['run']:<28} {row['members']:>3} snapshots  newest {row['newest']}"
+                  + (f"  best {row['best']}" if row.get("best") else ""))
+        return
+    if args.action == "conclude":
+        event = dict(type="conclude", run=args.run, reason=args.reason)
+        if args.best:
+            event["best"] = args.best
+        print(json.dumps(client.register(event), indent=1))
+        return
+    rule = dict(set=args.stop_set, min_games=args.min_games, patience=args.patience, auto=args.auto)
+    if args.step_every:
+        rule["step_every"] = args.step_every
+    print(json.dumps(client.register(dict(type="lineage", run=args.run, stop_rule=rule))["event"], indent=1))
 
 
 def cmd_rate(args):
@@ -801,6 +833,11 @@ def main(argv=None):
     wr.add_argument("--panel-set", help="condition set of the run's open stop-rule panel job")
     wr.add_argument("--panel-games", type=int, default=128)
     wr.add_argument("--panel-priority", type=int, default=60)
+    wr.add_argument("--panel-step-every", type=int,
+                    help="panel and stop rule only on snapshots at multiples of this many frames (e.g. 50000000)")
+    wr.add_argument("--auto-conclude", action="store_true",
+                    help="let the pool stop rule on --panel-set conclude the run when it fires")
+    wr.add_argument("--final-marker", help="glob in --dir whose appearance means the run is finished")
     wr.add_argument("--anchor")
     wr.add_argument("--settle", type=float, default=120.0)
     wr.add_argument("--poll", type=float, default=120.0)
@@ -812,7 +849,20 @@ def main(argv=None):
     sr.add_argument("--set")
     sr.add_argument("--min-games", type=int, default=128)
     sr.add_argument("--patience", type=int, default=2)
+    sr.add_argument("--step-every", type=int, help="only snapshots at multiples of this many frames")
     sr.add_argument("--exit-code", action="store_true", help="exit 10 when the rule has fired")
+
+    lg = commands.add_parser("lineage", help="training-run lineages: list, conclude, or set the pool stop rule")
+    remote(lg)
+    lg.add_argument("action", choices=("list", "conclude", "set"))
+    lg.add_argument("run", nargs="?")
+    lg.add_argument("--best", help="conclude: the snapshot to keep (default: stop-rule selection, else final)")
+    lg.add_argument("--reason", default="marked done")
+    lg.add_argument("--stop-set", help="set: condition set of the pool stop rule")
+    lg.add_argument("--step-every", type=int)
+    lg.add_argument("--min-games", type=int, default=128)
+    lg.add_argument("--patience", type=int, default=2)
+    lg.add_argument("--auto", action="store_true", help="set: conclude automatically when the stop rule fires")
 
     su = commands.add_parser("summary", help="CLI summary (or --json FILE for the full export)")
     remote(su)
@@ -843,7 +893,8 @@ def main(argv=None):
                         **{"condition-set": lambda: cmd_condition_set(args, client),
                            "import-study": lambda: cmd_import_study(args, client),
                            "watch-run": lambda: cmd_watch_run(args, client),
-                           "stop-rule": lambda: cmd_stop_rule(args, client)})
+                           "stop-rule": lambda: cmd_stop_rule(args, client),
+                           "lineage": lambda: cmd_lineage(args, client)})
         dispatch[args.command]()
 
 

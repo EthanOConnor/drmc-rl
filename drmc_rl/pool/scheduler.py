@@ -78,6 +78,9 @@ class Scheduler:
         state = self.state
         conditions = state.expand_conditions(job["conditions"])
         entrants = state.resolve_entrants(job.get("entrants", []))
+        if job.get("step_every"):
+            # Stop-rule panels stay on their pre-registered snapshot marks (e.g. every 50M frames).
+            entrants = [e for e in entrants if state.lineage_of(e) is None or state.step_of(e) % job["step_every"] == 0]
         items = []
         for condition in conditions:
             anchor = state.anchor_for(condition)
@@ -168,7 +171,11 @@ class Scheduler:
                     if e == anchor:
                         return 0.0
                     return (ratings[e].se / ELO_SCALE) ** 2 if e in ratings and ratings[e].games else prior_var
-                rated = sorted((e for e in active if e in ratings and ratings[e].games), key=lambda e: ratings[e].rating)
+                # Earlier snapshots of an active run are not opponents for others: a lineage
+                # shares one entrant's worth of background budget, carried by its newest snapshot.
+                role = {e: state.snapshot_role(e) for e in active}
+                rated = sorted((e for e in active if e in ratings and ratings[e].games and role[e] != "older"),
+                               key=lambda e: ratings[e].rating)
                 era_best = {}
                 for e in rated:
                     era = state.entrants[e]["era"]
@@ -180,6 +187,10 @@ class Scheduler:
                     g = games(e)
                     boost = 1.0 + settings["new_entrant_boost"] * (g < settings["min_rated_games"]) \
                         + settings["underplayed_boost"] * max(0.0, 1.0 - g / settings["target_games"])
+                    if role[e] == "older":
+                        half = 1.96 * ratings[e].se if e in ratings and g else float("inf")
+                        boost = settings["maintenance_share"] if half > settings["maintenance_ci"] \
+                            else settings["maintenance_idle"]
                     # An unplayed entrant is anchored first; afterwards eras and neighbours join.
                     opponents = [anchor] if not g else [anchor, *era_best.values()]
                     if e in ratings and g:
@@ -200,7 +211,7 @@ class Scheduler:
                         batch = self._batch(condition, a, b, self.seed_source(None, condition), inflight,
                                             self.pairs_per_batch(condition), why=(
                                                 f"background {cset['name']}: value {value:.3g}"
-                                                f"{' (new entrant)' if g < settings['min_rated_games'] else ''}"))
+                                                f"{' (maintenance)' if role[e] == 'older' else ' (new entrant)' if g < settings['min_rated_games'] else ''}"))
                         if batch is not None:
                             best = (key, batch)
         return None if best is None else best[1]

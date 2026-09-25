@@ -14,19 +14,65 @@ def _entrant_view(state, e):
                 lineage=r.get("lineage", {}), added_at=r.get("added_at"), notes=r.get("notes", ""))
 
 
-def display_rows(rows, difference_se):
+def frames_label(step):
+    step = int(step or 0)
+    if step >= 10 ** 9:
+        return f"{step / 1e9:.3g}B"
+    return f"{step / 1e6:.4g}M" if step else "0"
+
+
+def _bounds(r):
+    return [round(r["rating"] - 1.96 * r["se"]), round(r["rating"] + 1.96 * r["se"])]
+
+
+def collapse_lineages(rows, state):
+    """One row per training run: its best snapshot once concluded, else its newest rated one.
+
+    The row carries the run's trajectory (every rated snapshot, retired ones included,
+    by frames). Entrants outside lineages pass through unchanged.
+    """
+    if state is None:
+        return rows
+    out, groups = [], {}
+    for r in rows:
+        run = state.lineage_of(r["entrant"])
+        if run is None:
+            out.append(r)
+        else:
+            groups.setdefault(run, []).append(r)
+    for run, members in groups.items():
+        members.sort(key=lambda r: (state.step_of(r["entrant"]), r["entrant"]))
+        record = state.lineages.get(run, {})
+        present = {r["entrant"]: r for r in members}
+        if state.lineage_status(run) == "concluded":
+            pick = record.get("best") if record.get("best") in present else max(present, key=lambda e: present[e]["rating"])
+        else:
+            live = [r["entrant"] for r in members if state.entrants[r["entrant"]]["status"] != "retired"]
+            pick = (live or [members[-1]["entrant"]])[-1]
+        rep = dict(present[pick], lineage=run, lineage_status=state.lineage_status(run),
+                   label=f"{run} · {frames_label(state.step_of(pick))}",
+                   trajectory=[dict(entrant=r["entrant"], step=state.step_of(r["entrant"]),
+                                    frames=frames_label(state.step_of(r["entrant"])), rating=round(r["rating"]),
+                                    ci95=_bounds(r), games=r["games"],
+                                    retired=state.entrants[r["entrant"]]["status"] == "retired",
+                                    shown=r["entrant"] == pick) for r in members])
+        out.append(rep)
+    return out
+
+
+def display_rows(rows, difference_se, state=None):
     """Rows sorted strongest first, for display: integer rating and 95% bounds, and the
     likelihood of superiority over the next row, P(rating_i > rating_i+1), from the fitted
-    covariance of the two estimates (None for the last row or when it is undefined)."""
-    rows = sorted(rows, key=lambda r: -r["rating"])
+    covariance of the two estimates (None for the last row or when it is undefined).
+    With ``state``, snapshots of a training run collapse to one row with its trajectory."""
+    rows = sorted(collapse_lineages(rows, state), key=lambda r: -r["rating"])
     out = []
     for i, r in enumerate(rows):
         below = rows[i + 1] if i + 1 < len(rows) else None
         los = None if below is None else superiority(r["rating"] - below["rating"],
                                                        difference_se(r["entrant"], below["entrant"]))
         out.append(dict(r, rating=round(r["rating"]), se=round(r["se"], 1),
-                        ci95=[round(r["rating"] - 1.96 * r["se"]), round(r["rating"] + 1.96 * r["se"])],
-                        los=None if los is None else round(los, 4)))
+                        ci95=_bounds(r), los=None if los is None else round(los, 4)))
     return out
 
 
@@ -57,7 +103,7 @@ def build_report(coordinator):
         conditions.append(dict(key=key, name=c["name"], spec=c["spec"], games=games,
                                anchor=None if f is None else f.anchor,
                                ratings=[] if f is None else display_rows([r.to_dict() for r in f.ratings.values()],
-                                                                         f.difference_se),
+                                                                         f.difference_se, state),
                                unanchored=[] if f is None else f.unanchored))
     sets = []
     for cset in sorted(state.condition_sets.values(), key=lambda s: (not s["primary"], s["name"])):
@@ -69,7 +115,7 @@ def build_report(coordinator):
                          paces=paces,
                          notes=cset["notes"], conditions=[state.conditions[k]["name"] for k in cset["conditions"]],
                          pooled=display_rows(list(view.values()), lambda a, b, c=cset["conditions"]:
-                                             pooled_difference_se(fits, c, a, b))))
+                                             pooled_difference_se(fits, c, a, b), state)))
     primary = primary_set(state)
     primary_view = pooled(fits, primary["conditions"], min_games=1) if primary else {}
     eras = {}
@@ -88,6 +134,8 @@ def build_report(coordinator):
     new = []
     week = (datetime.now(timezone.utc) - timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
     for e in state.entrant_ids(("active", "benched")):
+        if state.snapshot_role(e) == "older":
+            continue
         per = {}
         for key in (primary["conditions"] if primary else []):
             f = fits.get(key)
@@ -123,6 +171,10 @@ def build_report(coordinator):
         condition_sets=sets, conditions=conditions,
         eras=sorted(eras.values(), key=lambda s: -(s["best"] or {}).get("rating", -1e9)),
         new_entrants=new, entrants=[_entrant_view(state, e) for e in sorted(state.entrants)], jobs=jobs,
+        lineages=[dict(run=run, status=state.lineage_status(run), members=len(state.lineage_members(run)),
+                       newest=state.newest(run), **{k: v for k, v in state.lineages.get(run, {}).items()
+                                                    if k in ("best", "final", "reason", "stop_rule")})
+                  for run in state.lineage_runs()],
         intentions=intent.roadmap(state, coordinator.capabilities),
         workers=workers, blocks=list(state.blocks.values()),
         fidelity=dict(mode=settings["fidelity"], min_agreement=settings["min_agreement"],
@@ -130,7 +182,7 @@ def build_report(coordinator):
                       pending_audits=len(coordinator.audits)))
 
 
-def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2):
+def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2, step_every=None):
     """Pre-registered-style stop rule computed from pool ratings.
 
     Snapshots are the entrants whose ``lineage.run`` is ``run``, ordered by
@@ -140,10 +192,14 @@ def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2
     every earlier snapshot. The rule fires after ``patience`` consecutive
     non-improving snapshots; a snapshot with fewer than ``min_games`` games in
     any condition of the set is pending and stops evaluation there.
+    ``step_every`` keeps the rule on its registered snapshot marks (e.g. every
+    50M frames); snapshots between marks are trajectory only.
     """
     state = coordinator.state
     snapshots = sorted((e for e, r in state.entrants.items() if (r.get("lineage") or {}).get("run") == run),
                        key=lambda e: (state.entrants[e]["lineage"].get("step", 0), e))
+    if step_every:
+        snapshots = [e for e in snapshots if state.step_of(e) % int(step_every) == 0]
     if not snapshots:
         raise KeyError(f"no entrants with lineage.run {run!r}")
     cset = state.condition_sets[condition_set] if condition_set else primary_set(state)
@@ -176,7 +232,8 @@ def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2
         rows.append(row)
     return dict(run=run, condition_set=cset["name"], rule=f"stop after {patience} consecutive snapshots whose pooled "
                 f"rating does not exceed the best of the parent and earlier snapshots", parent=parent,
-                min_games=min_games, snapshots=rows, fired=fired, selected=best, pending=pending)
+                min_games=min_games, step_every=step_every, snapshots=rows, fired=fired, selected=best,
+                pending=pending)
 
 
 def summary_text(report):
@@ -190,7 +247,7 @@ def summary_text(report):
         lines.append(f"  {'rating':>6}  {'95% CI':>11}  {'LOS':>4}  {'entrant':<44} {'games':>6}")
         for r in s["pooled"][:25]:
             lines.append(f"  {r['rating']:>6}  {r['ci95'][0]:>5}–{r['ci95'][1]:<5}  {los_text(r['los']):>4}  "
-                         f"{r['entrant']:<44} {r['games']:>6}")
+                         f"{r.get('label', r['entrant']):<44} {r['games']:>6}")
     lines.append("\n[eras] best per era (primary set)")
     for era in report["eras"]:
         b = era["best"]

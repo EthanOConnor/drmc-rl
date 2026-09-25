@@ -360,8 +360,9 @@ def test_stop_rule_fires_after_two_non_improving_snapshots(tmp_path):
     assert statuses == ["improved", "improved", "not improved", "not improved"]
     assert result["fired"] and result["selected"]["entrant"] == "run-f2"
     report = build_report(c)
-    assert report["condition_sets"][0]["pooled"][0]["entrant"] == "run-f2"
-    assert "run-f2" in summary_text(report)
+    run_row = [r for r in report["condition_sets"][0]["pooled"] if r.get("lineage") == "run"]
+    assert len(run_row) == 1 and run_row[0]["entrant"] == "run-f4"     # active run: its newest snapshot
+    assert len(run_row[0]["trajectory"]) == 4 and "run · " in summary_text(report)
 
 
 # ------------------------------------------------------------------------------ end to end over HTTP
@@ -490,3 +491,69 @@ def test_report_shows_integer_elo_and_likelihood_of_superiority(tmp_path):
     line = next(l for l in text.splitlines() if " a " in f" {l.split()[3] if len(l.split()) > 3 else ''} ")
     assert "." not in line.split()[0] and "%" in line
     assert "report.json" in PAGE and "setInterval(load, 60000)" in PAGE and "prefers-color-scheme:dark" in PAGE
+
+
+def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a"))
+    steps = [0, 25_000_000, 50_000_000, 75_000_000, 100_000_000]
+    for i, step in enumerate(steps):
+        state.record("entrant", entrant(f"run-f{i}", lineage=dict(run="run", step=step, parent="anchor")))
+    rng = random.Random(5)
+    truth = [0.1, 0.3, 0.6, 0.4, 0.5]
+    for i, t in enumerate(truth[:-1]):          # the newest snapshot is unplayed
+        p = 1 / (1 + math.exp(-t))
+        for seed in BANK[:150]:
+            rows = rows_for(key, f"run-f{i}", "anchor", [seed])
+            for row in rows:
+                won = float(rng.random() < p)
+                row["score"] = won if row["a"] == f"run-f{i}" else 1 - won
+            state.add_games(rows)
+    assert state.snapshot_role("run-f4") == "newest" and state.snapshot_role("run-f1") == "older"
+    c = coordinator(tmp_path)
+    available_everything(c)
+    # The newest snapshot carries the lineage's new-entrant priority; older ones are maintenance only.
+    batch = c.lease(worker())["batch"]
+    assert "run-f4" in (batch["a"], batch["b"]) and "new entrant" in batch["why"]
+    # The pooled table shows one row for the run, labelled with frames, with its trajectory.
+    report = build_report(c)
+    rows = report["condition_sets"][0]["pooled"]
+    run_rows = [r for r in rows if r.get("lineage") == "run"]
+    assert len(run_rows) == 1 and run_rows[0]["label"] == "run · 75M"      # newest rated snapshot
+    assert [p["frames"] for p in run_rows[0]["trajectory"]] == ["0", "25M", "50M", "75M"]
+    assert not {r["entrant"] for r in rows} & {"run-f0", "run-f1", "run-f2"}
+    # A 50M-mark stop rule ignores the 25M/75M snapshots; a panel job with step_every does too.
+    rule = stop_rule(c, run="run", min_games=128, step_every=50_000_000)
+    assert [s["entrant"] for s in rule["snapshots"]] == ["run-f0", "run-f2", "run-f4"]
+    c.register(dict(type="job", id="panel", games=64, conditions=["set:main"], entrants=["run-*"],
+                    step_every=50_000_000, priority=60))
+    assert {a for _, a, b in c.scheduler.job_items(c.state.jobs["panel"])} | \
+        {b for _, a, b in c.scheduler.job_items(c.state.jobs["panel"])} == {"anchor", "run-f0", "run-f2", "run-f4"}
+    # Concluding keeps the best and final snapshots active and retires the rest (still rated).
+    out = c.register(dict(type="conclude", run="run", reason="done"))
+    assert out["best"] == "run-f2" and out["final"] == "run-f4"
+    status = {e: c.state.entrants[e]["status"] for e in c.state.lineage_members("run")}
+    assert status == {"run-f0": "retired", "run-f1": "retired", "run-f2": "active", "run-f3": "retired",
+                      "run-f4": "active"}
+    rows = build_report(c)["condition_sets"][0]["pooled"]
+    shown = [r for r in rows if r.get("lineage") == "run"][0]
+    assert shown["entrant"] == "run-f2" and any(p["retired"] for p in shown["trajectory"])
+    # Replay reproduces the concluded lineage.
+    assert PoolState(tmp_path).lineages["run"]["status"] == "concluded"
+
+
+def test_pool_stop_rule_concludes_an_opted_in_lineage(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor",))
+    for i, t in enumerate([0.8, 0.2, 0.1]):
+        e = f"auto-f{i}"
+        state.record("entrant", entrant(e, lineage=dict(run="auto", step=50_000_000 * i, parent="anchor")))
+        p = 1 / (1 + math.exp(-t))
+        rng = random.Random(i)
+        for seed in BANK[:150]:
+            rows = rows_for(key, e, "anchor", [seed])
+            for row in rows:
+                won = float(rng.random() < p)
+                row["score"] = won if row["a"] == e else 1 - won
+            state.add_games(rows)
+    state.record("lineage", dict(run="auto", stop_rule=dict(set="main", min_games=128, auto=True)))
+    c = coordinator(tmp_path)
+    assert c.state.lineages["auto"]["status"] == "concluded" and c.state.lineages["auto"]["best"] == "auto-f0"

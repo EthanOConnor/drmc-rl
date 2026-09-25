@@ -60,6 +60,12 @@ DEFAULT_SETTINGS = dict(
     trust=["mps/"],
     refit_seconds=20.0,
     default_anchor="champion-retention-mixed-v2",
+    # Lineages (snapshots of one training run): older snapshots of an active run get a thin
+    # maintenance share until their per-condition 95% half-width is below maintenance_ci
+    # (75 per condition is about +/-28 pooled over seven paces), then only occasional games.
+    maintenance_ci=75.0,
+    maintenance_share=0.1,
+    maintenance_idle=0.01,
     max_download_streams=2,
     download_mb_per_second=20.0,
 )
@@ -153,6 +159,7 @@ class PoolState:
         (self.dir / "spool").mkdir(exist_ok=True)
         self.entrants, self.conditions, self.condition_names = {}, {}, {}
         self.condition_sets, self.jobs, self.intentions = {}, {}, {}
+        self.lineages = {}                     # run -> {status, best, final, stop_rule, reason}
         self.admitted, self.blocks = {}, {}
         self.history = defaultdict(list)       # (kind, id) -> events, for reports
         self.games = {}                        # id -> row
@@ -225,6 +232,18 @@ class PoolState:
             merged["updated_at"] = event["time"]
             self.intentions[record["id"]] = merged
             self.history[("intention", record["id"])].append(event)
+        elif kind == "lineage":
+            record = {k: v for k, v in event.items() if k not in ("type", "time", "by")}
+            check_name(record["run"])
+            merged = {**self.lineages.get(record["run"], dict(status="active")), **record}
+            if merged["status"] not in ("active", "concluded"):
+                raise ValueError("lineage status must be active or concluded")
+            rule = merged.get("stop_rule")
+            if rule is not None and (not isinstance(rule, dict) or "set" not in rule):
+                raise ValueError("lineage stop_rule needs at least a condition set")
+            merged["updated_at"] = event["time"]
+            self.lineages[record["run"]] = merged
+            self.history[("lineage", record["run"])].append(event)
         elif kind == "admission":
             self.admitted[event["numerics"]] = event["verdict"]
             self._stats.clear()
@@ -326,6 +345,33 @@ class PoolState:
     def resolve_entrants(self, patterns, statuses=ENTRANT_STATUSES):
         return pattern_match(patterns, self.entrant_ids(statuses))
 
+    # -- lineages (snapshots of one training run) -----------------------------------
+    def lineage_of(self, entrant):
+        return ((self.entrants.get(entrant) or {}).get("lineage") or {}).get("run")
+
+    def step_of(self, entrant):
+        return int(((self.entrants.get(entrant) or {}).get("lineage") or {}).get("step") or 0)
+
+    def lineage_members(self, run):
+        return sorted((e for e in self.entrants if self.lineage_of(e) == run), key=lambda e: (self.step_of(e), e))
+
+    def lineage_status(self, run):
+        return self.lineages.get(run, {}).get("status", "active")
+
+    def lineage_runs(self):
+        return sorted({self.lineage_of(e) for e in self.entrants} - {None})
+
+    def newest(self, run):
+        members = [e for e in self.lineage_members(run) if self.entrants[e]["status"] != "retired"]
+        return members[-1] if members else None
+
+    def snapshot_role(self, entrant):
+        """None (not a lineage snapshot), 'newest', or 'older' (an earlier snapshot of an active run)."""
+        run = self.lineage_of(entrant)
+        if run is None or self.lineage_status(run) != "active":
+            return None
+        return "newest" if self.newest(run) == entrant else "older"
+
     def blocked(self, condition, a, b=None):
         keys = [(condition, a, None)]
         if b is not None:
@@ -387,6 +433,8 @@ def validate_job(job):
     seeds = job.get("seeds", "bank")
     if seeds != "bank" and not (isinstance(seeds, dict) and ("allocation" in seeds or "explicit" in seeds)):
         raise ValueError("job seeds must be 'bank', {'allocation': study} or {'explicit': {condition: [seeds]}}")
+    if job.get("step_every") is not None and (type(job["step_every"]) is not int or job["step_every"] < 1):
+        raise ValueError("job step_every must be a positive integer (frames)")
     if not isinstance(job.get("priority", 50), (int, float)):
         raise ValueError("job priority must be a number")
 

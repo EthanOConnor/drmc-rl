@@ -89,7 +89,8 @@ def artifact_record(path, digest=None):
 
 
 def register_snapshot(client, path, *, run, entrant_id, era, step, parent=None, recipe=None, name=None,
-                      panel_set=None, panel_games=128, panel_priority=60, anchor=None, upload=True, notes=""):
+                      panel_set=None, panel_games=128, panel_priority=60, panel_step_every=None, anchor=None,
+                      upload=True, notes=""):
     """Register one training snapshot as an active pool entrant and keep the run's panel job open."""
     record = artifact_record(path)
     if upload:
@@ -105,6 +106,8 @@ def register_snapshot(client, path, *, run, entrant_id, era, step, parent=None, 
                    by=f"snapshot-hook:{run}")
         if anchor:
             job["opponents"] = [anchor]
+        if panel_step_every:
+            job["step_every"] = int(panel_step_every)
         client.register(job)
     return record
 

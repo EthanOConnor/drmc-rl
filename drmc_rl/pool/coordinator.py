@@ -198,9 +198,14 @@ class PoolCoordinator:
         """Periodic bookkeeping: lease expiry, refits, intention pickup, job completion."""
         now = self.clock()
         self._expire(now)
+        refitted = not getattr(self, "_ticked", False)
+        self._ticked = True
         for condition in sorted(self.state.dirty):
             if now - self.fitted_at.get(condition, 0) >= self.settings["refit_seconds"] or condition not in self.fits:
                 self.refit(condition)
+                refitted = True
+        if refitted:
+            self._auto_conclude()
         for record in list(intent.ready_to_start(self.state, self.capabilities)):
             job = dict(record["job"], id=record["id"], intention=record["id"])
             job.setdefault("status", "active")
@@ -605,7 +610,9 @@ class PoolCoordinator:
         kind = event.get("type")
         body = {k: v for k, v in event.items() if k not in ("type", "time")}
         by = body.pop("by", "cli")
-        if kind not in ("entrant", "condition", "condition_set", "job", "intention", "block", "unblock"):
+        if kind == "conclude":
+            return self.conclude(body["run"], best=body.get("best"), reason=body.get("reason", "marked done"), by=by)
+        if kind not in ("entrant", "condition", "condition_set", "job", "intention", "block", "unblock", "lineage"):
             raise ValueError(f"unsupported registry event {kind}")
         if kind == "job":
             merged = {**self.state.jobs.get(body["id"], {}), **body}
@@ -619,6 +626,48 @@ class PoolCoordinator:
         event = self.state.record(kind, body, by=by)
         self.tick()
         return dict(recorded=True, event=event)
+
+    def conclude(self, run, *, best=None, reason="marked done", by="cli"):
+        """End a run: keep its best and final snapshots active, retire the intermediates (still rated)."""
+        state = self.state
+        members = state.lineage_members(run)
+        if not members:
+            raise KeyError(f"no snapshots with lineage.run {run!r}")
+        final = members[-1]
+        if best is None:
+            rule = state.lineages.get(run, {}).get("stop_rule") or {}
+            try:
+                from drmc_rl.pool.report import stop_rule
+                result = stop_rule(self, run=run, condition_set=rule.get("set"),
+                                   min_games=int(rule.get("min_games", 1)), patience=int(rule.get("patience", 2)),
+                                   step_every=rule.get("step_every"))
+                best = (result.get("selected") or {}).get("entrant")
+            except KeyError:
+                best = None
+            if best is None or best not in state.entrants:
+                best = final
+        keep = {best, final}
+        for e in members:
+            if e not in keep and state.entrants[e]["status"] != "retired":
+                state.record("entrant", dict(id=e, status="retired"), by=f"lineage:{run}")
+        state.record("lineage", dict(run=run, status="concluded", best=best, final=final, reason=reason), by=by)
+        self.log(f"pool: lineage {run} concluded ({reason}); best {best}, final {final}")
+        return dict(run=run, best=best, final=final, retired=[e for e in members if e not in keep])
+
+    def _auto_conclude(self):
+        """Lineages that opted into the pool stop rule conclude when it fires."""
+        from drmc_rl.pool.report import stop_rule
+        for run, record in list(self.state.lineages.items()):
+            rule = record.get("stop_rule")
+            if record["status"] != "active" or not rule or not rule.get("auto"):
+                continue
+            try:
+                result = stop_rule(self, run=run, condition_set=rule["set"], min_games=int(rule.get("min_games", 128)),
+                                   patience=int(rule.get("patience", 2)), step_every=rule.get("step_every"))
+            except KeyError:
+                continue
+            if result["fired"]:
+                self.conclude(run, best=result["selected"]["entrant"], reason="pool stop rule fired", by="stop-rule")
 
     def import_games(self, payload):
         """Rows from pre-pool studies (``source`` = ``import:<name>``), idempotent by game id."""

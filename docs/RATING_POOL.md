@@ -135,6 +135,34 @@ coordinator submits the job (id = intention id) and marks it running; people mar
 done or dropped. The report lists planned, blocked (with what each waits on),
 running and overdue items. Seeded from `runs/rating-pool-v1/intentions.json`.
 
+### Lineages (training runs)
+
+Snapshots with the same `lineage.run` (the `watch-run --run` id) form a lineage.
+While the run is active every snapshot stays active and visible, but the lineage
+shares one entrant's background budget: only the newest snapshot gets the
+new-entrant and underplayed boosts and serves as an opponent for others; each
+older snapshot gets a maintenance share (`maintenance_share` 0.1) until its
+per-condition 95% half-width is below `maintenance_ci` (75 Elo, about ±28 pooled
+over seven paces), then only occasional games (`maintenance_idle` 0.01). Focused
+jobs are unaffected.
+
+A run concludes with `lineage conclude RUN [--best E]`, when a lineage that opted
+in with `lineage set RUN --stop-set SET --step-every N --auto` (or `watch-run
+--auto-conclude`) has its pool stop rule fire, or when `watch-run --final-marker
+GLOB` sees the run's final marker. Its best snapshot (stop-rule selection) and its
+final snapshot stay active; intermediates become retired (rated, never scheduled).
+
+Reports show one row per lineage: the best snapshot once concluded, otherwise the
+newest rated one, labelled `run · frames`, with an expandable trajectory (every
+snapshot's rating, CI and games against frames, retired ones included) and a
+sparkline. Other entrants are unchanged.
+
+Snapshot cadence and stop rules: runs may snapshot every 25M frames for the
+trajectory. Stop-rule panels and decisions stay on their registered marks:
+`watch-run --panel-step-every 50000000` limits the panel job to 50M multiples, and
+`stop-rule --step-every 50000000` (or the lineage's `step_every`) evaluates only
+those snapshots, so the extra snapshots never change a decision.
+
 ## Operations
 
 Coordinator: **mombox** (always on, 458 GB free), `~/drmc-rl-pool/{src,venv,data}`,
@@ -156,8 +184,8 @@ an operator decision), hosts reach the coordinator through an ssh tunnel:
 `ssh -N -L 127.0.0.1:8097:192.168.157.190:8097 -L 127.0.0.1:8098:192.168.157.190:8098 mombox`
 (`drmc-rl-pool-data/tunnel.sh` on the Mac) with `DRMC_POOL_URL=http://127.0.0.1:8097`.
 
-It runs in the user tmux session `rating-pool` (`~/drmc-rl-pool/run-coordinator.sh`).
-`~/drmc-rl-pool/rating-pool.service` is a prepared user unit, not enabled. Checkpoint
+It runs as the user systemd service `rating-pool` (`systemctl --user restart rating-pool`;
+it resumes from the journal). Checkpoint
 downloads are limited to 2 concurrent streams at 20 MB/s each; uploads from
 `entrant add`/`bootstrap`/`watch-run` are throttled to 40 MB/s by the client.
 
