@@ -21,6 +21,7 @@ from pathlib import Path
 W = dict(sloth=0.5, relaxed=0.5, normal=1, fast=1.5, top_humans=2, super_human=3, frame_perfect=3)
 FAST4 = ("fast", "top_humans", "super_human", "frame_perfect")
 METRICS = ("clears", "t1_plus", "t2_plus", "t3_plus", "horizontal", "horizontal_combo")
+ATTACK = ("attacks", "garbage", "quads", "waste")   # present in runs made after the attack counters landed
 
 
 def elo(q):
@@ -47,6 +48,10 @@ def pooled(per):
     for side in ("knob", "base"):
         s = {m: sum(W[p] * r["style"][side][m] for p, r in per.items()) / wsum for m in METRICS}
         s["hshare"] = s["horizontal"] / s["clears"] if s["clears"] else None
+        have = all(m in r["style"][side] for r in per.values() for m in ATTACK)
+        for m in ATTACK:
+            s[m] = sum(W[p] * r["style"][side][m] for p, r in per.items()) / wsum if have else None
+        s["quad_share"] = s["quads"] / s["attacks"] if have and s["attacks"] else None
         s["n"] = {m: round(sum(r["style"][side][m] * r["style"][side]["placements"] / 100 for r in per.values()))
                   for m in ("t1_plus", "t2_plus", "t3_plus")}
         bests = [r["style"][side].get("best") for r in per.values() if r["style"][side].get("best")]
@@ -182,7 +187,7 @@ def elo_cell(p):
 
 def style_cells(s):
     if not s:
-        return "<td>–</td>" * 6
+        return "<td>–</td>" * 10
     n = s["n"]
     best = s["best"]
     b = f"{best['score']:.1f} <span class=ci>({best['cells']}c {best['rounds']}r {best['lines']}l)</span>" if best else "–"
@@ -190,17 +195,20 @@ def style_cells(s):
             f"<td>{fmt(s['t2_plus'])} <span class=ci>({n['t2_plus']})</span></td>"
             f"<td>{fmt(s['t3_plus'], 4)} <span class=ci>({n['t3_plus']})</span></td>"
             f"<td>{fmt(s['hshare'] * 100 if s['hshare'] is not None else None, 1)}%</td>"
-            f"<td>{fmt(s['horizontal_combo'], 2)}</td><td>{b}</td>")
+            f"<td>{fmt(s['horizontal_combo'], 2)}</td><td>{fmt(s.get('quads'))}</td><td>{fmt(s.get('garbage'), 1)}</td>"
+            f"<td>{fmt(s.get('waste'))}</td><td>{fmt(s['quad_share'] * 100 if s.get('quad_share') is not None else None, 1)}%</td>"
+            f"<td>{b}</td>")
 
 
 HEAD = ("<tr><th>λ</th><th>games</th><th>4-pace Elo</th><th>7-pace Elo</th><th>SH Elo</th><th>FP Elo</th>"
-        "<th>T1+ (n)</th><th>T2+ (n)</th><th>T3+ (n)</th><th>h-share</th><th>h-combo</th><th>best clear</th>"
+        "<th>T1+ (n)</th><th>T2+ (n)</th><th>T3+ (n)</th><th>h-share</th><th>h-combo</th><th>quads</th><th>garbage</th>"
+        "<th>waste</th><th>quad share</th><th>best clear</th>"
         "<th>ΔT2+/0.25λ</th><th>ΔT3+/0.25λ</th></tr>")
 
 
 def arm_row(a):
     if not a["all"]:
-        return f"<tr class=partial><td>{a['lam']}</td><td colspan=13>queued</td></tr>"
+        return f"<tr class=partial><td>{a['lam']}</td><td colspan=17>queued</td></tr>"
     m = a.get("marginal") or {}
     tag = " <span class=badge>partial</span>" if a["partial"] else ""
     k = a["fast4"]["knob"] if a["fast4"] else a["all"]["knob"]
@@ -262,7 +270,7 @@ def pool_table(pool):
     out.append(f"<div class=mut>pool report {html.escape(str(pool.get('generated')))}; absolute pool ratings (not vs base); "
                "style pooled over all paces the entrant has played; T1+ is the pool's t1p (≥27).</div><table><tr><th>entrant</th>"
                "<th>games</th><th>4-pace rating</th><th>7-pace rating</th><th>SH</th><th>FP</th><th>T1+</th><th>T2+</th>"
-               "<th>T3+</th><th>h-share</th><th>best</th></tr>")
+               "<th>T3+</th><th>h-share</th><th>quads</th><th>quad share</th><th>waste</th><th>garbage</th><th>best</th></tr>")
     for r in pool["rows"]:
         st = r["style"] or {}
         def cell(p):
@@ -273,7 +281,8 @@ def pool_table(pool):
                    f"<td>{cell(r['fast4'])}</td><td>{cell(r['all'])}</td><td>{cell(r['sh'])}</td><td>{cell(r['fp'])}</td>"
                    f"<td>{fmt(st.get('t1p'))}</td><td>{fmt(st.get('t2'))}</td><td>{fmt(st.get('t3'), 4)}</td>"
                    f"<td>{fmt(st['horizontal'] * 100, 1) + '%' if st.get('horizontal') is not None else '–'}</td>"
-                   f"<td>{best['score'] if best else '–'}</td></tr>")
+                   f"<td>{fmt(st.get('quads'))}</td><td>{fmt(st.get('quad_share'))}</td><td>{fmt(st.get('waste'))}</td>"
+                   f"<td>{fmt(st.get('garbage'), 1)}</td><td>{best['score'] if best else '–'}</td></tr>")
     out.append("</table>")
     return "".join(out)
 
@@ -304,10 +313,12 @@ def render(data):
         out.append("</table>")
     out.append(pool_table(data.get("pool")))
     out.append("<h2>Reference (per 100 placements, 14-Hi)</h2><table><tr><th>who</th><th>T1+</th><th>T2+</th><th>T3+</th>"
-               "<th>h-share</th><th>h-combo</th></tr>")
+               "<th>h-share</th><th>h-combo</th><th>quads</th><th>garbage</th><th>waste</th><th>quad share</th></tr>")
     for r in data["references"]:
         out.append(f"<tr><td>{html.escape(r['name'])}</td><td>{fmt(r['t1_plus'])}</td><td>{fmt(r['t2_plus'])}</td>"
-                   f"<td>{fmt(r['t3_plus'], 4)}</td><td>{fmt(r['hshare'] * 100, 1)}%</td><td>{fmt(r['horizontal_combo'], 2)}</td></tr>")
+                   f"<td>{fmt(r['t3_plus'], 4)}</td><td>{fmt(r['hshare'] * 100 if r.get('hshare') is not None else None, 1)}%</td><td>{fmt(r['horizontal_combo'], 2)}</td>"
+                   f"<td>{fmt(r.get('quads'))}</td><td>{fmt(r.get('garbage'), 1)}</td><td>{fmt(r.get('waste'))}</td>"
+                   f"<td>{fmt(r['quad_share'] * 100 if r.get('quad_share') is not None else None, 1)}%</td></tr>")
     out.append("</table><h2>Queue</h2><table><tr><th>run</th><th>model</th><th>λ</th><th>vs</th><th>status</th><th>games</th><th>paces</th><th>ETA</th></tr>")
     order = {"running": 0, "starting": 0, "queued": 1, "stopped": 2, "done": 3}
     for q in sorted(data["queue"], key=lambda q: order.get(q["status"], 4)):
