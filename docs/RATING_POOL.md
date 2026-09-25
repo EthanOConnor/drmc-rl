@@ -110,6 +110,14 @@ reserve. Imported studies keep their own registered seeds.
    An unplayed entrant plays the anchor first.
 4. Jobs at or below background priority.
 
+The report shows integer Elo with 95% bounds and, per table, the likelihood of
+superiority (LOS) of each row over the next: P(rating_i > rating_i+1) under the
+normal approximation with the fitted covariance of the two estimates (per
+condition from the sandwich-scaled Laplace covariance; pooled, the per-condition
+difference variances summed and divided by k²). Each condition set has a per-pace
+drill-down: an entrant × pace matrix marking paces whose 95% interval excludes
+the pooled rating, and per-pace tables sorted by that pace's rating.
+
 Every 10th lease tries background first (`background_min_share`), so ratings stay
 fresh while long jobs run. A pairing has at most 2 leases in flight. A batch that
 fails twice with a deterministic error (e.g. a checkpoint without a public

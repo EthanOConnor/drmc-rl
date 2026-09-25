@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+from statistics import NormalDist
 
 import numpy as np
 
@@ -58,10 +59,8 @@ class Rating:
     anchored: bool = True
 
     def to_dict(self):
-        return dict(entrant=self.entrant, rating=round(self.rating, 1), se=round(self.se, 1),
-                    ci95=[round(self.rating - 1.96 * self.se, 1), round(self.rating + 1.96 * self.se, 1)],
-                    games=self.games, opponents=self.opponents, score=round(self.score, 4),
-                    anchored=self.anchored)
+        return dict(entrant=self.entrant, rating=self.rating, se=self.se, games=self.games,
+                    opponents=self.opponents, score=round(self.score, 4), anchored=self.anchored)
 
 
 @dataclass
@@ -210,9 +209,24 @@ def pooled(fits: dict[str, Fit], conditions: list[str], *, min_games: int = 1) -
         if any(r.games < min_games for r in rows) and e not in {fits[c].anchor for c in conditions}:
             continue
         k = len(rows)
-        out[e] = dict(entrant=e, rating=round(sum(r.rating for r in rows) / k, 1),
-                      se=round(math.sqrt(sum(r.se ** 2 for r in rows)) / k, 1),
+        out[e] = dict(entrant=e, rating=sum(r.rating for r in rows) / k,
+                      se=math.sqrt(sum(r.se ** 2 for r in rows)) / k,
                       games=sum(r.games for r in rows), conditions=k)
-        out[e]["ci95"] = [round(out[e]["rating"] - 1.96 * out[e]["se"], 1),
-                          round(out[e]["rating"] + 1.96 * out[e]["se"], 1)]
     return out
+
+
+def pooled_difference_se(fits: dict[str, Fit], conditions: list[str], a: str, b: str) -> float | None:
+    """SE of pooled(a) - pooled(b): per-condition difference variances (with covariance) summed, / k."""
+    parts = [fits[c].difference_se(a, b) for c in conditions]
+    if not parts or any(p is None for p in parts):
+        return None
+    return math.sqrt(sum(p * p for p in parts)) / len(parts)
+
+
+def superiority(difference: float, se: float | None) -> float | None:
+    """Likelihood of superiority: P(true rating difference > 0) under the normal posterior approximation."""
+    if se is None:
+        return None
+    if se <= 0:
+        return 1.0 if difference > 0 else 0.0 if difference < 0 else 0.5
+    return NormalDist().cdf(difference / se)

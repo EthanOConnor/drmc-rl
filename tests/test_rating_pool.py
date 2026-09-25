@@ -419,7 +419,7 @@ def test_end_to_end_http_workers_restart_and_recompute(tmp_path, monkeypatch):
     assert len(again.state.games) == report["totals"]["games"]
     view = again.ratings_for("main")
     for row in report["condition_sets"][0]["pooled"]:
-        assert view[row["entrant"]]["rating"] == row["rating"]
+        assert round(view[row["entrant"]]["rating"]) == row["rating"]
     ids = [r["id"] for r in again.state.games.values()]
     assert len(ids) == len(set(ids))
     # Every pool seed pair is complete and side-swapped.
@@ -448,3 +448,45 @@ def test_worker_switches_runtimes_without_resetting_torch_threads(monkeypatch):
         spec = dict(runtime=dict(rollout_backend=backend, anchor_checkpoint="sha256:x"))
         runtimes.get(spec, {"sha256:x": "anchor.pt"})
     assert calls == ["events", "frames", "events"]
+
+
+def test_report_shows_integer_elo_and_likelihood_of_superiority(tmp_path):
+    from statistics import NormalDist
+    from drmc_rl.pool.report import PAGE, los_text
+    state, keys = setup_state(tmp_path, entrants=("anchor", "a", "b"), paces=("normal", "fast"))
+    rng = random.Random(7)
+    for key in keys:
+        for e, p in (("a", 0.7), ("b", 0.62)):
+            for seed in BANK[:120]:
+                rows = rows_for(key, e, "anchor", [seed])
+                for row in rows:
+                    won = float(rng.random() < p)
+                    row["score"] = won if row["a"] == e else 1 - won
+                state.add_games(rows)
+        state.add_games(rows_for(key, "a", "b", BANK[:20], score_a=1.0))
+    c = coordinator(tmp_path)
+    report = build_report(c)
+    table = report["condition_sets"][0]["pooled"]
+    assert [r["entrant"] for r in table] == ["a", "b", "anchor"]
+    for r in table:
+        assert type(r["rating"]) is int and all(type(x) is int for x in r["ci95"])
+    assert table[-1]["los"] is None and los_text(table[-1]["los"]) == "–"
+    # LOS uses the covariance of the two estimates, averaged over the set's conditions.
+    fits = c.all_fits()
+    view = c.ratings_for("main")
+    var = sum(fits[k].difference_se("a", "b") ** 2 for k in keys) / len(keys) ** 2
+    expected = NormalDist().cdf((view["a"]["rating"] - view["b"]["rating"]) / math.sqrt(var))
+    assert table[0]["los"] == pytest.approx(expected, abs=1e-4)
+    assert fits[keys[0]].difference_se("a", "b") < math.hypot(fits[keys[0]].ratings["a"].se, fits[keys[0]].ratings["b"].se)
+    assert table[1]["los"] > 0.99                 # b vs the anchor: clearly stronger
+    assert los_text(0.934) == "93%"
+    # Per-pace drill-down: each pace table sorted by its own rating, with its own LOS.
+    paces = report["condition_sets"][0]["paces"]
+    assert [p["pace"] for p in paces] == ["normal", "fast"]
+    for p in paces:
+        assert [r["rating"] for r in p["ratings"]] == sorted((r["rating"] for r in p["ratings"]), reverse=True)
+        assert p["ratings"][-1]["los"] is None and p["ratings"][0]["los"] is not None
+    text = summary_text(report)
+    line = next(l for l in text.splitlines() if " a " in f" {l.split()[3] if len(l.split()) > 3 else ''} ")
+    assert "." not in line.split()[0] and "%" in line
+    assert "report.json" in PAGE and "setInterval(load, 60000)" in PAGE and "prefers-color-scheme:dark" in PAGE
