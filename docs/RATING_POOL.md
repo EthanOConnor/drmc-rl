@@ -142,6 +142,12 @@ systemd-run --user --scope -p MemoryMax=2G -p CPUQuota=50% nice -n 15 ionice -c3
   --host 192.168.157.190 --port 8097 --report-port 8098
 ```
 
+mombox's firewall (ufw) admits only ssh from the LAN. Until a LAN rule for ports
+8097/8098 exists (`sudo ufw allow from 192.168.157.0/24 to any port 8097,8098 proto tcp`,
+an operator decision), hosts reach the coordinator through an ssh tunnel:
+`ssh -N -L 127.0.0.1:8097:192.168.157.190:8097 -L 127.0.0.1:8098:192.168.157.190:8098 mombox`
+(`drmc-rl-pool-data/tunnel.sh` on the Mac) with `DRMC_POOL_URL=http://127.0.0.1:8097`.
+
 It runs in the user tmux session `rating-pool` (`~/drmc-rl-pool/run-coordinator.sh`).
 `~/drmc-rl-pool/rating-pool.service` is a prepared user unit, not enabled. Checkpoint
 downloads are limited to 2 concurrent streams at 20 MB/s each; uploads from
@@ -163,8 +169,8 @@ for slot in 0 1 2; do
 done
 ```
 
-(`~/dev/drmario/drmc-rl-pool-data/start-mac-workers.sh` runs these in the tmux
-session `pool-workers`.) Green (CUDA): the ARENA_HOSTS.md bootstrap, then
+(`~/dev/drmario/drmc-rl-pool-data/start-mac-workers.sh` starts these with nohup;
+`start-watchers.sh` starts the arm A and arm C snapshot watchers.) Green (CUDA): the ARENA_HOSTS.md bootstrap, then
 `python -m tools.rating_pool worker --coordinator http://192.168.157.190:8097
 --device cuda --slot N` from a checkout of the pool commit; a new CUDA class
 replays `calibration_games` (8) traced games before it contributes.
