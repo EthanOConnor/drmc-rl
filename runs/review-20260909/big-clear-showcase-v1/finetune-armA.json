@@ -4468,10 +4468,10 @@
  "max_game_frames": 120000,
  "seed": 20260925,
  "async_planning": true,
- "source_commit": "a72e3f77",
+ "source_commit": "2eb3cc51",
  "native_commit": "19f292c",
  "updates": 20000,
- "lr": 1e-05,
+ "lr": 2e-05,
  "epochs": 2,
  "minibatch": 128,
  "clip": 0.15,
@@ -4561,5 +4561,7 @@
   "alarm": 0.015,
   "min_lr": 1e-06,
   "max_lr": 3e-05
- }
+ },
+ "retention_hinge": true,
+ "accumulate_minibatches": 16
 }
