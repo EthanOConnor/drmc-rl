@@ -12,6 +12,18 @@
    "status_at_creation": {
     "trained_lineage": 96
    }
+  },
+  {
+   "study": "rating-pool-v1",
+   "purpose": "Continuous rating pool bank: every pool pairing plays these games, side-swapped, in reserve order; reused across pairings, conditions and levels, never by training",
+   "start": 96,
+   "count": 512,
+   "created_at": "2026-09-25T01:38:59+00:00",
+   "reserve_sha256": "9a60df54a10719cb0624e57b0345ca59d834398123e08679a4c7187ac56a1635",
+   "seeds_sha256": "13b79a261ea914265ff584897109232aaa3e00980a2b76966de5cbd5fcf4d981",
+   "status_at_creation": {
+    "trained_lineage": 512
+   }
   }
  ]
 }

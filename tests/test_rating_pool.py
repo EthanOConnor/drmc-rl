@@ -1,0 +1,428 @@
+"""Rating pool: rating math, conditions, journal replay, scheduler priorities, intentions, end to end."""
+from __future__ import annotations
+
+import json
+import math
+import random
+import threading
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from drmc_rl.pool import intentions as intent
+from drmc_rl.pool.conditions import condition_key, make_condition, normalize_decision, study_condition
+from drmc_rl.pool.coordinator import PROTOCOL, PoolCoordinator
+from drmc_rl.pool.ratings import ELO_SCALE, PairStats, fit, pooled
+from drmc_rl.pool.report import build_report, stop_rule, summary_text
+from drmc_rl.pool.store import PoolState, game_id
+
+SHA = {n: (f"{i:x}" * 64)[:64] for i, n in enumerate(["anchor", "a", "b", "c", "d", "e", "f", "old", "run-f1",
+                                                     "run-f2", "run-f3", "run-f4"], start=1)}
+BANK = list(range(1000, 1400))
+
+
+def condition(pace="normal", **kw):
+    return make_condition(backend=kw.pop("backend", "events"), engine="19f292c", level=kw.pop("level", 14),
+                          pace=pace, decision=kw.pop("decision", dict(delay=4)), **kw)
+
+
+def simulate(strength, pairs, rng):
+    """Complete side-swapped seed pairs with a Bradley-Terry truth."""
+    out = {}
+    for (i, j), count in pairs.items():
+        p = 1 / (1 + math.exp(-(strength[i] - strength[j])))
+        s = PairStats()
+        for _ in range(count):
+            s.add(float(rng.random() < p) + float(rng.random() < p))
+        out[(i, j)] = s
+    return out
+
+
+# ------------------------------------------------------------------------------ ratings
+
+
+def test_fit_recovers_bradley_terry_strengths_and_fixes_the_anchor():
+    truth = dict(anchor=0.0, a=1.0, b=-0.5, c=0.3)
+    pairs = simulate(truth, {("a", "anchor"): 400, ("anchor", "b"): 400, ("anchor", "c"): 400, ("a", "c"): 200},
+                     random.Random(1))
+    result = fit(pairs, "anchor", anchor_rating=1500)
+    assert result.ratings["anchor"].rating == 1500 and result.ratings["anchor"].se == 0
+    for e, t in truth.items():
+        r = result.ratings[e]
+        assert abs((r.rating - 1500) / ELO_SCALE - t) < 3 * max(r.se / ELO_SCALE, 1e-9) + 1e-9
+    assert result.ratings["a"].rating > result.ratings["c"].rating > result.ratings["b"].rating
+    # Deterministic: a refit of the same data is bit-identical.
+    again = fit(pairs, "anchor", anchor_rating=1500)
+    assert all(again.ratings[e].rating == result.ratings[e].rating for e in truth)
+    assert 0.5 < result.expected("a", "anchor") < 1
+    assert result.difference_se("a", "c") > 0
+
+
+def test_unconnected_entrants_are_unanchored_not_guessed():
+    pairs = {("a", "anchor"): PairStats(pairs=10, score=10, square=10), ("b", "c"): PairStats(pairs=5, score=5, square=5)}
+    result = fit(pairs, "anchor")
+    assert set(result.ratings) == {"a", "anchor"} and set(result.unanchored) == {"b", "c"}
+
+
+def test_sandwich_widens_uncertainty_for_correlated_seed_pairs():
+    # Same totals; in one record every pair is split 1-1, in the other pairs are 2-0 or 0-2.
+    split = {("a", "anchor"): PairStats(pairs=100, score=100.0, square=100 * 1.0)}
+    clustered = {("a", "anchor"): PairStats(pairs=100, score=100.0, square=50 * 4.0)}
+    assert fit(clustered, "anchor").ratings["a"].se > fit(split, "anchor").ratings["a"].se
+    assert fit(split, "anchor").ratings["a"].rating == pytest.approx(1500, abs=1e-6)
+
+
+def test_perfect_records_stay_finite_and_pooled_needs_every_condition():
+    sweep = {("a", "anchor"): PairStats(pairs=32, score=64.0, square=32 * 4.0)}
+    r = fit(sweep, "anchor").ratings["a"]
+    assert math.isfinite(r.rating) and r.rating > 1800
+    f1 = fit({("a", "anchor"): PairStats(pairs=10, score=12, square=16)}, "anchor")
+    f2 = fit({("anchor", "b"): PairStats(pairs=10, score=12, square=16),
+              ("a", "anchor"): PairStats(pairs=10, score=8, square=8)}, "anchor")
+    view = pooled({"x": f1, "y": f2}, ["x", "y"])
+    assert set(view) == {"a", "anchor"}                    # b is not rated under x
+    assert view["a"]["rating"] == pytest.approx((f1.ratings["a"].rating + f2.ratings["a"].rating) / 2, abs=0.1)
+    assert pooled({"x": f1}, ["x", "missing"]) == {}
+
+
+# ------------------------------------------------------------------------------ conditions
+
+
+def test_condition_key_normalizes_inert_settings_and_separates_contracts():
+    spawn = condition(decision=dict(delay=4, decision_point="spawn", early_preview="repeat"))
+    assert spawn["decision"] == dict(delay=4) and condition_key(spawn) == condition_key(condition())
+    lock = condition(backend="frames", decision=dict(delay=4, decision_point="lock_safe", early_preview="repeat"))
+    frames_spawn = condition(backend="frames")
+    assert len({condition_key(spawn), condition_key(lock), condition_key(frames_spawn),
+                condition_key(condition(level=20)), condition_key(condition("fast"))}) == 5
+    with pytest.raises(ValueError):
+        condition(decision=dict(delay=4, decision_point="lock_safe"))   # events backend is spawn-only
+    with pytest.raises(ValueError):
+        normalize_decision(dict(delay=4, anticipation=True))
+    with pytest.raises(ValueError):
+        condition(speed=1)
+
+
+def test_study_rows_with_asymmetric_contracts_are_not_imported():
+    config = dict(rollout_backend="frames", native_commit="19f292c")
+    match = dict(level=14, pace="normal")
+    spec, why = study_condition(config, match, dict(delay=4), dict(delay=4))
+    assert spec is not None and not why
+    spec, why = study_condition(config, match, dict(delay=4, decision_point="lock_safe"), dict(delay=4))
+    assert spec is None and "different decision contracts" in why
+    spec, why = study_condition(config, match, dict(delay=4, anticipation=True), dict(delay=4))
+    assert spec is None
+    spec, why = study_condition(dict(rollout_backend="events"), match, dict(delay=4), dict(delay=4))
+    assert spec is None and "native engine" in why
+
+
+# ------------------------------------------------------------------------------ journal and state
+
+
+def entrant(eid, era="test", status="active", **kw):
+    return dict(id=eid, name=eid, loader="plain", checkpoint=dict(sha256=SHA.get(eid, SHA["a"]), paths=[]), era=era,
+                status=status, **kw)
+
+
+def setup_state(tmp_path, entrants=("anchor", "a", "b"), paces=("normal",)):
+    state = PoolState(tmp_path, settings=dict(seed_bank=BANK, default_anchor="anchor"))
+    keys = []
+    for pace in paces:
+        spec = condition(pace)
+        state.record("condition", dict(spec=spec, name=f"ev-{pace}"))
+        keys.append(condition_key(spec))
+    for e in entrants:
+        state.record("entrant", entrant(e))
+    state.record("condition_set", dict(name="main", conditions=keys, anchor="anchor", primary=True))
+    return state, keys
+
+
+def rows_for(key, a, b, seeds, score_a=1.0, numerics="mps/test", source="pool"):
+    out = []
+    for seed in seeds:
+        for side in (0, 1):
+            x, y = sorted((a, b))
+            s = score_a if x == a else 1 - score_a
+            out.append(dict(id=game_id(key, x, y, seed, side), condition=key, a=x, b=y, seed=seed, side=side, score=s,
+                            winner="a" if s == 1 else "b" if s == 0 else "draw", reason="topout", frames=100,
+                            source=source, numerics=numerics))
+    return out
+
+
+def test_journal_repairs_a_torn_tail_and_replay_is_idempotent(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    assert len(state.add_games(rows_for(key, "a", "anchor", BANK[:4]))) == 8
+    assert state.add_games(rows_for(key, "a", "anchor", BANK[:4])) == []          # idempotent by id
+    with open(tmp_path / "games.jsonl", "a") as stream:
+        stream.write('{"id": "torn')                                            # crash mid-write
+    replay = PoolState(tmp_path)
+    assert len(replay.games) == 8 and replay.pair_stats(key)[("a", "anchor")].pairs == 4
+    assert (tmp_path / "games.jsonl").read_text().endswith("\n")
+    assert replay.entrants.keys() == state.entrants.keys() and replay.condition_sets == state.condition_sets
+
+
+def test_only_complete_uncensored_admitted_seed_pairs_are_rated(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    rows = rows_for(key, "a", "anchor", BANK[:3])
+    rows[5]["score"] = None                          # third pair censored
+    state.add_games(rows + rows_for(key, "a", "anchor", [BANK[3]])[:1])         # a half pair
+    assert state.pair_stats(key)[("a", "anchor")].pairs == 2
+    state.add_games(rows_for(key, "b", "anchor", BANK[:2], numerics="cuda/bad"))
+    assert ("anchor", "b") in state.pair_stats(key)
+    state.record("admission", dict(numerics="cuda/bad", verdict="replica failed"))
+    assert ("anchor", "b") not in state.pair_stats(key)                          # rejected class leaves ratings
+
+
+def test_registry_rejects_invalid_records(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    with pytest.raises(ValueError):
+        state.record("entrant", dict(entrant("x"), settings=dict(delay=6)))   # a condition key is not a setting
+    with pytest.raises(ValueError):
+        state.record("job", dict(id="j", status="active", games=3, conditions=[key], entrants=["a"]))
+    with pytest.raises(ValueError):
+        state.add_games([dict(rows_for(key, "a", "anchor", [BANK[0]])[0], a="zzz")])
+    other = condition("fast")
+    state.record("condition", dict(spec=other, name="ev-fast"))
+    state.record("entrant", entrant("c"))
+    with pytest.raises(ValueError):             # one condition, one anchor
+        state.record("condition_set", dict(name="other", conditions=[key], anchor="c"))
+
+
+# ------------------------------------------------------------------------------ scheduler
+
+
+def coordinator(tmp_path, **kw):
+    return PoolCoordinator(tmp_path, source="test", capabilities=None, log=lambda *_: None,
+                           settings={**dict(seed_bank=BANK, default_anchor="anchor", calibration_games=0,
+                                            replicate_every=0), **kw.pop("settings", {})}, **kw)
+
+
+def worker(wid="w0", numerics="mps/test"):
+    from drmc_rl.pool.conditions import runtime_capabilities
+    from drmc_rl.pool.coordinator import REPO
+    return dict(protocol=PROTOCOL, worker_id=wid, host="h", numerics=numerics, device="mps", threads=1,
+                source="test", capabilities=sorted(runtime_capabilities(REPO) | {"engine:19f292c"}))
+
+
+def available_everything(c):
+    c.available = lambda e: True
+    c.scheduler.available = c.available
+
+
+def submit(c, lease, strengths):
+    spec = lease["batch"]
+    a, b = spec["a"], spec["b"]
+    p = 1 / (1 + math.exp(-(strengths[a] - strengths[b])))
+    rows, moves = [], []
+    for seed, side, index in spec["jobs"]:
+        u = random.Random(f"{spec['condition']}{a}{b}{seed}{side}").random()
+        s = 1.0 if u < p else 0.0
+        rows.append(dict(seed=seed, side=side, index=index, score=s, winner="a" if s else "b", reason="topout",
+                         frames=10, a_stats={}, b_stats={}))
+        moves.append([dict(frame=1, placement=dict(action=seed % 7))])
+    return c.submit(lease["lease_id"], dict(claim_token=lease["claim_token"], elapsed=1.0, worker=worker(
+        lease.get("_wid", "w0")), rows=rows, moves=moves))
+
+
+def test_new_entrant_plays_the_anchor_first_in_whole_side_swapped_pairs(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    state.add_games(rows_for(key, "a", "anchor", BANK[:100], score_a=1.0)[:0])
+    for i in range(100):
+        state.add_games(rows_for(key, "a", "anchor", [BANK[i]], score_a=float(i % 2)))
+    c = coordinator(tmp_path)
+    available_everything(c)
+    lease = c.lease(worker())
+    spec = lease["batch"]
+    assert lease["status"] == "lease" and {spec["a"], spec["b"]} == {"anchor", "b"} and "new entrant" in spec["why"]
+    seeds = [j[0] for j in spec["jobs"]]
+    assert all(seeds.count(s) == 2 for s in seeds) and sorted({j[1] for j in spec["jobs"]}) == [0, 1]
+    assert seeds[0] == BANK[0]                   # the bank in order: every pairing plays the same games
+    second = c.lease(worker("w1"))["batch"]      # in-flight seeds are never leased twice
+    if {second["a"], second["b"]} == {"anchor", "b"}:
+        assert not set(second["seeds"]) & set(spec["seeds"])
+
+
+def test_focused_jobs_precede_background_and_background_keeps_a_share(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "a", "b", "c"))
+    state.record("job", dict(id="focus", status="active", games=512, conditions=["set:main"], entrants=["c"],
+                             opponents=["a"], priority=80))
+    c = coordinator(tmp_path, settings=dict(background_min_share=0.25, max_inflight_per_pairing=100))
+    available_everything(c)
+    kinds = [c.lease(worker(f"w{i}"))["batch"]["job"] for i in range(8)]
+    assert kinds.count("focus") == 6 and kinds.count(None) == 2
+    state.record("job", dict(id="later", status="active", games=64, conditions=["set:main"], entrants=["b"],
+                             opponents=["a"], priority=5))           # below background priority
+
+
+def test_job_completes_and_explicit_seeds_are_honored(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    c = coordinator(tmp_path, settings=dict(background_min_share=0))
+    available_everything(c)
+    c.register(dict(type="job", id="confirm", games=8, conditions=["ev-normal"], entrants=["a"], opponents=["b"],
+                    priority=90, seeds=dict(explicit={"ev-normal": [7, 8, 9, 10]})))
+    strengths = dict(anchor=0, a=0.5, b=0)
+    lease = c.lease(worker())
+    assert lease["batch"]["job"] == "confirm" and sorted(lease["batch"]["seeds"]) == [7, 8, 9, 10]
+    assert submit(c, lease, strengths)["new_games"] == 8
+    c.tick()
+    assert c.state.jobs["confirm"]["status"] == "done"
+
+
+def test_failures_block_an_incompatible_entrant(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    c = coordinator(tmp_path)
+    available_everything(c)
+    for i in range(2):
+        lease = c.lease(worker(f"w{i}"))
+        c.fail(lease["lease_id"], dict(claim_token=lease["claim_token"], kind="incompatible",
+                                       error="ValueError: historical public opponents must ..."))
+    assert c.state.blocks
+    blocked = next(iter(c.state.blocks.values()))
+    assert blocked["a"] in ("a", "b") and "historical" in blocked["reason"]
+
+
+# ------------------------------------------------------------------------------ intentions
+
+
+def test_intention_lifecycle_submits_its_job_when_entrants_appear(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    c = coordinator(tmp_path)
+    available_everything(c)
+    c.register(dict(type="intention", id="arm-c", title="Full-size afterstate arm", entrants=["armc-*"],
+                    conditions=["set:main"], depends=["capability:backend:events", "external:real-player data"],
+                    due="2000-01-01", job=dict(games=16, conditions=["set:main"], entrants=["armc-*"], priority=70)))
+    road = {r["id"]: r for r in intent.roadmap(c.state, c.capabilities)}
+    assert road["arm-c"]["view"] == "blocked" and road["arm-c"]["overdue"]
+    assert set(road["arm-c"]["waiting_on"]) == {"external:real-player data", "entrant:armc-*"}
+    c.register(dict(type="intention", id="arm-c", resolved=["external:real-player data"]))
+    c.register(dict(type="entrant", **entrant("armc-f1")))
+    assert c.state.intentions["arm-c"]["status"] == "running" and c.state.jobs["arm-c"]["intention"] == "arm-c"
+    assert c.lease(worker())["batch"]["job"] == "arm-c"
+    c.register(dict(type="intention", id="arm-c", status="done", notes="decided"))
+    assert not intent.roadmap(c.state, c.capabilities)[0]["overdue"]
+
+
+# ------------------------------------------------------------------------------ fidelity and stop rule
+
+
+def test_calibration_admits_a_matching_class_and_replicas_reject_a_bad_one(tmp_path):
+    state, (key,) = setup_state(tmp_path)
+    c = coordinator(tmp_path, settings=dict(calibration_games=4, replicate_every=1, trace_every=1))
+    available_everything(c)
+    strengths = dict(anchor=0, a=0.3, b=-0.3)
+    lease = c.lease(worker("mac"))
+    assert lease["purpose"] == "play"            # mps/ is trusted
+    submit(c, lease, strengths)
+    lease = c.lease(dict(worker("green", "cuda/x"), worker_id="green"))
+    assert lease["purpose"] == "calibrate"
+    lease["_wid"] = "green"
+    spec = lease["batch"]
+    rows, moves = [], []
+    for seed, side, index in spec["jobs"]:
+        trace = json.loads(__import__("gzip").decompress((tmp_path / c.state.games[game_id(
+            spec["condition"], spec["a"], spec["b"], seed, side)]["trace"]).read_bytes()))
+        rows.append(trace["game"])
+        moves.append(trace["moves"])
+    reply = c.submit(lease["lease_id"], dict(claim_token=lease["claim_token"], elapsed=1.0,
+                                             worker=worker("green", "cuda/x"), rows=rows, moves=moves))
+    assert reply["accepted"] and c.state.admitted["cuda/x"] is True
+    # The trusted Mac batch was sampled for audit; green replays it with different decisions.
+    lease = c.lease(dict(worker("green", "cuda/x"), worker_id="green"))
+    assert lease["purpose"] == "replicate"
+    spec = lease["batch"]
+    bad = [dict(seed=s, side=d, index=i, score=0.0, winner="b", reason="topout", frames=10)
+           for s, d, i in spec["jobs"]]
+    c.submit(lease["lease_id"], dict(claim_token=lease["claim_token"], elapsed=1.0, worker=worker("green", "cuda/x"),
+                                     rows=bad, moves=[[dict(frame=1, placement=dict(action=99))]] * len(bad)))
+    assert c.state.admitted["cuda/x"] != True        # noqa: E712
+    assert c.lease(dict(worker("green", "cuda/x"), worker_id="green"))["status"] == "rejected"
+    assert len(list(c.state.audit_journal.read())) == 2
+
+
+def test_stop_rule_fires_after_two_non_improving_snapshots(tmp_path):
+    state, (key,) = setup_state(tmp_path, entrants=("anchor",))
+    for i, s in enumerate([0.5, 0.9, 0.6, 0.7], start=1):
+        state.record("entrant", entrant(f"run-f{i}", lineage=dict(run="run", step=i, parent="anchor")))
+    rng = random.Random(3)
+    truth = {"run-f1": 0.2, "run-f2": 0.8, "run-f3": 0.1, "run-f4": 0.3}
+    for e, t in truth.items():
+        p = 1 / (1 + math.exp(-t))
+        for seed in BANK[:200]:
+            s = [float(rng.random() < p) for _ in (0, 1)]
+            rows = rows_for(key, e, "anchor", [seed])
+            for row, value in zip(rows, s):
+                row["score"] = value if row["a"] == e else 1 - value
+            state.add_games(rows)
+    c = coordinator(tmp_path)
+    result = stop_rule(c, run="run", min_games=128)
+    statuses = [s["status"] for s in result["snapshots"]]
+    assert statuses == ["improved", "improved", "not improved", "not improved"]
+    assert result["fired"] and result["selected"]["entrant"] == "run-f2"
+    report = build_report(c)
+    assert report["condition_sets"][0]["pooled"][0]["entrant"] == "run-f2"
+    assert "run-f2" in summary_text(report)
+
+
+# ------------------------------------------------------------------------------ end to end over HTTP
+
+
+def test_end_to_end_http_workers_restart_and_recompute(tmp_path, monkeypatch):
+    from tools import rating_pool
+    from drmc_rl.pool import worker as pool_worker
+    from drmc_rl.pool.client import PoolClient
+    state, keys = setup_state(tmp_path, entrants=("anchor", "a", "b", "c"), paces=("normal", "fast"))
+    for e in ("anchor", "a", "b", "c"):
+        (tmp_path / "artifacts" / SHA[e]).write_bytes(b"x")          # servable artifacts
+        state.entrants[e]["checkpoint"]["sha256"] = SHA[e]
+    del state
+    monkeypatch.setattr("tools.trainer_arena_distributed.source_revision", lambda root=None: "test")
+    token = "t0ken"
+    strengths = dict(anchor=0.0, a=1.2, b=-0.8, c=0.4)
+    stopped, ready = threading.Event(), {}
+    args = SimpleNamespace(data=tmp_path, settings=json.dumps(dict(seed_bank=BANK, default_anchor="anchor",
+                                                                   calibration_games=0, replicate_every=0,
+                                                                   batch_games=dict(events=8))),
+                           allow_source_mismatch=False, report_port=0, report_host=None, host="127.0.0.1", port=0,
+                           token_file="unused")
+    server = threading.Thread(target=rating_pool.serve, args=(args,), kwargs=dict(
+        token=token, stopped=stopped, on_ready=lambda p: ready.setdefault("port", p)), daemon=True)
+    server.start()
+    for _ in range(200):
+        if "port" in ready:
+            break
+        time.sleep(0.05)
+    url = f"http://127.0.0.1:{ready['port']}"
+    client = PoolClient(url, token=token)
+    wargs = SimpleNamespace(worker_id=None, device="cpu", slot=0, reach_library=None, fake=json.dumps(strengths),
+                            native_library=None, numerics="mps/fake", engine="19f292c", threads=1,
+                            planner_workers=None, allow_source_mismatch=False, cache=str(tmp_path / "wcache"),
+                            artifact_dir=[], cache_gb=1.0, max_loaded=2, poll=0.1, host_budget=0, min_free_gb=0,
+                            max_batches=40, max_failures=3)
+    threads = []
+    for i in range(2):
+        w = SimpleNamespace(**{**vars(wargs), "slot": i, "worker_id": f"fake{i}"})
+        t = threading.Thread(target=pool_worker.run_worker, args=(w, client), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join(120)
+    report = client.get("/api/v1/pool/report")
+    assert report["totals"]["games"] == 2 * 40 * 8
+    order = [r["entrant"] for r in report["condition_sets"][0]["pooled"]]
+    assert order.index("a") < order.index("c") < order.index("anchor") < order.index("b")
+    stopped.set()
+    server.join(30)
+    # Restart-resume and offline recomputation from the journal alone give identical ratings.
+    again = PoolCoordinator(tmp_path, source="test", log=lambda *_: None,
+                            settings=dict(seed_bank=BANK, default_anchor="anchor"))
+    assert len(again.state.games) == report["totals"]["games"]
+    view = again.ratings_for("main")
+    for row in report["condition_sets"][0]["pooled"]:
+        assert view[row["entrant"]]["rating"] == row["rating"]
+    ids = [r["id"] for r in again.state.games.values()]
+    assert len(ids) == len(set(ids))
+    # Every pool seed pair is complete and side-swapped.
+    for key in keys:
+        for seeds in again.state.by_pairing[key].values():
+            assert all(sorted(sides) == [0, 1] for sides in seeds.values())

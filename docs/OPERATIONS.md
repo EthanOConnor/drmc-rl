@@ -89,6 +89,18 @@ writes it, and it fails only if the pooled 95% lower bound is below 0.45.
 Pre-spawn decisions score the predicted spawn bottle, so its afterstates are
 computed from that bottle.
 
+## Rating pool
+
+Strength evaluation runs in the continuously running rating pool
+(`python -m tools.rating_pool`, docs/RATING_POOL.md): coordinator on mombox
+(`http://192.168.157.190:8097`, report on port 8098), Mac MPS and green CUDA
+workers. New training runs register snapshots with `watch-run` and take their
+stop rule from `stop-rule` instead of an ad-hoc panel; focused comparisons are
+`job submit` priority specs; planned experiments are recorded as intentions
+before their entrants exist. Pre-registered contracts that predate the pool
+(the afterstate arms' stop rules and tournaments, the stranded-edge guards)
+stand as written; import their journals with `import-study` afterwards.
+
 ## Public progress input experiment
 
 `trainer-controller-core` accepts optional `progress_schema` in its training

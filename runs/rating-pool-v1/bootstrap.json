@@ -1,0 +1,711 @@
+{
+ "schema": "drmc-rating-pool-bootstrap-v1",
+ "conditions": [
+  {
+   "name": "ev-L14-sloth-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "sloth",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-relaxed-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "relaxed",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-normal-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "normal",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-fast-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "fast",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-top_humans-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "top_humans",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-super_human-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "super_human",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-frame_perfect-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "frame_perfect",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-sloth-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "sloth",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-relaxed-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "relaxed",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-normal-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "normal",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-fast-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "fast",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-top_humans-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "top_humans",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-super_human-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "super_human",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L20-frame_perfect-spawn4",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 20,
+   "pace": "frame_perfect",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-sloth-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "sloth",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-relaxed-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "relaxed",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-normal-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "normal",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-fast-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "fast",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-top_humans-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "top_humans",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-super_human-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "super_human",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "fr-L14-frame_perfect-lock_safe4-repeat",
+   "backend": "frames",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "frame_perfect",
+   "decision": {
+    "delay": 4,
+    "decision_point": "lock_safe",
+    "early_preview": "repeat"
+   },
+   "movement": "exact"
+  },
+  {
+   "name": "ev-L14-sloth-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "sloth",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  },
+  {
+   "name": "ev-L14-relaxed-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "relaxed",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  },
+  {
+   "name": "ev-L14-normal-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "normal",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  },
+  {
+   "name": "ev-L14-fast-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "fast",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  },
+  {
+   "name": "ev-L14-top_humans-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "top_humans",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  },
+  {
+   "name": "ev-L14-super_human-spawn4-human",
+   "backend": "events",
+   "engine": "19f292c",
+   "level": 14,
+   "pace": "super_human",
+   "decision": {
+    "delay": 4
+   },
+   "movement": "human"
+  }
+ ],
+ "condition_sets": [
+  {
+   "name": "l14-spawn",
+   "conditions": [
+    "ev-L14-sloth-spawn4",
+    "ev-L14-relaxed-spawn4",
+    "ev-L14-normal-spawn4",
+    "ev-L14-fast-spawn4",
+    "ev-L14-top_humans-spawn4",
+    "ev-L14-super_human-spawn4",
+    "ev-L14-frame_perfect-spawn4"
+   ],
+   "anchor": "champion-retention-mixed-v2",
+   "weight": 1.0,
+   "primary": true,
+   "notes": "Primary. The afterstate panel/tournament conditions: events backend, level 14 HI, fresh spawn decision charged max(4, reaction) frames, motor-limit (exact) movement, all seven paces. Pooled view = equal-weight mean over the seven paces, only for entrants rated at every pace."
+  },
+  {
+   "name": "l20-spawn",
+   "conditions": [
+    "ev-L20-sloth-spawn4",
+    "ev-L20-relaxed-spawn4",
+    "ev-L20-normal-spawn4",
+    "ev-L20-fast-spawn4",
+    "ev-L20-top_humans-spawn4",
+    "ev-L20-super_human-spawn4",
+    "ev-L20-frame_perfect-spawn4"
+   ],
+   "anchor": "champion-retention-mixed-v2",
+   "weight": 0.3,
+   "primary": false,
+   "notes": "Level 20 HI, otherwise as l14-spawn. Many historical controller-core/retention games were played here."
+  },
+  {
+   "name": "l14-shipped",
+   "conditions": [
+    "fr-L14-sloth-lock_safe4-repeat",
+    "fr-L14-relaxed-lock_safe4-repeat",
+    "fr-L14-normal-lock_safe4-repeat",
+    "fr-L14-fast-lock_safe4-repeat",
+    "fr-L14-top_humans-lock_safe4-repeat",
+    "fr-L14-super_human-lock_safe4-repeat",
+    "fr-L14-frame_perfect-lock_safe4-repeat"
+   ],
+   "anchor": "champion-retention-mixed-v2",
+   "weight": 0.3,
+   "primary": false,
+   "notes": "The shipped browser timing contract (v17/v18): lock_safe early decision with the repeat preview, frames backend. Needs public-context actors."
+  },
+  {
+   "name": "l14-human-movement",
+   "conditions": [
+    "ev-L14-sloth-spawn4-human",
+    "ev-L14-relaxed-spawn4-human",
+    "ev-L14-normal-spawn4-human",
+    "ev-L14-fast-spawn4-human",
+    "ev-L14-top_humans-spawn4-human",
+    "ev-L14-super_human-spawn4-human"
+   ],
+   "anchor": "champion-retention-mixed-v2",
+   "weight": 0.2,
+   "primary": false,
+   "notes": "Human-like movement at the six human paces. Blocked until the pool engine includes the human movement model (trainer/human-movement-training)."
+  }
+ ],
+ "entrants": [
+  {
+   "id": "champion-retention-mixed-v2",
+   "name": "Mixed-pace retention v2 (shipped champion)",
+   "era": "retention",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-mixed-v2/core-final-inference.pt",
+   "checkpoint_sha256": "fae04a599635cbf600914e5dede2f5dcdfeff7e5436dd53053c7d9fc1c85b3a3",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "anchor",
+    "era-best",
+    "champion"
+   ],
+   "lineage": {
+    "recipe": "controller-retention-mixed-v2",
+    "parent": "public-core-final"
+   },
+   "notes": "Anchor of every condition set (rating 1500)."
+  },
+  {
+   "id": "retention-control-v1",
+   "name": "Retention control v1",
+   "era": "retention",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/review-20260909/controller-retention-control-v1/core-final-inference.pt",
+   "checkpoint_sha256": "cb8bef26002b3773b3bcd417dc4382a2993f76c81a04bacb86950137c93b8bdc",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best"
+   ],
+   "lineage": {
+    "recipe": "controller-retention-control-v1",
+    "parent": "public-core-final"
+   }
+  },
+  {
+   "id": "public-core-final",
+   "name": "Public history core 1.116B",
+   "era": "public-core",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-controller-core/core-final-inference.pt",
+   "checkpoint_sha256": "60bdc681991a615f76d330c0597014cb8a1445380139838f815beb4de002a231",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best"
+   ],
+   "lineage": {
+    "recipe": "controller-core-live-v4",
+    "step": 1116000000
+   }
+  },
+  {
+   "id": "public-core-300m",
+   "name": "Public history core 300M",
+   "era": "public-core",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/incoming-controller-core/core-f300000000.pt",
+   "checkpoint_sha256": "8bf411349e669db33e42dbc0c6a89232b2c64e3848ea3cb9ba482d6bc9af67eb",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best"
+   ],
+   "lineage": {
+    "recipe": "controller-core-live-v4",
+    "step": 300000000
+   }
+  },
+  {
+   "id": "public-outcome-10m",
+   "name": "Public outcome 10M (v20 installed core)",
+   "era": "public-outcome",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-baseline-v1/public-outcome-10m-inference.pt.gz",
+   "checkpoint_sha256": "805c2b75444baba4325796753564686f1b9c7a5705a7444501b73b61f264c488",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best",
+    "pre-online"
+   ],
+   "lineage": {
+    "recipe": "trainer-public-outcome",
+    "parent": "v5-public-bootstrap"
+   }
+  },
+  {
+   "id": "pace-adapter-final",
+   "name": "Pace adapter (trainer-pace-v1) on outcome 10M",
+   "era": "pace-adapter",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-baseline-v1/public-outcome-10m-inference.pt.gz",
+   "checkpoint_sha256": "805c2b75444baba4325796753564686f1b9c7a5705a7444501b73b61f264c488",
+   "adapter": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/local-checkpoints/adapter-final.pt",
+   "loader": "pace_adapter",
+   "status": "active",
+   "tags": [
+    "era-best",
+    "pre-online"
+   ],
+   "lineage": {
+    "recipe": "trainer-pace-v1",
+    "parent": "public-outcome-10m"
+   }
+  },
+  {
+   "id": "v5-public-bootstrap",
+   "name": "V5 bootstrap (public export)",
+   "era": "v5",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/trainer-pace-v1/local-models/v5-full-epoch05-public.pt.gz",
+   "checkpoint_sha256": "525e19272166d78d01f5e9d688afb643d394be9eae615a0ae32712b8eab34b69",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best",
+    "pre-online"
+   ]
+  },
+  {
+   "id": "bc-gt2000",
+   "name": "Behaviour-cloned humans rated > 2000",
+   "era": "bc-human",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl/runs/bc_opponents/bc_gt2000.pt.gz",
+   "checkpoint_sha256": "6a716c83fa19ab3926ba5f4b1ae9b1d78ae9fdcf1286d79631e4ede6ae2b998b",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "era-best",
+    "pre-online",
+    "floor"
+   ]
+  },
+  {
+   "id": "armA-distill-v1",
+   "name": "Afterstate core arm A \u00b7 distilled student",
+   "era": "afterstate",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/student-final-inference.pt",
+   "checkpoint_sha256": "1482039709d69a0a49dc331f625810651c59de23d560cd0a574175b8c36f5409",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "stronger-3",
+    "arm-a"
+   ],
+   "lineage": {
+    "recipe": "afterstate-core-distill-v1",
+    "parent": "champion-retention-mixed-v2",
+    "run": "armA-ppo-v1",
+    "step": 0
+   }
+  },
+  {
+   "id": "armA-ppo-v1-f00050000000",
+   "name": "Afterstate core arm A \u00b7 PPO 50M",
+   "era": "afterstate",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/core-f00050000000.pt",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "stronger-3",
+    "arm-a",
+    "snapshot"
+   ],
+   "lineage": {
+    "recipe": "afterstate-core-ppo-v1",
+    "parent": "armA-distill-v1",
+    "run": "armA-ppo-v1",
+    "step": 50000000
+   }
+  },
+  {
+   "id": "armA-ppo-v1-f00100000000",
+   "name": "Afterstate core arm A \u00b7 PPO 100M",
+   "era": "afterstate",
+   "checkpoint": "/Users/ethan/dev/drmario/drmc-rl-afterstate-data/core-f00100000000.pt",
+   "loader": "plain",
+   "status": "active",
+   "tags": [
+    "stronger-3",
+    "arm-a",
+    "snapshot"
+   ],
+   "lineage": {
+    "recipe": "afterstate-core-ppo-v1",
+    "parent": "armA-distill-v1",
+    "run": "armA-ppo-v1",
+    "step": 100000000
+   }
+  }
+ ],
+ "blocks": [
+  {
+   "condition": "fr-L14-sloth-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-relaxed-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-normal-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-fast-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-top_humans-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-super_human-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-frame_perfect-lock_safe4-repeat",
+   "a": "bc-gt2000",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-sloth-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-relaxed-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-normal-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-fast-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-top_humans-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-super_human-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-frame_perfect-lock_safe4-repeat",
+   "a": "v5-public-bootstrap",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-sloth-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-relaxed-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-normal-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-fast-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-top_humans-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-super_human-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-frame_perfect-lock_safe4-repeat",
+   "a": "public-outcome-10m",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-sloth-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-relaxed-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-normal-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-fast-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-top_humans-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-super_human-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  },
+  {
+   "condition": "fr-L14-frame_perfect-lock_safe4-repeat",
+   "a": "pace-adapter-final",
+   "reason": "pre-spawn decisions require a public-context actor (aux spec is not public_pair_context_v3)"
+  }
+ ]
+}
