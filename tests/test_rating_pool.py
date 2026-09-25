@@ -1128,5 +1128,8 @@ def test_attack_efficiency_counts_quads_and_wasted_lines_at_the_engine_cap():
     new = dict(placements=100, placements4=100, clears=30, lines=50, attacks=12, attacks4=12, quads=3, wasted=2)
     m = metrics(add(add({}, old), new))
     assert m["quads"] == 3.0 and m["wasted"] == 2.0 and m["quad_share"] == 0.25      # over V4 games only
+    assert m["attacks"] == 12.0
+    from drmc_rl.pool.style import HUMAN_ROWS
+    assert HUMAN_ROWS[0]["quads"] == 0.738 and HUMAN_ROWS[2]["quad_share"] == 0.033
     from drmc_rl.pool.report import PAGE
     assert "Quad share" in PAGE and "Wasted" in PAGE

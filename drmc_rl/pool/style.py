@@ -30,10 +30,15 @@ KEYS_V4 = ("placements4", "attacks4", "quads", "wasted")
 
 # Human reference rows, per 100 placements (14-Hi-rated corpus analysis): old T1 (>=20),
 # T1+ (>=27), T2+ (>=30), T3+ (>=42), share of clears containing a horizontal line (4+).
+# Attack references (knob agent, 14-Hi; "All humans" attack values from 2026-05..06): attacks, garbage,
+# quads and waste per 100 placements, quad share.
 HUMAN_ROWS = (
-    dict(label="Humans >2000", t1=1.25, t1p=0.442, t2=0.254, t3=0.022, horizontal=0.288),
-    dict(label="Top 5 by 14-Hi", t1=1.49, t1p=0.557, t2=0.329, t3=0.032, horizontal=0.306),
-    dict(label="All humans", t1=0.855, t1p=0.279, t2=0.156, t3=0.013, horizontal=0.241),
+    dict(label="Humans >2000", t1=1.25, t1p=0.442, t2=0.254, t3=0.022, horizontal=0.288,
+         attacks=18.6, garbage=41.4, quads=0.738, quad_share=0.040, wasted=0.186),
+    dict(label="Top 5 by 14-Hi", t1=1.49, t1p=0.557, t2=0.329, t3=0.032, horizontal=0.306,
+         attacks=19.2, garbage=43.3, quads=0.908, quad_share=0.047, wasted=0.259),
+    dict(label="All humans", t1=0.855, t1p=0.279, t2=0.156, t3=0.013, horizontal=0.241,
+         attacks=16.2, garbage=35.6, quads=0.531, quad_share=0.033, wasted=0.119),
 )
 
 # Human reference rates from the full Fightcade corpus (drmc-rl-bigclear-data
@@ -125,5 +130,6 @@ def metrics(total, *, min_games=64):
                 quads=round(100.0 * total["quads"] / total["placements4"], 3) if total.get("placements4") else None,
                 wasted=round(100.0 * total["wasted"] / total["placements4"], 3) if total.get("placements4") else None,
                 quad_share=round(total["quads"] / total["attacks4"], 3) if total.get("attacks4") else None,
+                attacks=round(100.0 * total["attacks4"] / total["placements4"], 3) if total.get("placements4") else None,
                 t1_mean=round(total["t1_score"] / total["t1"], 1) if total.get("t1") else None,
                 best=total.get("best"))
