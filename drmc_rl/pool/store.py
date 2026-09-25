@@ -43,10 +43,7 @@ DEFAULT_SETTINGS = dict(
     seed_allocation="rating-pool-v1",
     batch_games=dict(events=32, frames=16),
     min_rated_games=64,           # below this an entrant is "new" under a condition
-    target_games=512,             # background coverage target per entrant and condition
     new_entrant_boost=8.0,
-    underplayed_boost=3.0,
-    nearest_opponents=4,
     background_priority=10,
     background_min_share=0.1,     # this share of leases goes to background even while jobs run
     max_inflight_per_pairing=2,
@@ -60,12 +57,13 @@ DEFAULT_SETTINGS = dict(
     trust=["mps/"],
     refit_seconds=20.0,
     default_anchor="champion-retention-mixed-v2",
-    # Lineages (snapshots of one training run): older snapshots of an active run get a thin
-    # maintenance share until their per-condition 95% half-width is below maintenance_ci
-    # (75 per condition is about +/-28 pooled over seven paces), then only occasional games.
-    maintenance_ci=75.0,
-    maintenance_share=0.1,
-    maintenance_idle=0.01,
+    # Value-of-information background scheduling (drmc_rl/pool/voi.py).
+    coverage_share=0.12,          # background leases that only keep every rating fresh
+    new_entrant_ci=50.0,          # pooled 95% half-width above which an entrant is "new"
+    new_entrant_peers=4,          # established opponents (besides the anchor) a new entrant may play
+    opponent_cap=0.25,            # max share of one opponent in an entrant's recent games per set
+    anchor_floor=0.15,            # min anchor share in an entrant's recent games per set
+    mix_window=400,               # recent pool games per entrant and set for the two rails
     # A non-frontier snapshot of an active run keeps a real boost until its weighted-pooled
     # comparison with each neighbour (by frames) and the run's best is resolved: LOS >= resolve_los
     # or <= 1 - resolve_los, or the difference's 95% half-width <= resolve_ci, or it has

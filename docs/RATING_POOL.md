@@ -135,11 +135,26 @@ pre-registered rule keep their own.
 2. Focused jobs with priority above `background_priority` (10), by priority,
    deadline, submission; within a job the (pairing, condition) furthest below its
    target first.
-3. Background fill over the weighted sets: for each active entrant e and candidate
-   opponent o (the anchor; once e has games also each era's best and the 4
-   nearest-rated), value = weight × boost(e) × p(1−p) × (var_e + var_o) / (1 +
-   in-flight leases), with boost = 1 + 8·[games < 64] + 3·max(0, 1 − games/512).
-   An unplayed entrant plays the anchor first.
+3. Background fill by value of information (`drmc_rl/pool/voi.py`). For each
+   candidate batch (pair, condition) it computes the expected reduction in the
+   posterior variance of the rating differences that matter, from the fitted
+   covariance and the batch's Fisher information (n·p(1−p) per game, divided by
+   the condition's seed-pair design effect), as a rank-one update. Targets, each
+   counted at (pace weight / Σ weights)² on the condition dimension and times the
+   set weight: each active run's newest vs best vs anchor and every resolving
+   snapshot vs its open neighbours (weight 4 and 3); every new or uncertain
+   entrant's own rating (weight 8 while its pooled 95% half-width exceeds 50);
+   adjacent rows of the default weighted ranking (1.5·0.85^k from the top).
+   Because the variance of X − Y is dominated by X's own when Y is well
+   determined, this pairs uncertain entrants with established, near-rated
+   opponents. 12% of background leases (`coverage_share`) are coverage leases
+   whose targets are every active entrant's own rating, so none goes stale.
+   Rails: an entrant with a pooled half-width above 50 (or unrated) plays only the
+   anchor and the 4 most established entrants nearest its provisional rating;
+   over an entrant's last 400 pool games in a set, a non-anchor opponent above 25%
+   is discounted 20× and an anchor share below 15% triples the value of the
+   anchor. Each lease records its reason and value (report: Recent leases), and
+   the report's Opponent mix shows every entrant's top opponents.
 4. Jobs at or below background priority.
 
 The report shows integer Elo with 95% bounds and, per table, the likelihood of
@@ -178,8 +193,8 @@ neighbours, until its comparison with each adjacent snapshot (by frames) and the
 best is resolved: LOS >= 90% or <= 10% on the weighted pooled view, or the 95%
 half-width of the difference <= 25 Elo (genuinely equal snapshots), or 2,000
 games over the primary set (`resolve_los`, `resolve_ci`, `snapshot_game_cap`).
-Then it drops to *maintenance*: a 0.1 share until its per-condition 95% half-width
-is below 75 Elo, then occasional games. Focused jobs are unaffected. The report's
+Then it drops to *maintenance*: only coverage leases, like any settled entrant.
+Focused jobs are unaffected. The report's
 trajectories show why each snapshot is scheduled (newest, best, resolving vs X,
 maintenance (reason), retired), and every rating table shows games journaled in
 the last hour next to total games.

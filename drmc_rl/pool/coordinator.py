@@ -7,6 +7,7 @@ with the scheduler's priority list. Torch-free: it never loads a model.
 """
 from __future__ import annotations
 
+import collections
 import gzip
 import hashlib
 import json
@@ -131,9 +132,12 @@ class PoolCoordinator:
         self.issued = sum(1 for _ in self.state.batches_journal.read())
         self._seed_cache = {}
         self._view_cache = {}
+        self._mix = None
+        self.recent_leases = collections.deque(maxlen=40)
         self.scheduler = Scheduler(self.state, seed_source=self.seed_source, available=self.available,
                                    capabilities=self.capabilities, background_seeds=self.background_seeds,
-                                   roles=self.lineage_roles)
+                                   roles=self.lineage_roles, pace_weights=self.pace_weights,
+                                   opponent_mix=self.opponent_mix)
         self.tick()
 
     # -- seeds ----------------------------------------------------------------------
@@ -420,7 +424,8 @@ class PoolCoordinator:
                 artifacts[item["sha256"]] = dict(name=item.get("name") or item["sha256"][:12] + ".pt",
                                                  size=item.get("size"), paths=item.get("paths", []))
         return dict(key=key, condition=batch["condition"], a=batch["a"], b=batch["b"], seeds=batch["seeds"],
-                    job=batch.get("job"), why=batch.get("why", ""), audit=batch.get("audit", False),
+                    job=batch.get("job"), why=batch.get("why", ""), value=batch.get("value"),
+                    audit=batch.get("audit", False),
                     match=match, variants=variants, jobs=jobs, engine=spec["engine"], backend=spec["backend"],
                     runtime=dict(self.runtime, rollout_backend=spec["backend"],
                                  anchor_checkpoint="sha256:" + self.state.entrants[anchor]["checkpoint"]["sha256"]),
@@ -452,6 +457,8 @@ class PoolCoordinator:
             self.inflight.setdefault(slot, set()).update(spec["seeds"])
             self.inflight.setdefault((*slot, "leases"), set()).add(lease_id)
         self.workers[identity["worker_id"]]["status"] = f"{purpose} {spec['key']}"
+        self.recent_leases.appendleft(dict(time=now_iso(), worker=identity["worker_id"], purpose=purpose,
+                                           batch=spec["key"], why=spec.get("why", ""), value=spec.get("value")))
         self.log(f"pool: {purpose} {spec['key']} ({len(spec['jobs'])} games; {spec.get('why', '')}) -> "
                  f"{identity['worker_id']}")
         return dict(status="lease", lease_id=lease_id, claim_token=claim, purpose=purpose, batch=spec,
@@ -587,6 +594,8 @@ class PoolCoordinator:
                 traced.append(path)
             out.append(compact)
         fresh = self.state.add_games(out)
+        if self._mix is not None:
+            self._note_mix(fresh)
         self.state.batches_journal.append(dict(batch=spec["key"], condition=condition, a=a, b=b, job=spec.get("job"),
                                                games=len(rows), new_games=len(fresh), elapsed=elapsed,
                                                worker=worker, sha256=digest, time=stamp, unix=self.clock(),
@@ -832,6 +841,31 @@ class PoolCoordinator:
                 roles[e] = ("resolving", "vs " + ", ".join(open_), open_) if open_ else ("maintenance", "resolved", [])
         self._roles = (stamp, roles)
         return roles
+
+    def _set_of_condition(self):
+        out = {}
+        for cset in sorted(self.state.condition_sets.values(), key=lambda s: s["name"]):
+            for k in cset["conditions"]:
+                out.setdefault(k, cset["name"])
+        return out
+
+    def _note_mix(self, rows):
+        where = self._set_of_condition()
+        window = int(self.settings["mix_window"])
+        for row in rows:
+            name = where.get(row["condition"])
+            if name is None or row.get("source") != "pool":
+                continue
+            for me, other in ((row["a"], row["b"]), (row["b"], row["a"])):
+                self._mix.setdefault(name, {}).setdefault(me, collections.deque(maxlen=window)).append(other)
+
+    def opponent_mix(self, set_name):
+        """entrant -> Counter(opponent) over its last ``mix_window`` pool games in this set."""
+        if self._mix is None:
+            self._mix = {}
+            self._note_mix(sorted((r for r in self.state.games.values() if r.get("source") == "pool"),
+                                  key=lambda r: r.get("time", "")))
+        return {e: collections.Counter(d) for e, d in self._mix.get(set_name, {}).items()}
 
     def pace_weights(self, conditions, weighting="pace"):
         """Per-condition weights of a pooled view: confirmed pace weights, or all equal."""

@@ -58,6 +58,8 @@ a{color:inherit}
 <h2>Jobs</h2><div class="scroll" id="jobs"></div>
 <h2>Roadmap</h2><div class="scroll" id="intentions"></div>
 <h2>Workers</h2><div class="scroll" id="workers"></div>
+<h3>Recent leases</h3><p class="muted"><small>Why each batch was chosen; voi = expected variance reduction of the target rating differences (×1000).</small></p><div class="scroll" id="leases"></div>
+<h2>Opponent mix</h2><p class="muted">Pool games per active entrant and condition set: most frequent opponents (share of its games), last hour in brackets.</p><div id="mix"></div>
 <h2>Per-condition ratings</h2><div id="conditions"></div>
 
 <p class="muted" style="margin-top:24px"><a href="report.json">report.json</a> · ratings are recomputable from games.jsonl alone (docs/RATING_POOL.md)</p>
@@ -247,6 +249,15 @@ function render(d) {
     ["State", w => `<small class="${w.state === "offline" ? "muted" : w.state.startsWith("paused") ? "warn" : ""}">${esc(w.state)}</small>` +
       (w.last_error ? `<br><small class="bad">${esc(w.last_error)}</small>` : ""), "wrap"]],
     d.workers, "no workers yet");
+  $("leases").innerHTML = table([
+    ["Time", l => `<small>${esc(new Date(l.time).toLocaleTimeString())}</small>`], ["Worker", l => `<small>${esc(l.worker)}</small>`],
+    ["Batch", l => `<small>${esc(l.batch)}</small>`, "wrap"], ["Why", l => `<small>${esc(l.why)}</small>`, "wrap"]],
+    d.recent_leases || [], "no leases since the coordinator started");
+  const mixSets = [...new Set((d.opponent_mix || []).map(m => m.condition_set))];
+  $("mix").innerHTML = mixSets.map(name => `<details data-key="mix-${esc(name)}"><summary><b>${esc(name)}</b></summary><div class="scroll">` +
+    table([["Entrant", m => esc(m.label), "e"], ["Games", m => num(m.games), "n"], ["Last h", m => num(m.games_last_hour), "n"],
+      ["Top opponents", m => m.opponents.map(o => `${esc(o.opponent)} <span class="muted">${Math.round(100 * o.share)}% (${o.last_hour})</span>`).join("<br>"), "wrap"]],
+      d.opponent_mix.filter(m => m.condition_set === name)) + "</div></details>").join("") || '<p class="muted">no pool games yet</p>';
   $("conditions").innerHTML = d.conditions.map(c =>
     `<details data-key="cond-${esc(c.key)}"><summary><b>${esc(c.name)}</b> <span class="muted">· ${num(c.games)} games · ${c.ratings.length} rated</span></summary>` +
     ratings(c.ratings) + (c.unanchored.length ? `<p class="warn">Not connected to the anchor: ${c.unanchored.map(esc).join(", ")}</p>` : "") +

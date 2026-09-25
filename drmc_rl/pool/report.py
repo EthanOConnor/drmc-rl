@@ -220,10 +220,38 @@ def build_report(coordinator):
                                                     if k in ("best", "final", "reason", "stop_rule")})
                   for run in state.lineage_runs()],
         intentions=intent.roadmap(state, coordinator.capabilities),
-        workers=workers, hosts=hosts, blocks=list(state.blocks.values()),
+        workers=workers, hosts=hosts, recent_leases=list(coordinator.recent_leases),
+        opponent_mix=opponent_mix_rows(coordinator, hour_cutoff=cutoff), blocks=list(state.blocks.values()),
         fidelity=dict(mode=settings["fidelity"], min_agreement=settings["min_agreement"],
                       admitted=state.admitted, classes=coordinator.fidelity_stats,
                       pending_audits=len(coordinator.audits)))
+
+
+def opponent_mix_rows(coordinator, *, hour_cutoff, top=6):
+    """Per active entrant and condition set: its most frequent pool opponents (all time, last hour)."""
+    state = coordinator.state
+    where = coordinator._set_of_condition()
+    total, hour = {}, {}
+    for row in state.games.values():
+        if row.get("source") != "pool" or row["condition"] not in where:
+            continue
+        name = where[row["condition"]]
+        recent = row.get("time", "") >= hour_cutoff
+        for me, other in ((row["a"], row["b"]), (row["b"], row["a"])):
+            total.setdefault((name, me), Counter())[other] += 1
+            if recent:
+                hour.setdefault((name, me), Counter())[other] += 1
+    out = []
+    for (name, e), counts in sorted(total.items()):
+        if state.entrants.get(e, {}).get("status") != "active":
+            continue
+        games = sum(counts.values())
+        recent = hour.get((name, e), Counter())
+        out.append(dict(condition_set=name, entrant=e, label=_style_label(state, e), games=games,
+                        games_last_hour=sum(recent.values()),
+                        opponents=[dict(opponent=o, games=g, share=round(g / games, 3), last_hour=recent.get(o, 0))
+                                   for o, g in counts.most_common(top)]))
+    return sorted(out, key=lambda r: (r["condition_set"], -r["games"]))
 
 
 def worker_rows(coordinator, batches, now):

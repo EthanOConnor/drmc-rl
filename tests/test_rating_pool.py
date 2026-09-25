@@ -516,7 +516,7 @@ def test_lineages_share_budget_collapse_in_reports_and_conclude(tmp_path):
     available_everything(c)
     # The newest snapshot carries the lineage's new-entrant priority; older ones are maintenance only.
     batch = c.lease(worker())["batch"]
-    assert "run-f4" in (batch["a"], batch["b"]) and "(newest)" in batch["why"]
+    assert "run-f4" in (batch["a"], batch["b"]) and "new entrant run-f4" in batch["why"]
     # The pooled table shows one row for the run, labelled with frames, with its trajectory.
     report = build_report(c)
     rows = report["condition_sets"][0]["pooled"]
@@ -686,7 +686,7 @@ def test_lineage_roles_resolve_neighbours_and_report_recent_games(tmp_path):
     assert roles["ln-f0"] == ("maintenance", "resolved", [])
     available_everything(c)
     whys = [c.lease(worker(f"w{i}"))["batch"]["why"] for i in range(12)]
-    assert any("(resolving)" in w for w in whys) and not any("(maintenance)" in w for w in whys[:3])
+    assert any("for resolving " in w for w in whys)
     # The per-snapshot game cap ends the boost even when unresolved.
     c.settings["snapshot_game_cap"] = 100
     c._roles = None
@@ -731,3 +731,64 @@ def test_worker_stats_come_from_the_journal_and_survive_restarts(tmp_path):
     w = {r["worker"]: r for r in again["workers"]}
     assert w["Mac.lan-pool-mps-0"]["games"] == 96 and w["Mac.lan-pool-mps-0"]["first_seen"]
     assert "Mac.lan-pool-mps-0" in summary_text(again)
+
+
+
+def _voi_pool(tmp_path):
+    """The reported skew: a frontier snapshot, near well-determined peers, and a far, uncertain opponent."""
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "peer-up", "peer-down", "far"))
+    truth = {"peer-up": 0.15, "peer-down": -0.2, "far": -1.1, "x-f100": 0.12, "x-f150": 0.18}
+    for i, (e, step) in enumerate((("x-f100", 100), ("x-f150", 150))):
+        state.record("entrant", entrant(e, lineage=dict(run="x", step=step * 1_000_000, parent="anchor")))
+    counts = {"peer-up": 400, "peer-down": 400, "far": 12, "x-f100": 60, "x-f150": 150}
+    for e, n in counts.items():
+        p = 1 / (1 + math.exp(-truth[e]))
+        rng = random.Random(e)
+        for seed in BANK[:n]:
+            rows = rows_for(key, e, "anchor", [seed])
+            for row in rows:
+                won = float(rng.random() < p)
+                row["score"] = won if row["a"] == e else 1 - won
+            state.add_games(rows)
+    c = coordinator(tmp_path, settings=dict(batch_games=dict(events=8), background_min_share=0,
+                                            max_inflight_per_pairing=100, min_rated_games=16))
+    available_everything(c)
+    return c, dict(truth, anchor=0.0)
+
+
+def test_voi_sends_the_frontier_to_near_well_determined_opponents(tmp_path):
+    c, strengths = _voi_pool(tmp_path)
+    opponents = []
+    for i in range(80):
+        lease = c.lease(worker(f"w{i % 3}"))
+        spec = lease["batch"]
+        if "x-f150" in (spec["a"], spec["b"]):
+            opponents.append(spec["b"] if spec["a"] == "x-f150" else spec["a"])
+        submit(c, lease, strengths)
+    share = {o: opponents.count(o) / len(opponents) for o in set(opponents)}
+    assert len(opponents) >= 20
+    assert share.get("far", 0) <= 0.15                          # the old skew sent ~41% here
+    assert share.get("anchor", 0) + share.get("peer-up", 0) + share.get("x-f100", 0) >= 0.6
+    assert share.get("x-f100", 0) > 0                           # newest vs best, directly
+    # Diversity rails over its pool games in the set.
+    mix = c.opponent_mix("main")["x-f150"]
+    total = sum(mix.values())
+    assert max(mix.values()) / total <= 0.4 and mix["anchor"] / total >= 0.15
+    report = build_report(c)
+    assert any(m["entrant"] == "x-f150" and m["opponents"] for m in report["opponent_mix"])
+    assert report["recent_leases"] and "voi" in report["recent_leases"][0]["why"]
+
+
+def test_a_new_entrant_plays_only_the_anchor_and_established_near_peers(tmp_path):
+    c, strengths = _voi_pool(tmp_path)
+    c.register(dict(type="entrant", **entrant("newbie")))
+    strengths["newbie"] = 0.1
+    seen = set()
+    for i in range(40):
+        lease = c.lease(worker(f"w{i % 3}"))
+        spec = lease["batch"]
+        if "newbie" in (spec["a"], spec["b"]):
+            seen.add(spec["b"] if spec["a"] == "newbie" else spec["a"])
+        submit(c, lease, strengths)
+    assert seen and "far" not in seen and seen <= {"anchor", "peer-up", "peer-down", "x-f100", "x-f150"}
+    assert "anchor" in seen

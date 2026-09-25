@@ -72,6 +72,7 @@ class Fit:
     iterations: int = 0
     covariance: np.ndarray | None = None
     index: dict[str, int] = field(default_factory=dict)
+    design: float = 1.0      # seed-pair design effect: median robust / model variance
 
     def expected(self, a: str, b: str) -> float | None:
         """Model probability that ``a`` beats ``b`` (None when either is unanchored)."""
@@ -168,8 +169,11 @@ def fit(pairs: dict[tuple[str, str], PairStats], anchor: str, *, anchor_rating: 
     sandwich = covariance @ meat @ covariance if n else covariance
     variance = np.maximum(np.diag(covariance), np.diag(sandwich)) if n else np.zeros(0)
     # The reported covariance is the model covariance scaled to the robust variances.
+    design = 1.0
     if n:
-        scale = np.sqrt(variance / np.maximum(np.diag(covariance), 1e-300))
+        ratio = variance / np.maximum(np.diag(covariance), 1e-300)
+        design = float(np.median(ratio))
+        scale = np.sqrt(ratio)
         covariance = covariance * np.outer(scale, scale)
     games, score, opponents = {}, {}, {}
     for (i, j), s in pairs.items():
@@ -190,6 +194,7 @@ def fit(pairs: dict[tuple[str, str], PairStats], anchor: str, *, anchor_rating: 
     result.iterations = iterations
     result.covariance = covariance
     result.index = index
+    result.design = design
     return result
 
 
