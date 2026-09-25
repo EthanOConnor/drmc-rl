@@ -98,6 +98,10 @@ def collapse_lineages(rows, state, difference_se=None, roles=None, partial=None,
                 recent=recent(e) if recent else None, role=_role(roles, e, state), los=None,
                 incomplete=est.get("paces", "—")))
         rep["trajectory"].sort(key=lambda t: (t["step"], t["entrant"]))
+        if recent is not None:
+            # A run's row counts the last hour of every snapshot; the trajectory breaks it down.
+            rep["recent_shown"] = rep.get("recent")
+            rep["recent"] = sum(recent(e) for e in state.lineage_members(run))
         out.append(rep)
     return out
 
@@ -144,10 +148,12 @@ def build_report(coordinator):
     # imported rows only dates (which sort before any time on that day).
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3600))
     hour = Counter()
+    hour_games = Counter()
     for row in state.games.values():
         if row.get("time", "") >= cutoff:
             hour[(row["condition"], row["a"])] += 1
             hour[(row["condition"], row["b"])] += 1
+            hour_games[row["condition"]] += 1
     roles = coordinator.lineage_roles()
     conditions = []
     for key, c in sorted(state.conditions.items(), key=lambda kv: kv[1]["name"]):
@@ -188,7 +194,8 @@ def build_report(coordinator):
                          weights={state.conditions[k]["spec"]["pace"]: w
                                   for k, w in zip(keys, coordinator.pace_weights(keys))},
                          # Default ranking: pace-weighted pooled rating over all comparable games.
-                         pooled=set_rows(fits, keys, "pace"), pooled_equal=set_rows(fits, keys, "equal"),
+                         pooled=(ranked := set_rows(fits, keys, "pace")), pooled_equal=set_rows(fits, keys, "equal"),
+                         hour=hour_reconciliation(state, keys, ranked, hour, hour_games),
                          views=dict(real_play=set_rows(view_fits["real_play"], keys, "pace"),
                                     uniform=set_rows(view_fits["uniform"], keys, "pace"))))
     primary = primary_set(state)
@@ -237,6 +244,11 @@ def build_report(coordinator):
         totals=dict(games=len(state.games), **games_by_source, entrants=len(state.entrants),
                     active_entrants=len(state.entrant_ids(("active",))), conditions=len(state.conditions),
                     games_last_hour=sum(b["new_games"] for b in recent),
+                    games_last_hour_journal=sum(hour_games.values()),
+                    games_last_hour_by_set={s["name"]: sum(hour_games[k] for k in s["conditions"])
+                                            for s in state.condition_sets.values()},
+                    games_last_hour_no_set=sum(n for k, n in hour_games.items()
+                                               if not any(k in s["conditions"] for s in state.condition_sets.values())),
                     games_last_day=sum(b["new_games"] for b in day), leases=len(coordinator.leases),
                     trace_mb=round(coordinator.trace_bytes / 2 ** 20, 1)),
         condition_sets=sets, conditions=conditions,
@@ -282,6 +294,22 @@ def opponent_mix_rows(coordinator, *, hour_cutoff, top=6):
                         opponents=[dict(opponent=o, games=g, share=round(g / games, 3), last_hour=recent.get(o, 0))
                                    for o, g in counts.most_common(top)]))
     return sorted(out, key=lambda r: (r["condition_set"], -r["games"]))
+
+
+def hour_reconciliation(state, keys, rows, hour, hour_games):
+    """Last-hour counts of one set: games, and entrant-games (each game counts for both sides)
+    split into the ranked rows (a run row counts all its snapshots) and entrants not ranked yet."""
+    covered = set()
+    for r in rows:
+        run = r.get("lineage")
+        covered.update(state.lineage_members(run) if run else [r["entrant"]])
+    players = {e for (k, e) in hour if k in keys}
+    ranked = sum(hour[(k, e)] for k in keys for e in players if e in covered)
+    unranked = sum(hour[(k, e)] for k in keys for e in players if e not in covered)
+    return dict(games=sum(hour_games[k] for k in keys), entrant_games=ranked + unranked,
+                ranked=ranked, unranked=unranked,
+                unranked_entrants=sorted(e for e in players if e not in covered
+                                         and any(hour[(k, e)] for k in keys)))
 
 
 def worker_rows(coordinator, batches, now):

@@ -943,3 +943,31 @@ def test_style_reports_cumulative_t1_plus_horizontal_share_and_human_rows(tmp_pa
     report = build_report(coordinator(tmp_path))
     assert report["style"]["human_rows"][0]["t1"] == 1.25
     assert "T1 (≥20, old)" in PAGE and "T1+ (≥27)" in PAGE and "Cumulative: clears scoring >= 30" in PAGE
+
+
+def test_last_hour_counts_reconcile_with_the_totals(tmp_path):
+    from drmc_rl.pool.store import now_iso
+    state, keys = setup_state(tmp_path, entrants=("anchor", "a", "b"), paces=("normal", "fast"))
+    for i in range(3):
+        state.record("entrant", entrant(f"h-f{i}", lineage=dict(run="h", step=25_000_000 * (i + 1), parent="anchor")))
+    other = condition("sloth")
+    state.record("condition", dict(spec=other, name="ev-sloth"))          # in no set
+    stamp = now_iso()
+    plan = [(k, e, "anchor", 20) for k in keys for e in ("a", "h-f0", "h-f1", "h-f2")] + \
+           [(keys[0], "b", "anchor", 5), (condition_key(other), "a", "anchor", 3)]      # b: one pace only
+    for key, x, y, n in plan:
+        rows = rows_for(key, x, y, BANK[:n], score_a=0.5)
+        for r in rows:
+            r["time"] = stamp
+        state.add_games(rows)
+    report = build_report(coordinator(tmp_path))
+    totals, s0 = report["totals"], report["condition_sets"][0]
+    assert totals["games_last_hour_journal"] == sum(2 * n for *_, n in plan)
+    assert totals["games_last_hour_by_set"]["main"] + totals["games_last_hour_no_set"] == totals["games_last_hour_journal"]
+    hr = s0["hour"]
+    assert hr["entrant_games"] == 2 * hr["games"] == 2 * totals["games_last_hour_by_set"]["main"]
+    # Rows (a run row = all its snapshots) plus not-yet-ranked entrants add up to twice the games.
+    assert sum(r["recent"] for r in s0["pooled"]) == hr["ranked"]
+    assert hr["ranked"] + hr["unranked"] == hr["entrant_games"] and hr["unranked_entrants"] == ["b"]
+    run = next(r for r in s0["pooled"] if r.get("lineage") == "h")
+    assert run["recent"] == sum(t["recent"] for t in run["trajectory"]) == 3 * 2 * 2 * 20

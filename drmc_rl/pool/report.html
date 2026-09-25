@@ -126,7 +126,7 @@ function ratings(rows) {
     ["95% CI", r => `${int(r.ci95[0])}–${int(r.ci95[1])}`, "n"],
     ['<span title="Probability this entrant is stronger than the next row">LOS</span>', r => los(r.los), "n"],
     ["Games", r => num(r.games), "n"],
-    ['<span title="Games journaled in the last 60 minutes">Last h</span>', r => num(r.recent), "n"],
+    ['<span title="Games in the last 60 minutes involving this entrant, in this set (a run: all its snapshots; expand for each). Each game counts for both entrants, so the column sums to twice the set\'s games.">Last h</span>', r => num(r.recent), "n"],
   ], rows, "no rated entrants yet")}</div>`;
 }
 function paceBreakdown(s) {
@@ -204,7 +204,7 @@ function renderStyle(st) {
 function render(d) {
   const t = d.totals;
   $("summary").textContent = `${num(t.games)} games (${num(t.pool || 0)} pool, ${num(t.imported || 0)} imported) · ` +
-    `${num(t.games_last_hour)} last hour · ${num(t.games_last_day)} last day · ${t.active_entrants}/${t.entrants} entrants active · ` +
+    `${num(t.games_last_hour_journal ?? t.games_last_hour)} games in the last hour (${Object.entries(t.games_last_hour_by_set || {}).filter(([, n]) => n).map(([k, n]) => `${k} ${num(n)}`).join(", ")}${t.games_last_hour_no_set ? `, other ${num(t.games_last_hour_no_set)}` : ""}) · ${num(t.games_last_day)} last day · ${t.active_entrants}/${t.entrants} entrants active · ` +
     `${t.leases} leases · anchor ${int(d.anchor_rating)}`;
   $("updated").textContent = `updated ${new Date(d.generated).toLocaleTimeString()} · refreshes every 60 s`;
   $("sets").innerHTML = d.condition_sets.map(s => {
@@ -213,7 +213,10 @@ function render(d) {
     const pick = {pooled: s.pooled, pooled_equal: s.pooled_equal, real_play: s.views.real_play, uniform: s.views.uniform}[v] || s.pooled;
     const tabs = VIEWS.map(([k, label]) => `<button class="tab${k === v ? " on" : ""}" data-view="${esc(s.name)}|${k}">${label}</button>`).join("");
     const w = Object.entries(s.weights || {}).map(([p, x]) => `${esc(p)} ${x}`).join(" · ");
-    const body = `<p class="muted">${esc(s.notes)}</p><p class="muted"><small>Pace weights: ${w}</small></p>` +
+    const hr = s.hour || {};
+    const hourNote = `Last hour in this set: ${num(hr.games)} games = ${num(hr.entrant_games)} entrant-games (each game counts for both sides): ${num(hr.ranked)} in the rows below` +
+      (hr.unranked ? `, ${num(hr.unranked)} by entrants not ranked here yet (${(hr.unranked_entrants || []).map(esc).join(", ")})` : "") + ".";
+    const body = `<p class="muted">${esc(s.notes)}</p><p class="muted"><small>Pace weights: ${w}</small></p><p class="muted"><small>${hourNote}</small></p>` +
       `<div class="tabs">${tabs}</div>${ratings(pick)}${paceBreakdown(s)}`;
     return s.primary ? `<h3>${head}</h3>${body}` : `<details data-key="set-${esc(s.name)}"><summary>${head}</summary>${body}</details>`;
   }).join("");
