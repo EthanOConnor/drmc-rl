@@ -92,7 +92,8 @@ class ParallelPlanning:
 
 
 def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
-                    observer=None, controller=None, anchor_recorder=None):
+                    observer=None, controller=None, anchor_recorder=None, starts=None):
+    """``starts`` (one checkpoint overlay or None per job) begins games from start-bank positions."""
     if controller is not None:
         if (not config.get("allow_unadmitted_controller_experiment") or observer is not None
                 or config.get("mixed_core_actor")):
@@ -119,7 +120,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
     if asynchronous and not hasattr(planner,"submit"):
         raise ValueError("asynchronous rollout requires a submitting planner")
     with EventVsPool(len(jobs), lib_path=config.get("native_library")) as pool:
-        pool.reset([job[0] for job in jobs], level=match["level"])
+        pool.reset([job[0] for job in jobs], level=match["level"], starts=starts)
         while True:
             tick = time.perf_counter()
             progress = pool.advance(limit)

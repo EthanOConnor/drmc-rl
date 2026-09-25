@@ -122,6 +122,59 @@ training seeds and reserved-game confirmation against the shipped portfolio.
 This input ablation does not replace the pending retention arena or the required
 larger-teacher, adaptive-search and expressive-play work.
 
+## Stranded edge-virus endgames
+
+A diagnostic for one tactical weakness: late in a round a virus sits in column
+0 or 7 with an empty shaft under it. `drmc_rl/eval/stranded_edge.py` owns the
+definition (`Definition` defaults): 1-3 viruses left, an edge virus with at
+least 4 empty cells directly below it, and at most 24 non-virus tiles outside
+the edge column and its neighbour. A `pillar` virus instead rests on a
+pill-only tower with at least 4 open cells beside it. A support-destroying
+clear is a placement, made while the virus stands, after which the stack top
+under it or in the neighbour column at or below its row moved down.
+
+1. Mine: `python -m tools.mine_stranded_edge arena --out DIR RUN_DIR...` over
+   arena journals, and `... corpus --out DIR` over the human corpus on tf3090
+   (CPU, read-only mount, `nice -n 19`). Run each at `--min-gap 4` and
+   `--min-gap 0` (the supported-edge-virus control), then `... report`.
+2. Bank: `python -m tools.build_stranded_edge_bank benchmark` picks 40 stranded
+   and 8 pillar positions per source (strong-human corpus games, arena games),
+   one per source game, adds each left-right mirror and a grounded twin (the
+   virus column lowered onto its support), and keeps groups whole. The
+   `training` mode takes every other eligible position, drops the benchmark's
+   source games and arena games on reserve seeds, and adds mirrored,
+   recolored, shifted and trimmed variants.
+3. Benchmark: `trainer-stranded-edge-benchmark` (`tools.eval_stranded_edge`).
+   Both bottles start from the row; the pill stream comes from the
+   `stranded-edge-benchmark-v1` reserve allocation (96 seeds, one per group).
+   `solo` plays the candidate on both sides; `race` plays it against a fixed
+   reference with side swaps. `--compare` gives paired, group-bootstrapped
+   differences between two outputs; `--reference-gap` compares against
+   `tools.oracle_stranded_edge` (a clairvoyant beam, or the public two-ply
+   `preview` / `preview-round` search).
+4. Curriculum: `train_controller_retention` accepts `start_mix`
+   (`bank`, `bank_sha256`, `fraction`, `levels`, `paces`). It replaces that
+   fraction of each level-14 collection's seed pairs with bank positions,
+   drawn from its own random stream, so natural seeds, opponents and levels
+   are unchanged. The pair keeps its training-pool seed for the pill stream.
+   Outcomes stay natural terminal results. Retention, KL limits and the
+   objective are untouched. `runs/review-20260909/prepare_stranded_edge_finetune_v1.py`
+   writes a fine-tune of a finished core, or prints the block to fold into a
+   later run. Do not add it to one afterstate arm alone, or the arm
+   tournament stops being matched.
+
+Pre-registration (`runs/review-20260909/stranded-edge-v1/preregistration.json`):
+the primary metric is the paired solo difference in restricted-mean pills to
+clear the stranded virus (horizon 40, failure = 40) on strata 0-1. It is
+pooled over frame_perfect and normal, the candidate minus the champion
+(`eval/champion-v1`). Success needs a point estimate of at most -1.5 pills
+and a 95% upper bound below 0. The pillar and grounded strata must not
+worsen by more than 1 pill at the upper bound. Regression is checked on the
+896-game `panel` (`prepare_afterstate_tournament_v1.py panel`) against the
+fine-tune's parent: the pooled 95% lower bound must be at least 0.45. Report
+the panel against the champion too. Benchmark results are diagnostic. They
+never replace the panel or tournament outcome evidence.
+
 ## Authority and supported entrypoints
 
 Run this before any work:

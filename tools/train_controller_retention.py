@@ -31,7 +31,36 @@ from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
 from tools.vs_head_to_head import PlainPolicy
 
 
-def collection_schedule(config, update, available, opponents):
+class StartMix:
+    """Replace a fraction of each collection's seed pairs with start-bank positions.
+
+    The mix draws from its own random stream, so the natural seeds, opponents and
+    levels of a collection are exactly those of the same run without a mix. A
+    mixed pair keeps its training-pool seed (it supplies the pill stream after
+    the bank position's preview), plays both side assignments from the bank
+    row, and is journaled with ``start_row``. Outcomes stay natural terminal
+    results from that position; no scenario-specific reward is added.
+    """
+    def __init__(self, spec):
+        from drmc_rl.training.envs.start_bank import StartBank
+        self.spec=dict(spec); self.bank=StartBank(spec['bank'])
+        self.fraction=float(spec['fraction'])
+        if not 0<self.fraction<1: raise ValueError('start_mix fraction must be in (0, 1)')
+        self.paces=set(spec.get('paces') or []); self.levels=set(spec.get('levels',[14]))
+        self.sha256=hashlib.sha256(Path(spec['bank']).read_bytes()).hexdigest()
+        if spec.get('bank_sha256') not in (None,self.sha256):
+            raise ValueError('start_mix bank bytes differ from the declared bank_sha256')
+
+    def starts(self, config, cycle, index, match, pairs):
+        if (self.paces and match['pace'] not in self.paces) or match['level'] not in self.levels:
+            return None
+        rng=np.random.default_rng([config['seed'],cycle,index,0x5E])
+        rows=[int(rng.integers(len(self.bank))) if rng.random()<self.fraction else None for _ in range(pairs)]
+        if all(r is None for r in rows): return None
+        return [(r,None if r is None else self.bank.spec_kwargs(r)) for r in rows for _ in (0,1)]
+
+
+def collection_schedule(config, update, available, opponents, start_mix=None):
     paces=config['paces']
     if config['arm']=='mixed_retention':
         cycle=update-1; selected=list(enumerate(paces))
@@ -49,8 +78,9 @@ def collection_schedule(config, update, available, opponents):
             raise ValueError('collections require complete seed pairs')
         seeds=rng.choice(available,count//2,replace=False)
         jobs=[(int(seed),side,2*i+side) for i,seed in enumerate(seeds) for side in (0,1)]
-        result.append((dict(id=f'train-{update}-{pace}',a='learner',b=opponent,
-                            games=count,pace=pace,level=level),jobs))
+        match=dict(id=f'train-{update}-{pace}',a='learner',b=opponent,games=count,pace=pace,level=level)
+        starts=None if start_mix is None else start_mix.starts(config,cycle,index,match,len(seeds))
+        result.append((match,jobs,starts))
     return result
 
 
@@ -83,9 +113,12 @@ def main():
         pressure_strength=config.get('retention_pressure_strength',0.))
     require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
     available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
+    start_mix=StartMix(config['start_mix']) if config.get('start_mix') else None
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
                     execution_profiles={p:resolve_pace(p).to_dict() for p in config['paces']})
+    if start_mix is not None:
+        identities['start_mix_bank']=start_mix.sha256
     from drmc_rl.planning.native_reach import resolve_library_path as reach_path
     from drmc_rl.envs.backends.drmario_pool import resolve_library_path as pool_path
     identities['native_sha256']={str(p):hashlib.sha256(p.read_bytes()).hexdigest()
@@ -127,13 +160,13 @@ def main():
     try:
         for update in range(progress['updates']+1,config['updates']+1):
             if target_met(progress,config): break
-            started=time.monotonic(); schedules=collection_schedule(config,update,available,opponents)
+            started=time.monotonic(); schedules=collection_schedule(config,update,available,opponents,start_mix)
             records=[]; games=[]; shards=[]; natural=Counter(); breakdown=defaultdict(float)
             progress.update(current_pace='mixed' if len(schedules)>1 else schedules[0][0]['pace'],
-                            collecting_update=update,collecting_target=sum(m['games'] for m,_ in schedules),
+                            collecting_update=update,collecting_target=sum(m['games'] for m,_,_ in schedules),
                             collecting_games=0,phase='collecting',activity=None,updated_at=datetime.now(UTC).isoformat())
             dump(output/'training.json',progress)
-            for match,jobs in schedules:
+            for match,jobs,starts in schedules:
                 opponent=opponents.load(match['b']); batch=[]; offset=len(games)
                 chunk=config.get('rollout_games',32)
                 if chunk<2 or chunk%2: raise ValueError('rollout chunks require paired sides')
@@ -146,13 +179,16 @@ def main():
                                  frames=before_frames+w['frames'],decision_requests=before_requests+w['decision_requests'])
                     metrics={}
                     part,elapsed=run_event_batch(runtime,match,jobs[start:start+chunk],None,planner,None,
-                        policies={'learner':actor,match['b']:opponent},activity=collecting,metrics=metrics)
+                        policies={'learner':actor,match['b']:opponent},activity=collecting,metrics=metrics,
+                        starts=None if starts is None else [k for _,k in starts[start:start+chunk]])
                     batch.extend(part); breakdown['rollout_seconds']+=elapsed
                     for k,v in metrics.items(): breakdown[k]+=v
                 selected=terminal_samples(batch)
                 for r in selected:
                     r.update(game_id=r['game_id']+offset,pace=match['pace'])
-                rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b']) for r,_,_ in batch]
+                rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b'],
+                           **({} if starts is None or starts[j][0] is None else {'start_row':starts[j][0]}))
+                      for j,(r,_,_) in enumerate(batch)]
                 natural[match['pace']]+=sum(r['reason']!='timeout' for r in rows)
                 records.extend(selected); games.extend(rows); shards.append((match,selected))
                 progress.update(collecting_games=len(games),collecting_frames=sum(r['frames'] for r in games),collecting_decisions=len(records))

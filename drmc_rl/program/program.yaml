@@ -347,6 +347,22 @@ recipes:
       - Separate teacher KL and per-pace vetoes never replace the actual PPO behavior distribution or natural terminal returns.
       - Restore both model and optimizer on rejection. Fresh arena evidence, larger teachers and expressive play remain separate requirements.
 
+  trainer-stranded-edge-benchmark:
+    status: active
+    stage: 3
+    purpose: Score a core on fixed stranded edge-virus endgame starts (solo mirror races and races against a reference) from reserve-allocated pill streams.
+    requires_paths:
+      - tools/eval_stranded_edge.py
+      - drmc_rl/eval/stranded_edge.py
+      - "{stranded_edge_config}"
+    requires_gates: [pair-state-v2]
+    command: [python, -m, tools.eval_stranded_edge, --config, "{stranded_edge_config}"]
+    produces: [Per-row journal, pooled pills/frames to clear the stranded virus, support-destroying clears, grounded-twin handicap, race score]
+    resources: {preferred_host: mac, accelerator: mps}
+    notes:
+      - Positions come from tools.mine_stranded_edge (arena journals and strong-human corpus games) via tools.build_stranded_edge_bank benchmark; seeds only from the stranded-edge-benchmark-v1 allocation.
+      - Diagnostic of one tactical weakness; it never replaces the panel or tournament outcome evidence.
+
   trainer-afterstate-core-dataset:
     status: active
     stage: 3

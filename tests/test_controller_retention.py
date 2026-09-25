@@ -41,8 +41,8 @@ def test_mixed_and_cycling_arms_have_identical_per_pace_game_schedules():
         mixed=collection_schedule(config,cycle,np.arange(1,100),opponents)
         cycling=[collection_schedule(dict(config,arm='cycling_control'),(cycle-1)*3+i+1,
                                      np.arange(1,100),opponents)[0] for i in range(3)]
-        for (a,ja),(b,jb) in zip(mixed,cycling,strict=True):
-            assert ja==jb
+        for (a,ja,sa),(b,jb,sb) in zip(mixed,cycling,strict=True):
+            assert ja==jb and sa is sb is None
             assert {k:v for k,v in a.items() if k!='id'}=={k:v for k,v in b.items() if k!='id'}
 
 

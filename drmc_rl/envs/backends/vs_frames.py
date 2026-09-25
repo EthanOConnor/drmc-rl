@@ -126,13 +126,21 @@ class FrameVsPool:
             value = self._events[key] = event.public()
         return value
 
-    def reset(self, seeds, *, level=14, speed=2, mask=None):
+    def reset(self, seeds, *, level=14, speed=2, mask=None, starts=None):
+        """``starts[pair]`` optionally overlays a start-bank checkpoint (``StartBank.spec_kwargs``).
+
+        The seed still fixes the pill reserve, so a checkpoint start continues
+        with the seed's pill stream from the stored reserve index.
+        """
         if len(seeds) != self.num_pairs:
             raise ValueError("one seed per pair required")
+        if starts is not None and len(starts) != self.num_pairs:
+            raise ValueError("one start overlay (or None) per pair required")
         specs = (_DrmVsResetSpec * self.num_pairs)(*[
             build_vs_reset_spec(level=(level, level), speed_setting=(speed, speed),
-                                rng_override=True, rng_state=(int(seed) & 255, (int(seed) >> 8) & 255))
-            for seed in seeds])
+                                rng_override=True, rng_state=(int(seed) & 255, (int(seed) >> 8) & 255),
+                                **((starts[i] or {}) if starts is not None else {}))
+            for i, seed in enumerate(seeds)])
         cmask = None if mask is None else (C.c_uint8 * self.num_pairs)(*mask)
         self._check(self.lib.drm_vspool_frame_reset(self.handle, cmask, specs,
                                                   self.states, C.sizeof(FrameState)))
@@ -265,8 +273,8 @@ class EventVsPool(FrameVsPool):
         self.progress = (FrameAdvance * (2*self.num_pairs))()
         self.script_storage = [None] * (2*self.num_pairs)
 
-    def reset(self, seeds, *, level=14, speed=2, mask=None):
-        states = super().reset(seeds,level=level,speed=speed,mask=mask)
+    def reset(self, seeds, *, level=14, speed=2, mask=None, starts=None):
+        states = super().reset(seeds,level=level,speed=speed,mask=mask,starts=starts)
         for pair in range(self.num_pairs):
             if mask is None or mask[pair]:
                 for side in (2*pair,2*pair+1):
