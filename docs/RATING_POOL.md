@@ -104,12 +104,14 @@ Jobs with `--seeds bank` use the reserve set; confirmatory studies keep fresh
 allocations (`--seeds allocation:STUDY`), and job seeds outside the reserve are
 refused. Imported studies keep their own registered seeds.
 
-**Which games the ratings use.** The default ranking uses every comparable game,
-whatever its seeds: pool games on all three sets plus the imported history (which
-carries most of the anchor connections). The report shows alongside it the same
-fit restricted to the mixture set ("Real-play seeds", the real-play-weighted
-strength) and to the uniform set. When an entrant's memorization check is
-flagged, rank it by the reserve or real-play view, not the default.
+**Which games the ratings use (settled).** The default ranking uses every
+comparable game, whatever its seeds: pool games on all three sets plus the
+imported history (which carries most of the anchor connections). This is a
+permanent decision (user, 2026-09-25), independent of how many games the mixture
+set accumulates. "Real-play seeds" (the same fit on mixture-set games, the
+real-play-weighted strength) and "Uniform seen seeds" are secondary views shown
+alongside. The one exception: an entrant whose memorization check is flagged is
+ranked by its reserve or real-play view instead of the default.
 
 **Memorization check.** Per entrant, over pool games on the reserve and uniform
 sets: seen-minus-reserve score gap in points with a seed-clustered 95% interval
