@@ -25,6 +25,7 @@ td.wrap{white-space:normal;min-width:16em}
 .n{text-align:right}
 td.e{max-width:30em;overflow:hidden;text-overflow:ellipsis}
 details.traj{margin:0}
+div.tabs{margin:4px 0 6px;display:flex;flex-wrap:wrap;gap:4px}button.tab{border:1px solid var(--line);background:none;color:var(--muted);font:inherit;font-size:12px;padding:1px 8px;border-radius:10px;cursor:pointer}button.tab.on{color:var(--fg);border-color:var(--fg)}
 button.tog{border:0;background:none;color:inherit;font:inherit;padding:0 4px 0 0;cursor:pointer}
 tr.sub td{color:var(--muted);font-size:12px}tr.sub.retired td{opacity:.7}details.traj summary{padding:0}table.sub{width:auto;margin:4px 0 6px}table.sub th,table.sub td{padding:1px 6px;font-size:12px}
 @media (max-width:600px){main{padding:12px}td.e{max-width:10.5em}th,td{padding:3px 5px}}
@@ -42,10 +43,13 @@ a{color:inherit}
 <p class="summary" id="summary"></p>
 
 <h2>Ratings by condition set</h2>
-<p class="muted">Elo, anchor fixed. Pooled = mean over the set's conditions, only for entrants rated in all of them. LOS = probability the entrant is stronger than the next row.</p>
+<p class="muted">Elo, anchor fixed. Default ranking: pace-weighted mean over the set's conditions, only for entrants rated in all of them; equal-weight and seed-set views alongside. Real-play seeds = the 50/50 real-play mixture set (its plain mean is real-play-weighted strength). LOS = probability the entrant is stronger than the next row, in the view shown.</p>
 <div id="sets"></div>
 
 <h2>Era leaderboard</h2><div class="scroll" id="eras"></div>
+<h2>Memorization check</h2>
+<p class="muted">Score on uniform seen (non-reserve) seeds minus score on the reserve bank, pool games only, in points. Flagged when the 95% interval excludes 0 by more than 2 points.</p>
+<div class="scroll" id="memorization"></div>
 <h2>New and underplayed</h2><div class="scroll" id="new"></div>
 <h2>Jobs</h2><div class="scroll" id="jobs"></div>
 <h2>Roadmap</h2><div class="scroll" id="intentions"></div>
@@ -56,9 +60,13 @@ a{color:inherit}
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const VIEWS = [["pooled", "Pace-weighted"], ["pooled_equal", "Equal-weight"], ["real_play", "Real-play seeds"], ["uniform", "Uniform seen seeds"]];
+const setView = new Map();    // chosen view per condition set; survives refreshes
 const expanded = new Set();   // expanded lineage rows in pace matrices; survives refreshes
 let last = null;
 document.addEventListener("click", e => {
+  const t = e.target.closest("[data-view]");
+  if (t) { const [set, view] = t.dataset.view.split("|"); setView.set(set, view); keep(() => render(last)); return; }
   const b = e.target.closest("[data-toggle]");
   if (!b) return;
   const k = b.dataset.toggle;
@@ -151,13 +159,26 @@ function render(d) {
   $("updated").textContent = `updated ${new Date(d.generated).toLocaleTimeString()} · refreshes every 60 s`;
   $("sets").innerHTML = d.condition_sets.map(s => {
     const head = `<b>${esc(s.name)}</b>${s.primary ? " · primary" : ""} <span class="muted">· anchor ${esc(s.anchor)} · ${s.conditions.length} conditions · weight ${s.weight}</span>`;
-    const body = `<p class="muted">${esc(s.notes)}</p>${ratings(s.pooled)}${paceBreakdown(s)}`;
+    const v = setView.get(s.name) || "pooled";
+    const pick = {pooled: s.pooled, pooled_equal: s.pooled_equal, real_play: s.views.real_play, uniform: s.views.uniform}[v] || s.pooled;
+    const tabs = VIEWS.map(([k, label]) => `<button class="tab${k === v ? " on" : ""}" data-view="${esc(s.name)}|${k}">${label}</button>`).join("");
+    const w = Object.entries(s.weights || {}).map(([p, x]) => `${esc(p)} ${x}`).join(" · ");
+    const body = `<p class="muted">${esc(s.notes)}</p><p class="muted"><small>Pace weights: ${w}</small></p>` +
+      `<div class="tabs">${tabs}</div>${ratings(pick)}${paceBreakdown(s)}`;
     return s.primary ? `<h3>${head}</h3>${body}` : `<details data-key="set-${esc(s.name)}"><summary>${head}</summary>${body}</details>`;
   }).join("");
   $("eras").innerHTML = table([
     ["Era", e => esc(e.era)], ["Best entrant", e => e.best ? esc(e.best.entrant) : '<span class="muted">unrated</span>', "e"],
     ["Elo", e => e.best ? int(e.best.rating) : "", "n"], ["95% CI", e => e.best ? `${int(e.best.ci95[0])}–${int(e.best.ci95[1])}` : "", "n"],
     ["Entrants", e => e.entrants, "n"]], d.eras);
+  const pts = x => x == null ? "" : (x > 0 ? "+" : "") + Number(x).toFixed(1);
+  $("memorization").innerHTML = table([
+    ["Entrant", m => esc(m.entrant), "e"], ["Gap", m => pts(m.gap_points), "n"],
+    ["95% CI", m => m.ci95_points ? `${pts(m.ci95_points[0])} – ${pts(m.ci95_points[1])}` : "", "n"],
+    ["Detectable", m => m.detectable_points == null ? "" : "±" + m.detectable_points, "n"],
+    ["Seeds reserve / seen", m => `${m.reserve_seeds} / ${m.seen_seeds}`, "n"],
+    ["", m => m.flagged ? '<span class="bad">flag</span>' : ""]],
+    (d.memorization || []).filter(m => m.gap_points != null), "not enough pool games on both seed sets yet");
   $("new").innerHTML = table([
     ["Entrant", e => esc(e.id), "e"], ["Era", e => esc(e.era)], ["Status", e => esc(e.status)],
     ["Games (min / max per primary condition)", e => { const v = Object.values(e.games); return v.length ? `${Math.min(...v)} / ${Math.max(...v)}` : ""; }, "n"],

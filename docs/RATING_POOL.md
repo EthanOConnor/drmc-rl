@@ -52,9 +52,9 @@ games under one condition. Nothing mixes silently: a different engine commit, pa
 profile or backend is a different key.
 
 A **condition set** names conditions, one anchor, a background weight and whether
-it is primary. The pooled view of a set is the equal-weight mean of an entrant's
-per-condition ratings, only for entrants rated under every condition of the set
-(no imputation), with se = sqrt(Σ se²)/k. Sets registered at bootstrap
+it is primary. The pooled view of a set is the pace-weighted mean of an entrant's
+per-condition ratings (below), only for entrants rated under every condition of
+the set (no imputation). Sets registered at bootstrap
 (`runs/rating-pool-v1/bootstrap.json`):
 
 | Set | Conditions | Weight |
@@ -87,15 +87,45 @@ under a condition are reported unanchored. Display scale: 400/ln 10 per logit.
 
 ### Seeds
 
-Rating games use one bank: the reserve allocation `rating-pool-v1` (512 evaluation
-seeds, `drmc_rl/program/eval_seed_allocations.json`). Every pairing plays the bank
-in order, both sides of each seed on the same worker; seeds are reused across
-pairings, conditions and levels (common games reduce the variance of rating
-differences) but never within a pairing, so a pairing holds at most 1,024 games per
-condition. Reserve seeds are blocked from training. Confirmatory studies keep fresh
-allocations: a job with `--seeds allocation:STUDY` (or `file:` with per-condition
-lists) plays only those seeds, and the coordinator refuses job seeds outside the
-reserve. Imported studies keep their own registered seeds.
+Three fixed seed sets, persisted in `pool.json` when first drawn (so a refreshed
+frequency table never changes them), each played in order, both sides of a seed
+on one worker, reused across pairings, conditions and levels but never within a
+pairing (at most 1,024 games per pairing, condition and set):
+
+| Set | Seeds | Role |
+|---|---|---|
+| `reserve` | reserve allocation `rating-pool-v1` (512, games 96–607 of the reserve) | never trainable; the memorization reference |
+| `uniform` | 512 non-reserve console seeds, uniform (`draw_mixture_seeds`, seed_mix 0) | the fair "seen" comparison for memorization |
+| `mixture` | 512 non-reserve seeds from the training mixture (seed_mix 0.5: half Fightcade play frequency, half uniform) | its plain mean is real-play-weighted strength |
+
+Background pairs rotate among the sets by share (`background_seed_shares`:
+mixture 0.5, reserve 0.25, uniform 0.25), always the set furthest below its share.
+Jobs with `--seeds bank` use the reserve set; confirmatory studies keep fresh
+allocations (`--seeds allocation:STUDY`), and job seeds outside the reserve are
+refused. Imported studies keep their own registered seeds.
+
+**Which games the ratings use.** The default ranking uses every comparable game,
+whatever its seeds: pool games on all three sets plus the imported history (which
+carries most of the anchor connections). The report shows alongside it the same
+fit restricted to the mixture set ("Real-play seeds", the real-play-weighted
+strength) and to the uniform set. When an entrant's memorization check is
+flagged, rank it by the reserve or real-play view, not the default.
+
+**Memorization check.** Per entrant, over pool games on the reserve and uniform
+sets: seen-minus-reserve score gap in points with a seed-clustered 95% interval
+(`memorization_report`), pooled over conditions, with the smallest detectable gap
+(`detectable_gap`) for the seeds played so far. Flagged when the interval
+excludes 0 by more than 2 points.
+
+### Pace weighting
+
+The pooled ranking of a condition set is the pace-weighted mean of its
+per-condition ratings (confirmed weights: Frame Perfect 3, Super Human 3, Top
+Humans 2, Fast 1.5, Normal 1, Relaxed 0.5, Sloth 0.5; `pace_weights` in
+pool.json), se = sqrt(Σ w² se²)/Σw, and LOS uses the same weights with the fitted
+covariances. The equal-weight view is shown alongside. The pool stop rule of new
+runs uses the weighted view (`stop-rule --equal` for equal weights); runs with a
+pre-registered rule keep their own.
 
 ### Scheduler priority list
 

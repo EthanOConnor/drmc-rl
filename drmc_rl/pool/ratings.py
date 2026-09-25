@@ -193,34 +193,39 @@ def fit(pairs: dict[tuple[str, str], PairStats], anchor: str, *, anchor_rating: 
     return result
 
 
-def pooled(fits: dict[str, Fit], conditions: list[str], *, min_games: int = 1) -> dict[str, dict]:
+def pooled(fits: dict[str, Fit], conditions: list[str], *, min_games: int = 1,
+           weights: list[float] | None = None) -> dict[str, dict]:
     """Mean rating over a named condition set, only for entrants rated under every one.
 
     No imputation: an entrant missing (or unanchored, or under ``min_games``)
     in any condition of the set has no pooled rating. The per-condition errors
-    are treated as independent (different games), so se = sqrt(sum se^2) / k.
+    are treated as independent (different games): with weights w (default all
+    1), rating = sum(w r) / sum(w) and se = sqrt(sum(w^2 se^2)) / sum(w).
     """
     out = {}
     if not conditions or any(c not in fits for c in conditions):
         return out
+    w = [1.0] * len(conditions) if weights is None else [float(x) for x in weights]
+    total = sum(w)
     entrants = set.intersection(*[set(fits[c].ratings) for c in conditions])
     for e in sorted(entrants):
         rows = [fits[c].ratings[e] for c in conditions]
         if any(r.games < min_games for r in rows) and e not in {fits[c].anchor for c in conditions}:
             continue
-        k = len(rows)
-        out[e] = dict(entrant=e, rating=sum(r.rating for r in rows) / k,
-                      se=math.sqrt(sum(r.se ** 2 for r in rows)) / k,
-                      games=sum(r.games for r in rows), conditions=k)
+        out[e] = dict(entrant=e, rating=sum(x * r.rating for x, r in zip(w, rows)) / total,
+                      se=math.sqrt(sum((x * r.se) ** 2 for x, r in zip(w, rows))) / total,
+                      games=sum(r.games for r in rows), conditions=len(rows))
     return out
 
 
-def pooled_difference_se(fits: dict[str, Fit], conditions: list[str], a: str, b: str) -> float | None:
-    """SE of pooled(a) - pooled(b): per-condition difference variances (with covariance) summed, / k."""
+def pooled_difference_se(fits: dict[str, Fit], conditions: list[str], a: str, b: str,
+                         weights: list[float] | None = None) -> float | None:
+    """SE of pooled(a) - pooled(b): per-condition difference variances (with covariance), weighted."""
     parts = [fits[c].difference_se(a, b) for c in conditions]
     if not parts or any(p is None for p in parts):
         return None
-    return math.sqrt(sum(p * p for p in parts)) / len(parts)
+    w = [1.0] * len(parts) if weights is None else [float(x) for x in weights]
+    return math.sqrt(sum((x * p) ** 2 for x, p in zip(w, parts))) / sum(w)
 
 
 def superiority(difference: float, se: float | None) -> float | None:

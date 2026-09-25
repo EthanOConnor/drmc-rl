@@ -115,18 +115,29 @@ def build_report(coordinator):
                                                                          f.difference_se, state),
                                unanchored=[] if f is None else f.unanchored))
     sets = []
+    view_fits = {v: coordinator.view_fits(v) for v in ("real_play", "uniform")}
+
+    def set_rows(fitmap, keys, weighting):
+        weights = coordinator.pace_weights(keys, weighting)
+        view = pooled(fitmap, keys, min_games=1, weights=weights)
+        return display_rows(list(view.values()), lambda a, b: pooled_difference_se(fitmap, keys, a, b, weights), state)
     for cset in sorted(state.condition_sets.values(), key=lambda s: (not s["primary"], s["name"])):
-        view = pooled(fits, cset["conditions"], min_games=1)
+        keys = cset["conditions"]
         by_key = {c["key"]: c for c in conditions}
         paces = [dict(pace=state.conditions[k]["spec"]["pace"], condition=state.conditions[k]["name"], key=k,
                       ratings=by_key[k]["ratings"]) for k in cset["conditions"]]
         sets.append(dict(name=cset["name"], anchor=cset["anchor"], primary=cset["primary"], weight=cset["weight"],
                          paces=paces,
                          notes=cset["notes"], conditions=[state.conditions[k]["name"] for k in cset["conditions"]],
-                         pooled=display_rows(list(view.values()), lambda a, b, c=cset["conditions"]:
-                                             pooled_difference_se(fits, c, a, b), state)))
+                         weights={state.conditions[k]["spec"]["pace"]: w
+                                  for k, w in zip(keys, coordinator.pace_weights(keys))},
+                         # Default ranking: pace-weighted pooled rating over all comparable games.
+                         pooled=set_rows(fits, keys, "pace"), pooled_equal=set_rows(fits, keys, "equal"),
+                         views=dict(real_play=set_rows(view_fits["real_play"], keys, "pace"),
+                                    uniform=set_rows(view_fits["uniform"], keys, "pace"))))
     primary = primary_set(state)
-    primary_view = pooled(fits, primary["conditions"], min_games=1) if primary else {}
+    primary_view = pooled(fits, primary["conditions"], min_games=1,
+                          weights=coordinator.pace_weights(primary["conditions"])) if primary else {}
     eras = {}
     for e in state.entrants:
         era = state.entrants[e]["era"]
@@ -152,6 +163,7 @@ def build_report(coordinator):
         if (state.entrants[e].get("added_at") or "") >= week or any(g < min_rated for g in per.values()):
             new.append(dict(_entrant_view(state, e), games=per, rated=e in primary_view,
                             pooled=None if e not in primary_view else round(primary_view[e]["rating"])))
+    memorization = memorization_rows(coordinator)
     jobs = []
     for job in sorted(state.jobs.values(), key=lambda j: (j["status"] != "active", -j.get("priority", 50), j["id"])):
         progress = coordinator.scheduler.job_progress(job)
@@ -179,6 +191,9 @@ def build_report(coordinator):
                     trace_mb=round(coordinator.trace_bytes / 2 ** 20, 1)),
         condition_sets=sets, conditions=conditions,
         eras=sorted(eras.values(), key=lambda s: -(s["best"] or {}).get("rating", -1e9)),
+        memorization=memorization, pace_weights=dict(settings["pace_weights"]),
+        pace_weights_status=settings["pace_weights_status"],
+        seed_sets={k: len(v) for k, v in coordinator.seed_sets().items()},
         new_entrants=new, entrants=[_entrant_view(state, e) for e in sorted(state.entrants)], jobs=jobs,
         lineages=[dict(run=run, status=state.lineage_status(run), members=len(state.lineage_members(run)),
                        newest=state.newest(run), **{k: v for k, v in state.lineages.get(run, {}).items()
@@ -191,7 +206,48 @@ def build_report(coordinator):
                       pending_audits=len(coordinator.audits)))
 
 
-def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2, step_every=None):
+def memorization_rows(coordinator):
+    """Per entrant: seen-minus-reserve score gap (percentage points) on pool games.
+
+    Seen = the uniform non-reserve seed set, reserve = the rating bank, so both sides are
+    uniform draws of console games and differ only in whether training may have seen them.
+    Flagged when the 95% interval excludes 0 by more than ``memorization_flag_points``.
+    """
+    from types import SimpleNamespace
+    from drmc_rl.program.seed_reserve import detectable_gap, memorization_report
+    state = coordinator.state
+    sets = coordinator.seed_sets()
+    reserve, uniform = set(sets["reserve"]), set(sets.get("uniform", ()))
+    rows = {}
+    for game in state.games.values():
+        if game.get("source") != "pool" or game["score"] is None or not state.counts(game):
+            continue
+        if game["seed"] not in reserve and game["seed"] not in uniform:
+            continue
+        name = state.conditions[game["condition"]]["name"]
+        for e, score in ((game["a"], game["score"]), (game["b"], 1.0 - game["score"])):
+            rows.setdefault(e, []).append(dict(seed=game["seed"], score=score, condition=name))
+    flag = float(coordinator.settings["memorization_flag_points"]) / 100
+    out = []
+    for e, items in sorted(rows.items()):
+        report = memorization_report(items, reserve=SimpleNamespace(blocked=frozenset(reserve)))
+        held = {r["seed"] for r in items if r["seed"] in reserve}
+        seen = {r["seed"] for r in items if r["seed"] not in reserve}
+        plays = len(items) / 2 / max(len(held | seen), 1)
+        pooled_gap = report.get("pooled")
+        row = dict(entrant=e, reserve_seeds=len(held), seen_seeds=len(seen), games=len(items),
+                   detectable_points=round(100 * detectable_gap(max(len(held), 1), max(plays, 1e-9),
+                                                                max(len(seen), 1)), 1) if held and seen else None)
+        if pooled_gap:
+            low, high = pooled_gap["ci95"]
+            row.update(gap_points=round(100 * pooled_gap["gap"], 1), ci95_points=[round(100 * low, 1), round(100 * high, 1)],
+                       flagged=low > flag or high < -flag)
+        out.append(row)
+    return sorted(out, key=lambda r: (not r.get("flagged", False), -(r.get("gap_points") or -1e9)))
+
+
+def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2, step_every=None,
+              weighting="pace"):
     """Pre-registered-style stop rule computed from pool ratings.
 
     Snapshots are the entrants whose ``lineage.run`` is ``run``, ordered by
@@ -213,7 +269,7 @@ def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2
         raise KeyError(f"no entrants with lineage.run {run!r}")
     cset = state.condition_sets[condition_set] if condition_set else primary_set(state)
     fits = coordinator.all_fits()
-    view = pooled(fits, cset["conditions"], min_games=1)
+    view = pooled(fits, cset["conditions"], min_games=1, weights=coordinator.pace_weights(cset["conditions"], weighting))
     parent = state.entrants[snapshots[0]]["lineage"].get("parent")
 
     def games(e):
@@ -239,7 +295,8 @@ def stop_rule(coordinator, *, run, condition_set=None, min_games=128, patience=2
             streak += 1
             fired = streak >= patience
         rows.append(row)
-    return dict(run=run, condition_set=cset["name"], rule=f"stop after {patience} consecutive snapshots whose pooled "
+    return dict(run=run, condition_set=cset["name"], weighting=weighting,
+                rule=f"stop after {patience} consecutive snapshots whose {weighting}-weighted pooled "
                 f"rating does not exceed the best of the parent and earlier snapshots", parent=parent,
                 min_games=min_games, step_every=step_every, snapshots=rows, fired=fired, selected=best,
                 pending=pending)
@@ -251,12 +308,22 @@ def summary_text(report):
              "{games_last_day}; {active_entrants}/{entrants} entrants active; {leases} leases".format(
                  **{"pool": 0, "imported": 0, **report["totals"]})]
     for s in report["condition_sets"]:
-        lines.append(f"\n[{s['name']}] pooled over {len(s['conditions'])} conditions, anchor {s['anchor']} = "
-                     f"{report['anchor_rating']:.0f}")
+        lines.append(f"\n[{s['name']}] pace-weighted pooled over {len(s['conditions'])} conditions, anchor "
+                     f"{s['anchor']} = {report['anchor_rating']:.0f}  (weights "
+                     + ", ".join(f"{k} {v:g}" for k, v in s.get("weights", {}).items()) + ")")
         lines.append(f"  {'rating':>6}  {'95% CI':>11}  {'LOS':>4}  {'entrant':<44} {'games':>6}")
         for r in s["pooled"][:25]:
             lines.append(f"  {r['rating']:>6}  {r['ci95'][0]:>5}–{r['ci95'][1]:<5}  {los_text(r['los']):>4}  "
                          f"{r.get('label', r['entrant']):<44} {r['games']:>6}")
+    if report["condition_sets"]:
+        lines.append("  equal-weight: " + ", ".join(f"{r.get('label', r['entrant'])} {r['rating']}"
+                                                  for r in report["condition_sets"][0]["pooled_equal"][:8]))
+    mem = [m for m in report.get("memorization", []) if m.get("gap_points") is not None]
+    if mem:
+        lines.append("\n[memorization] seen (uniform) minus reserve, score points")
+        for m in mem[:15]:
+            lines.append(f"  {m['gap_points']:+6.1f} [{m['ci95_points'][0]:+.1f}, {m['ci95_points'][1]:+.1f}]"
+                         f"{'  FLAG' if m['flagged'] else ''}  {m['entrant']}  ({m['reserve_seeds']}/{m['seen_seeds']} seeds)")
     lines.append("\n[eras] best per era (primary set)")
     for era in report["eras"]:
         b = era["best"]

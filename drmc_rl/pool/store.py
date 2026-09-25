@@ -66,6 +66,15 @@ DEFAULT_SETTINGS = dict(
     maintenance_ci=75.0,
     maintenance_share=0.1,
     maintenance_idle=0.01,
+    # Seed sets for background play (docs/RATING_POOL.md "Seeds"): the reserve bank, a uniform
+    # draw of non-reserve console seeds and a 50/50 real-play mixture draw; shares of pairs.
+    background_seed_shares=dict(mixture=0.5, reserve=0.25, uniform=0.25),
+    seed_set_size=512,
+    seed_set_rng=20260925,
+    memorization_flag_points=2.0,
+    # Strength weighting of paces for the pooled ranking (confirmed by the user).
+    pace_weights=dict(frame_perfect=3, super_human=3, top_humans=2, fast=1.5, normal=1, relaxed=0.5, sloth=0.5),
+    pace_weights_status="confirmed 2026-09-25: the default pooled ranking and new runs' pool stop rule",
     max_download_streams=2,
     download_mb_per_second=20.0,
 )
@@ -284,7 +293,8 @@ class PoolState:
         self.games[row["id"]] = row
         self.by_pairing[row["condition"]][(row["a"], row["b"])].setdefault(row["seed"], {})[row["side"]] = row
         self.dirty.add(row["condition"])
-        self._stats.pop(row["condition"], None)
+        for key in [k for k in self._stats if k == row["condition"] or (isinstance(k, tuple) and k[0] == row["condition"])]:
+            self._stats.pop(key)
         return True
 
     def add_games(self, rows):
@@ -312,21 +322,27 @@ class PoolState:
         verdict = self.admitted.get(row.get("numerics"))
         return verdict is None or verdict is True
 
-    def pair_stats(self, condition):
-        """PairStats per canonical pairing: complete, uncensored, admitted seed pairs only."""
-        if condition in self._stats:
-            return self._stats[condition]
+    def pair_stats(self, condition, only=None):
+        """PairStats per canonical pairing: complete, uncensored, admitted seed pairs only.
+
+        ``only`` = (name, seeds) restricts to one seed set (e.g. the real-play mixture set).
+        """
+        cache = condition if only is None else (condition, only[0])
+        if cache in self._stats:
+            return self._stats[cache]
         stats = {}
         for pairing, seeds in self.by_pairing.get(condition, {}).items():
             s = PairStats()
-            for sides in seeds.values():
+            for seed, sides in seeds.items():
+                if only is not None and seed not in only[1]:
+                    continue
                 if len(sides) != 2 or any(r["score"] is None or not self.counts(r) for r in sides.values()):
                     continue
                 s.add(sides[0]["score"] + sides[1]["score"],
                       draws=sum(r["score"] == 0.5 for r in sides.values()))
             if s.pairs:
                 stats[pairing] = s
-        self._stats[condition] = stats
+        self._stats[cache] = stats
         return stats
 
     def played_seeds(self, condition, a, b):

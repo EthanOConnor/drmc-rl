@@ -130,8 +130,9 @@ class PoolCoordinator:
             self.audits[reference["batch"]["key"]] = reference
         self.issued = sum(1 for _ in self.state.batches_journal.read())
         self._seed_cache = {}
+        self._view_cache = {}
         self.scheduler = Scheduler(self.state, seed_source=self.seed_source, available=self.available,
-                                   capabilities=self.capabilities)
+                                   capabilities=self.capabilities, background_seeds=self.background_seeds)
         self.tick()
 
     # -- seeds ----------------------------------------------------------------------
@@ -143,6 +144,57 @@ class PoolCoordinator:
                 from drmc_rl.program.seed_reserve import allocated_seeds
                 self._seed_cache["bank"] = allocated_seeds(self.settings["seed_allocation"])
         return self._seed_cache["bank"]
+
+    def seed_sets(self):
+        """name -> seeds: the reserve bank (ratings history, memorization reference), ``uniform``
+        (non-reserve console seeds, uniform: the fair seen-seed comparison) and ``mixture`` (50/50
+        real-play frequency and uniform: its plain mean is real-play-weighted strength).
+
+        The drawn sets are persisted in pool.json on first use, so they never change underneath
+        the journal when the frequency table is refreshed."""
+        if "sets" in self._seed_cache:
+            return self._seed_cache["sets"]
+        stored = self.settings.get("seed_sets")
+        if not stored:
+            import numpy as np
+            from drmc_rl.program.seed_reserve import draw_mixture_seeds
+            rng = np.random.default_rng(int(self.settings["seed_set_rng"]))
+            size = int(self.settings["seed_set_size"])
+            uniform = draw_mixture_seeds(rng, size, seed_mix=0.0, excluded=self.bank())
+            mixture = draw_mixture_seeds(rng, size, seed_mix=0.5, excluded=self.bank() + uniform)
+            stored = dict(uniform=dict(seed_mix=0.0, seeds=uniform), mixture=dict(seed_mix=0.5, seeds=mixture))
+            self.settings["seed_sets"] = stored
+            path = self.dir / "pool.json"
+            saved = json.loads(path.read_text())
+            saved["seed_sets"] = stored
+            path.write_text(json.dumps(saved, indent=1) + "\n")
+            self.log(f"pool: drew seed sets uniform ({len(uniform)}) and mixture ({len(mixture)})")
+        sets = dict(reserve=list(self.bank()), **{k: list(v["seeds"]) for k, v in stored.items()})
+        self._seed_cache["sets"] = sets
+        self._seed_cache["set_of"] = {s: name for name, seeds in sets.items() for s in seeds}
+        return sets
+
+    def set_of(self, seed):
+        self.seed_sets()
+        return self._seed_cache["set_of"].get(seed)
+
+    def background_seeds(self, condition, a, b, inflight):
+        """The seed set this background pair plays next: the one furthest below its share."""
+        sets = self.seed_sets()
+        shares = self.settings["background_seed_shares"]
+        played = self.state.played_seeds(condition, a, b) | inflight.get((condition, a, b), set())
+        best = None
+        for name in sorted(shares):
+            seeds = sets.get(name) or []
+            if not shares[name] or not seeds:
+                continue
+            used = sum(1 for s in seeds if s in played)
+            if used >= len(seeds):
+                continue
+            key = (used / shares[name], name)
+            if best is None or key < best[0]:
+                best = (key, name, seeds)
+        return ("reserve", sets["reserve"]) if best is None else (best[1], best[2])
 
     def seed_source(self, job, condition):
         seeds = "bank" if job is None else job.get("seeds", "bank")
@@ -331,8 +383,11 @@ class PoolCoordinator:
         """Everything a worker needs to play one batch, with checkpoints by hash."""
         condition = self.state.conditions[batch["condition"]]
         spec = condition["spec"]
-        order = self.bank() if batch.get("job") is None else self.seed_source(self.state.jobs[batch["job"]],
-                                                                                 batch["condition"])
+        if batch.get("job") is None:
+            sets = self.seed_sets()
+            order = sets.get(self.set_of(batch["seeds"][0]) or "reserve", sets["reserve"])
+        else:
+            order = self.seed_source(self.state.jobs[batch["job"]], batch["condition"])
         position = {s: i for i, s in enumerate(order)}
         jobs = [(seed, side, 2 * position.get(seed, 0) + side) for seed in batch["seeds"] for side in (0, 1)]
         key = f"{condition['name']}.{batch['a']}.{batch['b']}.{batch['seeds'][0]}.{len(jobs)}"
@@ -640,7 +695,7 @@ class PoolCoordinator:
                 from drmc_rl.pool.report import stop_rule
                 result = stop_rule(self, run=run, condition_set=rule.get("set"),
                                    min_games=int(rule.get("min_games", 1)), patience=int(rule.get("patience", 2)),
-                                   step_every=rule.get("step_every"))
+                                   step_every=rule.get("step_every"), weighting=rule.get("weighting", "pace"))
                 best = (result.get("selected") or {}).get("entrant")
             except KeyError:
                 best = None
@@ -663,7 +718,8 @@ class PoolCoordinator:
                 continue
             try:
                 result = stop_rule(self, run=run, condition_set=rule["set"], min_games=int(rule.get("min_games", 128)),
-                                   patience=int(rule.get("patience", 2)), step_every=rule.get("step_every"))
+                                   patience=int(rule.get("patience", 2)), step_every=rule.get("step_every"),
+                                   weighting=rule.get("weighting", "pace"))
             except KeyError:
                 continue
             if result["fired"]:
@@ -712,12 +768,38 @@ class PoolCoordinator:
         from drmc_rl.pool.report import stop_rule
         return stop_rule(self, **query)
 
-    def ratings_for(self, condition_set=None):
-        fits = self.all_fits()
+    def pace_weights(self, conditions, weighting="pace"):
+        """Per-condition weights of a pooled view: confirmed pace weights, or all equal."""
+        if weighting == "equal":
+            return [1.0] * len(conditions)
+        table = self.settings["pace_weights"]
+        return [float(table.get(self.state.conditions[c]["spec"]["pace"], 1.0)) for c in conditions]
+
+    def view_fits(self, view="all"):
+        """Per-condition fits on all comparable games, or on one seed set's games only
+        (``real_play`` = the mixture set, ``uniform``, ``reserve``)."""
+        if view == "all":
+            return self.all_fits()
+        name = dict(real_play="mixture").get(view, view)
+        cached = self._view_cache.get(view)
+        if cached and cached[0] == len(self.state.games):
+            return cached[1]
+        seeds = frozenset(self.seed_sets()[name])
+        fits = {}
+        for condition in self.state.conditions:
+            anchor = self.state.anchor_for(condition)
+            if anchor in self.state.entrants:
+                fits[condition] = fit(self.state.pair_stats(condition, (name, seeds)), anchor,
+                                      anchor_rating=self.settings["anchor_rating"], prior_sd=self.settings["prior_sd"])
+        self._view_cache[view] = (len(self.state.games), fits)
+        return fits
+
+    def ratings_for(self, condition_set=None, weighting="pace", view="all"):
+        fits = self.view_fits(view)
         if condition_set is None:
             return fits
         cset = self.state.condition_sets[condition_set]
-        return pooled(fits, cset["conditions"], min_games=1)
+        return pooled(fits, cset["conditions"], min_games=1, weights=self.pace_weights(cset["conditions"], weighting))
 
     def export_registry(self):
         return self.state.snapshot()

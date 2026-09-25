@@ -20,6 +20,8 @@ from drmc_rl.pool.store import PoolState, game_id
 SHA = {n: (f"{i:x}" * 64)[:64] for i, n in enumerate(["anchor", "a", "b", "c", "d", "e", "f", "old", "run-f1",
                                                      "run-f2", "run-f3", "run-f4"], start=1)}
 BANK = list(range(1000, 1400))
+UNIFORM, MIXTURE = list(range(2000, 2400)), list(range(3000, 3400))
+SEED_SETS = dict(uniform=dict(seed_mix=0.0, seeds=UNIFORM), mixture=dict(seed_mix=0.5, seeds=MIXTURE))
 
 
 def condition(pace="normal", **kw):
@@ -194,8 +196,8 @@ def test_registry_rejects_invalid_records(tmp_path):
 
 def coordinator(tmp_path, **kw):
     return PoolCoordinator(tmp_path, source="test", capabilities=None, log=lambda *_: None,
-                           settings={**dict(seed_bank=BANK, default_anchor="anchor", calibration_games=0,
-                                            replicate_every=0), **kw.pop("settings", {})}, **kw)
+                           settings={**dict(seed_bank=BANK, seed_sets=SEED_SETS, default_anchor="anchor",
+                                            calibration_games=0, replicate_every=0), **kw.pop("settings", {})}, **kw)
 
 
 def worker(wid="w0", numerics="mps/test"):
@@ -237,7 +239,7 @@ def test_new_entrant_plays_the_anchor_first_in_whole_side_swapped_pairs(tmp_path
     assert lease["status"] == "lease" and {spec["a"], spec["b"]} == {"anchor", "b"} and "new entrant" in spec["why"]
     seeds = [j[0] for j in spec["jobs"]]
     assert all(seeds.count(s) == 2 for s in seeds) and sorted({j[1] for j in spec["jobs"]}) == [0, 1]
-    assert seeds[0] == BANK[0]                   # the bank in order: every pairing plays the same games
+    assert seeds[0] == MIXTURE[0]                # a seed set in order: every pairing plays the same games
     second = c.lease(worker("w1"))["batch"]      # in-flight seeds are never leased twice
     if {second["a"], second["b"]} == {"anchor", "b"}:
         assert not set(second["seeds"]) & set(spec["seeds"])
@@ -381,7 +383,8 @@ def test_end_to_end_http_workers_restart_and_recompute(tmp_path, monkeypatch):
     token = "t0ken"
     strengths = dict(anchor=0.0, a=1.2, b=-0.8, c=0.4)
     stopped, ready = threading.Event(), {}
-    args = SimpleNamespace(data=tmp_path, settings=json.dumps(dict(seed_bank=BANK, default_anchor="anchor",
+    args = SimpleNamespace(data=tmp_path, settings=json.dumps(dict(seed_bank=BANK, seed_sets=SEED_SETS,
+                                                                   default_anchor="anchor",
                                                                    calibration_games=0, replicate_every=0,
                                                                    batch_games=dict(events=8))),
                            allow_source_mismatch=False, report_port=0, report_host=None, host="127.0.0.1", port=0,
@@ -411,12 +414,12 @@ def test_end_to_end_http_workers_restart_and_recompute(tmp_path, monkeypatch):
     report = client.get("/api/v1/pool/report")
     assert report["totals"]["games"] == 2 * 40 * 8
     order = [r["entrant"] for r in report["condition_sets"][0]["pooled"]]
-    assert order.index("a") < order.index("c") < order.index("anchor") < order.index("b")
+    assert order[0] == "a" and order[-1] == "b"        # strengths 1.2 > 0.4 ~ 0 > -0.8
     stopped.set()
     server.join(30)
     # Restart-resume and offline recomputation from the journal alone give identical ratings.
     again = PoolCoordinator(tmp_path, source="test", log=lambda *_: None,
-                            settings=dict(seed_bank=BANK, default_anchor="anchor"))
+                            settings=dict(seed_bank=BANK, seed_sets=SEED_SETS, default_anchor="anchor"))
     assert len(again.state.games) == report["totals"]["games"]
     view = again.ratings_for("main")
     for row in report["condition_sets"][0]["pooled"]:
@@ -569,3 +572,51 @@ def test_pool_stop_rule_concludes_an_opted_in_lineage(tmp_path):
     state.record("lineage", dict(run="auto", stop_rule=dict(set="main", min_games=128, auto=True)))
     c = coordinator(tmp_path)
     assert c.state.lineages["auto"]["status"] == "concluded" and c.state.lineages["auto"]["best"] == "auto-f0"
+
+
+def test_seed_sets_rotate_by_share_and_feed_views_memorization_and_weights(tmp_path):
+    state, keys = setup_state(tmp_path, entrants=("anchor", "a", "b"), paces=("normal", "frame_perfect"))
+    c = coordinator(tmp_path, settings=dict(max_inflight_per_pairing=100, background_min_share=0))
+    available_everything(c)
+    strengths = dict(anchor=0.0, a=0.6, b=-0.4)
+    sets_played = []
+    for _ in range(48):
+        lease = c.lease(worker())
+        sets_played.append(c.set_of(lease["batch"]["seeds"][0]))
+        submit(c, lease, strengths)
+    # Background pairs follow the 50/25/25 shares, always whole side-swapped seed pairs.
+    counts = {k: sets_played.count(k) for k in ("mixture", "reserve", "uniform")}
+    assert counts["mixture"] >= counts["reserve"] >= 1 and counts["mixture"] >= counts["uniform"] >= 1
+    report = build_report(c)
+    s0 = report["condition_sets"][0]
+    assert s0["weights"] == {"normal": 1.0, "frame_perfect": 3.0}
+    # The default ranking is the pace-weighted pooled view, with equal-weight and seed-set views alongside.
+    fits = c.all_fits()
+    a_w = (fits[keys[0]].ratings["a"].rating * 1 + fits[keys[1]].ratings["a"].rating * 3) / 4
+    row = next(r for r in s0["pooled"] if r["entrant"] == "a")
+    assert row["rating"] == round(a_w)
+    a_e = next(r for r in s0["pooled_equal"] if r["entrant"] == "a")["rating"]
+    assert a_e == round((fits[keys[0]].ratings["a"].rating + fits[keys[1]].ratings["a"].rating) / 2)
+    assert {r["entrant"] for r in s0["views"]["real_play"]} >= {"anchor"}
+    assert s0["pooled"][0]["los"] is not None and s0["pooled"][-1]["los"] is None
+    # Memorization: equal strength on seen and reserve seeds, so no flag.
+    mem = {m["entrant"]: m for m in report["memorization"]}
+    assert "a" in mem and mem["a"]["reserve_seeds"] > 0 and mem["a"]["seen_seeds"] > 0
+    assert not any(m.get("flagged") for m in report["memorization"])
+    assert "pace-weighted" in summary_text(report)
+    # The pool stop rule defaults to the confirmed pace weights.
+    for i in range(2):
+        c.register(dict(type="entrant", **entrant(f"r-f{i}", lineage=dict(run="r", step=i, parent="anchor"))))
+    assert stop_rule(c, run="r", min_games=0)["weighting"] == "pace"
+
+
+def test_memorization_is_flagged_when_seen_seeds_score_higher(tmp_path):
+    from drmc_rl.pool.report import memorization_rows
+    state, (key,) = setup_state(tmp_path, entrants=("anchor", "m"))
+    for seed in BANK[:150]:
+        state.add_games(rows_for(key, "m", "anchor", [seed], score_a=float(seed % 2)))
+    for seed in UNIFORM[:150]:
+        state.add_games(rows_for(key, "m", "anchor", [seed], score_a=float(seed % 5 != 0)))
+    c = coordinator(tmp_path)
+    m = {r["entrant"]: r for r in memorization_rows(c)}["m"]
+    assert m["gap_points"] > 20 and m["flagged"] and m["detectable_points"] > 0

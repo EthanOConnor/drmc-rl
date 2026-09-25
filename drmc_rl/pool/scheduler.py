@@ -30,12 +30,14 @@ from drmc_rl.pool.store import condition_requirements, entrant_requirements
 
 
 class Scheduler:
-    def __init__(self, state, *, seed_source, available, capabilities):
+    def __init__(self, state, *, seed_source, available, capabilities, background_seeds=None):
         """``seed_source(job, condition) -> list[int]``; ``available(entrant) -> bool`` (artifacts servable)."""
         self.state = state
         self.seed_source = seed_source
         self.available = available
         self.capabilities = capabilities
+        # (condition, a, b, inflight) -> (seed-set name, seeds) for background pairs; default: the bank.
+        self.background_seeds = background_seeds or (lambda c, a, b, inflight: ("reserve", seed_source(None, c)))
         self.leases = 0
 
     # -- eligibility --------------------------------------------------------------
@@ -208,9 +210,10 @@ class Scheduler:
                         key = (value, condition, a, b)
                         if best is not None and key <= best[0]:
                             continue
-                        batch = self._batch(condition, a, b, self.seed_source(None, condition), inflight,
+                        seed_set, seeds = self.background_seeds(condition, a, b, inflight)
+                        batch = self._batch(condition, a, b, seeds, inflight,
                                             self.pairs_per_batch(condition), why=(
-                                                f"background {cset['name']}: value {value:.3g}"
+                                                f"background {cset['name']} ({seed_set} seeds): value {value:.3g}"
                                                 f"{' (maintenance)' if role[e] == 'older' else ' (new entrant)' if g < settings['min_rated_games'] else ''}"))
                         if batch is not None:
                             best = (key, batch)

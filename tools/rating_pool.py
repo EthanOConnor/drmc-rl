@@ -74,7 +74,8 @@ class PoolHandler(Handler):
             if path == "/api/v1/pool/stop-rule":
                 q = dict(run=query["run"], condition_set=query.get("set"),
                          min_games=int(query.get("min_games", 128)), patience=int(query.get("patience", 2)),
-                         step_every=int(query["step_every"]) if query.get("step_every") else None)
+                         step_every=int(query["step_every"]) if query.get("step_every") else None,
+                         weighting=query.get("weighting", "pace"))
                 return self._json(200, self._call(c.stop_rule, q))
             m = re.fullmatch(r"/api/v1/pool/artifacts/([0-9a-f]{64})/exists", path)
             if m:
@@ -654,7 +655,8 @@ def cmd_summary(args, client):
 
 def cmd_stop_rule(args, client):
     result = client.get("/api/v1/pool/stop-rule", run=args.run, set=args.set, min_games=args.min_games,
-                        patience=args.patience, step_every=args.step_every)
+                        patience=args.patience, step_every=args.step_every,
+                        weighting="equal" if args.equal else "pace")
     print(json.dumps(result, indent=1))
     if args.exit_code:
         sys.exit(10 if result["fired"] else 0)
@@ -850,6 +852,7 @@ def main(argv=None):
     sr.add_argument("--min-games", type=int, default=128)
     sr.add_argument("--patience", type=int, default=2)
     sr.add_argument("--step-every", type=int, help="only snapshots at multiples of this many frames")
+    sr.add_argument("--equal", action="store_true", help="equal pace weights instead of the confirmed pace weights")
     sr.add_argument("--exit-code", action="store_true", help="exit 10 when the rule has fired")
 
     lg = commands.add_parser("lineage", help="training-run lineages: list, conclude, or set the pool stop rule")
