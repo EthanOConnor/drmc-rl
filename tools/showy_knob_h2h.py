@@ -131,6 +131,13 @@ class Runner:
                                             **{"lambda": self.args.extra_lambda})]
         return dict(knob=knob, base=base)
 
+    def bare_policies(self, model):
+        """The unwrapped knob-side and base actors (the knob side's own checkpoint, not the anchor)."""
+        from tools.trainer_planning_arena import variant_policy
+        v = self.variants(None, model)
+        return (variant_policy(self.runtime.config, v["knob"], self.runtime.policy),
+                variant_policy(self.runtime.config, v["base"], self.runtime.policy))
+
     def play(self, variants, pace, seeds, *, policies=None):
         from drmc_rl.pool.conditions import pace_profile
         from tools.trainer_planning_arena import bind_execution_profiles, variant_policy
@@ -154,7 +161,8 @@ def identity_check(runner, model, pace, seeds):
     bare, _ = runner.play(runner.variants(None, model), pace, seeds)
     zero, _ = runner.play(runner.variants(0.0, model), pace, seeds)
     from drmc_rl.style.showy_knob import ShowyModel, ShowyPolicy
-    wrapped0 = {"knob": ShowyPolicy(runner.runtime.policy, ShowyModel.load(model), 0.0), "base": runner.runtime.policy}
+    inner, base = runner.bare_policies(model)
+    wrapped0 = {"knob": ShowyPolicy(inner, ShowyModel.load(model), 0.0), "base": base}
     forced, _ = runner.play(runner.variants(0.0, model), pace, seeds, policies=wrapped0)
     sig = lambda b: [(r["seed"], r["side"], r["score"], r["frames"], [m["placement"]["action"] for m in mv])  # noqa: E731
                      for r, mv, _ in b]
@@ -175,7 +183,8 @@ def verify_inputs(runner, model, pace, seeds, lam=1.0):
                 seen.append((bytes(fields[i]), tuple(int(c) for c in np.asarray(info["next_pill_colors"]).reshape(-1))))
             return super().score(obs, infos)
 
-    policies = {"knob": Probe(runner.runtime.policy, ShowyModel.load(model), lam), "base": runner.runtime.policy}
+    inner, base = runner.bare_policies(model)
+    policies = {"knob": Probe(inner, ShowyModel.load(model), lam), "base": base}
     batch, _ = runner.play(runner.variants(lam, model), pace, seeds, policies=policies)
     truth = set()
     for row, moves, _ in batch:
