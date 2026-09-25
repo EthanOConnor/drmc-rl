@@ -6,6 +6,7 @@ player while its opponent advances. No speculative preparation is performed.
 """
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+import hashlib
 import threading
 import time
 import json
@@ -107,6 +108,7 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
         raise ValueError("pre-spawn decision points and preview marginals require the frame runner")
     started = time.perf_counter()
     next_activity = started
+    match_key = int.from_bytes(hashlib.blake2b(str(match.get("id", "")).encode(), digest_size=4).digest(), "little")
     measured = Counter()
     pace = resolve_pace(match.get("pace", "frame_perfect"))
     limit = config.get("max_game_frames", 60000)
@@ -207,6 +209,9 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                     decision_delay_frames=delay_input,
                 )
                 info[0]["pace/context"] = strategy_context(pace, state, delay)
+                # A decision's identity, for samplers whose draws must not depend on batching.
+                info[0]["sampling/key"] = (match_key, int(jobs[side // 2][2]), side % 2,
+                                           int(statistics[side]["decisions"]))
                 count = int(np.count_nonzero(info[0]["placements/feasible_mask"]))
                 statistics[side]["feasible_candidates"] += count
                 statistics[side]["forced_placements"] += int(count == 1)

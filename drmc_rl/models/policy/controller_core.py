@@ -87,6 +87,10 @@ class ControllerCorePolicy(PlainPolicy):
         # When set, collection skips the per-call reference forward and the
         # trainer fills base_logits in batches with fill_reference_logits.
         self.defer_reference = False
+        # When set, every sampled row draws its uniform from a counter-based
+        # stream keyed by (sampling_seed, its "sampling/key") instead of the
+        # shared generator, so a game's samples do not depend on batching.
+        self.sampling_seed = None
         self._collection_id = 0
         self._collection_versions = None
 
@@ -120,7 +124,12 @@ class ControllerCorePolicy(PlainPolicy):
             logits, values = self.net(*inputs, aux=aux)
             reference = None if self.defer_reference else self.reference(*inputs, aux=aux)[0]
             logs = logits.float().log_softmax(-1).cpu()
-            slots = torch.multinomial(logs.exp(), 1, generator=self.rng).squeeze(1)
+            if self.sampling_seed is None:
+                slots = torch.multinomial(logs.exp(), 1, generator=self.rng).squeeze(1)
+            else:
+                slots = torch.as_tensor([keyed_sample(logs[i, :int(masks[i].sum())].numpy(),
+                                                      self.sampling_seed, infos[i].get("sampling/key"))
+                                         for i in range(len(infos))])
             arrays = [t.detach().cpu().numpy() for t in (*inputs, aux)]
             reference = None if reference is None else reference.float().cpu().numpy()
             values = values.reshape(-1).float().cpu().numpy()
@@ -269,6 +278,20 @@ class ControllerCorePolicy(PlainPolicy):
             calibrated=False, diagnostic_only=True, **metadata,
         ), temporary)
         temporary.replace(path)
+
+
+def keyed_sample(logp, seed, key):
+    """Inverse-CDF draw from ``exp(logp)`` with a uniform fixed by ``(seed, *key)``.
+
+    The uniform depends only on the decision's identity, never on which other
+    rows shared its forward, so batching can move a sample only when the
+    uniform lands within FP32 rounding of a cumulative-probability boundary.
+    """
+    if key is None:
+        raise ValueError("per-game sampling requires a sampling/key on every decision")
+    uniform = np.random.default_rng([int(seed), *map(int, key)]).random()
+    cumulative = np.cumsum(np.exp(np.asarray(logp, dtype=np.float64)))
+    return min(int(np.searchsorted(cumulative, uniform * cumulative[-1], side="right")), len(cumulative) - 1)
 
 
 def write_public_replay(path, records, games, *, update, pace, level):

@@ -77,7 +77,9 @@ def test_registered_anchor_bank_recovers_without_changing_frozen_teacher_games(p
     assert all(after[k]==before[k] for k in ('frames','games','anchor_rows','conditions'))
 
 
-def test_registered_retention_training_runs_a_natural_update_and_recovers(parent,tmp_path):
+@pytest.mark.parametrize("throughput",[{},dict(fill_inference_batches=True,deferred_reference=True),
+    dict(fill_inference_batches=True,deferred_reference=True,coalesce_inference=True)])
+def test_registered_retention_training_runs_a_natural_update_and_recovers(parent,tmp_path,throughput):
     import json
     import subprocess
     import sys
@@ -97,7 +99,7 @@ def test_registered_retention_training_runs_a_natural_update_and_recovers(parent
         retention_batch_size=4,max_update_kl=.03,max_anchor_kl_increase=.03,
         retention_pressure_strength=31.,reset_update_lr=True,minimum_learning_rate=1e-8,
         target_decisions=1,minimum_decisions_per_pace=0,updates=2,rollout_games=2,planner_workers=1,
-        level20_fraction=0.,max_game_frames=120000,native_library=os.environ.get('DRMC_FRAME_LIBRARY'))
+        level20_fraction=0.,max_game_frames=120000,native_library=os.environ.get('DRMC_FRAME_LIBRARY'),**throughput)
     config=tmp_path/'config.json'; config.write_text(json.dumps(cfg))
     command=[sys.executable,'-m','tools.program','launch','trainer-controller-retention','--set',
              'controller_retention_config='+str(config)]

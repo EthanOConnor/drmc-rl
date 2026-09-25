@@ -26,6 +26,7 @@ from drmc_rl.training.public_league import PublicOpponentPool
 from tools.train_pace_strategy import (
     TrainingActivity, add_game_totals, restore_game_journal, terminal_samples, update_adapter,
 )
+from tools.coalesced_inference import InferenceHub
 from tools.trainer_event_rollout import ParallelPlanning, run_event_batch
 from tools.vs_head_to_head import PlainPolicy
 
@@ -51,6 +52,65 @@ def collection_schedule(config, update, available, opponents):
         result.append((dict(id=f'train-{update}-{pace}',a='learner',b=opponent,
                             games=count,pace=pace,level=level),jobs))
     return result
+
+
+def collect_concurrently(runtime, schedules, chunk, actor, opponents, planner, hub, breakdown, activity, target):
+    """Collect every schedule at once, one thread each, sharing batched forwards.
+
+    Each schedule still plays its chunks in order with its own games, seeds and
+    opponent; only the inference calls are merged across threads by ``hub``.
+    Returns the per-schedule game batches in schedule order.
+    """
+    from concurrent.futures import ThreadPoolExecutor, wait, FIRST_EXCEPTION
+    import threading
+
+    loaded=[opponents.load(match['b']) for match,_ in schedules]  # load on this thread, once
+    lock=threading.Lock(); work=[dict(games=0,frames=0,decision_requests=0) for _ in schedules]
+
+    def run(index):
+        match,jobs=schedules[index]; batch=[]; measured=defaultdict(float)
+        policies={'learner':hub.proxy(actor,'learner'),match['b']:hub.proxy(loaded[index],match['b'])}
+        with hub.client():
+            for start in range(0,len(jobs),chunk):
+                base=dict(games=len(batch),frames=sum(r['frames'] for r,_,_ in batch),
+                          decision_requests=sum(r['a_stats'].get('decisions',0) for r,_,_ in batch))
+                def collecting(w):
+                    with lock:
+                        work[index]={k:base[k]+w[k] for k in base}
+                        activity('collecting',target=target,**{k:sum(x[k] for x in work) for k in base})
+                metrics={}
+                part,elapsed=run_event_batch(runtime,match,jobs[start:start+chunk],None,planner,None,
+                    policies=policies,activity=collecting,metrics=metrics)
+                batch.extend(part); measured['rollout_thread_seconds']+=elapsed
+                for k,v in metrics.items(): measured[k]+=v
+        return batch,measured
+
+    tick=time.monotonic()
+    before=dict(hub.stats)
+    with ThreadPoolExecutor(len(schedules),thread_name_prefix='collect') as pool:
+        futures=[pool.submit(run,i) for i in range(len(schedules))]
+        try:
+            while True:
+                done,waiting=wait(futures,timeout=1.,return_when=FIRST_EXCEPTION)
+                failed=[f for f in done if f.exception() is not None]
+                if failed:
+                    hub.close(RuntimeError(f'a concurrent collection failed: {failed[0].exception()!r}'))
+                    raise failed[0].exception()
+                if not waiting: break
+        except BaseException as error:
+            # KeyboardInterrupt lands here on the main thread: fail every pending
+            # and later inference request so the collection threads unwind.
+            hub.close(error if isinstance(error,Exception) else RuntimeError(f'collection stopped by {type(error).__name__}'))
+            wait(futures,timeout=120)
+            raise
+    results=[f.result() for f in futures]
+    breakdown['rollout_seconds']+=time.monotonic()-tick
+    for _,measured in results:
+        for k,v in measured.items(): breakdown[k]+=v
+    forwards=hub.stats['forwards']-before['forwards']
+    breakdown['coalesced_forwards']+=forwards
+    breakdown['coalesced_rows']+=hub.stats['rows']-before['rows']
+    return [batch for batch,_ in results]
 
 
 def optimizer_groups(net,config):
@@ -142,6 +202,13 @@ def main():
     runtime=dict(config,variants={id:{'delay':4} for id in ('learner',*opponents.names)},
                  replay_games=0,mixed_core_actor=None,reactive_compute_frames=4,preparation_compute_frames=6)
     planner=ParallelPlanning(config.get('planner_workers',4))
+    hub=None
+    if config.get('coalesce_inference'):
+        actor.sampling_seed=config['seed']
+        hub=InferenceHub(window=config.get('coalesce_window_seconds',.005),
+                         timeout=config.get('coalesce_timeout_seconds',900.))
+    elif config.get('per_game_sampling'):
+        actor.sampling_seed=config['seed']
     activity=TrainingActivity(output/'training.json',progress)
     begun=time.monotonic()
     try:
@@ -153,32 +220,43 @@ def main():
                             collecting_update=update,collecting_target=sum(m['games'] for m,_ in schedules),
                             collecting_games=0,phase='collecting',activity=None,updated_at=datetime.now(UTC).isoformat())
             dump(output/'training.json',progress)
-            for match,jobs in schedules:
-                opponent=opponents.load(match['b']); batch=[]; offset=len(games)
-                chunk=config.get('rollout_games',32)
-                if chunk<2 or chunk%2: raise ValueError('rollout chunks require paired sides')
-                for start in range(0,len(jobs),chunk):
-                    before_games=len(games)+len(batch)
-                    before_frames=sum(r['frames'] for r in games)+sum(r['frames'] for r,_,_ in batch)
-                    before_requests=sum(r['a_stats'].get('decisions',0) for r in games)+sum(r['a_stats'].get('decisions',0) for r,_,_ in batch)
-                    def collecting(w):
-                        activity('collecting',games=before_games+w['games'],target=progress['collecting_target'],
-                                 frames=before_frames+w['frames'],decision_requests=before_requests+w['decision_requests'])
-                    metrics={}
-                    part,elapsed=run_event_batch(runtime,match,jobs[start:start+chunk],None,planner,None,
-                        policies={'learner':actor,match['b']:opponent},activity=collecting,metrics=metrics)
-                    batch.extend(part); breakdown['rollout_seconds']+=elapsed
-                    for k,v in metrics.items(): breakdown[k]+=v
+            chunk=config.get('rollout_games',32)
+            if chunk<2 or chunk%2: raise ValueError('rollout chunks require paired sides')
+            if hub is None:
+                batches=[]
+                for match,jobs in schedules:
+                    opponent=opponents.load(match['b']); batch=[]
+                    done_games=sum(len(b) for b in batches)
+                    done_frames=sum(r['frames'] for b in batches for r,_,_ in b)
+                    done_requests=sum(r['a_stats'].get('decisions',0) for b in batches for r,_,_ in b)
+                    for start in range(0,len(jobs),chunk):
+                        before_games=done_games+len(batch)
+                        before_frames=done_frames+sum(r['frames'] for r,_,_ in batch)
+                        before_requests=done_requests+sum(r['a_stats'].get('decisions',0) for r,_,_ in batch)
+                        def collecting(w):
+                            activity('collecting',games=before_games+w['games'],target=progress['collecting_target'],
+                                     frames=before_frames+w['frames'],decision_requests=before_requests+w['decision_requests'])
+                        metrics={}
+                        part,elapsed=run_event_batch(runtime,match,jobs[start:start+chunk],None,planner,None,
+                            policies={'learner':actor,match['b']:opponent},activity=collecting,metrics=metrics)
+                        batch.extend(part); breakdown['rollout_seconds']+=elapsed
+                        for k,v in metrics.items(): breakdown[k]+=v
+                    batches.append(batch)
+            else:
+                batches=collect_concurrently(runtime,schedules,chunk,actor,opponents,planner,hub,
+                                             breakdown,activity,progress['collecting_target'])
+            for (match,jobs),batch in zip(schedules,batches):
+                offset=len(games)
                 selected=terminal_samples(batch)
-                if actor.defer_reference:
-                    tick=time.monotonic(); actor.fill_reference_logits(selected)
-                    breakdown['reference_seconds']+=time.monotonic()-tick
                 for r in selected:
                     r.update(game_id=r['game_id']+offset,pace=match['pace'])
                 rows=[dict(r,update=update,pace=match['pace'],level=match['level'],opponent=match['b']) for r,_,_ in batch]
                 natural[match['pace']]+=sum(r['reason']!='timeout' for r in rows)
                 records.extend(selected); games.extend(rows); shards.append((match,selected))
                 progress.update(collecting_games=len(games),collecting_frames=sum(r['frames'] for r in games),collecting_decisions=len(records))
+            if actor.defer_reference:
+                tick=time.monotonic(); actor.fill_reference_logits(records)
+                breakdown['reference_seconds']+=time.monotonic()-tick
             activity('saving_replay',decisions=len(records))
             for match,selected in shards:
                 if selected:
@@ -241,6 +319,7 @@ def main():
     except BaseException as error:
         progress.update(status='Failed',error=str(error),updated_at=datetime.now(UTC).isoformat()); raise
     finally:
+        if hub is not None: hub.close()
         dump(output/'training.json',progress); planner.close()
 
 
