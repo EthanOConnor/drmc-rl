@@ -164,9 +164,15 @@ class ShowyModel:
 
 def immediate_scores(fields: np.ndarray, pill, actions) -> np.ndarray:
     """Exact showiness score of each placement (``-1`` for no clear) from one root bottle."""
+    return immediate_clears(fields, pill, actions)[0]
+
+
+def immediate_clears(fields: np.ndarray, pill, actions):
+    """Exact (showiness score or -1, matched lines) of each placement from one root bottle."""
     from drmc_rl.eval import big_clear as bc
     root = bytes(np.asarray(fields, np.uint8).reshape(128))
     out = np.full(len(actions), -1.0, np.float32)
+    lines = np.zeros(len(actions), np.int32)
     for k, action in enumerate(actions):
         action = int(action)
         if action < 0:
@@ -182,12 +188,29 @@ def immediate_scores(fields: np.ndarray, pill, actions) -> np.ndarray:
             f = bc.resolve(placed)[1]
             if f.rounds:
                 out[k] = f.score()
-    return out
+                lines[k] = f.lines
+    return out, lines
 
 
 def showy_bias(model: ShowyModel, root_field, pill, actions, mask, lam: float, *, tier_bar: float = 30.0,
                eps: float = 1e-3) -> np.ndarray:
     """Per-candidate bias ``lam * (logit V - mean logit V over legal)`` for one decision ``[K]``."""
+    return _bias(model, root_field, pill, actions, mask, lam, eps=eps,
+                 certain=lambda score, lines: score >= tier_bar)
+
+
+def quad_bias(model: ShowyModel, root_field, pill, actions, mask, lam: float, *, tier_bar: float = 4.0,
+              eps: float = 1e-3) -> np.ndarray:
+    """The quad knob: V = P(quad within the next placements | afterstate), certain when this
+    placement itself matches ``tier_bar`` (4) or more lines, minus ``model["waste_penalty"]``
+    logit units per line beyond four in this placement's own attack (the ROM sends at most 4)."""
+    penalty = float(model.spec.get("waste_penalty", 0.0))
+    return _bias(model, root_field, pill, actions, mask, lam, eps=eps,
+                 certain=lambda score, lines: lines >= tier_bar,
+                 adjust=(lambda score, lines: -penalty * np.maximum(lines - 4, 0)) if penalty else None)
+
+
+def _bias(model, root_field, pill, actions, mask, lam, *, eps, certain, adjust=None):
     from drmc_rl.game.afterstate import resolve_placement
     try:  # fast path for quiet placements where available (newer afterstate module)
         from drmc_rl.game.afterstate import _quiet_placement, _stable_root
@@ -207,10 +230,11 @@ def showy_bias(model: ShowyModel, root_field, pill, actions, mask, lam: float, *
         quiet = _quiet_placement(stable, colors, int(actions[k])) if stable is not None else None
         after[j] = np.frombuffer((quiet or resolve_placement(root, colors, int(actions[k])))[0], np.uint8)
     z = model.logit(after).astype(np.float64)
-    now = immediate_scores(root, colors, actions[legal])
-    hit = now >= tier_bar
-    z[hit] = np.log((1 - eps) / eps)
+    score, lines = immediate_clears(root, colors, actions[legal])
+    z[certain(score, lines)] = np.log((1 - eps) / eps)
     z = np.clip(z, -12.0, 12.0)
+    if adjust is not None:
+        z = z + adjust(score, lines)
     bias[legal] = lam * (z - z.mean())
     return bias
 
@@ -245,18 +269,22 @@ class ShowyPolicy:
         return acts.astype(np.int32)
 
 
-__all__ = ["FEATURE_NAMES", "SCHEMA", "ShowyModel", "ShowyPolicy", "board_features", "immediate_scores", "showy_bias"]
+__all__ = ["FEATURE_NAMES", "SCHEMA", "TRIGGER_NAMES", "ShowyModel", "ShowyPolicy", "board_features", "immediate_clears",
+           "immediate_scores", "quad_bias", "showy_bias", "trigger_features"]
 
 
 TRIGGER_NAMES = ("trig_n", "trig_multi", "trig_max_score", "trig_sum_score", "trig_max_rounds", "trig_max_lines",
-                 "trig_h", "trig_t1")
+                 "trig_h", "trig_t1",
+                 # attack view of the same drops (ROM: 2+ matched lines send min(lines, 4) pieces)
+                 "trig_attack", "trig_quad", "trig_max_garbage", "trig_max_waste")
 
 
 def trigger_features(fields: np.ndarray) -> np.ndarray:
     """Cascade potential by exact simulation: drop one tile of each color on each column's surface.
 
     For each of the 8 x 3 (column, color) single-tile drops that completes a line, the
-    bottle is resolved exactly (``drmc_rl.eval.big_clear.resolve``). Returns ``[N,8]``.
+    bottle is resolved exactly (``drmc_rl.eval.big_clear.resolve``). Returns ``[N,12]``
+    (columns appended later never change earlier ones, so older models are unaffected).
     """
     from drmc_rl.eval import big_clear as bc
     fields = np.asarray(fields, np.uint8).reshape(-1, 128)
@@ -289,4 +317,8 @@ def trigger_features(fields: np.ndarray) -> np.ndarray:
                 row[5] = max(row[5], feat.lines)
                 row[6] += feat.horizontal_lines > 0
                 row[7] += s >= 27
+                row[8] += feat.lines >= 2
+                row[9] += feat.lines >= 4
+                row[10] = max(row[10], min(feat.lines, 4) if feat.lines >= 2 else 0)
+                row[11] = max(row[11], feat.lines - 4)
     return out
