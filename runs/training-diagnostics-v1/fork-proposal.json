@@ -1,0 +1,23 @@
+{
+  "schema": "drmc-fork-proposal-v1",
+  "status": "proposed; not launched",
+  "revised": "2026-09-25: fork point moved from core-u00058 (150M, pooled 1525) to f100M (pooled 1558) per coordinator",
+  "fork_point": {
+    "checkpoint": "~/.cache/drmc-rl/trainer-output/afterstate-core-v1/ppo-v1/core-f00100000000.pt",
+    "frames": 100000000,
+    "pooled_strength_weighted_rating": [1558, "ci95 1535-1580"],
+    "why": "statistically tied with f50M (1559) and the strongest arm A snapshot; 150M sits about 2 sigma below the peak; f100M is also the parent of showiness candidate 2, so both share a baseline",
+    "optimizer_state": "none (61.7 MB weights-only snapshot; core-u00058.pt with optimizer is 185 MB). Every arm, including the control, starts with a fresh AdamW at the same settings.",
+    "retention_baseline": "each arm measures its per-pace anchor KL baseline at f100M on start, identically"
+  },
+  "arms": {
+    "control": "unchanged arm A recipe (ppo-v1 config) from f100M, fresh Adam",
+    "F1_optimizer_batch": "larger effective batch per GNS (B_noise about 3.5e5 decisions; policy signal about 5.7% of per-update |G|^2), learning rate rescaled and gradient clipping per the GNS study's recommendation; one change set",
+    "F2_objective_alignment": "strength-weighted allocation (games per update about sloth 16 floor, relaxed 16 floor, normal 20, fast 28, top_humans 37, super_human 56, frame_perfect 57, rescaled to the control's decisions per update) plus pace weights (FP 3, SH 3, TH 2, Fast 1.5, Normal 1, Relaxed 0.5, Sloth 0.5) in balance_pace_credit",
+    "F3_retention_hinge": "retention penalises only anchor KL above each pace's fork-point baseline (no pull below baseline); coefficient and hard limit unchanged"
+  },
+  "budget": "equal frames per arm, about 50M (100M -> 150M), snapshots every 12.5M",
+  "primary_metric": "slope of the pooled strength-weighted L14-spawn rating (tools.rating_pool, anchor champion-retention-mixed-v2) versus frames, arm minus control, over the 5 snapshots including the shared f100M point",
+  "power_note": "about +-12 Elo per snapshot; 50M-frame arms resolve slope differences of about 50 Elo per 100M or more",
+  "evidence": "drmc-rl-diag-data: curve.json, replay.json, gradients-u58.json, gns/analysis-u58.json; GPU diagnostics (value fits, epochs, branch rollouts) pending in morning_queue.sh and may revise F1/F3"
+}
