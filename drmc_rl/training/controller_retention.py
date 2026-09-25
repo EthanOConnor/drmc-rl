@@ -83,7 +83,7 @@ def save_anchor_bank(path, records, metadata):
 
 class PaceRetention:
     def __init__(self, actor, bank_paths, *, excluded_seeds, paces, max_kl_increase=.03,
-                 coefficient=.1, batch_size=64, pressure_strength=0.):
+                 coefficient=.1, batch_size=64, pressure_strength=0., hinge=False):
         if (not np.isfinite(max_kl_increase) or max_kl_increase < 0
                 or not np.isfinite(coefficient) or coefficient <= 0 or batch_size < 1):
             raise ValueError("invalid retention budget")
@@ -92,6 +92,10 @@ class PaceRetention:
         if not np.isfinite(pressure_strength) or pressure_strength < 0:
             raise ValueError("invalid retention pressure")
         self.pressure_strength=float(pressure_strength)
+        # Hinge: penalise only per-pace KL above its starting value (self.baseline), so
+        # retention bounds drift without distilling the actor further toward the teachers.
+        self.hinge=bool(hinge)
+        self.hinge_counts={}
         self.records,self.identities,self.by_pace=[],{},{}
         excluded=set(map(int,excluded_seeds))
         for name in bank_paths:
@@ -143,11 +147,22 @@ class PaceRetention:
             ids=rng.choice(len(rows),per_pace,replace=True,p=self.weights[pace])
             selected.extend(rows[i] for i in ids)
         values=self._kl(selected)
-        if self.pressure_strength == 0:
+        if self.pressure_strength == 0 and not self.hinge:
             return self.coefficient*values.mean()
         values=values.reshape(len(self.paces),per_pace).mean(-1)
+        if self.hinge:
+            start=values.new_tensor([self.baseline[p] for p in self.paces])
+            for p,on in zip(self.paces,(values>start).tolist()):
+                a,t=self.hinge_counts.get(p,(0,0)); self.hinge_counts[p]=(a+int(on),t+1)
+            values=torch.relu(values-start)
         weights=values.new_tensor([self.pressure[p] for p in self.paces])
         return self.coefficient*(values*weights).mean()
+
+    def pop_hinge_stats(self):
+        """Fraction of minibatches whose pace KL exceeded its start value (the hinge was active), then reset."""
+        out={p:round(a/max(1,t),4) for p,(a,t) in self.hinge_counts.items()}
+        self.hinge_counts={}
+        return out
 
     @torch.no_grad()
     def measure(self):

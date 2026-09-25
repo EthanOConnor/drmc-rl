@@ -183,7 +183,7 @@ def main():
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
         paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
         coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
-        pressure_strength=config.get('retention_pressure_strength',0.))
+        pressure_strength=config.get('retention_pressure_strength',0.),hinge=bool(config.get('retention_hinge',False)))
     require_training_seeds(retention.seeds,config=config,what='retention anchor seeds')
     available=training_seed_pool(set(config['holdout_seeds'])|retention.seeds,config=config)
     start_mix=StartMix(config['start_mix'],available) if config.get('start_mix') else None
@@ -314,6 +314,10 @@ def main():
                 config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
             progress['optimizer_steps']+=losses['optimizer_steps']
+            if getattr(retention,'hinge',False):
+                progress['retention_hinge_active']=retention.pop_hinge_stats()
+            progress['gradient']=dict(pre_clip_norm=round(losses.get('gradient_norm',0.),4),
+                                      clipped_fraction=round(losses.get('gradient_clipped',0.),4))
             if kl_lr:
                 # KL-target step size (needs reset_update_lr): move lr toward the target update KL,
                 # at most x1.5 or x0.5 per update; halve on a KL above the alarm level.
@@ -384,7 +388,7 @@ def main():
             progress.update(phase='between_updates',activity=None)
             dump(output/'training.json',progress)
             print(json.dumps({k:progress[k] for k in ('updates','games','frames','decisions','current_pace','losses','throughput',
-                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr','style_update') if k in progress}),flush=True)
+                                                      'start_mix_share','start_mix_update_games','start_mix_update_decision_fraction','showiness_bonus_update','adaptive_lr','style_update','gradient','retention_hinge_active') if k in progress}),flush=True)
             if progress['consecutive_stalled_updates']>=config.get('max_stalled_updates',7):
                 raise RuntimeError('seven consecutive updates accepted no optimizer steps; inspect retention and KL before spending more rollout compute')
             if losses['effective_learning_rate'] < config.get('minimum_learning_rate',0.):

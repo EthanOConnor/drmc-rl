@@ -29,7 +29,7 @@ BONUS = dict(steps=[[27.0, 0.05], [30.0, 0.15], [42.0, 0.30]], event_cap=0.30, g
 START_MIX = dict(fraction=0.40, levels=[14], paces=[], replay_share=0.5,
                  score_weights=[[20.0, 0.0], [27.0, 1.0], [30.0, 3.0], [42.0, 10.0]])
 # Arm A's steps barely move the policy (update KL ~0.0015); start at 1e-5 and steer update KL to 0.005.
-LR = 1e-5
+LR = 2e-5  # start higher: 16x fewer, cleaner steps (effective minibatch 2048)
 LR_KL_TARGET = dict(target=0.005, alarm=0.015, min_lr=1e-6, max_lr=3e-5)
 
 
@@ -45,7 +45,8 @@ def main():
                  minimum_decisions_per_pace=base['minimum_decisions_per_pace'], milestone_decisions=[],
                  checkpoint_every_frames=25_000_000, keep_update_checkpoints=True, journal_showiness=True,
                  fill_inference_batches=True, deferred_reference=True, source_commit=commit,
-                 lr=LR, lr_kl_target=LR_KL_TARGET)
+                 lr=LR, lr_kl_target=LR_KL_TARGET, retention_hinge=True, minibatch=128,
+                 accumulate_minibatches=16)
         (HERE / f'finetune-{name}.json').write_text(json.dumps(c, indent=1) + '\n')
         print(HERE / f'finetune-{name}.json')
 

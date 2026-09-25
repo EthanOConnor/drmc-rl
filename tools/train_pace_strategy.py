@@ -381,19 +381,28 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
             attempt_totals = defaultdict(list)
             attempt_steps = 0
             candidate_first_kl = None
-            for start in range(0, len(indices), size):
-                rows = [records[i] for i in indices[start : start + size]]
-                features, data = _training_batch(actor, rows)
-                log_probs, terms = training_loss_terms(actor, features, data, config)
-                loss = sum(weighted_training_terms(terms, config).values())
-                if retention is not None:
-                    retention_loss = retention.loss(retention_rng)
-                    loss = loss + retention_loss
-                    terms["retention_loss"] = retention_loss
-                if not torch.isfinite(loss):
-                    raise RuntimeError("non-finite pace training loss")
+            # accumulate_minibatches k: one optimizer step per k * minibatch rows, the
+            # gradient being the row-weighted mean over its micro-batches (k=1: unchanged).
+            accumulate = int(config.get("accumulate_minibatches", 1))
+            group_size = size * accumulate
+            for start in range(0, len(indices), group_size):
+                group = indices[start : start + group_size]
                 optimizer.zero_grad(set_to_none=True)
-                loss.backward()
+                micro_terms = []
+                for micro in range(0, len(group), size):
+                    rows = [records[i] for i in group[micro : micro + size]]
+                    features, data = _training_batch(actor, rows)
+                    log_probs, terms = training_loss_terms(actor, features, data, config)
+                    loss = sum(weighted_training_terms(terms, config).values())
+                    if retention is not None:
+                        retention_loss = retention.loss(retention_rng)
+                        loss = loss + retention_loss
+                        terms["retention_loss"] = retention_loss
+                    if not torch.isfinite(loss):
+                        raise RuntimeError("non-finite pace training loss")
+                    (loss * (len(rows) / len(group)) if accumulate > 1 else loss).backward()
+                    micro_terms.append((terms, len(rows)))
+                rows = [records[i] for i in group]
                 norm = torch.nn.utils.clip_grad_norm_(_training_module(actor).parameters(), 0.7)
                 if not torch.isfinite(norm):
                     raise RuntimeError("non-finite pace adapter gradient")
@@ -407,9 +416,11 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
                     with torch.no_grad():
                         after = _training_forward(actor, features)[0].log_softmax(-1)
                         candidate_first_kl = categorical_kl(log_probs.detach(), after).mean().item()
-                for key, value in ({k: v.item() for k, v in terms.items()}
-                                   | dict(gradient_norm=norm.item())).items():
-                    attempt_totals[key].append((value, len(rows)))
+                for terms, n in micro_terms:
+                    for key, value in terms.items():
+                        attempt_totals[key].append((value.item(), n))
+                attempt_totals["gradient_norm"].append((norm.item(), len(rows)))
+                attempt_totals["gradient_clipped"].append((float(norm.item() > 0.7), len(rows)))
             per_pace_kl = {} if completed_games_by_pace is not None else None
             measured_kl, measured_mse = _policy_snapshot(
                 actor, records, size, reference=old_distributions, activity=activity, pace_kl=per_pace_kl

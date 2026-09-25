@@ -191,6 +191,8 @@ def mine_file(relative: str, args, scratch: Path, games: dict, reserve_path: str
             if not features.rounds:
                 continue
             counts["clears"] += 1
+            counts["horizontal_clears"] += features.horizontal_lines > 0
+            counts["horizontal_combo_clears"] += features.horizontal_lines > 0 and features.lines >= 2
             score = features.score()
             hist[key][int(round(score * 2))] += 1
             for name in ("cells", "rounds", "max_round_lines", "max_line", "viruses", "garbage"):
@@ -235,6 +237,8 @@ def cmd_mine(args) -> None:
         np.save(reserve_path, reserves())
     games = _games(args, scratch)
     files = [f for f in _files(args) if not (out / f"summary-{_month(f)}.json").exists() or args.force]
+    if args.months:
+        files = [f for f in files if _month(f) in set(args.months)]
     if args.limit:
         files = files[: args.limit]
     print(f"{len(files)} files, {len(games)} games", flush=True)
@@ -311,6 +315,7 @@ def main() -> None:
     m.add_argument("--keep-score", type=float, default=10.0)
     m.add_argument("--verify-prefilter", type=int, default=997, help="also resolve every Nth non-line placement")
     m.add_argument("--limit", type=int, default=0)
+    m.add_argument("--months", nargs="*", help="only these YYYY-MM months")
     m.add_argument("--force", action="store_true")
     s = sub.add_parser("summarize")
     s.add_argument("--out", required=True)

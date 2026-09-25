@@ -75,14 +75,26 @@
   ],
   "not_used": "coalesce_inference (no validated tf3090 smoke on record)",
   "step_size": {
-   "lr": 1e-05,
+   "lr": 2e-05,
    "lr_kl_target": {
     "target": 0.005,
     "alarm": 0.015,
     "min_lr": 1e-06,
     "max_lr": 3e-05
    },
-   "why": "arm A clips every step and its update KL is ~0.0015 against a 0.03 cap; style fine-tunes need the policy to move. After each update lr *= clip(sqrt(0.005/update_kl), 0.5, 1.5), halved if update_kl > 0.015. max_update_kl 0.03, parent-KL and retention guards unchanged."
+   "why": "arm A clips every step and its update KL is ~0.0015 against a 0.03 cap; style fine-tunes need the policy to move. After each update lr *= clip(sqrt(0.005/update_kl), 0.5, 1.5), halved if update_kl > 0.015. max_update_kl 0.03, parent-KL and retention guards unchanged. Start raised to 2e-5 with the 2048-row steps."
+  },
+  "retention_hinge": {
+   "loss": "coefficient x pressure_p x relu(KL_p(minibatch) - KL_p(start)) averaged over paces",
+   "start": "per-pace KL to the anchor-bank teacher distributions (not the parent) measured over the whole bank at initialisation; nonzero for both candidates",
+   "why": "training diagnostics (analysis/training-diagnostics 3821a7f9, 874e4dac): retention was ~0.67x the policy signal and pulled against it at several paces, distilling below its start at Relaxed and Normal; the hinge keeps the drift bound (coefficient 0.1, max_anchor_kl_increase 0.03, pressure 31 unchanged) but drops the pull back toward the teachers",
+   "test": "tests/test_big_clear.py::test_retention_hinge_is_zero_at_or_below_the_start_kl"
+  },
+  "minibatch": {
+   "effective": 2048,
+   "how": "minibatch 128 x accumulate_minibatches 16 (row-weighted gradient mean, one optimizer step per group); per-step GPU memory unchanged, 2 epochs",
+   "why": "diagnostics: ~6% of a 128-row minibatch gradient is signal, gradient noise scale ~3.5e5 decisions",
+   "grad_clip": "0.7 kept; pre-clip norm and the clipped fraction are logged per update (gradient.pre_clip_norm, gradient.clipped_fraction) to judge whether it should scale"
   }
  },
  "strength_rule": "Strong enough for the showcase: the pooled l14-spawn rating stays within 60 Elo of the champion (point estimate >= 1440 with the champion anchored at 1500). This replaces the -15 Elo guard for these two candidates only; the style trade-off report is unchanged.",
@@ -107,6 +119,21 @@
    "share_of_clears": 0.213,
    "source": "pool traces, 186 games"
   },
-  "human": "pending (corpus sample run)"
- }
+  "human": {
+   "per_100_placements": 8.44,
+   "share_of_clears": 0.241,
+   "combo_horizontal_per_100": 4.72,
+   "source": "8 sampled months (2023-03 .. 2026-08), 10.6M placements, 3.70M clears, tools/mine_big_clears.py"
+  }
+ },
+ "logging_per_update": [
+  "update_kl",
+  "adaptive_lr",
+  "start_mix_update_decision_fraction",
+  "showiness_bonus_update.fire_per_100_decisions",
+  "style_update (T1_20/T1/T2/T3/horizontal per 100, horizontal_share, best; natural games)",
+  "retention_hinge_active per pace",
+  "gradient.pre_clip_norm",
+  "gradient.clipped_fraction"
+ ]
 }

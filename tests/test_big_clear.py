@@ -183,3 +183,27 @@ def test_horizontal_bonus_counts_only_completed_horizontal_lines_under_its_own_c
     assert showiness.learner_bonuses(moves, spec) == pytest.approx([0, 0, 0.004, 0.006, 0])  # 0.012 capped to 0.006 left
     placed = bc.resolve(bc.place(bottle({(15, 0): 0x81, (15, 1): 0x81, (15, 2): 0x81}), (0, 2), 15 * 8 + 3))[1]
     assert placed.horizontal_lines == 1
+
+
+@pytest.mark.parametrize("pressure", [0.0, 31.0])
+def test_retention_hinge_is_zero_at_or_below_the_start_kl(pressure):
+    import torch
+    from drmc_rl.training.controller_retention import PaceRetention
+
+    r = PaceRetention.__new__(PaceRetention)
+    r.coefficient, r.batch_size, r.max_kl_increase, r.pressure_strength = 0.1, 4, 0.03, pressure
+    r.paces = ("normal", "fast")
+    r.by_pace = {p: [dict(i=i) for i in range(3)] for p in r.paces}
+    r.weights = {p: np.full(3, 1 / 3) for p in r.paces}
+    r.baseline = {"normal": 0.20, "fast": 0.10}
+    r.hinge, r.hinge_counts = True, {}
+    r.set_pressure(r.baseline)
+    kl = {}
+    r._kl = lambda rows: torch.tensor([kl[p] for p in r.paces for _ in range(len(rows) // 2)], dtype=torch.float32)
+    rng = np.random.default_rng(0)
+    for kl in ({"normal": 0.20, "fast": 0.05}, {"normal": 0.0, "fast": 0.10}):
+        assert float(r.loss(rng)) == 0.0
+    kl = {"normal": 0.26, "fast": 0.10}
+    expected = 0.1 * (0.06 * r.pressure["normal"] + 0.0) / 2
+    assert float(r.loss(rng)) == pytest.approx(expected, rel=1e-5)
+    assert r.pop_hinge_stats() == {"normal": pytest.approx(1 / 3, abs=1e-3), "fast": 0.0}
