@@ -12,7 +12,7 @@ Build (once per checkout, any machine with a C compiler; the library is not
 committed)::
 
     python -m drmc_rl.style.native build        # -> drmc_rl/style/native/libknob_features.{dylib,so}
-    python -m drmc_rl.style.native status
+    python -m drmc_rl.style.native status [--require]   # --require: exit 1 without it
 
 ``DRMC_KNOB_NATIVE=0`` forces the numpy path; ``DRMC_KNOB_NATIVE_LIB`` points at
 a library elsewhere.
@@ -125,10 +125,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="build or check the optional native knob-feature library")
     ap.add_argument("action", choices=("build", "status"))
     ap.add_argument("--cc", default=None)
+    ap.add_argument("--require", action="store_true", help="exit 1 unless the library loads (deploys)")
     args = ap.parse_args(argv)
     if args.action == "build":
         print(build(cc=args.cc))
     print(f"native knob features: {'available' if available() else 'absent (numpy fallback)'} ({library_path()})")
+    if args.require and not available():
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

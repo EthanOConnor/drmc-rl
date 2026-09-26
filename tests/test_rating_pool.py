@@ -1052,6 +1052,24 @@ def test_knob_entrants_register_with_derived_requires_and_lease_only_to_capable_
     assert next(e for e in report["entrants"] if e["id"] == knobbed)["knobs"] == ["showy-t2@1:1.5", "showy-hcombo@1:0.5"]
 
 
+def test_knob_base_reads_the_lineage_not_the_id(tmp_path):
+    from drmc_rl.pool.report import knob_base, knob_list
+    from drmc_rl.style import knobs
+    state, _ = setup_state(tmp_path, entrants=("anchor", "bigclear-turbo-f00125000000"))
+    base = "bigclear-turbo-f00125000000"
+    quad = knobs.parse("showy-quad@1:1.5")
+    wp8 = base + "+showy-quad@1:1.5-wp8"            # production --variant-id, not knobs.suffix's format
+    odd = "turbo-quad-wp8"                           # a variant id with no '+' at all
+    for eid in (wp8, odd):
+        state.record("entrant", entrant(eid, settings=dict(knobs=[quad]), requires=["knob:showy-quad@1"],
+                                        lineage=dict(parent=base)))
+    stack = wp8 + "+showy-hcombo@1:1"
+    state.record("entrant", entrant(stack, settings=dict(knobs=[quad, knobs.parse("showy-hcombo@1:1")]),
+                                    requires=["knob:showy-quad@1", "knob:showy-hcombo@1"], lineage=dict(parent=wp8)))
+    assert [knob_base(state, e) for e in (wp8, odd, stack, base, "anchor")] == [base, base, base, base, "anchor"]
+    assert knob_list(state, wp8) == ["showy-quad@1:1.5"]
+
+
 def test_watch_run_survives_a_coordinator_outage(tmp_path, monkeypatch):
     from tools import rating_pool
     calls = {"n": 0}

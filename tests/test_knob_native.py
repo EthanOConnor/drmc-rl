@@ -2,9 +2,14 @@
 
 Runs on deterministic synthetic decisions; set ``DRMC_KNOB_DECISIONS`` to a
 recorded-decisions file (``python -m tools.showy_knob.bench record``) to run the
-same checks on real games. Builds the library into a temp dir when it is absent
-and a C compiler exists; otherwise the native checks skip (the numpy fallback
-is still checked).
+same checks on real games.
+
+``DRMC_KNOB_REQUIRE_NATIVE=1`` (deploys): the library workers load
+(``native.library_path()``, normally the in-tree build) must be present and load,
+and the native path must actually run; nothing is built and nothing skips.
+Otherwise (development): an absent or unloadable library is built into a temp
+dir when a C compiler exists (a failed build fails the tests), and the native
+checks skip only when there is no compiler (the numpy fallback is still checked).
 """
 import os
 import shutil
@@ -15,6 +20,8 @@ import pytest
 from drmc_rl.style import knobs, native
 from drmc_rl.style import showy_knob as sk
 from tools.showy_knob.bench import SPECS, load_decisions, synthetic_decisions
+
+STRICT = os.environ.get("DRMC_KNOB_REQUIRE_NATIVE") == "1"
 
 
 @pytest.fixture(scope="module")
@@ -29,12 +36,19 @@ def lib(tmp_path_factory):
     os.environ.pop("DRMC_KNOB_NATIVE", None)
     native.reset()
     if not native.available():
+        where = native.library_path()
+        if STRICT:
+            pytest.fail(f"DRMC_KNOB_REQUIRE_NATIVE=1: {where} is {'present but did not load (stale ABI?)' if where.exists() else 'absent'};"
+                        " run python -m drmc_rl.style.native build")
         if not shutil.which(os.environ.get("CC", "cc")):
             pytest.skip("no native library and no C compiler")
-        path = tmp_path_factory.mktemp("knobnative") / native.library_path().name
+        path = tmp_path_factory.mktemp("knobnative") / where.name
         os.environ["DRMC_KNOB_NATIVE_LIB"] = str(path)
-        native.build(path)
-    assert native.available()
+        try:
+            native.build(path)
+        except Exception as exc:  # noqa: BLE001 - a compiler that cannot build the library is a failure, not a skip
+            pytest.fail(f"a C compiler exists but the knob library did not build: {exc}")
+    assert native.available(), f"{native.library_path()} does not load"
     yield native.load()
     for k, v in old.items():
         if v is None:
@@ -42,6 +56,20 @@ def lib(tmp_path_factory):
         else:
             os.environ[k] = v
     native.reset()
+
+
+@pytest.fixture
+def native_calls(monkeypatch):
+    """Counts decisions the native library actually computed (a None return is the numpy fallback)."""
+    calls = {"native": 0, "fallback": 0}
+    real = native.decision_features
+
+    def counted(*a, **kw):
+        out = real(*a, **kw)
+        calls["fallback" if out is None else "native"] += 1
+        return out
+    monkeypatch.setattr(native, "decision_features", counted)
+    return calls
 
 
 @pytest.fixture(autouse=True)
@@ -66,7 +94,9 @@ def test_native_features_equal_reference(lib, rows):
     _mode(True)
     for f, p, a, m in rows:
         legal, colors = np.flatnonzero(m), (int(p[0]), int(p[1]))
-        after, x, score, lines = native.decision_features(f, colors, a[legal], True)
+        out = native.decision_features(f, colors, a[legal], True)
+        assert out is not None, "the native library declined a decision (numpy fallback)"
+        after, x, score, lines = out
         ref_after = sk.reference_afterstates(np.asarray(f, np.uint8).reshape(128), colors, a[legal])
         assert after.tobytes() == ref_after.tobytes()
         ref_x = np.concatenate([sk.board_features(ref_after), sk.trigger_features(ref_after)], axis=1)
@@ -76,13 +106,16 @@ def test_native_features_equal_reference(lib, rows):
 
 
 @pytest.mark.parametrize("spec", SPECS)
-def test_native_bias_is_byte_identical(lib, rows, spec):
+def test_native_bias_is_byte_identical(lib, rows, spec, native_calls):
     entries = [knobs.parse(s) for s in spec.split(",")]
     models = [knobs.load_model(e) for e in entries]
     out = {}
     for on in (False, True):
         _mode(on)
+        before = dict(native_calls)
         out[on] = [knobs.total_bias(entries, f, p, a, m, models=models) for f, p, a, m in rows[:150]]
+        used = native_calls["native"] - before["native"]
+        assert (used > 0) if on else (used == 0), f"native path {'not ' if on else ''}taken with DRMC_KNOB_NATIVE={int(on)}"
     assert all(x.tobytes() == y.tobytes() for x, y in zip(out[False], out[True]))
 
 

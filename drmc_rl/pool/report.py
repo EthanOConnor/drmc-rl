@@ -18,6 +18,23 @@ def knob_list(state, e):
             for k in knobs.active((state.entrants.get(e, {}).get("settings") or {}).get("knobs"))]
 
 
+def knob_base(state, e):
+    """The plain entrant a knob variant was made from (its registered lineage parent), else ``e``.
+
+    Read from the record, never parsed from the id: variant ids are free-form
+    (``--variant-id``, e.g. ``<base>+showy-quad@1:1.5-wp8``), so they need not match
+    ``knobs.suffix``. Follows parents while they carry knobs, so a variant of a variant
+    still resolves to the unknobbed base."""
+    seen = set()
+    while e not in seen and knob_list(state, e):
+        seen.add(e)
+        parent = (state.entrants[e].get("lineage") or {}).get("parent")
+        if not parent or parent not in state.entrants:
+            break
+        e = parent
+    return e
+
+
 def _entrant_view(state, e):
     r = state.entrants[e]
     return dict(id=e, name=r.get("name", e), era=r["era"], status=r["status"], tags=r.get("tags", []),
