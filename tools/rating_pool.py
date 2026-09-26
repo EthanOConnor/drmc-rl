@@ -661,7 +661,7 @@ def cmd_watch_run(args, client):
 
 def _watch_once(args, client, directory, seen, step_re, configured):
     """One scan; True when the run's final marker was handled (the watch ends)."""
-    registered_now = False
+    registered_now = pending = False
     if True:
         registry = client.get("/api/v1/pool/registry")
         present = {e["checkpoint"]["sha256"] for e in registry["entrants"].values()}
@@ -672,8 +672,10 @@ def _watch_once(args, client, directory, seen, step_re, configured):
             signature = (stat.st_size, int(stat.st_mtime))
             if seen.get(path) != signature:
                 seen[path] = signature
+                pending = True
                 continue
             if time.time() - stat.st_mtime < args.settle:
+                pending = True
                 continue
             m = step_re.search(path.name)
             step = int(m.group(1)) if m else int(stat.st_mtime)
@@ -692,7 +694,8 @@ def _watch_once(args, client, directory, seen, step_re, configured):
             client.register(dict(type="lineage", run=args.run, stop_rule=dict(
                 set=args.panel_set, min_games=args.panel_games, patience=2, step_every=args.panel_step_every,
                 auto=True), by=f"watch-run:{args.run}"))
-        if args.final_marker and not registered_now and list(directory.glob(args.final_marker)):
+        # conclude only once every snapshot has been seen stable and registered
+        if args.final_marker and not (registered_now or pending) and list(directory.glob(args.final_marker)):
             print(json.dumps(client.register(dict(type="conclude", run=args.run,
                                                   reason=f"final marker {args.final_marker} present"))), flush=True)
             return True

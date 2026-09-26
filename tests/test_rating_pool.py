@@ -1087,6 +1087,29 @@ def test_watch_run_survives_a_coordinator_outage(tmp_path, monkeypatch):
     assert calls["n"] == 2                  # the outage was logged and the watch went on
 
 
+def test_watch_run_registers_the_last_snapshot_before_concluding(tmp_path, monkeypatch):
+    """The final marker lands with the last snapshot: the watch must register it before concluding."""
+    from tools import rating_pool
+    (tmp_path / "core-f00050000000.pt").write_bytes(b"x")
+    (tmp_path / "core-final.pt").write_bytes(b"y")
+    events, registered = [], []
+
+    class Client:
+        def get(self, path, **q):          # the registry reflects what has been registered
+            return dict(entrants={n: dict(checkpoint=dict(sha256=n)) for n in registered})
+        def register(self, event):
+            events.append(event["type"])
+            return event
+    monkeypatch.setattr(rating_pool, "artifact_record", lambda path: dict(sha256=path.name))
+    monkeypatch.setattr(rating_pool, "register_snapshot", lambda client, path, **kw: registered.append(path.name))
+    args = SimpleNamespace(dir=str(tmp_path), step_regex=r"f(\d+)", once=False, poll=0, settle=0, auto_conclude=False,
+                           panel_set=None, final_marker="*final*", pattern="core-f0*.pt", exclude=None,
+                           id_format="{run}-f{step:011d}", run="r", era="e", parent=None, recipe=None,
+                           panel_games=128, panel_priority=60, panel_step_every=None, anchor=None)
+    rating_pool.cmd_watch_run(args, Client())
+    assert registered == ["core-f00050000000.pt"]
+    assert events == ["conclude"]
+
 def test_job_exclude_leaves_out_knob_variants_and_keeps_counts(tmp_path):
     from drmc_rl.style import knobs
     state, (key,) = setup_state(tmp_path, entrants=("anchor", "bc-f1"))
