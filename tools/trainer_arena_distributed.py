@@ -43,6 +43,7 @@ import tempfile
 import threading
 import time
 import traceback
+import zlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -79,6 +80,8 @@ def source_revision(root=REPO):
 # ---------------------------------------------------------------------------
 # Deterministic batch plan and ordered commit (no networking).
 
+
+MAX_BODY_BYTES = 256 * 1024 * 1024    # JSON request bodies, compressed or not (results are ~10 MB)
 
 class Batch:
     __slots__ = ("key", "match", "ordinal", "jobs", "result", "status", "leases", "replicas", "audit")
@@ -548,9 +551,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _body(self):
-        data = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        # Bounded both ways; a bad body is a 400 (ValueError), never the study-fatal path.
+        length = int(self.headers.get("Content-Length", "0"))
+        if not 0 <= length <= MAX_BODY_BYTES:
+            raise ValueError(f"request body of {length} bytes exceeds {MAX_BODY_BYTES}")
+        data = self.rfile.read(length)
         if self.headers.get("Content-Encoding") == "gzip":
-            data = gzip.decompress(data)
+            inflate = zlib.decompressobj(16 + zlib.MAX_WBITS)
+            try:
+                data = inflate.decompress(data, MAX_BODY_BYTES + 1)
+            except zlib.error as error:
+                raise ValueError(f"bad gzip body: {error}") from error
+            if len(data) > MAX_BODY_BYTES or inflate.unconsumed_tail:
+                raise ValueError(f"decompressed body exceeds {MAX_BODY_BYTES} bytes")
         return json.loads(data)
 
     def do_GET(self):  # noqa: N802

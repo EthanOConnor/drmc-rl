@@ -206,3 +206,24 @@ def test_released_leases_are_reissued_immediately(tmp_path):
     assert coordinator.release_batch(again["batch"])["released"] == 1
     assert coordinator.lease(dict(worker, worker_id="c"))["batch"] == first["batch"]
     coordinator.close()
+
+
+def test_request_bodies_are_bounded_and_bad_gzip_is_a_client_error(monkeypatch):
+    """A gzip bomb, an oversized body or a corrupt gzip is a ValueError (HTTP 400), never study-fatal."""
+    import gzip
+    import io
+    from tools import trainer_arena_distributed as tad
+    monkeypatch.setattr(tad, "MAX_BODY_BYTES", 1000)
+
+    def body(raw, gz=False):
+        h = object.__new__(tad.Handler)
+        h.headers = {"Content-Length": str(len(raw)), **({"Content-Encoding": "gzip"} if gz else {})}
+        h.rfile = io.BytesIO(raw)
+        return h._body()
+
+    assert body(gzip.compress(b'{"ok": 1}'), gz=True) == {"ok": 1}
+    for raw, gz in ((gzip.compress(b"[" + b"0," * 5000 + b"0]"), True),   # inflates past the cap
+                    (b"x" * 1001, False),                                  # too long on the wire
+                    (b"not gzip", True)):                                  # corrupt
+        with pytest.raises(ValueError):
+            body(raw, gz)
