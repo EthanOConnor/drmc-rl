@@ -54,6 +54,8 @@ def collection_schedule(config, update, available, opponents):
 
 
 def target_met(progress,config):
+    if config.get('target_frames') is not None and progress['frames']>=config['target_frames']:
+        return True
     return (progress['decisions']>=config['target_decisions'] and
             all(progress['paces'].get(p,{}).get('learning_decisions',0)>=config['minimum_decisions_per_pace']
                 for p in config['paces']))
@@ -73,13 +75,23 @@ def main():
     torch.manual_seed(config['seed'])
     torch.backends.cuda.matmul.allow_tf32=False; torch.backends.cudnn.allow_tf32=False
     device=config.get('device','cuda')
-    actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],resume=config.get('resume'))
+    # A fork starts from `initial_weights` (weights only; fresh optimizer and progress).
+    actor=ControllerCorePolicy(config['checkpoint'],device,seed=config['seed'],
+                               resume=config.get('resume') or config.get('initial_weights'))
     parent=PlainPolicy(Path(config['opponent_parent']),device,public_only=True)
     opponents=PublicOpponentPool(config['opponent_pool'],parent,config['opponent_parent'],device)
     retention=PaceRetention(actor,config['anchor_banks'],excluded_seeds=config['holdout_seeds'],
         paces=config['paces'],max_kl_increase=config.get('max_anchor_kl_increase',.03),
         coefficient=config.get('retention_coefficient',.1),batch_size=config.get('retention_batch_size',64),
-        pressure_strength=config.get('retention_pressure_strength',0.))
+        pressure_strength=config.get('retention_pressure_strength',0.),
+        hinge=config.get('retention_hinge',False))
+    if config.get('retention_baseline_from') and not config.get('resume'):
+        # Keep the parent run's anchor baseline (its retention budget) instead of
+        # re-measuring at the fork point.
+        source=torch.load(config['retention_baseline_from'],map_location='cpu',weights_only=False)
+        retention.baseline=dict(source['progress']['retention_baseline'])
+        retention.set_pressure(retention.measure())
+        del source
     available=np.setdiff1d(np.arange(1,65536),list(set(config['holdout_seeds'])|retention.seeds))
     identities=dict(opponents=opponents.identities(),anchors=retention.identities,
                     initialization=actor.parent_sha256,
@@ -161,9 +173,21 @@ def main():
                         selected,games,update=update,pace=match['pace'],level=match['level'])
             tick=time.monotonic()
             revised=config['arm']=='mixed_retention'
-            losses=update_adapter(actor,optimizer,records,config,config['seed']+update,activity=activity,
+            update_config=config
+            if config.get('kl_target'):
+                # KL-targeted learning rate: the update starts at the adapted rate
+                # (reset_update_lr applies it); the max_update_kl backtracking cap stays.
+                update_config=dict(config,lr=progress.setdefault('adaptive_lr',config['lr']))
+            losses=update_adapter(actor,optimizer,records,update_config,config['seed']+update,activity=activity,
                 retention=retention if revised else None,completed_games_by_pace=dict(natural) if revised else None)
             progress['optimizer_steps']+=losses['optimizer_steps']
+            if config.get('kl_target'):
+                losses['update_lr']=update_config['lr']
+                if losses['optimizer_steps'] and losses['update_kl']>0:
+                    factor=float(np.clip(np.sqrt(config['kl_target']/losses['update_kl']),.5,2.))
+                    low,high=config.get('kl_target_lr_bounds',[config['lr']/8,config['lr']*16])
+                    progress['adaptive_lr']=float(np.clip(losses['effective_learning_rate']*factor,low,high))
+                losses['next_lr']=progress['adaptive_lr']
             progress['consecutive_stalled_updates']=(progress['consecutive_stalled_updates']+1
                 if losses['optimizer_steps']==0 else 0)
             breakdown['optimizer_seconds']=time.monotonic()-tick

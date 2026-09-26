@@ -83,7 +83,7 @@ def save_anchor_bank(path, records, metadata):
 
 class PaceRetention:
     def __init__(self, actor, bank_paths, *, excluded_seeds, paces, max_kl_increase=.03,
-                 coefficient=.1, batch_size=64, pressure_strength=0.):
+                 coefficient=.1, batch_size=64, pressure_strength=0., hinge=False):
         if (not np.isfinite(max_kl_increase) or max_kl_increase < 0
                 or not np.isfinite(coefficient) or coefficient <= 0 or batch_size < 1):
             raise ValueError("invalid retention budget")
@@ -92,6 +92,9 @@ class PaceRetention:
         if not np.isfinite(pressure_strength) or pressure_strength < 0:
             raise ValueError("invalid retention pressure")
         self.pressure_strength=float(pressure_strength)
+        # Hinge: a pace contributes retention only while its anchor KL exceeds
+        # its baseline, so retention never pulls a pace back below it.
+        self.hinge=bool(hinge)
         self.records,self.identities,self.by_pace=[],{},{}
         excluded=set(map(int,excluded_seeds))
         for name in bank_paths:
@@ -127,6 +130,7 @@ class PaceRetention:
         self.pressure={p:1+self.pressure_strength*float(np.clip(
             (measured[p]-self.baseline[p])/max(self.max_kl_increase,1e-12),0,1))**2
             for p in self.paces}
+        self.active={p:(not self.hinge) or measured[p]>self.baseline[p] for p in self.paces}
 
     def _kl(self, rows):
         features,data=self.actor.training_batch(rows)
@@ -143,10 +147,10 @@ class PaceRetention:
             ids=rng.choice(len(rows),per_pace,replace=True,p=self.weights[pace])
             selected.extend(rows[i] for i in ids)
         values=self._kl(selected)
-        if self.pressure_strength == 0:
+        if self.pressure_strength == 0 and not self.hinge:
             return self.coefficient*values.mean()
         values=values.reshape(len(self.paces),per_pace).mean(-1)
-        weights=values.new_tensor([self.pressure[p] for p in self.paces])
+        weights=values.new_tensor([self.pressure[p]*float(self.active[p]) for p in self.paces])
         return self.coefficient*(values*weights).mean()
 
     @torch.no_grad()

@@ -351,7 +351,9 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
         from drmc_rl.training.controller_retention import balance_pace_credit
         balance_pace_credit(records, completed_games_by_pace)
     size = config.get("minibatch", 128)
-    old_distributions, collection_agreement = _policy_snapshot(actor, records, size, activity=activity)
+    micro = min(size, config.get("microbatch", size))
+    grad_clip = float(config.get("grad_clip", 0.7))
+    old_distributions, collection_agreement = _policy_snapshot(actor, records, micro, activity=activity)
     rng, totals = np.random.default_rng(seed), defaultdict(list)
     max_kl = float(config.get("max_update_kl", 0.06))
     if not np.isfinite(max_kl) or max_kl <= 0:
@@ -382,18 +384,27 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
             candidate_first_kl = None
             for start in range(0, len(indices), size):
                 rows = [records[i] for i in indices[start : start + size]]
-                features, data = _training_batch(actor, rows)
-                log_probs, terms = training_loss_terms(actor, features, data, config)
-                loss = sum(weighted_training_terms(terms, config).values())
+                # Gradient accumulation: the step equals one minibatch-mean loss over
+                # `rows`; microbatches only bound activation memory.
+                optimizer.zero_grad(set_to_none=True)
+                micro_terms = []
+                for part_start in range(0, len(rows), micro):
+                    part = rows[part_start : part_start + micro]
+                    features, data = _training_batch(actor, part)
+                    log_probs, terms = training_loss_terms(actor, features, data, config)
+                    loss = sum(weighted_training_terms(terms, config).values()) * (len(part) / len(rows))
+                    if not torch.isfinite(loss):
+                        raise RuntimeError("non-finite pace training loss")
+                    loss.backward()
+                    micro_terms.append(({k: v.detach() for k, v in terms.items()}, len(part)))
+                terms = {k: sum(t[k] * n for t, n in micro_terms) / len(rows) for k in micro_terms[0][0]}
                 if retention is not None:
                     retention_loss = retention.loss(retention_rng)
-                    loss = loss + retention_loss
-                    terms["retention_loss"] = retention_loss
-                if not torch.isfinite(loss):
-                    raise RuntimeError("non-finite pace training loss")
-                optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                norm = torch.nn.utils.clip_grad_norm_(_training_module(actor).parameters(), 0.7)
+                    if not torch.isfinite(retention_loss):
+                        raise RuntimeError("non-finite pace training loss")
+                    retention_loss.backward()
+                    terms["retention_loss"] = retention_loss.detach()
+                norm = torch.nn.utils.clip_grad_norm_(_training_module(actor).parameters(), grad_clip)
                 if not torch.isfinite(norm):
                     raise RuntimeError("non-finite pace adapter gradient")
                 optimizer.step()
@@ -411,7 +422,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
                     attempt_totals[key].append((value, len(rows)))
             per_pace_kl = {} if completed_games_by_pace is not None else None
             measured_kl, measured_mse = _policy_snapshot(
-                actor, records, size, reference=old_distributions, activity=activity, pace_kl=per_pace_kl
+                actor, records, micro, reference=old_distributions, activity=activity, pace_kl=per_pace_kl
             )
             candidate_retention = retention.measure() if retention is not None else {}
             if (np.isfinite(measured_kl) and measured_kl <= max_kl
