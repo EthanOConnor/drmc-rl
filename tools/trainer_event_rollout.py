@@ -91,6 +91,40 @@ class ParallelPlanning:
             Path(self.planner.capture_path).write_text(json.dumps(list(self.planner.roots.values())))
 
 
+def score_shared_bases(policies, actors, selected_indices, obs, infos, scores):
+    """One forward per underlying network for evaluation actors that share it.
+
+    A knob entrant is its base actor plus a per-row bias, so its rows join the
+    base's rows in one forward and receive their biases afterwards from the same
+    512-slot scores the base returns. Only frozen evaluation actors are merged.
+    """
+    from drmc_rl.style.knobs import KnobPolicy
+    from tools.trainer_arena_cache import MemoPolicy
+
+    groups = {}
+    for name in sorted(set(actors[i] for i in selected_indices)):
+        actor = policies[name]
+        if getattr(actor, "training", False) or getattr(actor, "learning_records", None) is not None:
+            raise ValueError("shared-base forwards are for frozen evaluation actors only")
+        # Knob biases see the memoized 512-slot layout today; merging keeps that
+        # exact input. Without memoization a knob actor keeps its own forward.
+        shared = isinstance(actor, KnobPolicy) and isinstance(actor.inner, MemoPolicy)
+        base = actor.inner if shared else actor
+        groups.setdefault(id(base), (base, []))[1].append(name)
+    for base, names in groups.values():
+        indices = [j for j, i in enumerate(selected_indices) if actors[i] in names]
+        merged = score_public_inputs(base, obs[indices], [infos[j] for j in indices])
+        for name in names:
+            actor = policies[name]
+            mine = [k for k, j in enumerate(indices) if actors[selected_indices[j]] == name]
+            rows = [indices[k] for k in mine]
+            values = merged[mine]
+            if actor is not base:
+                values = actor.adjust(obs[rows], [infos[j] for j in rows],
+                                      np.broadcast_to(np.arange(512), values.shape), np.isfinite(values), values)[2]
+            scores[rows] = values
+
+
 def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=None, metrics=None, activity=None,
                     observer=None, controller=None, anchor_recorder=None):
     if controller is not None:
@@ -229,6 +263,8 @@ def run_event_batch(config, match, jobs, policy, planner, preparer, *, policies=
                 scores[:] = score_public_inputs(view,obs,infos)
                 if actor.learning_records is not None:
                     learning = {j:r for j,r in enumerate(actor.learning_records) if r is not None}
+            elif config.get("share_base_forwards") and policies is not None:
+                score_shared_bases(policies, actors, selected_indices, obs, infos, scores)
             else:
                 for id in sorted(set(actors[i] for i in selected_indices)):
                     indices = [j for j,i in enumerate(selected_indices) if actors[i] == id]

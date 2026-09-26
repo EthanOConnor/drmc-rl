@@ -277,7 +277,7 @@ def run_local(args):
         command = [sys.executable, "-m", "tools.rating_pool", "worker", "--coordinator",
                    f"http://127.0.0.1:{port['port']}", "--slot", str(i), "--worker-id", f"{socket.gethostname()}-local{i}"]
         for key in ("device", "threads", "planner_workers", "native_library", "reach_library", "engine", "cache",
-                    "cache_gb", "max_loaded", "host_budget", "min_free_gb", "max_batches", "numerics", "fake"):
+                    "cache_gb", "max_loaded", "host_budget", "min_free_gb", "max_batches", "numerics", "fake", "batching"):
             value = getattr(args, key, None)
             if value not in (None, "", 0):
                 command += [f"--{key.replace('_', '-')}", str(value)]

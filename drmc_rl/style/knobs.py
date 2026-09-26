@@ -204,8 +204,12 @@ class KnobPolicy:
         return getattr(self.inner, name)
 
     def score(self, obs, infos):
-        from drmc_rl.game.afterstate import planes_to_fields
         ca, cm, lg = self.inner.score(obs, infos)
+        return self.adjust(obs, infos, ca, cm, lg)
+
+    def adjust(self, obs, infos, ca, cm, lg):
+        """Add the knob biases to scores the inner actor produced for these rows."""
+        from drmc_rl.game.afterstate import planes_to_fields
         fields = planes_to_fields(np.asarray(obs)[:, :8])
         lg = np.array(lg, dtype=np.float32, copy=True)
         for i, info in enumerate(infos):

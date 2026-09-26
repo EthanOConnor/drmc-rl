@@ -96,7 +96,7 @@ class Runtimes:
 
     def __init__(self, args, max_loaded=4):
         self.args, self.max_loaded = args, max_loaded
-        self.runtimes, self.policies = {}, OrderedDict()
+        self.runtimes, self.policies, self.bases = {}, OrderedDict(), OrderedDict()
         self.built = False
 
     def config(self, spec, paths):
@@ -108,6 +108,10 @@ class Runtimes:
                       working_db=str(Path(self.args.cache).expanduser() / "work" / "unused.sqlite"))
         if self.args.planner_workers:
             config["planner_workers"] = self.args.planner_workers
+        # Host-local scheduling of inference (not part of the condition): one forward per
+        # shared network for both entrants, and filled asynchronous decision batches.
+        batching = getattr(self.args, "batching", "off") == "on"
+        config.update(share_base_forwards=batching, fill_inference_batches=batching)
         # A placeholder mixed variant makes the runtime score each entrant with its own policy.
         config["variants"] = {"_anchor": dict(name="anchor", delay=4, checkpoint=anchor)}
         return config
@@ -131,12 +135,22 @@ class Runtimes:
         return self.runtimes[key]
 
     def policy(self, runtime, params, identity):
-        from tools.trainer_planning_arena import variant_policy
+        from tools.trainer_planning_arena import _variant_actor, variant_policy
         if identity in self.policies:
             self.policies.move_to_end(identity)
             return self.policies[identity]
-        policy = variant_policy(runtime.config, params, runtime.policy)
+        # Knob variants of one checkpoint share its loaded network (and so, with
+        # share_base_forwards, its forwards); only the knob wrapper differs.
+        weights = json.dumps({k: v for k, v in json.loads(identity).items() if k != "knobs"}, sort_keys=True)
+        base = self.bases.get(weights)
+        if base is None:
+            base = self.bases[weights] = _variant_actor(runtime.config, {k: v for k, v in params.items() if k != "knobs"},
+                                                        runtime.policy)
+        self.bases.move_to_end(weights)
+        policy = variant_policy(runtime.config, params, runtime.policy, base=base)
         self.policies[identity] = policy
+        while len(self.bases) > self.max_loaded:
+            self.bases.popitem(last=False)
         while len(self.policies) > self.max_loaded:
             self.policies.popitem(last=False)
             try:
@@ -213,6 +227,7 @@ def identity(args):
     from tools.trainer_arena_distributed import source_revision
     return dict(protocol=PROTOCOL, worker_id=args.worker_id, host=socket.gethostname(), device=args.device,
                 threads=args.threads, planner_workers=args.planner_workers, source=source_revision(REPO),
+                batching=getattr(args, "batching", "off"),
                 numerics=numerics, native=native, engine=args.engine,
                 capabilities=sorted(runtime_capabilities(REPO) | {f"engine:{args.engine}"}))
 
@@ -349,6 +364,8 @@ def add_worker_arguments(parser):
     parser.add_argument("--artifact-dir", action="append", default=[],
                         help="directory searched (by file name, then hash) before downloading a checkpoint")
     parser.add_argument("--max-loaded", type=int, default=4, help="entrant policies kept in memory")
+    parser.add_argument("--batching", choices=("on", "off"), default="off",
+                        help="share one forward per network between entrants and fill decision batches")
     parser.add_argument("--slot", type=int, default=0, help="this worker's index on the host (for --host-budget)")
     parser.add_argument("--host-budget", type=int, default=0,
                         help="pause while other arena workers + slot >= budget (0: no limit)")

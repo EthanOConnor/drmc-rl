@@ -394,7 +394,7 @@ def next_live_match(config, results, decided=()):
     return min(pending,key=lambda m:len(results.get(m["id"],[])),default=None)
 
 
-def variant_policy(config, params, parent):
+def variant_policy(config, params, parent, base=None):
     """A frozen core override is a different player, not another parent alias.
 
     Opt-in ``knobs`` (``drmc_rl.style.knobs``: ``[{id, version, lambda, model}]``)
@@ -405,7 +405,7 @@ def variant_policy(config, params, parent):
     if stray:
         raise ValueError(f"this build does not accept {stray}; use knobs: [{{id, version, lambda, model}}]")
     from drmc_rl.style import knobs
-    return knobs.apply(_variant_actor(config, params, parent), params.get("knobs"))
+    return knobs.apply(base if base is not None else _variant_actor(config, params, parent), params.get("knobs"))
 
 
 def _variant_actor(config, params, parent):
