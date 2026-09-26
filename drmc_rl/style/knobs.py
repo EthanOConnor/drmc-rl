@@ -73,6 +73,13 @@ def _quad_bias(model, root_field, pill, actions, mask, tier_bar, decision=None):
     return quad_bias(model, root_field, pill, actions, mask, 1.0, tier_bar=tier_bar, decision=decision)
 
 
+def _gap_bias(immediate):
+    def bias(model, root_field, pill, actions, mask, tier_bar, decision=None):
+        from drmc_rl.style.gap_knob import gap_bias
+        return gap_bias(model, root_field, pill, actions, mask, 1.0, immediate=immediate, decision=decision)
+    return bias
+
+
 REGISTRY: dict[str, Knob] = {k.key: k for k in (
     Knob("showy-t2", 1, "drmc-showy-knob-v1", 30.0, _showy_bias,
          "P(T2+ clear within 4 placements | afterstate), human-fit logistic model; a T2+ clear now counts as certain",
@@ -85,6 +92,17 @@ REGISTRY: dict[str, Knob] = {k.key: k for k in (
          "human-fit logistic model; a 4+ line attack now counts as certain, optional per-wasted-line penalty "
          "(model waste_penalty)",
          "showy_quad_k4_v1.json"),
+    # knobs-v2: skill-gap knobs (tools/skill_gaps; drmc_rl/style/gap_knob.py). The model's ``sign``
+    # sets the direction; tier_bar is unused.
+    Knob("gap-finish", 1, "drmc-gap-knob-v1", math.inf, _gap_bias("virus_clear"),
+         "endgame: P(virus clear within 3 placements | afterstate), human-fit on bottles with <= 6 viruses and "
+         "inert above that; clearing a virus now counts as certain", "gap_finish_k3_v1.json"),
+    Knob("gap-safe", 1, "drmc-gap-knob-v1", math.inf, _gap_bias("none"),
+         "avoid danger: -P(spawn columns 3-4 at height 12+ within 4 placements | afterstate), human-fit",
+         "gap_safe_k4_v1.json"),
+    Knob("gap-big3", 1, "drmc-gap-knob-v1", math.inf, _gap_bias("none"),
+         "spawn-column attacks: P(an attack of 3+ lines, which always lands in spawn column 3 or 4, within 4 "
+         "placements | afterstate), human-fit", "gap_big3_k4_v1.json"),
 )}
 
 
@@ -189,8 +207,12 @@ def total_bias(knobs, root_field, pill, actions, mask, *, models=None) -> np.nda
 
 
 def load_model(entry):
+    spec = resolve_model(entry["model"])
+    if spec.get("schema") == "drmc-gap-knob-v1":
+        from drmc_rl.style.gap_knob import GapModel
+        return GapModel.load(spec)
     from drmc_rl.style.showy_knob import ShowyModel
-    return ShowyModel.load(resolve_model(entry["model"]))
+    return ShowyModel.load(spec)
 
 
 class KnobPolicy:
