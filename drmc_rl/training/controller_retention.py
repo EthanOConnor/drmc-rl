@@ -172,7 +172,7 @@ class PaceRetention:
             for p in self.paces)
 
 
-def balance_pace_credit(records, completed_games):
+def balance_pace_credit(records, completed_games, pace_weights=None):
     """Equal-pace episode SUM objective, with one common collection scale.
 
     All decisions in a pace receive the same factor. Natural games with no
@@ -182,9 +182,14 @@ def balance_pace_credit(records, completed_games):
     if not completed_games or any(n<=0 for n in completed_games.values()):
         raise ValueError("every selected pace needs natural completed games")
     total=sum(completed_games.values())
+    # Optional objective weights per pace (unit mean over the selected paces).
+    weights={p:1. for p in completed_games}
+    if pace_weights:
+        mean=sum(pace_weights[p] for p in completed_games)/len(completed_games)
+        weights={p:pace_weights[p]/mean for p in completed_games}
     for row in records:
         if row.get("anchor_only"):
             raise ValueError("teacher anchors are not PPO behavior samples")
-        factor=total/(len(completed_games)*completed_games[row["pace"]])
+        factor=weights[row["pace"]]*total/(len(completed_games)*completed_games[row["pace"]])
         for key in ("actor_weight","value_weight","entropy_weight","parent_kl_weight"):
             row[key]*=factor

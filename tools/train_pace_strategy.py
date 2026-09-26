@@ -349,7 +349,7 @@ def update_adapter(actor, optimizer, records, config, seed, *, activity=None,
     inverse_lengths, center, scale = prepare_training_records(records, config)
     if completed_games_by_pace is not None:
         from drmc_rl.training.controller_retention import balance_pace_credit
-        balance_pace_credit(records, completed_games_by_pace)
+        balance_pace_credit(records, completed_games_by_pace, config.get("pace_objective_weights"))
     size = config.get("minibatch", 128)
     micro = min(size, config.get("microbatch", size))
     grad_clip = float(config.get("grad_clip", 0.7))
